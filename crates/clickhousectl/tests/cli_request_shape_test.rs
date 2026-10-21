@@ -32710,3 +32710,123 @@ async fn snapshot_list_reads_every_page_in_json_and_human_output() {
         "{stdout}"
     );
 }
+
+#[tokio::test]
+async fn bigquery_cdc_controls_and_mappings_are_sent_for_both_auth_methods() {
+    for (auth, replication_method, mapping_field, mapping_value) in [
+        (
+            "SERVICE_ACCOUNT",
+            "query_based",
+            "queryCdcWatermarkColumn",
+            "updated_at",
+        ),
+        (
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "events_based",
+            "eventsFunction",
+            "appends",
+        ),
+    ] {
+        let mock = start_mock_clickpipes_api().await;
+        let directory = tempfile::tempdir().unwrap();
+        let key = directory.path().join("service-account.json");
+        std::fs::write(&key, "{}").unwrap();
+        let mapping = serde_json::json!({"sourceDatasetName":"sales", "sourceTable":"orders",
+            "targetTable":"orders_raw", mapping_field: mapping_value})
+        .to_string();
+        let mut args = vec![
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "cdc-pipe",
+            "--auth",
+            auth,
+            "--project-id",
+            "source-project",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--replication-mode",
+            "cdc",
+            "--replication-method",
+            replication_method,
+            "--sync-interval-seconds",
+            "60",
+            "--query-cdc-pull-sync-parallelism",
+            "4",
+            "--sync-delay-seconds",
+            "0",
+            "--pull-window-size-seconds",
+            "86400",
+            "--table-mapping-json",
+            &mapping,
+            "--org-id",
+            "org",
+        ];
+        if auth == "SERVICE_ACCOUNT" {
+            args.extend(["--service-account-file", key.to_str().unwrap()]);
+        }
+        let body = invoke_cli_capture_body(&mock, &args).await;
+        let source = &body["source"]["bigquery"];
+        assert_eq!(
+            source["settings"],
+            serde_json::json!({"replicationMode":"cdc",
+            "replicationMethod":replication_method, "syncIntervalSeconds":60,
+            "queryCdcPullSyncParallelism":4, "syncDelaySeconds":0, "pullWindowSizeSeconds":86400})
+        );
+        assert_eq!(source["tableMappings"][0][mapping_field], mapping_value);
+        assert_eq!(
+            source.get("credentials").is_some(),
+            auth == "SERVICE_ACCOUNT"
+        );
+    }
+}
+
+#[tokio::test]
+async fn bigquery_invalid_cdc_settings_fail_before_key_file_or_http() {
+    let mock = MockServer::start().await;
+    for extra in [
+        vec!["--replication-mode", "cdc"],
+        vec!["--sync-delay-seconds", "0"],
+        vec![
+            "--replication-mode",
+            "cdc",
+            "--replication-method",
+            "query_based",
+        ],
+        vec![
+            "--replication-mode",
+            "cdc_only",
+            "--replication-method",
+            "events_based",
+        ],
+    ] {
+        let mut args = vec![
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "invalid-cdc",
+            "--service-account-file",
+            "/missing/bigquery-key.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "sales.orders:orders",
+            "--org-id",
+            "org",
+        ];
+        args.extend(extra);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("/missing/bigquery-key.json"));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
