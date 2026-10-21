@@ -502,13 +502,16 @@ pub enum ClickPipeMutateMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
 }
 
 impl ClickPipeMutateMySQLSourceAuthentication {
-    pub const VALUES: &'static [&'static str] = &["basic", "IAM_ROLE"];
+    pub const VALUES: &'static [&'static str] =
+        &["basic", "IAM_ROLE", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceAuthentication {
@@ -516,6 +519,7 @@ impl std::fmt::Display for ClickPipeMutateMySQLSourceAuthentication {
         match self {
             Self::Basic => write!(f, "basic"),
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -531,6 +535,8 @@ pub enum ClickPipeMutateMySQLSourceType {
     Rdsmysql,
     #[serde(rename = "auroramysql")]
     Auroramysql,
+    #[serde(rename = "cloudsqlmysql")]
+    Cloudsqlmysql,
     #[serde(rename = "mariadb")]
     Mariadb,
     #[serde(rename = "rdsmariadb")]
@@ -541,8 +547,14 @@ pub enum ClickPipeMutateMySQLSourceType {
 }
 
 impl ClickPipeMutateMySQLSourceType {
-    pub const VALUES: &'static [&'static str] =
-        &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"];
+    pub const VALUES: &'static [&'static str] = &[
+        "mysql",
+        "rdsmysql",
+        "auroramysql",
+        "cloudsqlmysql",
+        "mariadb",
+        "rdsmariadb",
+    ];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceType {
@@ -551,6 +563,7 @@ impl std::fmt::Display for ClickPipeMutateMySQLSourceType {
             Self::Mysql => write!(f, "mysql"),
             Self::Rdsmysql => write!(f, "rdsmysql"),
             Self::Auroramysql => write!(f, "auroramysql"),
+            Self::Cloudsqlmysql => write!(f, "cloudsqlmysql"),
             Self::Mariadb => write!(f, "mariadb"),
             Self::Rdsmariadb => write!(f, "rdsmariadb"),
             Self::Unknown(s) => write!(f, "{s}"),
@@ -565,6 +578,8 @@ pub enum ClickPipeMutatePostgresSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -575,6 +590,7 @@ impl std::fmt::Display for ClickPipeMutatePostgresSourceAuthentication {
         match self {
             Self::Basic => write!(f, "basic"),
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -720,6 +736,8 @@ pub enum ClickPipeMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -730,6 +748,7 @@ impl std::fmt::Display for ClickPipeMySQLSourceAuthentication {
         match self {
             Self::Basic => write!(f, "basic"),
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -745,6 +764,8 @@ pub enum ClickPipeMySQLSourceType {
     Rdsmysql,
     #[serde(rename = "auroramysql")]
     Auroramysql,
+    #[serde(rename = "cloudsqlmysql")]
+    Cloudsqlmysql,
     #[serde(rename = "mariadb")]
     Mariadb,
     #[serde(rename = "rdsmariadb")]
@@ -760,6 +781,7 @@ impl std::fmt::Display for ClickPipeMySQLSourceType {
             Self::Mysql => write!(f, "mysql"),
             Self::Rdsmysql => write!(f, "rdsmysql"),
             Self::Auroramysql => write!(f, "auroramysql"),
+            Self::Cloudsqlmysql => write!(f, "cloudsqlmysql"),
             Self::Mariadb => write!(f, "mariadb"),
             Self::Rdsmariadb => write!(f, "rdsmariadb"),
             Self::Unknown(s) => write!(f, "{s}"),
@@ -1046,6 +1068,8 @@ pub enum ClickPipePatchMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1056,6 +1080,7 @@ impl std::fmt::Display for ClickPipePatchMySQLSourceAuthentication {
         match self {
             Self::Basic => write!(f, "basic"),
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1603,6 +1628,8 @@ pub enum ClickPipePostgresSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1613,6 +1640,7 @@ impl std::fmt::Display for ClickPipePostgresSourceAuthentication {
         match self {
             Self::Basic => write!(f, "basic"),
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2571,6 +2599,11 @@ pub struct ClickPipeMongoDBPipeTableMapping {
     pub source_collection: String,
     #[serde(rename = "sourceDatabaseName")]
     pub source_database_name: String,
+    #[serde(
+        rename = "structuredIngestion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub structured_ingestion: Option<ClickPipeMongoDBStructuredIngestion>,
     #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipeMongoDBPipeTableMappingTableengine>,
     #[serde(rename = "targetTable")]
@@ -2589,10 +2622,87 @@ pub struct ClickPipeMongoDBPipeTableMappingResponse {
     pub source_collection: Option<String>,
     #[serde(rename = "sourceDatabaseName", skip_serializing_if = "Option::is_none")]
     pub source_database_name: Option<String>,
+    #[serde(
+        rename = "structuredIngestion",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub structured_ingestion: Option<ClickPipeMongoDBStructuredIngestionResponse>,
     #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipeMongoDBPipeTableMappingTableengine>,
     #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
     pub target_table: Option<String>,
+}
+
+/// `ClickPipeMongoDBStructuredIngestion` from the ClickHouse Cloud API.
+///
+/// Replicates a collection into typed ClickHouse columns instead of a single
+/// JSON document column.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBStructuredIngestion {
+    #[serde(rename = "columns", skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeMongoDBPipeColumn>>,
+    #[serde(
+        rename = "dropUnexpectedValues",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub drop_unexpected_values: Option<bool>,
+    #[serde(rename = "enabled")]
+    pub enabled: bool,
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
+}
+
+/// `ClickPipeMongoDBStructuredIngestion` from the ClickHouse Cloud API, in
+/// response position.
+///
+/// Response variant of [`ClickPipeMongoDBStructuredIngestion`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBStructuredIngestionResponse {
+    #[serde(rename = "columns", skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeMongoDBPipeColumnResponse>>,
+    #[serde(
+        rename = "dropUnexpectedValues",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub drop_unexpected_values: Option<bool>,
+    #[serde(rename = "enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
+}
+
+/// `ClickPipeMongoDBPipeColumn` from the ClickHouse Cloud API: a top-level
+/// document field and the ClickHouse type it is replicated as.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBPipeColumn {
+    #[serde(rename = "name")]
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
+/// `ClickPipeMongoDBPipeColumn` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeMongoDBPipeColumn`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBPipeColumnResponse {
+    #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
 }
 
 /// `ClickPipeMongoDBSource` from the ClickHouse Cloud API.
