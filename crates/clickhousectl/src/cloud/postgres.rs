@@ -1996,6 +1996,7 @@ pub async fn postgres_create(
         tags,
         pg_config,
         pg_bouncer_config,
+        ip_access_list: None,
     };
 
     let org_id = resolve_org_id(client).await?;
@@ -2047,6 +2048,7 @@ fn build_postgres_update_request(
         size,
         ha_type,
         tags,
+        ip_access_list: None,
     }
 }
 

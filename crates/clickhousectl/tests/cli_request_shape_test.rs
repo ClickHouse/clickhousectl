@@ -19967,6 +19967,68 @@ async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
     }
 }
 
+// Omitting `ipAccessList` on create means "allow all"; an empty list blocks
+// public access, so the CLI must not send the key until it exposes it.
+#[tokio::test]
+async fn postgres_create_and_update_omit_the_ip_access_list() {
+    for (args, verb, endpoint) in [
+        (
+            vec![
+                "postgres",
+                "create",
+                "--name",
+                "pg-test",
+                "--region",
+                "us-east-1",
+                "--size",
+                "c6gd.large",
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres",
+        ),
+        (
+            vec!["postgres", "update", "pg-1", "--size", "c6gd.xlarge"],
+            "PATCH",
+            "/v1/organizations/org-1/postgres/pg-1",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method(verb))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"id": "11111111-1111-1111-1111-111111111111", "name": "pg-test"},
+                "status": 200,
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "tags": [],
+                    "ipAccessList": [{"id": "rule-1", "source": "0.0.0.0/0", "portRange": "5432"}]
+                },
+                "status": 200,
+            })))
+            .mount(&mock)
+            .await;
+        let mut args = args;
+        args.extend(["--org-id", "org-1"]);
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let writes: Vec<_> = requests
+            .iter()
+            .filter(|request| request.method.as_str() == verb)
+            .collect();
+        assert_eq!(writes.len(), 1, "{args:?}");
+        let body: Value = serde_json::from_slice(&writes[0].body).unwrap();
+        assert!(body.get("ipAccessList").is_none(), "{args:?}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn pgbouncer_invalid_file_values_fail_before_any_api_request() {
     let directory = tempfile::tempdir().unwrap();
