@@ -1,0 +1,222 @@
+{
+  "paths": {
+    "/v1/organizations/{organizationId}/udfs/{functionName}/attachments": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "description": "HTTP status code.",
+                      "example": 200,
+                      "type": "integer"
+                    },
+                    "requestId": {
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/UdfAttachmentListResponse"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "requestId",
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/udfs": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "description": "HTTP status code.",
+                      "example": 200,
+                      "type": "integer"
+                    },
+                    "requestId": {
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/UdfListResponse"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "requestId",
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/organizations/{organizationId}/udfs/{functionName}/versions": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "description": "HTTP status code.",
+                      "example": 200,
+                      "type": "integer"
+                    },
+                    "requestId": {
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000)$"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/UdfVersionListResponse"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "requestId",
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "UdfListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Latest version of each UDF in the organization.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Udf"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "additionalProperties": false
+      },
+      "UdfVersionListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Udf"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "additionalProperties": false
+      },
+      "UdfAttachmentListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UdfAttachment"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "additionalProperties": false
+      },
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "totalRecords": {
+            "description": "Total number of records available.",
+            "type": "integer"
+          },
+          "currentCursor": {
+            "description": "Cursor for the current page. Null for the first page.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextCursor": {
+            "description": "Cursor for the next page. Null if there are no more results.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "description": "Maximum number of records returned per page.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalRecords",
+          "currentCursor",
+          "nextCursor",
+          "limit"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

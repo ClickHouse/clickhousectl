@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REPORT_SCHEMA_VERSION: u32 = 10;
+pub const REPORT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +38,10 @@ pub enum FindingKind {
     SnapshotRemovedParameter,
     SnapshotChangedParameter,
     UnsupportedResponseSchema,
+    ResponseShapeMismatch,
+    SnapshotAddedResponse,
+    SnapshotRemovedResponse,
+    SnapshotChangedResponse,
     SnapshotAddedOperation,
     SnapshotRemovedOperation,
     SnapshotAddedSchema,

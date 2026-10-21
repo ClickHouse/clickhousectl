@@ -120,6 +120,10 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                 {
                     "crates/clickhouse-cloud-api/src/meta/operations.rs",
                     "crates/clickhouse-openapi-analyzer/src/permissions.rs",
+                "crates/clickhouse-openapi-analyzer/src/responses.rs",
+                "crates/clickhouse-openapi-analyzer/tests/fixtures/udf_contracts/before.json",
+                "crates/clickhouse-cloud-api/tests/integration_udf_test.rs",
+                "crates/clickhouse-cloud-api/tests/fixtures/udf_source.zip",
                     "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/before.json",
                     "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/after.json",
                     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",

@@ -303,7 +303,53 @@ Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachme
 
 ### OpenAPI response coverage
 
-The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 10.
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 11.
+
+
+Success response checking follows each operation's actual Rust return type. Generic
+applications and aliases retain their type arguments, which are substituted through
+response fields, flattened wrappers, arrays, and typed maps. An incompatible payload
+kind or referenced element model produces `response_shape_mismatch` with an operation,
+Rust field, and exact specification pointer. These checks use the target specification
+independently of the snapshot; removing a component and refreshing the snapshot cannot
+hide an obsolete return type. Response `Option` fields remain legitimate regardless of
+specification requiredness. Nullable 3.0 and 3.1 forms are supported.
+
+Resolved JSON success contracts are also compared between specifications, including
+referenced schemas. Added, removed, and changed contracts have separate snapshot
+findings with the previous/current contracts and locations. Prose, examples, and
+ordering of property/required sets do not cause contract drift. These findings describe
+specification changes, not necessarily a Rust incompatibility or a backend rollout.
+
+This is structural coverage, not a proof of every possible live value: arbitrary JSON
+payloads remain lossless catch-alls, existing union checks own named/inline variant
+coverage, and numeric ranges, string patterns, custom deserializers, non-JSON responses,
+and undocumented backend behavior are not validated by the shape checker. Unsupported
+compositions, unresolved generic bindings, alias cycles, and analysis depth limits are
+reported explicitly rather than counted as successful analysis.
+
+### UDF list response migration
+
+`udf_list` and `udf_version_list` now return `ApiResponse<Vec<Udf>>`;
+`udf_attachment_list` returns `ApiResponse<Vec<UdfAttachment>>`. Read rows from
+`response.result` and pagination from `response.limit`, `response.total_count`, and
+`response.next_cursor`. `total_count` is best-effort and can be absent or null; follow
+`next_cursor`, not the count, to find subsequent pages. The exported legacy
+`UdfListResponse`, `UdfVersionListResponse`, `UdfAttachmentListResponse`, and `Pagination`
+models remain available for callers that explicitly use them, but these three methods
+no longer return nested `items`/`pagination` objects.
+
+The historical implementation matched the earlier beta specification. An October
+snapshot refresh adopted array results and outer pagination without migrating the
+method returns. Removed-component warnings were a breadcrumb, but the old analyzer
+lost generic payload arguments and checked only outer field presence. UAT-01's
+regression reconstructs those returns against the current snapshot and requires all
+three mismatches to remain actionable after refresh.
+
+`integration_udf_test` creates two disposable UDFs, multiple versions, and a disposable
+service. It checks empty/nonempty lists, real continuation pages at `limit=1`, and
+attachment/deletion visibility, then cleans up on both success and failure. UDF client,
+model, and CLI paths select the service integration suite, which runs this test.
 
 
 ### Operation permissions and metadata

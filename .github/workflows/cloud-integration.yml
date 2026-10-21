@@ -259,7 +259,7 @@ jobs:
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.service == 'true' }}
-        run: cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
+        run: cargo test -p clickhouse-cloud-api --test integration_test --test integration_udf_test -- --ignored --nocapture
 
       - name: Run Query API key classification CLI integration test
         if: >-

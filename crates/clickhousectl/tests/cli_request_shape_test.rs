@@ -21548,7 +21548,7 @@ async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
                 serde_json::json!({"functionName":"my_udf", "serviceId":"svc-1", "version":2, "status":"future", "deterministic":false})
             };
             let result = if list {
-                serde_json::json!({"items": [item], "pagination":{"nextCursor":"next page", "limit":2, "totalRecords":3}})
+                serde_json::json!([item])
             } else {
                 item
             };
@@ -21556,7 +21556,7 @@ async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
                 .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
                 .and(header("authorization", "Bearer test-bearer-token"))
                 .respond_with(
-                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
+                    ResponseTemplate::new(200).set_body_json(if list { serde_json::json!({"result":result,"nextCursor":"next page","limit":2,"totalCount":3}) } else { serde_json::json!({"result":result}) }),
                 )
                 .expect(1)
                 .mount(&server)
@@ -21571,8 +21571,11 @@ async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
             assert_success(&output);
             let output: Value = serde_json::from_slice(&output.stdout).unwrap();
             if list {
-                assert_eq!(output["pagination"], result["pagination"]);
-                assert_eq!(output["items"][0]["status"], result["items"][0]["status"]);
+                assert_eq!(
+                    output["pagination"],
+                    serde_json::json!({"currentCursor":"page /+?","nextCursor":"next page","limit":2,"totalRecords":3})
+                );
+                assert_eq!(output["items"][0]["status"], result[0]["status"]);
                 let req = server.received_requests().await.unwrap().pop().unwrap();
                 let query: std::collections::HashMap<_, _> =
                     req.url.query_pairs().into_owned().collect();
@@ -21701,15 +21704,7 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
         Mock::given(method("GET"))
             .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": {
-                    "items": [],
-                    "pagination": {
-                        "currentCursor": "current page",
-                        "limit": 100,
-                        "nextCursor": "next page",
-                        "totalRecords": 0
-                    }
-                }
+                "result": [], "limit":100, "nextCursor":"next page", "totalCount":0
             })))
             .expect(1)
             .mount(&server)
@@ -21722,7 +21717,7 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             format!(
-                "{empty_state}\nPagination: 0 total records; page limit 100; current cursor: current page; next cursor: next page\n"
+                "{empty_state}\nPagination: 0 total records; page limit 100; next cursor: next page\n"
             )
         );
     }
@@ -22236,26 +22231,23 @@ async fn udf_stdin_minimal_definition_and_sparse_human_output() {
             "/my_udf",
             serde_json::json!({"functionName":null}),
         ),
-        (
-            vec!["list"],
-            "",
-            serde_json::json!({"items":[{}],"pagination":{"nextCursor":"next"}}),
-        ),
+        (vec!["list"], "", serde_json::json!([{}])),
         (
             vec!["attachment", "list", "my_udf"],
             "/my_udf/attachments",
-            serde_json::json!({"items":[{}]}),
+            serde_json::json!([{}]),
         ),
         (
             vec!["version", "list", "my_udf"],
             "/my_udf/versions",
-            serde_json::json!({"items":null,"pagination":null}),
+            serde_json::json!([]),
         ),
     ] {
         Mock::given(method("GET"))
             .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"result":result,"nextCursor":"next"})),
             )
             .expect(1)
             .mount(&server)
@@ -31747,9 +31739,47 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
             .await;
         Mock::given(method("GET"))
             .and(path("/v1/organizations/org-1/udfs/my_udf"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(udf_body(new_version, "ready")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(udf_body(
+                if existing {
+                    new_version + 1
+                } else {
+                    new_version
+                },
+                "ready",
+            )))
             .mount(&server)
             .await;
+        if existing {
+            // A concurrent publisher made GET point at version 3. The wait
+            // must find the created version 2 on a subsequent list page.
+            for (cursor, result, next) in [
+                (
+                    None,
+                    serde_json::json!([{"functionName":"my_udf","version":3,"status":"ready"}]),
+                    Some("page /+?"),
+                ),
+                (
+                    Some("page /+?"),
+                    serde_json::json!([{"functionName":"my_udf","version":2,"status":"ready"}]),
+                    None,
+                ),
+            ] {
+                let mock = Mock::given(method("GET"))
+                    .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+                    .and(query_param("limit", "100"));
+                let mock = if let Some(cursor) = cursor {
+                    mock.and(query_param("cursor", cursor))
+                } else {
+                    mock.and(wiremock::matchers::query_param_is_missing("cursor"))
+                };
+                mock.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result":result,"limit":100,"totalCount":null,"nextCursor":next
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            }
+        }
         let definition = serde_json::json!({
             "type": "executable", "runtime": "python3.11",
             "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
@@ -31843,19 +31873,25 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         } else {
             "POST /v1/organizations/org-1/udfs"
         };
-        assert_eq!(
-            calls,
-            [
-                "GET /v1/organizations/org-1/services/svc-1",
-                "GET /v1/organizations/org-1/udfs/my_udf",
-                "POST /v1/organizations/org-1/udfUploads/url",
-                publish,
-                "GET /v1/organizations/org-1/udfs/my_udf",
-                "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
-                "GET /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
-            ],
-            "existing={existing}"
-        );
+        let mut expected_calls = vec![
+            "GET /v1/organizations/org-1/services/svc-1",
+            "GET /v1/organizations/org-1/udfs/my_udf",
+            "POST /v1/organizations/org-1/udfUploads/url",
+            publish,
+            "GET /v1/organizations/org-1/udfs/my_udf",
+            "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            "GET /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ];
+        if existing {
+            expected_calls.splice(
+                5..5,
+                [
+                    "GET /v1/organizations/org-1/udfs/my_udf/versions",
+                    "GET /v1/organizations/org-1/udfs/my_udf/versions",
+                ],
+            );
+        }
+        assert_eq!(calls, expected_calls, "existing={existing}");
         assert_eq!(
             zip_entry_names(
                 &storage

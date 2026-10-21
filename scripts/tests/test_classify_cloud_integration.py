@@ -63,6 +63,8 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/serde_helpers.rs",
             },
             frozenset({"service"}): {
+                "crates/clickhouse-cloud-api/src/models/udfs.rs",
+                "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/client/backups.rs",
                 "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
                 "crates/clickhouse-cloud-api/src/client/saved_queries.rs",
@@ -104,7 +106,6 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             },
             classifier.NO_SUITES: {
                 "crates/clickhouse-cloud-api/src/client/clickstack.rs",
-                "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/convert/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/meta.rs",
                 "crates/clickhouse-cloud-api/src/meta/operations.rs",
@@ -112,7 +113,6 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs",
                 "crates/clickhouse-cloud-api/src/models/quotas.rs",
                 "crates/clickhouse-cloud-api/src/models/scim.rs",
-                "crates/clickhouse-cloud-api/src/models/udfs.rs",
             },
         }
         source_root = (
@@ -130,6 +130,19 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
         for path in (
             "crates/clickhouse-cloud-api/src/client/backups.rs",
             "crates/clickhouse-cloud-api/src/models/backups.rs",
+        ):
+            with self.subTest(path=path):
+                selection = classifier.select_records([("M", (path,))])
+                self.assertEqual(selection.suites, ("service",))
+                self.assertFalse(selection.failed_closed)
+
+    def test_udf_paths_select_service_lifecycle(self):
+        for path in (
+            "crates/clickhousectl/src/cloud/udfs.rs",
+            "crates/clickhouse-cloud-api/src/client/udfs.rs",
+            "crates/clickhouse-cloud-api/src/models/udfs.rs",
+            "crates/clickhouse-cloud-api/tests/integration_udf_test.rs",
+            "crates/clickhouse-cloud-api/tests/fixtures/udf_source.zip",
         ):
             with self.subTest(path=path):
                 selection = classifier.select_records([("M", (path,))])
@@ -154,6 +167,8 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/common/support.rs",
             },
             frozenset({"service"}): {
+                "crates/clickhouse-cloud-api/tests/integration_udf_test.rs",
+                "crates/clickhouse-cloud-api/tests/fixtures/udf_source.zip",
                 "crates/clickhouse-cloud-api/tests/integration_test.rs",
                 "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs",
             },

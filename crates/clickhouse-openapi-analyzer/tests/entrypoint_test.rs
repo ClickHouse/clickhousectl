@@ -9,6 +9,154 @@ use clickhouse_openapi_analyzer::{AnalysisInput, analyze};
 const SPEC: &str = include_str!("../../clickhouse-cloud-api/clickhouse_cloud_openapi.json");
 const API_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../clickhouse-cloud-api");
 
+fn copy_sources(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            copy_sources(&entry.path(), &to.join(entry.file_name()));
+        } else if entry
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "rs")
+        {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
+/// The old success schemas are captured from a9dba36a (October 1), supplied in
+/// the UAT-01 evidence bundle. Splice only these response contracts into the
+/// current baseline so unrelated historical drift cannot affect this regression.
+#[test]
+fn udf_payload_migration_remains_actionable_after_component_removal_and_snapshot_refresh() {
+    use clickhouse_openapi_analyzer::report::FindingKind::*;
+    let source = tempfile::tempdir().unwrap();
+    copy_sources(&Path::new(API_ROOT).join("src"), source.path());
+    let client = source.path().join("client/udfs.rs");
+    let repaired = std::fs::read_to_string(&client).unwrap();
+    // Reconstruct precisely the three incompatible method returns. Keep the
+    // legacy models in the tree: absence from components must not hide their use.
+    let mut obsolete = repaired.clone();
+    for (method, next, old) in [
+        ("udf_list", "udf_get", "UdfListResponse"),
+        (
+            "udf_attachment_list",
+            "udf_attachment_get",
+            "UdfAttachmentListResponse",
+        ),
+        (
+            "udf_version_list",
+            "udf_upload_session_create",
+            "UdfVersionListResponse",
+        ),
+    ] {
+        let start = obsolete.find(&format!("pub async fn {method}(")).unwrap();
+        let end = obsolete[start..]
+            .find(&format!("pub async fn {next}("))
+            .unwrap()
+            + start;
+        let section = obsolete[start..end]
+            .replace("ApiResponse<Vec<Udf>>", &format!("ApiResponse<{old}>"))
+            .replace(
+                "ApiResponse<Vec<UdfAttachment>>",
+                &format!("ApiResponse<{old}>"),
+            );
+        assert_ne!(&obsolete[start..end], section);
+        obsolete.replace_range(start..end, &section);
+    }
+    std::fs::write(&client, obsolete).unwrap();
+    let target: serde_json::Value = serde_json::from_str(SPEC).unwrap();
+    let fragment: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/udf_contracts/before.json")).unwrap();
+    let mut before = target.clone();
+    for (path, verbs) in fragment["paths"].as_object().unwrap() {
+        for (verb, operation) in verbs.as_object().unwrap() {
+            before["paths"][path][verb]["responses"]["200"] = operation["responses"]["200"].clone();
+        }
+    }
+    before["components"]["schemas"]
+        .as_object_mut()
+        .unwrap()
+        .extend(
+            fragment["components"]["schemas"]
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+    let config = clickhouse_cloud_config();
+    let historical = before.to_string();
+    let original_contract = analyze(
+        AnalysisInput {
+            spec_json: &historical,
+            snapshot_json: &historical,
+            rust_source_root: source.path(),
+        },
+        &config,
+    )
+    .unwrap();
+    assert!(
+        !original_contract.has_drift(),
+        "{}",
+        original_contract.render_text()
+    );
+    let analyze_with = |snapshot: &str| {
+        analyze(
+            AnalysisInput {
+                spec_json: SPEC,
+                snapshot_json: snapshot,
+                rust_source_root: source.path(),
+            },
+            &config,
+        )
+        .unwrap()
+    };
+    let old_report = analyze_with(&before.to_string());
+    assert_eq!(
+        old_report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == SnapshotChangedResponse)
+            .count(),
+        3,
+        "{}",
+        old_report.render_text()
+    );
+    assert_eq!(
+        old_report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == SnapshotRemovedSchema)
+            .count(),
+        4
+    );
+    let refreshed = analyze_with(SPEC);
+    assert_eq!(refreshed.findings.len(), 3, "{}", refreshed.render_text());
+    for finding in &refreshed.findings {
+        assert_eq!(finding.kind, ResponseShapeMismatch);
+        assert_eq!(
+            finding.rust_item.as_deref(),
+            Some("models.rs::ApiResponse::result")
+        );
+        let pointer = finding.spec_pointer.as_ref().unwrap();
+        assert!(pointer.ends_with("/properties/result"));
+        assert_eq!(target.pointer(pointer).unwrap()["type"], "array");
+    }
+    let json = serde_json::to_string(&refreshed).unwrap();
+    assert_eq!(
+        serde_json::from_str::<DriftReport>(&json).unwrap(),
+        refreshed
+    );
+    assert!(refreshed.render_text().contains("ResponseShapeMismatch"));
+    assert_eq!(
+        analyze_with(SPEC),
+        refreshed,
+        "reports must be deterministic"
+    );
+    std::fs::write(&client, repaired).unwrap();
+    assert!(!analyze_with(SPEC).has_drift());
+}
+
 #[test]
 fn executable_and_library_return_the_same_vendored_report() {
     let config = clickhouse_cloud_config();
@@ -173,12 +321,13 @@ fn captured_pagination_and_byoc_changes_survive_snapshot_refresh() {
     let after = contract_spec(true);
     assert!(!contract_report(&before, &before).has_drift());
     let report = contract_report(&after, &before);
-    assert_eq!(report.findings.len(), 9, "{}", report.render_text());
+    assert_eq!(report.findings.len(), 10, "{}", report.render_text());
     for kind in [
         MissingOperationParameter,
         OperationParameterMismatch,
         SnapshotAddedParameter,
         SnapshotChangedParameter,
+        SnapshotChangedResponse,
         MissingStructField,
     ] {
         assert!(report.findings.iter().any(|finding| finding.kind == kind));

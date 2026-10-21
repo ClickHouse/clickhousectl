@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 10:
+    if report.get("schema_version") != 11:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -509,6 +509,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Permission and operation metadata changes | {total('unsupported_operation_security', 'snapshot_changed_permissions', 'missing_operation_metadata', 'extra_operation_metadata', 'invalid_operation_metadata', 'operation_metadata_mismatch', 'operation_permissions_mismatch', 'operation_catalog_mismatch')} |",
         f"| Missing operation parameters | {counts['missing_operation_parameter']} |",
         f"| Operation parameter mismatches | {counts['operation_parameter_mismatch']} |",
+        f"| Incompatible response shapes | {counts['response_shape_mismatch']} |",
         f"| Unsupported success response schemas | {counts['unsupported_response_schema']} |",
         f"| Missing model types | {counts['missing_model_type']} |",
         f"| Missing schema definitions | {counts['missing_schema_definition']} |",
@@ -521,7 +522,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Field optionality mismatches | {counts['field_optionality_mismatch']} |",
         f"| Beta status changes | {total('newly_beta_operation', 'graduated_beta_operation')} |",
         f"| Deprecated-field changes | {total('newly_deprecated_field', 'undeprecated_field', 'missing_deprecated_marker', 'stray_deprecated_marker')} |",
-        f"| Stale snapshot changes | {total('snapshot_added_operation', 'snapshot_removed_operation', 'snapshot_added_schema', 'snapshot_removed_schema', 'snapshot_added_parameter', 'snapshot_removed_parameter', 'snapshot_changed_parameter')} |",
+        f"| Stale snapshot changes | {total('snapshot_added_operation', 'snapshot_removed_operation', 'snapshot_added_schema', 'snapshot_removed_schema', 'snapshot_added_parameter', 'snapshot_removed_parameter', 'snapshot_changed_parameter', 'snapshot_added_response', 'snapshot_removed_response', 'snapshot_changed_response')} |",
         f"| Stale exemptions | {counts['stale_exemption']} |",
         f"| New unsupported enum constraints | {counts['unsupported_enum_constraint']} |",
         f"| Changed acknowledged enum constraints | {counts['acknowledged_enum_constraint_changed']} |",
@@ -575,6 +576,10 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         ("missing_operation_parameter", "Missing Operation Parameters"),
         ("operation_parameter_mismatch", "Operation Parameter Mismatches"),
         ("unsupported_response_schema", "Unsupported Success Response Schemas"),
+        ("response_shape_mismatch", "Incompatible Operation Response Shapes"),
+        ("snapshot_added_response", "New JSON Success Responses Missing From Snapshot"),
+        ("snapshot_removed_response", "Removed JSON Success Responses Still In Snapshot"),
+        ("snapshot_changed_response", "Changed Operation Response Contracts"),
         ("snapshot_added_parameter", "New Operation Parameters Missing From Snapshot"),
         ("snapshot_removed_parameter", "Removed Operation Parameters Still In Snapshot"),
         ("snapshot_changed_parameter", "Changed Operation Parameter Contracts"),
@@ -608,7 +613,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         for finding in findings:
             location = finding.get("spec_pointer") or finding.get("rust_item") or "unknown"
             lines.append(f"- `{location}` — {finding['message']}")
-            if kind in {"snapshot_added_parameter", "snapshot_removed_parameter", "snapshot_changed_parameter"}:
+            if kind in {"snapshot_added_parameter", "snapshot_removed_parameter", "snapshot_changed_parameter", "snapshot_added_response", "snapshot_removed_response", "snapshot_changed_response"}:
                 details = finding.get("details", {})
                 for key, label in [("previous_contract", "Snapshot contract"), ("current_contract", "Live contract"), ("previous_spec_pointer", "Snapshot location")]:
                     if key in details:
