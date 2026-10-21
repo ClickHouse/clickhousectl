@@ -145,6 +145,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                 connection,
                 default_table_select_expression,
                 disabled: value.disabled,
+                order_by_expression: value.order_by_expression,
                 displayed_timestamp_value_expression: value.displayed_timestamp_value_expression,
                 event_attributes_expression: value.event_attributes_expression,
                 filter_settings: value.filter_settings.map(TryInto::try_into).transpose()?,
@@ -505,6 +506,7 @@ impl TryFrom<ClickStackSessionSourceResponse> for ClickStackSessionSource {
                 Ok(Self {
                     connection,
                     disabled: value.disabled,
+                    resource_attributes_expression: value.resource_attributes_expression,
                     from: from.try_into()?,
                     id: value.id,
                     kind,
@@ -723,6 +725,10 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 connection,
                 default_table_select_expression,
                 disabled: value.disabled,
+                displayed_timestamp_value_expression: value.displayed_timestamp_value_expression,
+                order_by_expression: value.order_by_expression,
+                sample_rate_expression: value.sample_rate_expression,
+                span_links_value_expression: value.span_links_value_expression,
                 duration_expression,
                 duration_precision,
                 event_attributes_expression: value.event_attributes_expression,
@@ -914,6 +920,7 @@ impl TryFrom<ClickStackVariableSavedFilterValueResponse> for ClickStackVariableS
         }
         match (value.r#type, value.name, value.values) {
             (Some(r#type), Some(name), Some(values)) => Ok(Self {
+                all: value.all,
                 r#type,
                 name,
                 values,
@@ -934,6 +941,340 @@ impl TryFrom<ClickStackSavedFilterValueResponse> for ClickStackSavedFilterValue 
                 Self::ClickStackVariableSavedFilterValue(value.try_into()?)
             }
             ClickStackSavedFilterValueResponse::Unknown(value) => Self::Unknown(value),
+        })
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsFromResponse>
+    for ClickStackClickHouseCASLPermissionConditionsFrom
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsFromResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.database_name.is_none() {
+            missing.push("databaseName");
+        }
+        if value.table_name.is_none() {
+            missing.push("tableName");
+        }
+        match (value.database_name, value.table_name) {
+            (Some(database_name), Some(table_name)) => Ok(Self {
+                database_name,
+                table_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsResponse>
+    for ClickStackClickHouseCASLPermissionConditions
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.connection.is_none() {
+            missing.push("connection");
+        }
+        if value.from.is_none() {
+            missing.push("from");
+        }
+        if value.r#where.is_none() {
+            missing.push("where");
+        }
+        if value.where_language.is_none() {
+            missing.push("whereLanguage");
+        }
+        match (
+            value.connection,
+            value.from,
+            value.r#where,
+            value.where_language,
+        ) {
+            (Some(connection), Some(from), Some(r#where), Some(where_language)) => Ok(Self {
+                connection,
+                from: from.try_into()?,
+                r#where,
+                where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionResponse> for ClickStackClickHouseCASLPermission {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackClickHouseCASLPermissionResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, value.integration, value.subject) {
+            (Some(action), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions: value.conditions.map(TryInto::try_into).transpose()?,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackMongoDBCASLPermissionResponse> for ClickStackMongoDBCASLPermission {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackMongoDBCASLPermissionResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, value.integration, value.subject) {
+            (Some(action), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions: value.conditions,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackQueryExpressionFilterResponse> for ClickStackQueryExpressionFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackQueryExpressionFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.expression.is_none() {
+            missing.push("expression");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.expression,
+            value.id,
+            value.name,
+            value.source_id,
+            value.r#type,
+        ) {
+            (Some(expression), Some(id), Some(name), Some(source_id), Some(r#type)) => Ok(Self {
+                applies_to_source_ids: value.applies_to_source_ids,
+                expression,
+                id,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                name,
+                source_id,
+                source_metric_type: value.source_metric_type,
+                r#type,
+                variable_name: value.variable_name,
+                r#where: value.r#where,
+                where_language: value.where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackStaticListFilterResponse> for ClickStackStaticListFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackStaticListFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.options.is_none() {
+            missing.push("options");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (value.id, value.name, value.options, value.r#type) {
+            (Some(id), Some(name), Some(options), Some(r#type)) => Ok(Self {
+                id,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                name,
+                options,
+                r#type,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackPrometheusLabelFilterResponse> for ClickStackPrometheusLabelFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackPrometheusLabelFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.label.is_none() {
+            missing.push("label");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.id,
+            value.label,
+            value.name,
+            value.source_id,
+            value.r#type,
+        ) {
+            (Some(id), Some(label), Some(name), Some(source_id), Some(r#type)) => Ok(Self {
+                id,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                label,
+                r#match: value.r#match,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                name,
+                source_id,
+                r#type,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackSourceFilterResponse> for ClickStackSourceFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackSourceFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.expression.is_none() {
+            missing.push("expression");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        if value.variable_name.is_none() {
+            missing.push("variableName");
+        }
+        match (
+            value.expression,
+            value.id,
+            value.name,
+            value.source_id,
+            value.r#type,
+            value.variable_name,
+        ) {
+            (
+                Some(expression),
+                Some(id),
+                Some(name),
+                Some(source_id),
+                Some(r#type),
+                Some(variable_name),
+            ) => Ok(Self {
+                applies_to_source_ids: value.applies_to_source_ids,
+                expression,
+                id,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                name,
+                source_id,
+                r#type,
+                variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackCASLPermissionResponse> for ClickStackCASLPermission {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackCASLPermissionResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(value) => {
+                Self::ClickStackMongoDBCASLPermission(value.try_into()?)
+            }
+            ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(value) => {
+                Self::ClickStackClickHouseCASLPermission(value.try_into()?)
+            }
+            ClickStackCASLPermissionResponse::Unknown(value) => Self::Unknown(value),
+        })
+    }
+}
+
+impl TryFrom<ClickStackFilterResponse> for ClickStackFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackFilterResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackFilterResponse::ClickStackQueryExpressionFilter(value) => {
+                Self::ClickStackQueryExpressionFilter(value.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackStaticListFilter(value) => {
+                Self::ClickStackStaticListFilter(value.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackPrometheusLabelFilter(value) => {
+                Self::ClickStackPrometheusLabelFilter(value.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackSourceFilter(value) => {
+                Self::ClickStackSourceFilter(value.try_into()?)
+            }
+            ClickStackFilterResponse::Unknown(value) => Self::Unknown(value),
         })
     }
 }

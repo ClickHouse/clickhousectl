@@ -4305,8 +4305,14 @@ fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
 
     assert_split_strictness!(
         ClickStackAggregatedColumn => ClickStackAggregatedColumnResponse,
-        ClickStackCASLPermission => ClickStackCASLPermissionResponse,
-        ClickStackFilter => ClickStackFilterResponse,
+        ClickStackMongoDBCASLPermission => ClickStackMongoDBCASLPermissionResponse,
+        ClickStackClickHouseCASLPermission => ClickStackClickHouseCASLPermissionResponse,
+        ClickStackClickHouseCASLPermissionConditions => ClickStackClickHouseCASLPermissionConditionsResponse,
+        ClickStackClickHouseCASLPermissionConditionsFrom => ClickStackClickHouseCASLPermissionConditionsFromResponse,
+        ClickStackQueryExpressionFilter => ClickStackQueryExpressionFilterResponse,
+        ClickStackStaticListFilter => ClickStackStaticListFilterResponse,
+        ClickStackPrometheusLabelFilter => ClickStackPrometheusLabelFilterResponse,
+        ClickStackSourceFilter => ClickStackSourceFilterResponse,
         ClickStackFilterSettingsColumn => ClickStackFilterSettingsColumnResponse,
         ClickStackHighlightedAttributeExpression => ClickStackHighlightedAttributeExpressionResponse,
         ClickStackLogSource => ClickStackLogSourceResponse,
@@ -4390,7 +4396,18 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
         ClickStackDashboardContainerTab => ClickStackDashboardContainerTabResponse,
         ClickStackEqualityColorCondition => ClickStackEqualityColorConditionResponse,
         ClickStackEventPatternsChartConfig => ClickStackEventPatternsChartConfigResponse,
-        ClickStackHeatmapChartConfig => ClickStackHeatmapChartConfigResponse,
+        ClickStackHeatmapDistributionChartConfig => ClickStackHeatmapDistributionChartConfigResponse,
+        ClickStackHeatmapSeriesChartConfig => ClickStackHeatmapSeriesChartConfigResponse,
+        ClickStackStackedLineBuilderChartConfig => ClickStackStackedLineBuilderChartConfigResponse,
+        ClickStackStackedLineRawSqlChartConfig => ClickStackStackedLineRawSqlChartConfigResponse,
+        ClickStackAlertLineBuilderChartConfig => ClickStackAlertLineBuilderChartConfigResponse,
+        ClickStackAlertLineRawSqlChartConfig => ClickStackAlertLineRawSqlChartConfigResponse,
+        ClickStackAlertBarBuilderChartConfig => ClickStackAlertBarBuilderChartConfigResponse,
+        ClickStackAlertBarRawSqlChartConfig => ClickStackAlertBarRawSqlChartConfigResponse,
+        ClickStackAlertStackedLineBuilderChartConfig => ClickStackAlertStackedLineBuilderChartConfigResponse,
+        ClickStackAlertStackedLineRawSqlChartConfig => ClickStackAlertStackedLineRawSqlChartConfigResponse,
+        ClickStackAlertNumberBuilderChartConfig => ClickStackAlertNumberBuilderChartConfigResponse,
+        ClickStackAlertNumberRawSqlChartConfig => ClickStackAlertNumberRawSqlChartConfigResponse,
         ClickStackHeatmapSelectItem => ClickStackHeatmapSelectItemResponse,
         ClickStackLineBuilderChartConfig => ClickStackLineBuilderChartConfigResponse,
         ClickStackLineRawSqlChartConfig => ClickStackLineRawSqlChartConfigResponse,
@@ -4446,6 +4463,8 @@ fn clickstack_alert_and_dashboard_response_models_accept_an_empty_payload() {
         ClickStackTileOutput,
         ClickStackValidateDashboardError,
         ClickStackValidateDashboardResponse,
+        ClickStackValidateWebhookResponse,
+        ClickStackValidateWebhookResponseErrorsItem,
     );
 }
 
@@ -4876,10 +4895,14 @@ fn clickstack_filter_applies_to_source_ids_round_trip() {
         "id": "f-1",
         "name": "errors",
         "sourceId": "src-1",
-        "type": "sql",
+        "type": "QUERY_EXPRESSION",
         "appliesToSourceIds": ["src-1", "src-2"]
     }"#;
-    let filter: ClickStackFilter = serde_json::from_str(json).unwrap();
+    let ClickStackFilter::ClickStackQueryExpressionFilter(filter) =
+        serde_json::from_str(json).unwrap()
+    else {
+        panic!("expected a query-expression filter");
+    };
     assert_eq!(
         filter.applies_to_source_ids,
         Some(vec!["src-1".to_string(), "src-2".to_string()])
@@ -4889,7 +4912,7 @@ fn clickstack_filter_applies_to_source_ids_round_trip() {
     assert_eq!(v["appliesToSourceIds"][1], "src-2");
 
     // Absent -> None -> dropped.
-    let filter = ClickStackFilter::default();
+    let filter = ClickStackQueryExpressionFilter::default();
     assert_eq!(filter.applies_to_source_ids, None);
     let v = serde_json::to_value(&filter).unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
@@ -4901,10 +4924,14 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
         "expression": "level = 'error'",
         "name": "errors",
         "sourceId": "src-1",
-        "type": "sql",
+        "type": "QUERY_EXPRESSION",
         "appliesToSourceIds": ["src-9"]
     }"#;
-    let filter: ClickStackFilterInput = serde_json::from_str(json).unwrap();
+    let ClickStackFilterInput::ClickStackQueryExpressionFilterInput(filter) =
+        serde_json::from_str(json).unwrap()
+    else {
+        panic!("expected a query-expression filter");
+    };
     assert_eq!(
         filter.applies_to_source_ids,
         Some(vec!["src-9".to_string()])
@@ -4912,7 +4939,7 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
     let v = serde_json::to_value(&filter).unwrap();
     assert_eq!(v["appliesToSourceIds"][0], "src-9");
 
-    let v = serde_json::to_value(ClickStackFilterInput::default()).unwrap();
+    let v = serde_json::to_value(ClickStackQueryExpressionFilterInput::default()).unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
 }
 
@@ -5573,9 +5600,9 @@ fn clickstack_tile_config_markdown_variant() {
 
 #[test]
 fn clickstack_tile_config_heatmap_variant() {
-    // `displayType: "heatmap"` is the only discriminator that reaches the
-    // ClickStackHeatmapChartConfig arm; the heatmap-specific `select` shape with
-    // `valueExpression` is then parsed by that variant, not used to select it.
+    // `displayType: "heatmap"` reaches the ClickStackHeatmapChartConfig arm,
+    // which then dispatches on `heatmapMode`; its absence selects the
+    // distribution heatmap, whose `select` items carry `valueExpression`.
     let json = r#"{
         "displayType": "heatmap",
         "sourceId": "src-1",
@@ -5583,17 +5610,42 @@ fn clickstack_tile_config_heatmap_variant() {
     }"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
     match cfg {
-        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(
+            ClickStackHeatmapChartConfig::ClickStackHeatmapDistributionChartConfig(h),
+        ) => {
             assert_eq!(h.source_id, "src-1");
             assert_eq!(
                 h.display_type,
-                ClickStackHeatmapChartConfigDisplaytype::Heatmap
+                ClickStackHeatmapDistributionChartConfigDisplaytype::Heatmap
             );
+            assert_eq!(h.heatmap_mode, None);
             assert_eq!(h.select.len(), 1);
             assert_eq!(h.select[0].value_expression, "latency_ms");
         }
-        other => panic!("expected heatmap variant, got {other}"),
+        other => panic!("expected distribution heatmap variant, got {other}"),
     }
+
+    let series = serde_json::json!({
+        "displayType": "heatmap", "heatmapMode": "series", "sourceId": "src-1",
+        "select": [{"aggFn": "count"}], "groupBy": "ServiceName"
+    });
+    let cfg: ClickStackTileConfig = serde_json::from_value(series.clone()).unwrap();
+    let ClickStackTileConfig::ClickStackHeatmapChartConfig(
+        ClickStackHeatmapChartConfig::ClickStackHeatmapSeriesChartConfig(h),
+    ) = &cfg
+    else {
+        panic!("expected series heatmap variant, got {cfg}");
+    };
+    assert_eq!(h.group_by.as_deref(), Some("ServiceName"));
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), series);
+
+    // A dropped `heatmapMode` on a series payload must not be retyped as a
+    // distribution heatmap that silently loses `groupBy`.
+    let mut dropped = series;
+    dropped.as_object_mut().unwrap().remove("heatmapMode");
+    let cfg: ClickStackHeatmapChartConfigResponse =
+        serde_json::from_value(dropped.clone()).unwrap();
+    assert_eq!(cfg, ClickStackHeatmapChartConfigResponse::Unknown(dropped));
 }
 
 #[test]
@@ -6180,14 +6232,27 @@ fn deserialize_clickstack_role_with_nested_conditions() {
         "permissions": [
             {
                 "action": "read",
-                "subject": "dashboard",
+                "subject": "Dashboard",
                 "inverted": false,
                 "integration": "mongodb",
+                "fields": ["name"],
                 "conditions": {
                     "teamId": "team-1",
-                    "tags": ["prod", "eu"]
+                    "name": {"$regex": "^prod", "$options": "i"}
                 }
-            }
+            },
+            {
+                "action": "read",
+                "subject": "Source",
+                "integration": "clickhouse",
+                "conditions": {
+                    "connection": "conn-1",
+                    "from": {"databaseName": "otel", "tableName": "logs"},
+                    "where": "ServiceName = 'api'",
+                    "whereLanguage": "sql"
+                }
+            },
+            {"action": "read", "subject": "Dashboard", "integration": "slack"}
         ]
     }"#;
     let role: ClickStackRole = serde_json::from_str(json).unwrap();
@@ -6195,41 +6260,57 @@ fn deserialize_clickstack_role_with_nested_conditions() {
     assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
     assert_eq!(role.is_predefined, Some(false));
     let permissions = role.permissions.as_deref().expect("permissions present");
-    assert_eq!(permissions.len(), 1);
+    assert_eq!(permissions.len(), 3);
 
-    let perm = &permissions[0];
-    assert_eq!(perm.action.as_deref(), Some("read"));
-    assert_eq!(perm.subject.as_deref(), Some("dashboard"));
-    assert_eq!(perm.inverted, Some(false));
-    assert_eq!(perm.integration, Some("mongodb".to_string()));
-
-    // Free-form conditions land as serde_json::Value with the nested content intact.
-    let conditions = perm.conditions.as_ref().unwrap();
+    let ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(mongo) = &permissions[0]
+    else {
+        panic!("expected a MongoDB permission");
+    };
+    assert_eq!(mongo.action, Some(ClickStackCASLPermissionAction::Read));
+    assert_eq!(
+        mongo.subject,
+        Some(ClickStackCASLPermissionSubject::Dashboard)
+    );
+    assert_eq!(mongo.inverted, Some(false));
+    assert_eq!(mongo.fields.as_deref(), Some(&["name".to_string()][..]));
+    // MongoDB conditions keep each dynamic key and its raw JSON value.
+    let conditions = mongo.conditions.as_ref().unwrap();
     assert_eq!(conditions["teamId"], "team-1");
-    assert_eq!(conditions["tags"][0], "prod");
-    assert_eq!(conditions["tags"][1], "eu");
+    assert_eq!(conditions["name"]["$regex"], "^prod");
+
+    let ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(clickhouse) =
+        &permissions[1]
+    else {
+        panic!("expected a ClickHouse permission");
+    };
+    let conditions = clickhouse.conditions.as_ref().unwrap();
+    assert_eq!(conditions.connection.as_deref(), Some("conn-1"));
+    assert_eq!(
+        conditions.from.as_ref().unwrap().table_name.as_deref(),
+        Some("logs")
+    );
+
+    // An integration the spec does not type is kept verbatim.
+    assert!(matches!(
+        &permissions[2],
+        ClickStackCASLPermissionResponse::Unknown(value) if value["integration"] == "slack"
+    ));
 }
 
 #[test]
 fn clickstack_role_round_trip() {
-    let role = ClickStackRole {
-        id: Some("role-1".to_string()),
-        name: Some("Deploy Bot".to_string()),
-        is_predefined: Some(false),
-        permissions: Some(vec![ClickStackCASLPermissionResponse {
-            action: Some("manage".to_string()),
-            subject: Some("all".to_string()),
-            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
-            ..Default::default()
-        }]),
-        ..Default::default()
-    };
+    let json = serde_json::json!({
+        "id": "role-1",
+        "name": "Deploy Bot",
+        "isPredefined": false,
+        "permissions": [{
+            "action": "manage", "subject": "all", "integration": "mongodb",
+            "conditions": {"teamId": "team-1"}
+        }]
+    });
+    let role: ClickStackRole = serde_json::from_value(json.clone()).unwrap();
     let v = serde_json::to_value(&role).unwrap();
-    assert_eq!(v["id"], "role-1");
-    assert_eq!(v["isPredefined"], false);
-    assert_eq!(v["permissions"][0]["action"], "manage");
-    assert_eq!(v["permissions"][0]["subject"], "all");
-    assert_eq!(v["permissions"][0]["conditions"]["teamId"], "team-1");
+    assert_eq!(v, json);
 
     // Optional fields dropped when None.
     assert!(v.get("description").is_none());
@@ -6241,49 +6322,137 @@ fn clickstack_role_round_trip() {
 }
 
 #[test]
-fn serialize_clickstack_casl_permission_omits_none() {
-    let perm = ClickStackCASLPermission {
-        action: "read".to_string(),
-        subject: "dashboard".to_string(),
-        ..Default::default()
+fn clickstack_casl_permission_requests_are_strict() {
+    for required in ["action", "subject", "integration"] {
+        let mut wire = serde_json::json!({
+            "action": "read", "subject": "Dashboard", "integration": "mongodb"
+        });
+        wire.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<ClickStackMongoDBCASLPermission>(wire).is_err(),
+            "{required} must be required"
+        );
+    }
+    for required in ["connection", "from", "where", "whereLanguage"] {
+        let mut wire = serde_json::json!({
+            "connection": "c", "from": {"databaseName": "d", "tableName": "t"},
+            "where": "1", "whereLanguage": "sql"
+        });
+        wire.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<ClickStackClickHouseCASLPermissionConditions>(wire).is_err(),
+            "{required} must be required"
+        );
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_response_converts_back_into_a_request() {
+    let response: ClickStackCASLPermissionResponse = serde_json::from_value(serde_json::json!({
+        "action": "read", "subject": "Source", "integration": "clickhouse",
+        "conditions": {
+            "connection": "conn-1", "from": {"databaseName": "otel", "tableName": "logs"},
+            "where": "1 = 1", "whereLanguage": "sql"
+        }
+    }))
+    .unwrap();
+    let request = ClickStackCASLPermission::try_from(response).unwrap();
+    let ClickStackCASLPermission::ClickStackClickHouseCASLPermission(permission) = &request else {
+        panic!("expected a ClickHouse permission");
     };
-    let v = serde_json::to_value(&perm).unwrap();
-    assert_eq!(v["action"], "read");
-    assert_eq!(v["subject"], "dashboard");
-    assert!(v.get("inverted").is_none());
-    assert!(v.get("integration").is_none());
-    assert!(v.get("conditions").is_none());
+    assert_eq!(
+        permission.conditions.as_ref().unwrap().from.table_name,
+        "logs"
+    );
+
+    let missing = ClickStackCASLPermission::try_from(
+        ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(
+            ClickStackClickHouseCASLPermissionResponse {
+                action: Some(ClickStackCASLPermissionAction::Read),
+                conditions: Some(ClickStackClickHouseCASLPermissionConditionsResponse {
+                    from: Some(ClickStackClickHouseCASLPermissionConditionsFromResponse::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(missing.fields(), ["integration", "subject"]);
+
+    // Missing nested fields are named at the level they are missing from.
+    let nested =
+        ClickStackClickHouseCASLPermission::try_from(ClickStackClickHouseCASLPermissionResponse {
+            action: Some(ClickStackCASLPermissionAction::Read),
+            subject: Some(ClickStackCASLPermissionSubject::Source),
+            integration: Some(ClickStackClickHouseCASLPermissionIntegration::Clickhouse),
+            conditions: Some(ClickStackClickHouseCASLPermissionConditionsResponse {
+                connection: Some("c".into()),
+                from: Some(ClickStackClickHouseCASLPermissionConditionsFromResponse {
+                    database_name: Some("d".into()),
+                    table_name: None,
+                }),
+                r#where: Some("1".into()),
+                where_language: Some(
+                    ClickStackClickHouseCASLPermissionConditionsWherelanguage::Sql,
+                ),
+            }),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(nested.fields(), ["tableName"]);
+
+    let unknown = serde_json::json!({"action": "read", "integration": "slack"});
+    assert_eq!(
+        ClickStackCASLPermission::try_from(ClickStackCASLPermissionResponse::Unknown(
+            unknown.clone()
+        ))
+        .unwrap(),
+        ClickStackCASLPermission::Unknown(unknown)
+    );
 }
 
 #[test]
 fn serialize_clickstack_create_role_request_omits_none() {
     let req = ClickStackCreateRoleRequest {
         name: "Deploy Bot".to_string(),
-        permissions: vec![ClickStackCASLPermission {
-            action: "read".to_string(),
-            subject: "dashboard".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
+            ClickStackMongoDBCASLPermission {
+                action: ClickStackCASLPermissionAction::Read,
+                subject: ClickStackCASLPermissionSubject::Dashboard,
+                integration: ClickStackMongoDBCASLPermissionIntegration::Mongodb,
+                ..Default::default()
+            },
+        )],
         ..Default::default()
     };
     let v = serde_json::to_value(&req).unwrap();
-    assert_eq!(v["name"], "Deploy Bot");
-    assert_eq!(v["permissions"][0]["action"], "read");
-    assert!(v.get("description").is_none());
+    assert_eq!(
+        v,
+        serde_json::json!({"name": "Deploy Bot", "permissions": [
+            {"action": "read", "subject": "Dashboard", "integration": "mongodb"}
+        ]})
+    );
 }
 
 #[test]
 fn serialize_clickstack_update_role_request_omits_none() {
     let req = ClickStackUpdateRoleRequest {
-        permissions: vec![ClickStackCASLPermission {
-            action: "manage".to_string(),
-            subject: "all".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![
+            ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
+                ClickStackClickHouseCASLPermission {
+                    action: ClickStackCASLPermissionAction::Manage,
+                    subject: ClickStackCASLPermissionSubject::All,
+                    integration: ClickStackClickHouseCASLPermissionIntegration::Clickhouse,
+                    ..Default::default()
+                },
+            ),
+        ],
         ..Default::default()
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["permissions"][0]["action"], "manage");
+    assert_eq!(v["permissions"][0]["integration"], "clickhouse");
     assert!(v.get("name").is_none());
     assert!(v.get("description").is_none());
 }
@@ -7228,13 +7397,13 @@ fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
 fn new_clickstack_channels_and_chart_fields_round_trip() {
     let request = ClickStackCreateAlertRequest {
         interval: ClickStackCreateAlertRequestInterval::Value30s,
-        channels: vec![ClickStackAlertChannel::default()],
+        channels: Some(vec![ClickStackAlertChannel::default()]),
         ..Default::default()
     };
     let wire = serde_json::to_value(&request).unwrap();
     assert_eq!(wire["channels"].as_array().unwrap().len(), 1);
     assert_eq!(wire["interval"], "30s");
-    assert!(wire.get("channel").is_some());
+    assert!(wire.get("channel").is_none());
     assert_eq!(
         serde_json::from_value::<ClickStackCreateAlertRequest>(wire).unwrap(),
         request
@@ -9046,6 +9215,21 @@ fn bigquery_cdc_fields_round_trip_and_write_back() {
         request
     );
 
+    // `syncCron` replaces `syncIntervalSeconds`; the API rejects both together.
+    let scheduled = serde_json::json!({
+        "replicationMode": "cdc_only", "replicationMethod": "events_based",
+        "syncCron": "CRON_TZ=Europe/Berlin 0 * * * *"
+    });
+    let response: ClickPipeBigQueryPipeSettingsResponse =
+        serde_json::from_value(scheduled.clone()).unwrap();
+    assert_eq!(
+        response.sync_cron.as_deref(),
+        Some("CRON_TZ=Europe/Berlin 0 * * * *")
+    );
+    let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+    assert_eq!(request.sync_interval_seconds, None);
+    assert_eq!(serde_json::to_value(&request).unwrap(), scheduled);
+
     let mapping = serde_json::json!({
         "sourceDatasetName": "sales", "sourceTable": "orders", "targetTable": "orders_raw",
         "queryCdcWatermarkColumn": "updated_at", "eventsFunction": "future_function"
@@ -9067,7 +9251,7 @@ fn bigquery_cdc_response_fields_tolerate_absence_and_null() {
         serde_json::json!({}),
         serde_json::json!({
             "replicationMode": null, "replicationMethod": null, "syncIntervalSeconds": null,
-            "queryCdcPullSyncParallelism": null, "syncDelaySeconds": null, "pullWindowSizeSeconds": null
+            "syncCron": null, "queryCdcPullSyncParallelism": null, "syncDelaySeconds": null, "pullWindowSizeSeconds": null
         }),
     ] {
         let response: ClickPipeBigQueryPipeSettingsResponse =
@@ -9166,6 +9350,312 @@ fn notification_tolerates_missing_null_and_future_values() {
     assert_eq!(future.r#type.as_deref(), Some("future.type"));
     assert_eq!(future.severity.as_deref(), Some("future.severity"));
     assert_eq!(future.resource_type.as_deref(), Some("future.resource"));
+}
+
+#[test]
+fn clickstack_alert_chart_config_dispatches_on_display_and_config_type() {
+    let cases = [
+        (
+            serde_json::json!({"displayType": "line", "sourceId": "s", "select": [{"aggFn": "count"}],
+                "name": "Errors", "where": "level:error", "whereLanguage": "lucene",
+                "lineInterpolation": "step"}),
+            "ClickStackAlertLineChartConfig",
+        ),
+        (
+            serde_json::json!({"displayType": "stacked_bar", "configType": "sql",
+                "connectionId": "c", "sqlTemplate": "SELECT 1"}),
+            "ClickStackAlertBarChartConfig",
+        ),
+        (
+            serde_json::json!({"displayType": "stacked_line", "sourceId": "s", "select": []}),
+            "ClickStackAlertStackedLineChartConfig",
+        ),
+        (
+            serde_json::json!({"displayType": "number", "configType": "sql", "connectionId": "c",
+                "sqlTemplate": "SELECT 1",
+                "colorRules": [{"operator": "gt", "value": 1.5, "color": "chart-red"}]}),
+            "ClickStackAlertNumberChartConfig",
+        ),
+    ];
+    for (wire, variant) in cases {
+        let request: ClickStackAlertChartConfig = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(request.to_string(), variant);
+        assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(response.to_string(), variant);
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+    }
+
+    let line: ClickStackAlertChartConfig = serde_json::from_value(serde_json::json!({
+        "displayType": "line", "sourceId": "s", "select": [], "name": "Errors"
+    }))
+    .unwrap();
+    let ClickStackAlertChartConfig::ClickStackAlertLineChartConfig(
+        ClickStackAlertLineChartConfig::ClickStackAlertLineBuilderChartConfig(builder),
+    ) = line
+    else {
+        panic!("expected a line builder alert config");
+    };
+    assert_eq!(builder.name.as_deref(), Some("Errors"));
+    assert_eq!(builder.r#where, None);
+
+    // A raw-SQL payload whose `configType` was dropped is kept verbatim instead
+    // of being retyped as a builder config.
+    let dropped =
+        serde_json::json!({"displayType": "line", "connectionId": "c", "sqlTemplate": "x"});
+    let config: ClickStackAlertChartConfigResponse =
+        serde_json::from_value(dropped.clone()).unwrap();
+    assert_eq!(
+        config,
+        ClickStackAlertChartConfigResponse::ClickStackAlertLineChartConfig(
+            ClickStackAlertLineChartConfigResponse::Unknown(dropped)
+        )
+    );
+    let unknown = serde_json::json!({"displayType": "pie", "sourceId": "s"});
+    assert_eq!(
+        serde_json::from_value::<ClickStackAlertChartConfigResponse>(unknown.clone()).unwrap(),
+        ClickStackAlertChartConfigResponse::Unknown(unknown)
+    );
+}
+
+#[test]
+fn clickstack_alert_requests_accept_inline_sources_without_channels() {
+    let wire = serde_json::json!({
+        "source": "inline", "threshold": 5.0, "interval": "5m", "thresholdType": "above",
+        "displayName": "API errors", "tags": ["api"],
+        "chartConfig": {"displayType": "number", "sourceId": "s", "select": [{"aggFn": "count"}]}
+    });
+    let create: ClickStackCreateAlertRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        create.source,
+        Some(ClickStackCreateAlertRequestSource::Inline)
+    );
+    assert_eq!(create.channel, None);
+    assert_eq!(create.channels, None);
+    assert_eq!(create.display_name.as_deref(), Some("API errors"));
+    assert_eq!(serde_json::to_value(&create).unwrap(), wire);
+    let update: ClickStackUpdateAlertRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        update.source,
+        Some(ClickStackUpdateAlertRequestSource::Inline)
+    );
+    assert_eq!(serde_json::to_value(&update).unwrap(), wire);
+
+    for required in ["threshold", "interval", "thresholdType"] {
+        let mut body = wire.clone();
+        body.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<ClickStackCreateAlertRequest>(body).is_err(),
+            "{required} must be required"
+        );
+    }
+
+    let response: ClickStackAlertResponse = serde_json::from_value(serde_json::json!({
+        "source": "inline", "displayName": "API errors", "tags": ["api"],
+        "chartConfig": {"displayType": "line", "configType": "sql", "connectionId": "c",
+            "sqlTemplate": "SELECT 1"}
+    }))
+    .unwrap();
+    assert_eq!(response.source, Some(ClickStackAlertResponseSource::Inline));
+    assert_eq!(response.tags, Some(vec!["api".to_string()]));
+    assert!(matches!(
+        response.chart_config,
+        Some(ClickStackAlertChartConfigResponse::ClickStackAlertLineChartConfig(_))
+    ));
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"displayName": null, "tags": null, "chartConfig": null}),
+    ] {
+        let response: ClickStackAlertResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(response, ClickStackAlertResponse::default());
+    }
+}
+
+#[test]
+fn clickstack_filter_union_dispatches_every_filter_type() {
+    let filters = [
+        serde_json::json!({"id": "f1", "type": "QUERY_EXPRESSION", "name": "Env", "expression": "env",
+            "sourceId": "s", "minSelections": 1, "maxSelections": 1, "isGlobalRequirement": true}),
+        serde_json::json!({"id": "f2", "type": "STATIC_LIST", "name": "Region", "options": ["eu", "us"]}),
+        serde_json::json!({"id": "f3", "type": "PROMETHEUS_LABEL", "name": "Job", "sourceId": "s",
+            "label": "job", "match": "up"}),
+        serde_json::json!({"id": "f4", "type": "SOURCE_FILTER", "name": "Svc", "sourceId": "s",
+            "expression": "ServiceName", "variableName": "svc"}),
+    ];
+    let variants = [
+        "ClickStackQueryExpressionFilter",
+        "ClickStackStaticListFilter",
+        "ClickStackPrometheusLabelFilter",
+        "ClickStackSourceFilter",
+    ];
+    for (wire, variant) in filters.iter().zip(variants) {
+        let filter: ClickStackFilter = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(filter.to_string(), variant);
+        assert_eq!(serde_json::to_value(&filter).unwrap(), *wire);
+        let response: ClickStackFilterResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(response.to_string(), variant);
+        assert_eq!(
+            ClickStackFilter::try_from(response).unwrap(),
+            filter,
+            "{variant} write-back"
+        );
+        let mut input = wire.clone();
+        input.as_object_mut().unwrap().remove("id");
+        let input_filter: ClickStackFilterInput = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&input_filter).unwrap(), input);
+    }
+
+    let ClickStackFilter::ClickStackQueryExpressionFilter(query) =
+        serde_json::from_value(filters[0].clone()).unwrap()
+    else {
+        panic!("expected a query-expression filter");
+    };
+    assert_eq!(
+        query.min_selections,
+        Some(ClickStackFilterMinselections::Required)
+    );
+    assert_eq!(
+        query.max_selections,
+        Some(ClickStackFilterMaxselections::Single)
+    );
+    let future: ClickStackFilterMinselections =
+        serde_json::from_value(serde_json::json!(2)).unwrap();
+    assert_eq!(future, ClickStackFilterMinselections::Unknown(2));
+    assert_eq!(serde_json::to_value(future).unwrap(), serde_json::json!(2));
+
+    // An existing filter must keep its `id`; the write-back names what is missing.
+    let missing = ClickStackFilter::try_from(ClickStackFilterResponse::ClickStackStaticListFilter(
+        ClickStackStaticListFilterResponse::default(),
+    ))
+    .unwrap_err();
+    assert_eq!(missing.fields(), ["id", "name", "options", "type"]);
+    assert!(
+        serde_json::from_value::<ClickStackStaticListFilter>(serde_json::json!({
+            "type": "STATIC_LIST", "name": "Region", "options": []
+        }))
+        .is_err()
+    );
+
+    let unknown = serde_json::json!({"type": "FUTURE", "name": "x"});
+    assert_eq!(
+        serde_json::from_value::<ClickStackFilterResponse>(unknown.clone()).unwrap(),
+        ClickStackFilterResponse::Unknown(unknown)
+    );
+}
+
+#[test]
+fn clickstack_stacked_line_tiles_and_new_tile_fields_round_trip() {
+    let builder = serde_json::json!({"displayType": "stacked_line", "sourceId": "s",
+        "select": [{"aggFn": "quantile", "level": 0.95, "valueExpression": "Duration"}],
+        "lineInterpolation": "smooth"});
+    let raw = serde_json::json!({"displayType": "stacked_line", "configType": "sql",
+        "connectionId": "c", "sqlTemplate": "SELECT 1", "lineInterpolation": "linear"});
+    for wire in [builder, raw] {
+        let tile: ClickStackTileConfig = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(tile.to_string(), "ClickStackStackedLineChartConfig");
+        assert_eq!(serde_json::to_value(&tile).unwrap(), wire);
+        let response: ClickStackTileConfigResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(response.to_string(), "ClickStackStackedLineChartConfig");
+    }
+
+    let select: ClickStackSelectItemResponse =
+        serde_json::from_value(serde_json::json!({"level": 0.999})).unwrap();
+    assert_eq!(select.level, Some(0.999));
+
+    let series: ClickStackTimeChartSeriesDisplaytype =
+        serde_json::from_value(serde_json::json!("stacked_line")).unwrap();
+    assert_eq!(series, ClickStackTimeChartSeriesDisplaytype::Stacked_line);
+    assert_eq!(series.to_string(), "stacked_line");
+
+    let output: ClickStackTileOutput =
+        serde_json::from_value(serde_json::json!({"description": "p95 latency"})).unwrap();
+    assert_eq!(output.description.as_deref(), Some("p95 latency"));
+    let saved: ClickStackVariableSavedFilterValueResponse = serde_json::from_value(
+        serde_json::json!({"type": "variable", "name": "env", "values": [], "all": true}),
+    )
+    .unwrap();
+    assert_eq!(
+        ClickStackVariableSavedFilterValue::try_from(saved)
+            .unwrap()
+            .all,
+        Some(true)
+    );
+}
+
+#[test]
+fn clickstack_source_expressions_survive_write_back() {
+    let trace: ClickStackTraceSourceResponse = serde_json::from_value(serde_json::json!({
+        "kind": "trace", "name": "t", "connection": "c",
+        "from": {"databaseName": "d", "tableName": "t"},
+        "defaultTableSelectExpression": "*", "timestampValueExpression": "ts",
+        "durationExpression": "dur", "durationPrecision": 9, "traceIdExpression": "trace",
+        "spanIdExpression": "span", "parentSpanIdExpression": "parent",
+        "spanNameExpression": "name", "spanKindExpression": "kind",
+        "displayedTimestampValueExpression": "ts64", "orderByExpression": "ts DESC",
+        "sampleRateExpression": "rate", "spanLinksValueExpression": "links"
+    }))
+    .unwrap();
+    let request = ClickStackTraceSource::try_from(trace).unwrap();
+    assert_eq!(
+        request.displayed_timestamp_value_expression.as_deref(),
+        Some("ts64")
+    );
+    assert_eq!(request.order_by_expression.as_deref(), Some("ts DESC"));
+    assert_eq!(request.sample_rate_expression.as_deref(), Some("rate"));
+    assert_eq!(
+        request.span_links_value_expression.as_deref(),
+        Some("links")
+    );
+
+    let log: ClickStackLogSourceResponse = serde_json::from_value(serde_json::json!({
+        "kind": "log", "name": "l", "connection": "c",
+        "from": {"databaseName": "d", "tableName": "t"},
+        "defaultTableSelectExpression": "*", "timestampValueExpression": "ts",
+        "orderByExpression": "ts DESC"
+    }))
+    .unwrap();
+    assert_eq!(
+        ClickStackLogSource::try_from(log)
+            .unwrap()
+            .order_by_expression
+            .as_deref(),
+        Some("ts DESC")
+    );
+    let session: ClickStackSessionSourceResponse = serde_json::from_value(serde_json::json!({
+        "kind": "session", "name": "s", "connection": "c",
+        "from": {"databaseName": "d", "tableName": "t"}, "traceSourceId": "trace",
+        "resourceAttributesExpression": "ResourceAttributes"
+    }))
+    .unwrap();
+    assert_eq!(
+        ClickStackSessionSource::try_from(session)
+            .unwrap()
+            .resource_attributes_expression
+            .as_deref(),
+        Some("ResourceAttributes")
+    );
+}
+
+#[test]
+fn clickstack_validate_webhook_response_tolerates_absence_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"valid": null, "errors": null, "normalized": null}),
+    ] {
+        let response: ClickStackValidateWebhookResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(response, ClickStackValidateWebhookResponse::default());
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let response: ClickStackValidateWebhookResponse = serde_json::from_value(serde_json::json!({
+        "valid": true, "errors": [], "normalized": {"name": "On-call", "service": "generic"}
+    }))
+    .unwrap();
+    assert_eq!(response.valid, Some(true));
+    assert_eq!(response.normalized.unwrap()["service"], "generic");
 }
 
 #[test]
