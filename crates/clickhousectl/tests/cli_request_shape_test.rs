@@ -32830,3 +32830,190 @@ async fn bigquery_invalid_cdc_settings_fail_before_key_file_or_http() {
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn org_notifications_forwards_filters_as_an_oauth_read_and_keeps_pagination() {
+    let mock = MockServer::start().await;
+    let cursor = "-opaque +/=&?'雪";
+    let result = serde_json::json!([
+        {"title": "Backup failed", "type": "future.type", "severity": "future.severity",
+         "resourceType": "service", "resourceId": "service-1", "resourceName": "analytics",
+         "description": "Review backup settings."},
+        {"id": null, "createdAt": null}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notifications"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .and(query_param("limit", "25"))
+        .and(query_param("cursor", cursor))
+        .and(query_param("severity", "future.severity"))
+        .and(query_param("type", "future.type"))
+        .and(query_param("resource_id", "service-1"))
+        .and(query_param("resource_type", "service"))
+        .and(query_param("from_date", "2026-10-01T00:00:00+02:00"))
+        .and(query_param("to_date", "2026-10-08T00:00:00Z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result, "limit": 25, "nextCursor": ""
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_org_with_oauth(
+        &mock,
+        &[
+            "notifications",
+            "--org-id",
+            "org-1",
+            "--limit",
+            "25",
+            "--cursor",
+            cursor,
+            "--severity",
+            "future.severity",
+            "--type",
+            "future.type",
+            "--resource-id",
+            "service-1",
+            "--resource-type",
+            "service",
+            "--from-date",
+            "2026-10-01T00:00:00+02:00",
+            "--to-date",
+            "2026-10-08T00:00:00Z",
+        ],
+    );
+    assert_success(&output);
+    let mut expected = result;
+    expected[1] = serde_json::json!({});
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "result": expected, "limit": 25, "nextCursor": ""
+        })
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].body.is_empty());
+}
+
+#[tokio::test]
+async fn org_notifications_human_output_tolerates_sparse_rows_and_empty_pages() {
+    for (result, expected) in [
+        (
+            serde_json::json!([{}, {"title": "Backup failed", "severity": "warning"}]),
+            "Backup failed",
+        ),
+        (serde_json::json!([]), "No notifications found"),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/notifications"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result, "nextCursor": ""
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &["org", "notifications", "--org-id", "org-1"],
+        );
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(expected), "{stdout}");
+        assert!(
+            stdout.contains("Next cursor (JSON string): \"\""),
+            "{stdout}"
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), None);
+    }
+}
+
+#[tokio::test]
+async fn org_notifications_preserves_api_errors_and_rejects_missing_results() {
+    for (status, body, expected_code, message) in [
+        (
+            403,
+            serde_json::json!({"error": "not permitted"}),
+            4,
+            "not permitted",
+        ),
+        (
+            400,
+            serde_json::json!({"error": "invalid cursor"}),
+            1,
+            "invalid cursor",
+        ),
+        (
+            200,
+            serde_json::json!({"result": null}),
+            1,
+            "Empty response from API",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/notifications"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["org", "notifications", "--org-id", "org-1"],
+        );
+        assert_eq!(output.status.code(), Some(expected_code));
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert!(output.stdout.is_empty());
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn org_notifications_rejects_bad_page_sizes_and_dates_before_network_access() {
+    let mock = MockServer::start().await;
+    for flags in [
+        vec!["--limit", "0"],
+        vec!["--limit", "251"],
+        vec!["--from-date", "2026-10-01"],
+        vec!["--to-date", "yesterday"],
+    ] {
+        let mut args = vec!["org", "notifications", "--org-id", "org-1"];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn org_notifications_accepts_an_empty_cursor_without_fetching_more_pages() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notifications"))
+        .and(query_param("cursor", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [], "nextCursor": "another-page"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "notifications", "--org-id", "org-1", "--cursor", ""],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "result": [], "nextCursor": "another-page"
+        })
+    );
+}
