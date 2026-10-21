@@ -110,6 +110,16 @@ clickhousectl cloud udf version create my_udf
 
 `--dir PATH` selects another parent directory, as for `deploy`. `--file` and `--artifact` go together and combine with neither `--dir` nor, for `create`, a name. The directory must not be a symbolic link and its `udf.json` must name the function; `version create` drops `functionName` from the request. The archive is deterministic and excludes `udf.json`, hidden entries and `__pycache__`; symbolic links inside are rejected. Runtime `python3.11` needs `main.py` at the root. Runtime `native` uploads only `amd64/main` and `arm64/main`, Linux binaries you build (see the [Cloud UDF docs](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions)).
 
+## List functions, versions, and attachments
+
+`cloud udf list`, `cloud udf version list`, and `cloud udf attachment list` return one page at a time. Use `--limit` (1–100) to set the page size and pass the returned `nextCursor` to `--cursor` for the next page. JSON output follows the same layout as `cloud key list`:
+
+```json
+{"result": [], "limit": 25, "totalCount": 0}
+```
+
+Rows are in `result`; pagination fields sit beside it. `totalCount` is best-effort and can be unknown. Missing or null metadata is omitted, so follow `nextCursor` until it is absent, regardless of the count or whether a page is empty. The CLI does not infer a count or echo the input cursor. Human output shows a table or a named empty state and any available pagination details.
+
 ## Create a new version
 
 `version.json` contains the complete desired definition without `uploadId`. It may keep a `functionName` equal to the command's name, so a `udf.json` can be reused; the CLI drops it from the request:

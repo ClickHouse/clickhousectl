@@ -24,6 +24,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11, or another deployed UDF that is broken), `function_config`, and `scripts_dir` |
 | `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud udf deploy --json` | Object with `action` (`created` or `version_created`), `udf`, and `attachment` |
+| `cloud udf list`, `cloud udf version list`, `cloud udf attachment list` with `--json` | Object with a `result` array and optional outer `limit`, `totalCount`, and `nextCursor`; missing/null metadata is omitted |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |

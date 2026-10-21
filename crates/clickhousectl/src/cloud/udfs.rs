@@ -190,7 +190,7 @@ pub struct UdfAttachmentArgs {
 
 #[derive(Args)]
 pub struct UdfPageArgs {
-    /// Cursor from pagination.nextCursor
+    /// Cursor from nextCursor
     #[arg(long)]
     cursor: Option<String>,
     /// Maximum records per page (1–100)
@@ -389,7 +389,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     if json {
                         output(&data, true)
                     } else {
-                        print_udfs(data.items, data.pagination, "UDFs")
+                        print_udfs(data, "UDFs")
                     }
                 }
                 UdfCommands::Get(name) => {
@@ -454,7 +454,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         if json {
                             output(&data, true)
                         } else {
-                            print_attachments(data.items, data.pagination)
+                            print_attachments(data)
                         }
                     }
                 },
@@ -471,7 +471,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         if json {
                             output(&data, true)
                         } else {
-                            print_udfs(data.items, data.pagination, "UDF versions")
+                            print_udfs(data, "UDF versions")
                         }
                     }
                     UdfVersionCommands::Delete { name, version } => {
@@ -507,11 +507,33 @@ fn output<T: Serialize>(data: &T, json: bool) -> CloudResult<()> {
     Ok(())
 }
 
-fn print_udfs(
-    items: Option<Vec<Udf>>,
-    pagination: Option<Pagination>,
-    label: &str,
-) -> CloudResult<()> {
+/// Same page layout as `cloud key list`: rows and optional outer metadata.
+#[derive(Serialize)]
+struct UdfPage<T> {
+    result: Vec<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+    #[serde(rename = "totalCount", skip_serializing_if = "Option::is_none")]
+    total_count: Option<i64>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+impl<T> UdfPage<T> {
+    fn from_response(mut response: ApiResponse<Vec<T>>) -> CloudResult<Self> {
+        let limit = response.limit;
+        let total_count = response.total_count;
+        let next_cursor = response.next_cursor.take();
+        Ok(Self {
+            result: CloudClient::unwrap_response(response)?,
+            limit,
+            total_count,
+            next_cursor,
+        })
+    }
+}
+
+fn print_udfs(page: UdfPage<Udf>, label: &str) -> CloudResult<()> {
     #[derive(Tabled)]
     struct Row {
         name: String,
@@ -519,27 +541,22 @@ fn print_udfs(
         runtime: String,
         status: String,
     }
-    match items {
-        Some(items) if items.is_empty() => println!("No {label} found"),
-        Some(items) => {
-            let rows = items.into_iter().map(|item| Row {
-                name: or_absent(item.function_name),
-                version: or_absent(item.version),
-                runtime: or_absent(item.runtime),
-                status: or_absent(item.status),
-            });
-            println!("{}", Table::new(rows).with(Style::markdown()));
-        }
-        None => println!("{label}: -"),
+    if page.result.is_empty() {
+        println!("No {label} found");
+    } else {
+        let rows = page.result.into_iter().map(|item| Row {
+            name: or_absent(item.function_name),
+            version: or_absent(item.version),
+            runtime: or_absent(item.runtime),
+            status: or_absent(item.status),
+        });
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
-    print_pagination(pagination);
+    print_pagination(page.limit, page.total_count, page.next_cursor);
     Ok(())
 }
 
-fn print_attachments(
-    items: Option<Vec<UdfAttachment>>,
-    pagination: Option<Pagination>,
-) -> CloudResult<()> {
+fn print_attachments(page: UdfPage<UdfAttachment>) -> CloudResult<()> {
     #[derive(Tabled)]
     struct Row {
         name: String,
@@ -547,38 +564,30 @@ fn print_attachments(
         version: String,
         status: String,
     }
-    match items {
-        Some(items) if items.is_empty() => println!("No UDF attachments found"),
-        Some(items) => {
-            let rows = items.into_iter().map(|item| Row {
-                name: or_absent(item.function_name),
-                service_id: or_absent(item.service_id),
-                version: or_absent(item.version),
-                status: or_absent(item.status),
-            });
-            println!("{}", Table::new(rows).with(Style::markdown()));
-        }
-        None => println!("UDF attachments: -"),
+    if page.result.is_empty() {
+        println!("No UDF attachments found");
+    } else {
+        let rows = page.result.into_iter().map(|item| Row {
+            name: or_absent(item.function_name),
+            service_id: or_absent(item.service_id),
+            version: or_absent(item.version),
+            status: or_absent(item.status),
+        });
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
-    print_pagination(pagination);
+    print_pagination(page.limit, page.total_count, page.next_cursor);
     Ok(())
 }
 
-fn print_pagination(pagination: Option<Pagination>) {
-    let Some(page) = pagination else {
-        return;
-    };
+fn print_pagination(limit: Option<i64>, total_count: Option<i64>, next_cursor: Option<String>) {
     let mut details = Vec::new();
-    if let Some(total) = page.total_records {
+    if let Some(total) = total_count {
         details.push(format!("{total} total records"));
     }
-    if let Some(limit) = page.limit {
+    if let Some(limit) = limit {
         details.push(format!("page limit {limit}"));
     }
-    if let Some(cursor) = page.current_cursor {
-        details.push(format!("current cursor: {cursor}"));
-    }
-    if let Some(cursor) = page.next_cursor {
+    if let Some(cursor) = next_cursor {
         details.push(format!("next cursor: {cursor}"));
     }
     if !details.is_empty() {
@@ -1080,14 +1089,13 @@ async fn fetch_udf_version(
             .list_udf_versions(org, name, cursor.as_deref(), Some(100))
             .await?;
         if let Some(found) = page
-            .items
-            .unwrap_or_default()
+            .result
             .into_iter()
             .find(|udf| udf.version == Some(version))
         {
             return Ok(found);
         }
-        cursor = page.pagination.and_then(|page| page.next_cursor);
+        cursor = page.next_cursor;
         if cursor.is_none() {
             return Err(CloudError::new(format!(
                 "UDF {name} version {version} was not found while waiting for its build"
@@ -1596,22 +1604,13 @@ impl CloudClient {
         org: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> CloudResult<UdfListResponse> {
-        let mut response = self
+    ) -> CloudResult<UdfPage<Udf>> {
+        let response = self
             .api()
             .udf_list(org, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        let pagination = Pagination {
-            current_cursor: cursor.map(str::to_owned),
-            limit: response.limit,
-            next_cursor: response.next_cursor.take(),
-            total_records: response.total_count,
-        };
-        Ok(UdfListResponse {
-            items: Some(Self::unwrap_response(response)?),
-            pagination: Some(pagination),
-        })
+        UdfPage::from_response(response)
     }
     /// `None` when the UDF does not exist, so `deploy` can choose between
     /// create and version create.
@@ -1647,22 +1646,13 @@ impl CloudClient {
         name: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> CloudResult<UdfAttachmentListResponse> {
-        let mut response = self
+    ) -> CloudResult<UdfPage<UdfAttachment>> {
+        let response = self
             .api()
             .udf_attachment_list(org, name, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        let pagination = Pagination {
-            current_cursor: cursor.map(str::to_owned),
-            limit: response.limit,
-            next_cursor: response.next_cursor.take(),
-            total_records: response.total_count,
-        };
-        Ok(UdfAttachmentListResponse {
-            items: Some(Self::unwrap_response(response)?),
-            pagination: Some(pagination),
-        })
+        UdfPage::from_response(response)
     }
     async fn get_udf_attachment(
         &self,
@@ -1728,22 +1718,13 @@ impl CloudClient {
         name: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> CloudResult<UdfVersionListResponse> {
-        let mut response = self
+    ) -> CloudResult<UdfPage<Udf>> {
+        let response = self
             .api()
             .udf_version_list(org, name, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        let pagination = Pagination {
-            current_cursor: cursor.map(str::to_owned),
-            limit: response.limit,
-            next_cursor: response.next_cursor.take(),
-            total_records: response.total_count,
-        };
-        Ok(UdfVersionListResponse {
-            items: Some(Self::unwrap_response(response)?),
-            pagination: Some(pagination),
-        })
+        UdfPage::from_response(response)
     }
     async fn delete_udf_version(
         &self,
