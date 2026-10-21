@@ -1351,6 +1351,7 @@ mod tests {
                 "bucketPath": "s3://backups/prefix",
                 "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
                 "iamRoleSessionName": "clickhouse-cloud",
+                "iamRoleExternalId": "trust-policy-id",
             }),
             serde_json::json!({
                 "bucketProvider": "GCP",
@@ -1385,6 +1386,7 @@ mod tests {
                 "bucketPath": "s3://backups/new-prefix",
                 "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
                 "iamRoleSessionName": "rotated-session",
+                "iamRoleExternalId": "rotated-external-id",
             }),
             serde_json::json!({
                 "bucketProvider": "GCP",
@@ -1428,6 +1430,40 @@ mod tests {
         for value in cases {
             assert!(build_backup_bucket_create_request(value, "test input").is_err());
         }
+    }
+
+    #[test]
+    fn aws_backup_bucket_external_id_preserves_update_states_and_unknown_field_checks() {
+        let base = serde_json::json!({
+            "bucketProvider": "AWS", "bucketPath": "s3://backups",
+            "iamRoleArn": "arn:aws:iam::123:role/backups"
+        });
+        for external_id in [
+            None,
+            Some(serde_json::json!("trust-policy-id")),
+            Some(Value::Null),
+        ] {
+            let mut wire = base.clone();
+            if let Some(value) = external_id {
+                wire["iamRoleExternalId"] = value;
+            }
+            let request = build_backup_bucket_update_request(wire.clone(), "test input").unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), wire);
+        }
+        for invalid in [serde_json::json!(42), serde_json::json!({"value": "id"})] {
+            let mut wire = base.clone();
+            wire["iamRoleExternalId"] = invalid;
+            assert!(build_backup_bucket_update_request(wire, "test input").is_err());
+        }
+        let mut unknown = base.clone();
+        unknown["iamRoleExternalIdTypo"] = serde_json::json!("id");
+        assert!(build_backup_bucket_update_request(unknown, "test input").is_err());
+
+        let mut create = base;
+        create["iamRoleSessionName"] = serde_json::json!("backups");
+        assert!(build_backup_bucket_create_request(create.clone(), "test input").is_err());
+        create["iamRoleExternalId"] = Value::Null;
+        assert!(build_backup_bucket_create_request(create, "test input").is_err());
     }
 
     #[test]

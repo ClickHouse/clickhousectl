@@ -78,11 +78,18 @@ For a bring-your-own backup bucket, `cloud backup bucket create/update --file` t
 
 | Provider | Required fields alongside `bucketProvider` |
 | --- | --- |
-| AWS | `bucketPath`, `iamRoleArn`, `iamRoleSessionName` (session name optional on update) |
+| AWS | `bucketPath`, `iamRoleArn`, `iamRoleSessionName`, `iamRoleExternalId` (session name and external ID optional on update) |
 | GCP | `bucketPath`, `accessKeyId`, `secretAccessKey` |
 | Azure | `containerName`, `connectionString` |
 
 Updates still require the provider's complete required fields, including GCP/Azure credentials. There is one backup-bucket resource per service, so no bucket ID is needed. For private-preview TDE restoration from your own bucket, pass the backup's `encryption_config.json` unchanged with `--backup-encryption-config` (or `-` for stdin).
+
+`iamRoleExternalId` is the external ID required by the AWS role's trust policy. The current create schema requires a string. On update, omit it to preserve the stored ID, set a string to replace it, or set it to `null` to clear it. For example, clear it through stdin while supplying the other required update fields:
+
+```bash
+printf '%s' '{"bucketProvider":"AWS","bucketPath":"s3://backups/prefix","iamRoleArn":"arn:aws:iam::123456789012:role/backups","iamRoleExternalId":null}' \
+  | clickhousectl cloud backup bucket update <service-id> --file -
+```
 
 ## Stop and delete
 
