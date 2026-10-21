@@ -80,14 +80,13 @@ use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
-    ClickPipeKafkaOffsetStrategy, ClickPipeMongoDBPipeSettingsReplicationmode,
-    ClickPipeMongoDBPipeTableMappingTableengine, ClickPipeMutateMongoDBSourceReadpreference,
-    ClickPipeMutateMySQLSourceType, ClickPipeMySQLPipeSettingsReplicationmechanism,
-    ClickPipeMySQLPipeSettingsReplicationmode, ClickPipeMySQLPipeTableMappingTableengine,
-    ClickPipePostKafkaSourceAuthentication, ClickPipePostKafkaSourceFormat,
-    ClickPipePostKafkaSourceType, ClickPipePostgresPipeTableMapping,
-    ClickPipePostgresPipeTableMappingTableengine,
+    ClickPipeBigQueryPipeTableMappingTableengine, ClickPipeKafkaOffsetStrategy,
+    ClickPipeMongoDBPipeSettingsReplicationmode, ClickPipeMongoDBPipeTableMappingTableengine,
+    ClickPipeMutateMongoDBSourceReadpreference, ClickPipeMutateMySQLSourceType,
+    ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
+    ClickPipeMySQLPipeTableMappingTableengine, ClickPipePostKafkaSourceAuthentication,
+    ClickPipePostKafkaSourceFormat, ClickPipePostKafkaSourceType,
+    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -1951,7 +1950,7 @@ pub struct BigQueryCreateArgs {
     #[arg(
         long,
         default_value = "snapshot",
-        value_parser = PossibleValuesParser::new(ClickPipeBigQueryPipeSettingsReplicationmode::VALUES),
+        value_parser = PossibleValuesParser::new(["snapshot"]),
     )]
     pub replication_mode: String,
 
@@ -5985,6 +5984,7 @@ fn build_bigquery_request(
         initial_load_parallelism: args.initial_load_parallelism,
         snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
         snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+        ..Default::default()
     };
     let source = match authentication {
         GcpAuthentication::ServiceAccount => {
@@ -10193,9 +10193,7 @@ mod tests {
         for &value in REPLICATION_MODES {
             assert_postgres_value("--replication-mode", value);
         }
-        for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
-            assert_bigquery_value("--replication-mode", value);
-        }
+        assert_bigquery_value("--replication-mode", "snapshot");
         for &value in DB_AUTHS {
             assert_mysql_value("--auth", value);
         }

@@ -53,6 +53,10 @@ pub enum ClickPipeBigQueryPipeSettingsReplicationmode {
     #[serde(rename = "snapshot")]
     #[default]
     Snapshot,
+    #[serde(rename = "cdc")]
+    Cdc,
+    #[serde(rename = "cdc_only")]
+    CdcOnly,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -62,6 +66,8 @@ impl std::fmt::Display for ClickPipeBigQueryPipeSettingsReplicationmode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Snapshot => write!(f, "snapshot"),
+            Self::Cdc => write!(f, "cdc"),
+            Self::CdcOnly => write!(f, "cdc_only"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -69,7 +75,7 @@ impl std::fmt::Display for ClickPipeBigQueryPipeSettingsReplicationmode {
 
 impl ClickPipeBigQueryPipeSettingsReplicationmode {
     /// Wire values accepted by the API, excluding the catch-all.
-    pub const VALUES: &'static [&'static str] = &["snapshot"];
+    pub const VALUES: &'static [&'static str] = &["snapshot", "cdc", "cdc_only"];
 }
 
 /// Inline enum for `ClickPipeBigQueryPipeTableMapping.tableEngine`.
@@ -2012,6 +2018,25 @@ pub struct ClickPipeBigQueryPipeSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_number_of_parallel_tables: Option<f64>,
+    #[serde(
+        rename = "pullWindowSizeSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pull_window_size_seconds: Option<i64>,
+    #[serde(
+        rename = "queryCdcPullSyncParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub query_cdc_pull_sync_parallelism: Option<i64>,
+    #[serde(rename = "replicationMethod", skip_serializing_if = "Option::is_none")]
+    pub replication_method: Option<String>,
+    #[serde(rename = "syncDelaySeconds", skip_serializing_if = "Option::is_none")]
+    pub sync_delay_seconds: Option<i64>,
+    #[serde(
+        rename = "syncIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_interval_seconds: Option<i64>,
 }
 
 /// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API, in response
@@ -2044,6 +2069,25 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_number_of_parallel_tables: Option<f64>,
+    #[serde(
+        rename = "pullWindowSizeSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pull_window_size_seconds: Option<i64>,
+    #[serde(
+        rename = "queryCdcPullSyncParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub query_cdc_pull_sync_parallelism: Option<i64>,
+    #[serde(rename = "replicationMethod", skip_serializing_if = "Option::is_none")]
+    pub replication_method: Option<String>,
+    #[serde(rename = "syncDelaySeconds", skip_serializing_if = "Option::is_none")]
+    pub sync_delay_seconds: Option<i64>,
+    #[serde(
+        rename = "syncIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_interval_seconds: Option<i64>,
 }
 
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API.
@@ -2066,6 +2110,13 @@ pub struct ClickPipeBigQueryPipeTableMapping {
         skip_serializing_if = "Option::is_none"
     )]
     pub use_custom_sorting_key: Option<bool>,
+    #[serde(rename = "eventsFunction", skip_serializing_if = "Option::is_none")]
+    pub events_function: Option<String>,
+    #[serde(
+        rename = "queryCdcWatermarkColumn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub query_cdc_watermark_column: Option<String>,
 }
 
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API, in
@@ -2093,6 +2144,13 @@ pub struct ClickPipeBigQueryPipeTableMappingResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub use_custom_sorting_key: Option<bool>,
+    #[serde(rename = "eventsFunction", skip_serializing_if = "Option::is_none")]
+    pub events_function: Option<String>,
+    #[serde(
+        rename = "queryCdcWatermarkColumn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub query_cdc_watermark_column: Option<String>,
 }
 
 /// `ClickPipeBigQuerySource` from the ClickHouse Cloud API, selected by `authentication`.
