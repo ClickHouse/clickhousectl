@@ -21196,7 +21196,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_fil
             "action": "manage",
             "subject": "Dashboard",
             "inverted": false,
-            "integration": "slack",
+            "integration": "mongodb",
             "conditions": {"teamId": "team-1"}
         }]
     });
@@ -21474,7 +21474,7 @@ async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_reques
         &mock,
         &["clickstack", "role", "create", "svc-1", "--file", "-"],
         Some(
-            r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","conditons":null}]}"#,
+            r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","integration":"mongodb","conditons":null}]}"#,
         ),
         false,
     );
