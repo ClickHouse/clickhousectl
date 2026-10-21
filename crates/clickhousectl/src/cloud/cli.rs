@@ -160,7 +160,7 @@ CONTEXT FOR AGENTS:
   Typical flow: create -> get -> update -> delete.")]
     QueryApiEndpoint(QueryApiEndpointArgs),
 
-    /// Manage saved queries (Beta)
+    /// Manage saved queries
     #[command(after_help = "CONTEXT FOR AGENTS:
   Writes require API key authentication; list/get support OAuth.
   Service IDs: `cloud service list`.

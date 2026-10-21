@@ -122,4 +122,4 @@ clickhousectl cloud saved-query create <service-id> --name "Order count" \
 clickhousectl cloud saved-query get <service-id> <query-id>
 ```
 
-Saved-query update also replaces the complete definition; pass every field again, including parameters to retain. `--sql-file -` reads stdin. List is paginated with `nextCursor`. Saved queries are beta. Named endpoint and saved-query reads support OAuth; writes require API keys.
+Saved-query update also replaces the complete definition; pass every field again, including parameters to retain. `--sql-file -` reads stdin. List is paginated with `nextCursor`. Named endpoint and saved-query reads support OAuth; writes require API keys.
