@@ -212,11 +212,12 @@ When the nightly `openapi-drift.yml` run opens a new drift issue, it launches a 
 skill and opens draft pull requests for review. Later runs only edit the open issue, so they never launch another
 agent. Each issue maps to a fixed agent ID, so a retry can't start a second agent for the same issue.
 
-Configure it in the repository settings:
+Configure it in the repository settings. The job runs in the `openapi-drift-agent` environment, which only deploys
+from `main`; keep it without required reviewers so the nightly run is not held for approval.
 
 | Setting | Kind | Purpose |
 | --- | --- | --- |
-| `CURSOR_API_KEY` | Secret, required | Cursor user or service-account API key. Without it the step logs a warning and skips. |
+| `CURSOR_API_KEY` | `openapi-drift-agent` environment secret, required | Cursor user or service-account API key. Without it the step logs a warning and skips. |
 | `CURSOR_DRIFT_AGENT_MODEL` | Variable, optional | Model ID from `GET https://api.cursor.com/v1/models`. When unset, the key owner's default model is used. |
 | `CURSOR_DRIFT_AGENT_MODEL_PARAMS` | Variable, optional | JSON array of model parameters, such as `[{"id": "thinking", "value": "high"}]`. |
 | `CURSOR_DRIFT_AGENT_ENVIRONMENT` | Variable, optional | Name of a saved Cursor cloud environment. When unset, Cursor picks the repository's saved environment. |

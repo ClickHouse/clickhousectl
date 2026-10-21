@@ -27,6 +27,9 @@ jobs:
   check-drift:
     name: Check for OpenAPI spec drift
     runs-on: ubuntu-latest
+    # Holds CURSOR_API_KEY and only deploys from main, so a workflow edited on
+    # another branch cannot read the key.
+    environment: openapi-drift-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
