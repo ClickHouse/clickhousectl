@@ -161,6 +161,8 @@ pub enum ClickStackAlertResponseSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -171,6 +173,7 @@ impl std::fmt::Display for ClickStackAlertResponseSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -519,6 +522,8 @@ pub enum ClickStackCreateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -529,6 +534,7 @@ impl std::fmt::Display for ClickStackCreateAlertRequestSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -687,7 +693,8 @@ impl std::fmt::Display for ClickStackEventPatternsChartConfigWherelanguage {
     }
 }
 
-/// Inline enum for `ClickStackFilter.sourceMetricType`.
+/// Inline enum for `ClickStackQueryExpressionFilterInput.sourceMetricType`, shared by
+/// the query-expression filter request, response and input types.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackFilterSourcemetrictype {
     #[serde(rename = "sum")]
@@ -719,26 +726,8 @@ impl std::fmt::Display for ClickStackFilterSourcemetrictype {
     }
 }
 
-/// Inline enum for `ClickStackFilter.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackFilterType {
-    #[default]
-    QUERY_EXPRESSION,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackFilterType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackFilter.whereLanguage`.
+/// Inline enum for `ClickStackQueryExpressionFilterInput.whereLanguage`, shared by
+/// the query-expression filter request, response and input types.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackFilterWherelanguage {
     #[serde(rename = "sql")]
@@ -752,80 +741,6 @@ pub enum ClickStackFilterWherelanguage {
 }
 
 impl std::fmt::Display for ClickStackFilterWherelanguage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sql => write!(f, "sql"),
-            Self::Lucene => write!(f, "lucene"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackFilterInput.sourceMetricType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackFilterInputSourcemetrictype {
-    #[serde(rename = "sum")]
-    #[default]
-    Sum,
-    #[serde(rename = "gauge")]
-    Gauge,
-    #[serde(rename = "histogram")]
-    Histogram,
-    #[serde(rename = "summary")]
-    Summary,
-    #[serde(rename = "exponential histogram")]
-    Exponential_histogram,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackFilterInputSourcemetrictype {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sum => write!(f, "sum"),
-            Self::Gauge => write!(f, "gauge"),
-            Self::Histogram => write!(f, "histogram"),
-            Self::Summary => write!(f, "summary"),
-            Self::Exponential_histogram => write!(f, "exponential histogram"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackFilterInput.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackFilterInputType {
-    #[default]
-    QUERY_EXPRESSION,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackFilterInputType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackFilterInput.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackFilterInputWherelanguage {
-    #[serde(rename = "sql")]
-    #[default]
-    Sql,
-    #[serde(rename = "lucene")]
-    Lucene,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackFilterInputWherelanguage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sql => write!(f, "sql"),
@@ -850,49 +765,6 @@ impl std::fmt::Display for ClickStackGenericWebhookService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Generic => write!(f, "generic"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackHeatmapChartConfig.displayType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackHeatmapChartConfigDisplaytype {
-    #[serde(rename = "heatmap")]
-    #[default]
-    Heatmap,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackHeatmapChartConfigDisplaytype {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Heatmap => write!(f, "heatmap"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-/// Inline enum for `ClickStackHeatmapChartConfig.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackHeatmapChartConfigWherelanguage {
-    #[serde(rename = "sql")]
-    #[default]
-    Sql,
-    #[serde(rename = "lucene")]
-    Lucene,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackHeatmapChartConfigWherelanguage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Sql => write!(f, "sql"),
-            Self::Lucene => write!(f, "lucene"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2070,35 +1942,6 @@ impl std::fmt::Display for ClickStackSelectItemAggfn {
     }
 }
 
-/// Inline enum for `ClickStackSelectItem.level`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickStackSelectItemLevel {
-    #[serde(rename = "0.5")]
-    #[default]
-    _0_5,
-    #[serde(rename = "0.9")]
-    _0_9,
-    #[serde(rename = "0.95")]
-    _0_95,
-    #[serde(rename = "0.99")]
-    _0_99,
-    /// Catch-all for unknown or newly-added values.
-    #[serde(untagged)]
-    Unknown(String),
-}
-
-impl std::fmt::Display for ClickStackSelectItemLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::_0_5 => write!(f, "0.5"),
-            Self::_0_9 => write!(f, "0.9"),
-            Self::_0_95 => write!(f, "0.95"),
-            Self::_0_99 => write!(f, "0.99"),
-            Self::Unknown(s) => write!(f, "{s}"),
-        }
-    }
-}
-
 /// Inline enum for `ClickStackSelectItem.metricType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackSelectItemMetrictype {
@@ -2492,6 +2335,8 @@ pub enum ClickStackTimeChartSeriesDisplaytype {
     #[serde(rename = "stacked_bar")]
     #[default]
     Stacked_bar,
+    #[serde(rename = "stacked_line")]
+    Stacked_line,
     #[serde(rename = "line")]
     Line,
     /// Catch-all for unknown or newly-added values.
@@ -2503,6 +2348,7 @@ impl std::fmt::Display for ClickStackTimeChartSeriesDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Stacked_line => write!(f, "stacked_line"),
             Self::Line => write!(f, "line"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -2682,6 +2528,8 @@ pub enum ClickStackUpdateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2692,6 +2540,7 @@ impl std::fmt::Display for ClickStackUpdateAlertRequestSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2802,5 +2651,585 @@ impl std::fmt::Display for ClickStackVariableSavedFilterValueType {
             Self::Variable => write!(f, "variable"),
             Self::Unknown(value) => write!(f, "{value}"),
         }
+    }
+}
+
+/// Inline enum for `ClickStackAlertChartConfigOverlay.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackAlertChartConfigOverlayWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChartConfigOverlayWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackMongoDBCASLPermission.action`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCASLPermissionAction {
+    #[serde(rename = "create")]
+    #[default]
+    Create,
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "update")]
+    Update,
+    #[serde(rename = "delete")]
+    Delete,
+    #[serde(rename = "manage")]
+    Manage,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCASLPermissionAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create => write!(f, "create"),
+            Self::Read => write!(f, "read"),
+            Self::Update => write!(f, "update"),
+            Self::Delete => write!(f, "delete"),
+            Self::Manage => write!(f, "manage"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackMongoDBCASLPermission.subject`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCASLPermissionSubject {
+    #[default]
+    Alert,
+    Connection,
+    Dashboard,
+    SavedSearch,
+    Source,
+    Team,
+    User,
+    Webhook,
+    Role,
+    Notebook,
+    SchemaMigration,
+    #[serde(rename = "all")]
+    All,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCASLPermissionSubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alert => write!(f, "Alert"),
+            Self::Connection => write!(f, "Connection"),
+            Self::Dashboard => write!(f, "Dashboard"),
+            Self::SavedSearch => write!(f, "SavedSearch"),
+            Self::Source => write!(f, "Source"),
+            Self::Team => write!(f, "Team"),
+            Self::User => write!(f, "User"),
+            Self::Webhook => write!(f, "Webhook"),
+            Self::Role => write!(f, "Role"),
+            Self::Notebook => write!(f, "Notebook"),
+            Self::SchemaMigration => write!(f, "SchemaMigration"),
+            Self::All => write!(f, "all"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackClickHouseCASLPermissionConditions.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackClickHouseCASLPermissionConditionsWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackClickHouseCASLPermissionConditionsWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackClickHouseCASLPermission.integration`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackClickHouseCASLPermissionIntegration {
+    #[serde(rename = "clickhouse")]
+    #[default]
+    Clickhouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackClickHouseCASLPermissionIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clickhouse => write!(f, "clickhouse"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapDistributionChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapDistributionChartConfigDisplaytype {
+    #[serde(rename = "heatmap")]
+    #[default]
+    Heatmap,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapDistributionChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Heatmap => write!(f, "heatmap"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapDistributionChartConfig.heatmapMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapDistributionChartConfigHeatmapmode {
+    #[serde(rename = "distribution")]
+    #[default]
+    Distribution,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapDistributionChartConfigHeatmapmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Distribution => write!(f, "distribution"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapDistributionChartConfig.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapDistributionChartConfigWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapDistributionChartConfigWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapSeriesChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapSeriesChartConfigDisplaytype {
+    #[serde(rename = "heatmap")]
+    #[default]
+    Heatmap,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapSeriesChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Heatmap => write!(f, "heatmap"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapSeriesChartConfig.heatmapMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapSeriesChartConfigHeatmapmode {
+    #[serde(rename = "series")]
+    #[default]
+    Series,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapSeriesChartConfigHeatmapmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Series => write!(f, "series"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLineBuilderChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLineBuilderChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineBuilderChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLineRawSqlChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLineRawSqlChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineRawSqlChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackMongoDBCASLPermission.integration`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackMongoDBCASLPermissionIntegration {
+    #[serde(rename = "mongodb")]
+    #[default]
+    Mongodb,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMongoDBCASLPermissionIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mongodb => write!(f, "mongodb"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackPrometheusLabelFilterInput.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPrometheusLabelFilterType {
+    #[default]
+    PROMETHEUS_LABEL,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPrometheusLabelFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PROMETHEUS_LABEL => write!(f, "PROMETHEUS_LABEL"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackQueryExpressionFilterInput.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackQueryExpressionFilterType {
+    #[default]
+    QUERY_EXPRESSION,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackQueryExpressionFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSourceFilterInput.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSourceFilterType {
+    #[default]
+    SOURCE_FILTER,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSourceFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SOURCE_FILTER => write!(f, "SOURCE_FILTER"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLineBuilderChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLineBuilderChartConfigDisplaytype {
+    #[serde(rename = "stacked_line")]
+    #[default]
+    Stacked_line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLineBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_line => write!(f, "stacked_line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLineBuilderChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLineBuilderChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLineBuilderChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLineRawSqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLineRawSqlChartConfigConfigtype {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLineRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLineRawSqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLineRawSqlChartConfigDisplaytype {
+    #[serde(rename = "stacked_line")]
+    #[default]
+    Stacked_line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLineRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_line => write!(f, "stacked_line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLineRawSqlChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLineRawSqlChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLineRawSqlChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStaticListFilterInput.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStaticListFilterType {
+    #[default]
+    STATIC_LIST,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStaticListFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::STATIC_LIST => write!(f, "STATIC_LIST"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline integer enum for the dashboard filters' `minSelections`: `1` makes
+/// the filter required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum ClickStackFilterMinselections {
+    #[default]
+    Optional = 0,
+    Required = 1,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for ClickStackFilterMinselections {
+    fn from(value: i64) -> Self {
+        match value {
+            0 => Self::Optional,
+            1 => Self::Required,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<ClickStackFilterMinselections> for i64 {
+    fn from(value: ClickStackFilterMinselections) -> Self {
+        match value {
+            ClickStackFilterMinselections::Optional => 0,
+            ClickStackFilterMinselections::Required => 1,
+            ClickStackFilterMinselections::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for ClickStackFilterMinselections {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
+    }
+}
+
+/// Inline integer enum for the dashboard filters' `maxSelections`: `1` makes
+/// the filter single-select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum ClickStackFilterMaxselections {
+    #[default]
+    Single = 1,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for ClickStackFilterMaxselections {
+    fn from(value: i64) -> Self {
+        match value {
+            1 => Self::Single,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<ClickStackFilterMaxselections> for i64 {
+    fn from(value: ClickStackFilterMaxselections) -> Self {
+        match value {
+            ClickStackFilterMaxselections::Single => 1,
+            ClickStackFilterMaxselections::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for ClickStackFilterMaxselections {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
     }
 }

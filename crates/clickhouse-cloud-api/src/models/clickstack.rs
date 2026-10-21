@@ -902,6 +902,8 @@ impl std::fmt::Display for ClickStackSource {
 /// Deliberately has no `Default`: every arm's default would serialize to `{}`,
 /// which carries no `kind` and so would not deserialize back to the same
 /// variant. Build a [`ClickStackSource`] instead when writing.
+// Boxing the trace arm would break callers that match on it by value.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackSourceResponse {
@@ -1039,6 +1041,7 @@ pub enum ClickStackTileConfig {
     ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfig),
     ClickStackLineChartConfig(ClickStackLineChartConfig),
     ClickStackBarChartConfig(ClickStackBarChartConfig),
+    ClickStackStackedLineChartConfig(ClickStackStackedLineChartConfig),
     ClickStackTableChartConfig(ClickStackTableChartConfig),
     ClickStackNumberChartConfig(ClickStackNumberChartConfig),
     ClickStackPieChartConfig(ClickStackPieChartConfig),
@@ -1057,6 +1060,7 @@ discriminated_union! {
     ClickStackTileConfig, "displayType" {
         "line" => ClickStackLineChartConfig,
         "stacked_bar" => ClickStackBarChartConfig,
+        "stacked_line" => ClickStackStackedLineChartConfig,
         "bar" => ClickStackCategoricalBarChartConfig,
         "table" => ClickStackTableChartConfig,
         "number" => ClickStackNumberChartConfig,
@@ -1076,6 +1080,9 @@ impl std::fmt::Display for ClickStackTileConfig {
             }
             Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
             Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
+            Self::ClickStackStackedLineChartConfig(_) => {
+                write!(f, "ClickStackStackedLineChartConfig")
+            }
             Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
             Self::ClickStackNumberChartConfig(_) => write!(f, "ClickStackNumberChartConfig"),
             Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
@@ -1111,6 +1118,7 @@ impl std::fmt::Display for ClickStackTileConfig {
 pub enum ClickStackTileConfigResponse {
     ClickStackLineChartConfig(ClickStackLineChartConfigResponse),
     ClickStackBarChartConfig(ClickStackBarChartConfigResponse),
+    ClickStackStackedLineChartConfig(ClickStackStackedLineChartConfigResponse),
     ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfigResponse),
     ClickStackTableChartConfig(ClickStackTableChartConfigResponse),
     ClickStackNumberChartConfig(ClickStackNumberChartConfigResponse),
@@ -1130,6 +1138,7 @@ discriminated_union! {
     ClickStackTileConfigResponse, "displayType" {
         "line" => ClickStackLineChartConfig,
         "stacked_bar" => ClickStackBarChartConfig,
+        "stacked_line" => ClickStackStackedLineChartConfig,
         "bar" => ClickStackCategoricalBarChartConfig,
         "table" => ClickStackTableChartConfig,
         "number" => ClickStackNumberChartConfig,
@@ -1146,6 +1155,9 @@ impl std::fmt::Display for ClickStackTileConfigResponse {
         match self {
             Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
             Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
+            Self::ClickStackStackedLineChartConfig(_) => {
+                write!(f, "ClickStackStackedLineChartConfig")
+            }
             Self::ClickStackCategoricalBarChartConfig(_) => {
                 write!(f, "ClickStackCategoricalBarChartConfig")
             }
@@ -1204,9 +1216,6 @@ impl std::fmt::Display for ClickStackWebhook {
         }
     }
 }
-
-/// Type alias for `ClickStackCASLPermissionConditions`.
-pub type ClickStackCASLPermissionConditions = serde_json::Value;
 
 /// Type alias for `ClickStackValidateDashboardResponseNormalized`.
 pub type ClickStackValidateDashboardResponseNormalized = serde_json::Value;
@@ -1321,10 +1330,14 @@ pub struct ClickStackAlertResponse {
     pub channels: Option<ClickStackAlertChannelsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<ClickStackAlertChannelResponse>,
+    #[serde(rename = "chartConfig", skip_serializing_if = "Option::is_none")]
+    pub chart_config: Option<ClickStackAlertChartConfigResponse>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(rename = "executionErrors", skip_serializing_if = "Option::is_none")]
     pub execution_errors: Option<Vec<ClickStackAlertExecutionError>>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
@@ -1359,6 +1372,8 @@ pub struct ClickStackAlertResponse {
     pub source: Option<ClickStackAlertResponseSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ClickStackAlertResponseState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     #[serde(rename = "teamId", skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1550,38 +1565,6 @@ pub struct ClickStackBetweenColorConditionResponse {
     pub value: Option<Vec<f64>>,
 }
 
-/// `ClickStackCASLPermission` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackCASLPermission {
-    pub action: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conditions: Option<ClickStackCASLPermissionConditions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub integration: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inverted: Option<bool>,
-    pub subject: String,
-}
-
-/// `ClickStackCASLPermission` from the ClickHouse Cloud API, in response position.
-///
-/// Response variant of [`ClickStackCASLPermission`]: every field is
-/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
-/// `None` instead of failing.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackCASLPermissionResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conditions: Option<ClickStackCASLPermissionConditions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub integration: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inverted: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-}
-
 /// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarBuilderChartConfig {
@@ -1694,11 +1677,17 @@ pub struct ClickStackConnection {
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateAlertRequest {
-    #[serde(rename = "channels")]
-    pub channels: ClickStackAlertChannels,
-    pub channel: ClickStackAlertChannel,
+    #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
+    pub channels: Option<ClickStackAlertChannels>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ClickStackAlertChannel>,
+    /// Inline query for an alert with `source: Inline`.
+    #[serde(rename = "chartConfig", skip_serializing_if = "Option::is_none")]
+    pub chart_config: Option<ClickStackAlertChartConfig>,
     #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
     pub interval: ClickStackCreateAlertRequestInterval,
@@ -1722,7 +1711,10 @@ pub struct ClickStackCreateAlertRequest {
     pub schedule_offset_minutes: Option<i64>,
     #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
     pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub source: ClickStackCreateAlertRequestSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ClickStackCreateAlertRequestSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     pub threshold: f64,
     #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none")]
     pub threshold_max: Option<f64>,
@@ -1924,88 +1916,6 @@ pub struct ClickStackEventPatternsChartConfigResponse {
     pub where_language: Option<ClickStackEventPatternsChartConfigWherelanguage>,
 }
 
-/// `ClickStackFilter` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackFilter {
-    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
-    pub variable_name: Option<String>,
-    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_variable_enabled: Option<bool>,
-    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_broadcast_enabled: Option<bool>,
-    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
-    pub applies_to_source_ids: Option<Vec<String>>,
-    pub expression: String,
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "sourceId")]
-    pub source_id: String,
-    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
-    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
-    pub r#type: ClickStackFilterType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#where: Option<String>,
-    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
-    pub where_language: Option<ClickStackFilterWherelanguage>,
-}
-
-/// `ClickStackFilter` from the ClickHouse Cloud API, in response position.
-///
-/// Response variant of [`ClickStackFilter`]: every field is `Option<T>`, so a
-/// field the API drops or sends as `null` deserializes to `None` instead of
-/// failing.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackFilterResponse {
-    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
-    pub variable_name: Option<String>,
-    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_variable_enabled: Option<bool>,
-    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_broadcast_enabled: Option<bool>,
-    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
-    pub applies_to_source_ids: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expression: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
-    pub source_id: Option<String>,
-    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
-    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<ClickStackFilterType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#where: Option<String>,
-    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
-    pub where_language: Option<ClickStackFilterWherelanguage>,
-}
-
-/// `ClickStackFilterInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackFilterInput {
-    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
-    pub variable_name: Option<String>,
-    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_variable_enabled: Option<bool>,
-    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
-    pub is_broadcast_enabled: Option<bool>,
-    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
-    pub applies_to_source_ids: Option<Vec<String>>,
-    pub expression: String,
-    pub name: String,
-    #[serde(rename = "sourceId")]
-    pub source_id: String,
-    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
-    pub source_metric_type: Option<ClickStackFilterInputSourcemetrictype>,
-    pub r#type: ClickStackFilterInputType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub r#where: Option<String>,
-    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
-    pub where_language: Option<ClickStackFilterInputWherelanguage>,
-}
-
 /// `ClickStackFilterSettingsColumn` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilterSettingsColumn {
@@ -2056,43 +1966,6 @@ pub struct ClickStackGenericWebhook {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-}
-
-/// `ClickStackHeatmapChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackHeatmapChartConfig {
-    #[serde(rename = "displayType")]
-    pub display_type: ClickStackHeatmapChartConfigDisplaytype,
-    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
-    pub number_format: Option<ClickStackNumberFormat>,
-    pub select: Vec<ClickStackHeatmapSelectItem>,
-    #[serde(rename = "sourceId")]
-    pub source_id: String,
-    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
-    pub r#where: Option<String>,
-    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
-    pub where_language: Option<ClickStackHeatmapChartConfigWherelanguage>,
-}
-
-/// `ClickStackHeatmapChartConfig` from the ClickHouse Cloud API, in response position.
-///
-/// Response variant of [`ClickStackHeatmapChartConfig`]: every field is `Option<T>`, so a field
-/// the API drops or sends as `null` deserializes to `None` instead of
-/// failing.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackHeatmapChartConfigResponse {
-    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
-    pub display_type: Option<ClickStackHeatmapChartConfigDisplaytype>,
-    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
-    pub number_format: Option<ClickStackNumberFormatResponse>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub select: Option<Vec<ClickStackHeatmapSelectItemResponse>>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
-    pub source_id: Option<String>,
-    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
-    pub r#where: Option<String>,
-    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
-    pub where_language: Option<ClickStackHeatmapChartConfigWherelanguage>,
 }
 
 /// `ClickStackHeatmapSelectItem` from the ClickHouse Cloud API.
@@ -2203,6 +2076,8 @@ pub struct ClickStackLineBuilderChartConfig {
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineBuilderChartConfigLineinterpolation>,
 }
 
 /// `ClickStackLineBuilderChartConfig` from the ClickHouse Cloud API, in response position.
@@ -2244,6 +2119,8 @@ pub struct ClickStackLineBuilderChartConfigResponse {
     pub select: Option<Vec<ClickStackSelectItemResponse>>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineBuilderChartConfigLineinterpolation>,
 }
 
 /// `ClickStackLineRawSqlChartConfig` from the ClickHouse Cloud API.
@@ -2275,6 +2152,8 @@ pub struct ClickStackLineRawSqlChartConfig {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineRawSqlChartConfigLineinterpolation>,
 }
 
 /// `ClickStackLineRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
@@ -2310,6 +2189,8 @@ pub struct ClickStackLineRawSqlChartConfigResponse {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
     pub sql_template: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineRawSqlChartConfigLineinterpolation>,
 }
 
 /// `ClickStackLogSource` from the ClickHouse Cloud API.
@@ -2408,6 +2289,8 @@ pub struct ClickStackLogSource {
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
 }
 
 /// `ClickStackLogSource` from the ClickHouse Cloud API, in response position.
@@ -2520,6 +2403,8 @@ pub struct ClickStackLogSourceResponse {
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
 }
 
 /// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
@@ -2869,6 +2754,8 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
 }
 
 /// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
@@ -2892,6 +2779,8 @@ pub struct ClickStackNumberRawSqlChartConfigResponse {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
     pub sql_template: Option<String>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorConditionResponse>>,
 }
 
 /// `ClickStackNumericColorCondition` from the ClickHouse Cloud API.
@@ -3451,7 +3340,7 @@ pub struct ClickStackSelectItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<ClickStackSelectItemLevel>,
+    pub level: Option<f64>,
     #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
     #[serde(rename = "metricType", skip_serializing_if = "Option::is_none")]
@@ -3480,7 +3369,7 @@ pub struct ClickStackSelectItemResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<ClickStackSelectItemLevel>,
+    pub level: Option<f64>,
     #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
     #[serde(rename = "metricType", skip_serializing_if = "Option::is_none")]
@@ -3519,6 +3408,11 @@ pub struct ClickStackSessionSource {
     pub timestamp_value_expression: Option<String>,
     #[serde(rename = "traceSourceId")]
     pub trace_source_id: String,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
 }
 
 /// `ClickStackSessionSource` from the ClickHouse Cloud API, in response position.
@@ -3551,6 +3445,11 @@ pub struct ClickStackSessionSourceResponse {
     pub timestamp_value_expression: Option<String>,
     #[serde(rename = "traceSourceId", skip_serializing_if = "Option::is_none")]
     pub trace_source_id: Option<String>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
 }
 
 /// `ClickStackSlackAPIWebhook` from the ClickHouse Cloud API.
@@ -3804,6 +3703,8 @@ pub struct ClickStackTileInput {
     pub w: i64,
     pub x: i64,
     pub y: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// `ClickStackTileOutput` from the ClickHouse Cloud API.
@@ -3830,6 +3731,8 @@ pub struct ClickStackTileOutput {
     pub x: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub y: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// `ClickStackTimeChartSeries` from the ClickHouse Cloud API.
@@ -3972,6 +3875,23 @@ pub struct ClickStackTraceSource {
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
+    #[serde(
+        rename = "displayedTimestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub displayed_timestamp_value_expression: Option<String>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
+    #[serde(
+        rename = "sampleRateExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sample_rate_expression: Option<String>,
+    #[serde(
+        rename = "spanLinksValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub span_links_value_expression: Option<String>,
 }
 
 /// `ClickStackTraceSource` from the ClickHouse Cloud API, in response position.
@@ -4102,6 +4022,23 @@ pub struct ClickStackTraceSourceResponse {
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
+    #[serde(
+        rename = "displayedTimestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub displayed_timestamp_value_expression: Option<String>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
+    #[serde(
+        rename = "sampleRateExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sample_rate_expression: Option<String>,
+    #[serde(
+        rename = "spanLinksValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub span_links_value_expression: Option<String>,
 }
 
 /// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
@@ -4132,11 +4069,17 @@ pub struct ClickStackTraceSourceMetadataMaterializedViewsResponse {
 /// `ClickStackUpdateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateAlertRequest {
-    #[serde(rename = "channels")]
-    pub channels: ClickStackAlertChannels,
-    pub channel: ClickStackAlertChannel,
+    #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
+    pub channels: Option<ClickStackAlertChannels>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ClickStackAlertChannel>,
+    /// Inline query for an alert with `source: Inline`.
+    #[serde(rename = "chartConfig", skip_serializing_if = "Option::is_none")]
+    pub chart_config: Option<ClickStackAlertChartConfig>,
     #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
     pub interval: ClickStackUpdateAlertRequestInterval,
@@ -4160,7 +4103,10 @@ pub struct ClickStackUpdateAlertRequest {
     pub schedule_offset_minutes: Option<i64>,
     #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
     pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub source: ClickStackUpdateAlertRequestSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ClickStackUpdateAlertRequestSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
     pub threshold: f64,
     #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none")]
     pub threshold_max: Option<f64>,
@@ -4383,6 +4329,8 @@ pub struct ClickStackVariableSavedFilterValue {
     pub name: String,
     #[serde(rename = "values")]
     pub values: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
 }
 
 /// `ClickStackVariableSavedFilterValueResponse` from the ClickHouse Cloud API.
@@ -4394,6 +4342,8 @@ pub struct ClickStackVariableSavedFilterValueResponse {
     pub name: Option<String>,
     #[serde(rename = "values", skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
 }
 
 /// ClickStack request validation failures.
@@ -4408,4 +4358,2090 @@ pub struct ClickStackValidationErrorItem {
     pub r#type: String,
     #[serde(rename = "errors")]
     pub errors: ClickStackValidationErrorItemErrors,
+}
+
+/// `ClickStackMongoDBCASLPermissionConditions` from the ClickHouse Cloud API:
+/// MongoDB-style conditions keyed by field name. Each value is a string or a
+/// `{"$regex": ..., "$options": ...}` object, kept as raw JSON.
+pub type ClickStackMongoDBCASLPermissionConditions =
+    std::collections::BTreeMap<String, serde_json::Value>;
+
+/// `ClickStackMongoDBCASLPermissionConditions` in response position.
+pub type ClickStackMongoDBCASLPermissionConditionsResponse =
+    ClickStackMongoDBCASLPermissionConditions;
+
+/// Type alias for `ClickStackValidateWebhookResponseNormalized`.
+pub type ClickStackValidateWebhookResponseNormalized = serde_json::Value;
+
+/// `ClickStackAlertChartConfigOverlay` from the ClickHouse Cloud API.
+///
+/// The spec only composes this schema into the `ClickStackAlert*ChartConfig`
+/// variants, which carry these fields as optional (`where` is rejected on raw
+/// SQL variants). Build one of those variants rather than this standalone type.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertChartConfigOverlay {
+    pub name: String,
+    pub r#where: String,
+    #[serde(rename = "whereLanguage")]
+    pub where_language: ClickStackAlertChartConfigOverlayWherelanguage,
+}
+
+/// `ClickStackAlertLineBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLineBuilderChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackLineBuilderChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormula>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineBuilderChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertLineBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertLineBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLineBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackLineBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormulaResponse>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineBuilderChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertLineRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLineRawSqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackLineRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackLineRawSqlChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineRawSqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertLineRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertLineRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLineRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackLineRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackLineRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLineRawSqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarBuilderChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackBarBuilderChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormula>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertBarBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackBarBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormulaResponse>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarRawSqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackBarRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackBarRawSqlChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertBarRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackBarRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackBarRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLineBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLineBuilderChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackStackedLineBuilderChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormula>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineBuilderChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLineBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertStackedLineBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLineBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackStackedLineBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormulaResponse>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineBuilderChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLineRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLineRawSqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackStackedLineRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackStackedLineRawSqlChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineRawSqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLineRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertStackedLineRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLineRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackStackedLineRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackStackedLineRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineRawSqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertNumberBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberBuilderChartConfig {
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
+    pub background_chart: Option<ClickStackBackgroundChart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackNumberBuilderChartConfigDisplaytype,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormula>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertNumberBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertNumberBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberBuilderChartConfigResponse {
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
+    pub background_chart: Option<ClickStackBackgroundChartResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorConditionResponse>>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackNumberBuilderChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormulaResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertNumberRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberRawSqlChartConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackNumberRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackNumberRawSqlChartConfigDisplaytype,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertNumberRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertNumberRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberRawSqlChartConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorConditionResponse>>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackNumberRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackNumberRawSqlChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertLineChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `configType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertLineChartConfig {
+    ClickStackAlertLineRawSqlChartConfig(ClickStackAlertLineRawSqlChartConfig),
+    ClickStackAlertLineBuilderChartConfig(ClickStackAlertLineBuilderChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertLineChartConfig, "configType" {
+        "sql" => ClickStackAlertLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertLineChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertBarChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `configType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertBarChartConfig {
+    ClickStackAlertBarRawSqlChartConfig(ClickStackAlertBarRawSqlChartConfig),
+    ClickStackAlertBarBuilderChartConfig(ClickStackAlertBarBuilderChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertBarChartConfig, "configType" {
+        "sql" => ClickStackAlertBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertBarBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertBarChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertBarRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertBarRawSqlChartConfig")
+            }
+            Self::ClickStackAlertBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertBarBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertStackedLineChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `configType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertStackedLineChartConfig {
+    ClickStackAlertStackedLineRawSqlChartConfig(ClickStackAlertStackedLineRawSqlChartConfig),
+    ClickStackAlertStackedLineBuilderChartConfig(ClickStackAlertStackedLineBuilderChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertStackedLineChartConfig, "configType" {
+        "sql" => ClickStackAlertStackedLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertStackedLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertStackedLineChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertStackedLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertStackedLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertNumberChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `configType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertNumberChartConfig {
+    ClickStackAlertNumberRawSqlChartConfig(ClickStackAlertNumberRawSqlChartConfig),
+    ClickStackAlertNumberBuilderChartConfig(ClickStackAlertNumberBuilderChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertNumberChartConfig, "configType" {
+        "sql" => ClickStackAlertNumberRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertNumberBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertNumberChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertNumberRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberRawSqlChartConfig")
+            }
+            Self::ClickStackAlertNumberBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `displayType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertChartConfig {
+    ClickStackAlertLineChartConfig(ClickStackAlertLineChartConfig),
+    ClickStackAlertBarChartConfig(ClickStackAlertBarChartConfig),
+    ClickStackAlertStackedLineChartConfig(ClickStackAlertStackedLineChartConfig),
+    ClickStackAlertNumberChartConfig(ClickStackAlertNumberChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertChartConfig, "displayType" {
+        "line" => ClickStackAlertLineChartConfig,
+        "stacked_bar" => ClickStackAlertBarChartConfig,
+        "stacked_line" => ClickStackAlertStackedLineChartConfig,
+        "number" => ClickStackAlertNumberChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertLineChartConfig(_) => write!(f, "ClickStackAlertLineChartConfig"),
+            Self::ClickStackAlertBarChartConfig(_) => write!(f, "ClickStackAlertBarChartConfig"),
+            Self::ClickStackAlertStackedLineChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineChartConfig")
+            }
+            Self::ClickStackAlertNumberChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertLineChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertLineChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `configType` exactly as the request
+/// union is. A `configType` this crate does not know, or a payload that does not
+/// fit the variant its `configType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertLineChartConfigResponse {
+    ClickStackAlertLineRawSqlChartConfig(ClickStackAlertLineRawSqlChartConfigResponse),
+    ClickStackAlertLineBuilderChartConfig(ClickStackAlertLineBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertLineChartConfigResponse, "configType" {
+        "sql" => ClickStackAlertLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertLineChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertBarChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertBarChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `configType` exactly as the request
+/// union is. A `configType` this crate does not know, or a payload that does not
+/// fit the variant its `configType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertBarChartConfigResponse {
+    ClickStackAlertBarRawSqlChartConfig(ClickStackAlertBarRawSqlChartConfigResponse),
+    ClickStackAlertBarBuilderChartConfig(ClickStackAlertBarBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertBarChartConfigResponse, "configType" {
+        "sql" => ClickStackAlertBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertBarBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertBarChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertBarRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertBarRawSqlChartConfig")
+            }
+            Self::ClickStackAlertBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertBarBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertStackedLineChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertStackedLineChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `configType` exactly as the request
+/// union is. A `configType` this crate does not know, or a payload that does not
+/// fit the variant its `configType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertStackedLineChartConfigResponse {
+    ClickStackAlertStackedLineRawSqlChartConfig(
+        ClickStackAlertStackedLineRawSqlChartConfigResponse,
+    ),
+    ClickStackAlertStackedLineBuilderChartConfig(
+        ClickStackAlertStackedLineBuilderChartConfigResponse,
+    ),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertStackedLineChartConfigResponse, "configType" {
+        "sql" => ClickStackAlertStackedLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertStackedLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertStackedLineChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertStackedLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertStackedLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertNumberChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertNumberChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `configType` exactly as the request
+/// union is. A `configType` this crate does not know, or a payload that does not
+/// fit the variant its `configType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertNumberChartConfigResponse {
+    ClickStackAlertNumberRawSqlChartConfig(ClickStackAlertNumberRawSqlChartConfigResponse),
+    ClickStackAlertNumberBuilderChartConfig(ClickStackAlertNumberBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertNumberChartConfigResponse, "configType" {
+        "sql" => ClickStackAlertNumberRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackAlertNumberBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertNumberChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertNumberRawSqlChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberRawSqlChartConfig")
+            }
+            Self::ClickStackAlertNumberBuilderChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackAlertChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `displayType` exactly as the request
+/// union is. A `displayType` this crate does not know, or a payload that does not
+/// fit the variant its `displayType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertChartConfigResponse {
+    ClickStackAlertLineChartConfig(ClickStackAlertLineChartConfigResponse),
+    ClickStackAlertBarChartConfig(ClickStackAlertBarChartConfigResponse),
+    ClickStackAlertStackedLineChartConfig(ClickStackAlertStackedLineChartConfigResponse),
+    ClickStackAlertNumberChartConfig(ClickStackAlertNumberChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertChartConfigResponse, "displayType" {
+        "line" => ClickStackAlertLineChartConfig,
+        "stacked_bar" => ClickStackAlertBarChartConfig,
+        "stacked_line" => ClickStackAlertStackedLineChartConfig,
+        "number" => ClickStackAlertNumberChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertLineChartConfig(_) => write!(f, "ClickStackAlertLineChartConfig"),
+            Self::ClickStackAlertBarChartConfig(_) => write!(f, "ClickStackAlertBarChartConfig"),
+            Self::ClickStackAlertStackedLineChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLineChartConfig")
+            }
+            Self::ClickStackAlertNumberChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackStackedLineBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStackedLineBuilderChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackStackedLineBuilderChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormula>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineBuilderChartConfigLineinterpolation>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+}
+
+/// `ClickStackStackedLineBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackStackedLineBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStackedLineBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackStackedLineBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formulas: Option<Vec<ClickStackFormulaResponse>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineBuilderChartConfigLineinterpolation>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
+    pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+/// `ClickStackStackedLineRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStackedLineRawSqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackStackedLineRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackStackedLineRawSqlChartConfigDisplaytype,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineRawSqlChartConfigLineinterpolation>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+}
+
+/// `ClickStackStackedLineRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackStackedLineRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStackedLineRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackStackedLineRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackStackedLineRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLineRawSqlChartConfigLineinterpolation>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+}
+
+/// `ClickStackStackedLineChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `configType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackStackedLineChartConfig {
+    ClickStackStackedLineRawSqlChartConfig(ClickStackStackedLineRawSqlChartConfig),
+    ClickStackStackedLineBuilderChartConfig(ClickStackStackedLineBuilderChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackStackedLineChartConfig, "configType" {
+        "sql" => ClickStackStackedLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackStackedLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackStackedLineChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackStackedLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackStackedLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackStackedLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackStackedLineChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackStackedLineChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `configType` exactly as the request
+/// union is. A `configType` this crate does not know, or a payload that does not
+/// fit the variant its `configType` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackStackedLineChartConfigResponse {
+    ClickStackStackedLineRawSqlChartConfig(ClickStackStackedLineRawSqlChartConfigResponse),
+    ClickStackStackedLineBuilderChartConfig(ClickStackStackedLineBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackStackedLineChartConfigResponse, "configType" {
+        "sql" => ClickStackStackedLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackStackedLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackStackedLineChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackStackedLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackStackedLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackStackedLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackHeatmapDistributionChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapDistributionChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackHeatmapDistributionChartConfigDisplaytype,
+    #[serde(rename = "heatmapMode", skip_serializing_if = "Option::is_none")]
+    pub heatmap_mode: Option<ClickStackHeatmapDistributionChartConfigHeatmapmode>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackHeatmapSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackHeatmapDistributionChartConfigWherelanguage>,
+}
+
+/// `ClickStackHeatmapDistributionChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackHeatmapDistributionChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapDistributionChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackHeatmapDistributionChartConfigDisplaytype>,
+    #[serde(rename = "heatmapMode", skip_serializing_if = "Option::is_none")]
+    pub heatmap_mode: Option<ClickStackHeatmapDistributionChartConfigHeatmapmode>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackHeatmapSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackHeatmapDistributionChartConfigWherelanguage>,
+}
+
+/// `ClickStackHeatmapSeriesChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapSeriesChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackHeatmapSeriesChartConfigDisplaytype,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "heatmapMode")]
+    pub heatmap_mode: ClickStackHeatmapSeriesChartConfigHeatmapmode,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+}
+
+/// `ClickStackHeatmapSeriesChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackHeatmapSeriesChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapSeriesChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackHeatmapSeriesChartConfigDisplaytype>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "heatmapMode", skip_serializing_if = "Option::is_none")]
+    pub heatmap_mode: Option<ClickStackHeatmapSeriesChartConfigHeatmapmode>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+/// `ClickStackHeatmapChartConfig` - one of multiple variants.
+///
+/// Dispatched on the `heatmapMode` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackHeatmapChartConfig {
+    ClickStackHeatmapDistributionChartConfig(ClickStackHeatmapDistributionChartConfig),
+    ClickStackHeatmapSeriesChartConfig(ClickStackHeatmapSeriesChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackHeatmapChartConfig, "heatmapMode" {
+        "distribution" => ClickStackHeatmapDistributionChartConfig,
+        "series" => ClickStackHeatmapSeriesChartConfig,
+        none unless "groupBy" => ClickStackHeatmapDistributionChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackHeatmapChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackHeatmapDistributionChartConfig(_) => {
+                write!(f, "ClickStackHeatmapDistributionChartConfig")
+            }
+            Self::ClickStackHeatmapSeriesChartConfig(_) => {
+                write!(f, "ClickStackHeatmapSeriesChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackHeatmapChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackHeatmapChartConfig`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `heatmapMode` exactly as the request
+/// union is. A `heatmapMode` this crate does not know, or a payload that does not
+/// fit the variant its `heatmapMode` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackHeatmapChartConfigResponse {
+    ClickStackHeatmapDistributionChartConfig(ClickStackHeatmapDistributionChartConfigResponse),
+    ClickStackHeatmapSeriesChartConfig(ClickStackHeatmapSeriesChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackHeatmapChartConfigResponse, "heatmapMode" {
+        "distribution" => ClickStackHeatmapDistributionChartConfig,
+        "series" => ClickStackHeatmapSeriesChartConfig,
+        none unless "groupBy" => ClickStackHeatmapDistributionChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackHeatmapChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackHeatmapDistributionChartConfig(_) => {
+                write!(f, "ClickStackHeatmapDistributionChartConfig")
+            }
+            Self::ClickStackHeatmapSeriesChartConfig(_) => {
+                write!(f, "ClickStackHeatmapSeriesChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackMongoDBCASLPermission` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMongoDBCASLPermission {
+    pub action: ClickStackCASLPermissionAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<ClickStackMongoDBCASLPermissionConditions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    pub integration: ClickStackMongoDBCASLPermissionIntegration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverted: Option<bool>,
+    pub subject: ClickStackCASLPermissionSubject,
+}
+
+/// `ClickStackMongoDBCASLPermission` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMongoDBCASLPermission`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMongoDBCASLPermissionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ClickStackCASLPermissionAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<ClickStackMongoDBCASLPermissionConditionsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<ClickStackMongoDBCASLPermissionIntegration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<ClickStackCASLPermissionSubject>,
+}
+
+/// `ClickStackClickHouseCASLPermission` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermission {
+    pub action: ClickStackCASLPermissionAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<ClickStackClickHouseCASLPermissionConditions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    pub integration: ClickStackClickHouseCASLPermissionIntegration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverted: Option<bool>,
+    pub subject: ClickStackCASLPermissionSubject,
+}
+
+/// `ClickStackClickHouseCASLPermission` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackClickHouseCASLPermission`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermissionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ClickStackCASLPermissionAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<ClickStackClickHouseCASLPermissionConditionsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<ClickStackClickHouseCASLPermissionIntegration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<ClickStackCASLPermissionSubject>,
+}
+
+/// `ClickStackClickHouseCASLPermissionConditions` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermissionConditions {
+    pub connection: String,
+    pub from: ClickStackClickHouseCASLPermissionConditionsFrom,
+    pub r#where: String,
+    #[serde(rename = "whereLanguage")]
+    pub where_language: ClickStackClickHouseCASLPermissionConditionsWherelanguage,
+}
+
+/// `ClickStackClickHouseCASLPermissionConditions` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackClickHouseCASLPermissionConditions`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermissionConditionsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackClickHouseCASLPermissionConditionsFromResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackClickHouseCASLPermissionConditionsWherelanguage>,
+}
+
+/// `ClickStackClickHouseCASLPermissionConditionsFrom` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermissionConditionsFrom {
+    #[serde(rename = "databaseName")]
+    pub database_name: String,
+    #[serde(rename = "tableName")]
+    pub table_name: String,
+}
+
+/// `ClickStackClickHouseCASLPermissionConditionsFrom` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackClickHouseCASLPermissionConditionsFrom`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackClickHouseCASLPermissionConditionsFromResponse {
+    #[serde(rename = "databaseName", skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+}
+
+/// `ClickStackCASLPermission` - one of multiple variants.
+///
+/// Dispatched on the `integration` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackCASLPermission {
+    ClickStackMongoDBCASLPermission(ClickStackMongoDBCASLPermission),
+    ClickStackClickHouseCASLPermission(ClickStackClickHouseCASLPermission),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackCASLPermission, "integration" {
+        "mongodb" => ClickStackMongoDBCASLPermission,
+        "clickhouse" => ClickStackClickHouseCASLPermission,
+    }
+}
+
+impl std::fmt::Display for ClickStackCASLPermission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackMongoDBCASLPermission(_) => {
+                write!(f, "ClickStackMongoDBCASLPermission")
+            }
+            Self::ClickStackClickHouseCASLPermission(_) => {
+                write!(f, "ClickStackClickHouseCASLPermission")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackCASLPermission` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackCASLPermission`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `integration` exactly as the request
+/// union is. A `integration` this crate does not know, or a payload that does not
+/// fit the variant its `integration` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackCASLPermissionResponse {
+    ClickStackMongoDBCASLPermission(ClickStackMongoDBCASLPermissionResponse),
+    ClickStackClickHouseCASLPermission(ClickStackClickHouseCASLPermissionResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackCASLPermissionResponse, "integration" {
+        "mongodb" => ClickStackMongoDBCASLPermission,
+        "clickhouse" => ClickStackClickHouseCASLPermission,
+    }
+}
+
+impl std::fmt::Display for ClickStackCASLPermissionResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackMongoDBCASLPermission(_) => {
+                write!(f, "ClickStackMongoDBCASLPermission")
+            }
+            Self::ClickStackClickHouseCASLPermission(_) => {
+                write!(f, "ClickStackClickHouseCASLPermission")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackQueryExpressionFilterInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackQueryExpressionFilterInput {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    pub expression: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
+    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
+    pub r#type: ClickStackQueryExpressionFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackFilterWherelanguage>,
+}
+
+/// `ClickStackQueryExpressionFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackQueryExpressionFilter {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    pub expression: String,
+    pub id: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
+    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
+    pub r#type: ClickStackQueryExpressionFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackFilterWherelanguage>,
+}
+
+/// `ClickStackQueryExpressionFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackQueryExpressionFilter`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackQueryExpressionFilterResponse {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
+    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackQueryExpressionFilterType>,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackFilterWherelanguage>,
+}
+
+/// `ClickStackStaticListFilterInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStaticListFilterInput {
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    pub options: Vec<String>,
+    pub r#type: ClickStackStaticListFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackStaticListFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStaticListFilter {
+    pub id: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    pub options: Vec<String>,
+    pub r#type: ClickStackStaticListFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackStaticListFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackStaticListFilter`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackStaticListFilterResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackStaticListFilterType>,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackPrometheusLabelFilterInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPrometheusLabelFilterInput {
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<String>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    pub r#type: ClickStackPrometheusLabelFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackPrometheusLabelFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPrometheusLabelFilter {
+    pub id: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<String>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    pub r#type: ClickStackPrometheusLabelFilterType,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackPrometheusLabelFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPrometheusLabelFilter`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPrometheusLabelFilterResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#match: Option<String>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackPrometheusLabelFilterType>,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackSourceFilterInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSourceFilterInput {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    pub expression: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    pub r#type: ClickStackSourceFilterType,
+    #[serde(rename = "variableName")]
+    pub variable_name: String,
+}
+
+/// `ClickStackSourceFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSourceFilter {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    pub expression: String,
+    pub id: String,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    pub name: String,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    pub r#type: ClickStackSourceFilterType,
+    #[serde(rename = "variableName")]
+    pub variable_name: String,
+}
+
+/// `ClickStackSourceFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSourceFilter`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSourceFilterResponse {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_broadcast_enabled: Option<bool>,
+    #[serde(
+        rename = "isGlobalRequirement",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_global_requirement: Option<bool>,
+    #[serde(rename = "isVariableEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_variable_enabled: Option<bool>,
+    #[serde(rename = "maxSelections", skip_serializing_if = "Option::is_none")]
+    pub max_selections: Option<ClickStackFilterMaxselections>,
+    #[serde(rename = "minSelections", skip_serializing_if = "Option::is_none")]
+    pub min_selections: Option<ClickStackFilterMinselections>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackSourceFilterType>,
+    #[serde(rename = "variableName", skip_serializing_if = "Option::is_none")]
+    pub variable_name: Option<String>,
+}
+
+/// `ClickStackFilterInput` - one of multiple variants.
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackFilterInput {
+    ClickStackQueryExpressionFilterInput(ClickStackQueryExpressionFilterInput),
+    ClickStackStaticListFilterInput(ClickStackStaticListFilterInput),
+    ClickStackPrometheusLabelFilterInput(ClickStackPrometheusLabelFilterInput),
+    ClickStackSourceFilterInput(ClickStackSourceFilterInput),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackFilterInput, "type" {
+        "QUERY_EXPRESSION" => ClickStackQueryExpressionFilterInput,
+        "STATIC_LIST" => ClickStackStaticListFilterInput,
+        "PROMETHEUS_LABEL" => ClickStackPrometheusLabelFilterInput,
+        "SOURCE_FILTER" => ClickStackSourceFilterInput,
+    }
+}
+
+impl std::fmt::Display for ClickStackFilterInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackQueryExpressionFilterInput(_) => {
+                write!(f, "ClickStackQueryExpressionFilterInput")
+            }
+            Self::ClickStackStaticListFilterInput(_) => {
+                write!(f, "ClickStackStaticListFilterInput")
+            }
+            Self::ClickStackPrometheusLabelFilterInput(_) => {
+                write!(f, "ClickStackPrometheusLabelFilterInput")
+            }
+            Self::ClickStackSourceFilterInput(_) => write!(f, "ClickStackSourceFilterInput"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackFilter` - one of multiple variants.
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackFilter {
+    ClickStackQueryExpressionFilter(ClickStackQueryExpressionFilter),
+    ClickStackStaticListFilter(ClickStackStaticListFilter),
+    ClickStackPrometheusLabelFilter(ClickStackPrometheusLabelFilter),
+    ClickStackSourceFilter(ClickStackSourceFilter),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackFilter, "type" {
+        "QUERY_EXPRESSION" => ClickStackQueryExpressionFilter,
+        "STATIC_LIST" => ClickStackStaticListFilter,
+        "PROMETHEUS_LABEL" => ClickStackPrometheusLabelFilter,
+        "SOURCE_FILTER" => ClickStackSourceFilter,
+    }
+}
+
+impl std::fmt::Display for ClickStackFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackQueryExpressionFilter(_) => {
+                write!(f, "ClickStackQueryExpressionFilter")
+            }
+            Self::ClickStackStaticListFilter(_) => write!(f, "ClickStackStaticListFilter"),
+            Self::ClickStackPrometheusLabelFilter(_) => {
+                write!(f, "ClickStackPrometheusLabelFilter")
+            }
+            Self::ClickStackSourceFilter(_) => write!(f, "ClickStackSourceFilter"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackFilter` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackFilter`]: each arm is the all-`Option` response
+/// variant of its request type, dispatched on `type` exactly as the request
+/// union is. A `type` this crate does not know, or a payload that does not
+/// fit the variant its `type` selects, lands in `Unknown` with the raw JSON
+/// intact.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackFilterResponse {
+    ClickStackQueryExpressionFilter(ClickStackQueryExpressionFilterResponse),
+    ClickStackStaticListFilter(ClickStackStaticListFilterResponse),
+    ClickStackPrometheusLabelFilter(ClickStackPrometheusLabelFilterResponse),
+    ClickStackSourceFilter(ClickStackSourceFilterResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackFilterResponse, "type" {
+        "QUERY_EXPRESSION" => ClickStackQueryExpressionFilter,
+        "STATIC_LIST" => ClickStackStaticListFilter,
+        "PROMETHEUS_LABEL" => ClickStackPrometheusLabelFilter,
+        "SOURCE_FILTER" => ClickStackSourceFilter,
+    }
+}
+
+impl std::fmt::Display for ClickStackFilterResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackQueryExpressionFilter(_) => {
+                write!(f, "ClickStackQueryExpressionFilter")
+            }
+            Self::ClickStackStaticListFilter(_) => write!(f, "ClickStackStaticListFilter"),
+            Self::ClickStackPrometheusLabelFilter(_) => {
+                write!(f, "ClickStackPrometheusLabelFilter")
+            }
+            Self::ClickStackSourceFilter(_) => write!(f, "ClickStackSourceFilter"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackValidateWebhookResponse` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateWebhookResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<ClickStackValidateWebhookResponseErrorsItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalized: Option<ClickStackValidateWebhookResponseNormalized>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid: Option<bool>,
+}
+
+/// `ClickStackValidateWebhookResponseErrorsItem` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateWebhookResponseErrorsItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }

@@ -4003,11 +4003,12 @@ async fn create_role() {
         .and(path(
             "/v1/organizations/org-1/services/svc-1/clickstack/roles",
         ))
-        .and(body_partial_json(serde_json::json!({
+        .and(body_json(serde_json::json!({
             "name": "Deploy Bot",
             "permissions": [{
                 "action": "read",
-                "subject": "dashboard",
+                "subject": "Dashboard",
+                "integration": "mongodb",
                 "conditions": { "teamId": "team-1" }
             }]
         })))
@@ -4017,7 +4018,8 @@ async fn create_role() {
             "isPredefined": false,
             "permissions": [{
                 "action": "read",
-                "subject": "dashboard",
+                "subject": "Dashboard",
+                "integration": "mongodb",
                 "conditions": { "teamId": "team-1" }
             }]
         })))
@@ -4026,12 +4028,18 @@ async fn create_role() {
 
     let body = ClickStackCreateRoleRequest {
         name: "Deploy Bot".to_string(),
-        permissions: vec![ClickStackCASLPermission {
-            action: "read".to_string(),
-            subject: "dashboard".to_string(),
-            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
-            ..Default::default()
-        }],
+        permissions: vec![ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
+            ClickStackMongoDBCASLPermission {
+                action: ClickStackCASLPermissionAction::Read,
+                subject: ClickStackCASLPermissionSubject::Dashboard,
+                integration: ClickStackMongoDBCASLPermissionIntegration::Mongodb,
+                conditions: Some(ClickStackMongoDBCASLPermissionConditions::from([(
+                    "teamId".to_string(),
+                    serde_json::json!("team-1"),
+                )])),
+                ..Default::default()
+            },
+        )],
         ..Default::default()
     };
     let resp = c
@@ -4079,23 +4087,28 @@ async fn update_role() {
             "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
         ))
         .and(body_partial_json(serde_json::json!({
-            "permissions": [{ "action": "manage", "subject": "all" }]
+            "permissions": [{ "action": "manage", "subject": "all", "integration": "clickhouse" }]
         })))
         .respond_with(ok_json(serde_json::json!({
             "id": "role-1",
             "name": "Deploy Bot",
             "isPredefined": false,
-            "permissions": [{ "action": "manage", "subject": "all" }]
+            "permissions": [{ "action": "manage", "subject": "all", "integration": "clickhouse" }]
         })))
         .mount(&s)
         .await;
 
     let body = ClickStackUpdateRoleRequest {
-        permissions: vec![ClickStackCASLPermission {
-            action: "manage".to_string(),
-            subject: "all".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![
+            ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
+                ClickStackClickHouseCASLPermission {
+                    action: ClickStackCASLPermissionAction::Manage,
+                    subject: ClickStackCASLPermissionSubject::All,
+                    integration: ClickStackClickHouseCASLPermissionIntegration::Clickhouse,
+                    ..Default::default()
+                },
+            ),
+        ],
         ..Default::default()
     };
     let resp = c
@@ -4105,7 +4118,15 @@ async fn update_role() {
     let role = resp.result.unwrap();
     let permissions = role.permissions.unwrap_or_default();
     assert_eq!(permissions.len(), 1);
-    assert_eq!(permissions[0].action.as_deref(), Some("manage"));
+    let ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(permission) =
+        &permissions[0]
+    else {
+        panic!("expected a ClickHouse permission");
+    };
+    assert_eq!(
+        permission.action,
+        Some(ClickStackCASLPermissionAction::Manage)
+    );
 }
 
 #[tokio::test]
@@ -4345,6 +4366,76 @@ async fn validate_dashboard() {
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].path.as_deref(), Some("tiles.0.config"));
     assert_eq!(result.normalized, None);
+}
+
+#[tokio::test]
+async fn validate_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({
+            "name": "On-call",
+            "service": "generic",
+            "url": "https://example.com/hook"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "valid": false,
+            "errors": [{"path": "url", "message": "URL is not allowed"}],
+            "normalized": null
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "On-call".to_string(),
+        service: ClickStackWebhookInputService::Generic,
+        url: "https://example.com/hook".to_string(),
+        ..Default::default()
+    };
+    let result = c
+        .click_stack_validate_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result.valid, Some(false));
+    let errors = result.errors.as_ref().expect("errors should populate");
+    assert_eq!(errors[0].path.as_deref(), Some("url"));
+    assert_eq!(errors[0].message.as_deref(), Some("URL is not allowed"));
+    assert_eq!(result.normalized, None);
+}
+
+#[tokio::test]
+async fn validate_webhook_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "invalid body"
+        })))
+        .mount(&s)
+        .await;
+
+    let error = c
+        .click_stack_validate_webhook("org-1", "svc-1", &ClickStackWebhookInput::default())
+        .await
+        .unwrap_err();
+    match error {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "invalid body");
+        }
+        other => panic!("expected an API error, got {other:?}"),
+    }
 }
 
 // ===========================================================================

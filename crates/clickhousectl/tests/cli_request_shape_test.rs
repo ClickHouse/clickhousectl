@@ -20029,6 +20029,183 @@ async fn postgres_create_and_update_omit_the_ip_access_list() {
     }
 }
 
+fn postgres_service_with_rules() -> Value {
+    serde_json::json!({
+        "result": {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "pg-test",
+            "tags": [{"key": "env", "value": "prod"}],
+            "ipAccessList": [
+                {"id": "rule-1", "source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"id": "rule-2", "source": "198.51.100.7/32", "portRange": "5432"},
+                {"id": "rule-3", "source": "198.51.100.7/32", "portRange": "6432"}
+            ]
+        },
+        "status": 200,
+    })
+}
+
+#[tokio::test]
+async fn postgres_create_sends_ip_rules_or_blocks_public_access() {
+    for (flags, expected) in [
+        (
+            vec![
+                "--ip-allow",
+                "203.0.113.0/24:5432=office",
+                "--ip-allow",
+                "203.0.113.0/24:6432",
+            ],
+            serde_json::json!([
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"source": "203.0.113.0/24", "portRange": "6432"}
+            ]),
+        ),
+        (vec!["--block-public-access"], serde_json::json!([])),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/org-1/postgres"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(postgres_service_with_rules()))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "postgres",
+            "create",
+            "--name",
+            "pg-test",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["ipAccessList"], expected, "{args:?}");
+    }
+}
+
+#[tokio::test]
+async fn postgres_update_resolves_ip_rule_removals_from_the_current_list() {
+    for (extra, tags) in [
+        (vec![], serde_json::json!([{"key": "env", "value": "prod"}])),
+        (vec!["--clear-tags"], serde_json::json!([])),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(postgres_service_with_rules()))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(postgres_service_with_rules()))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "postgres",
+            "update",
+            "pg-1",
+            "--remove-ip-allow",
+            "198.51.100.7",
+            "--remove-ip-allow",
+            "rule-1",
+            "--add-ip-allow",
+            "192.0.2.0/24:5432..6432=vpn",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(extra.iter().copied());
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let patch = requests
+            .iter()
+            .find(|request| request.method.as_str() == "PATCH")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "tags": tags,
+                "ipAccessList": {
+                    "add": [{"source": "192.0.2.0/24", "portRange": "5432..6432", "description": "vpn"}],
+                    "remove": [{"id": "rule-2"}, {"id": "rule-3"}, {"id": "rule-1"}]
+                }
+            }),
+            "{args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_update_rejects_an_unmatched_ip_rule_before_patching() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(postgres_service_with_rules()))
+        .mount(&mock)
+        .await;
+    let output = invoke_pgbouncer_cli(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            "pg-1",
+            "--remove-ip-allow",
+            "192.0.2.1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("did not match"));
+    let requests = mock.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method.as_str() == "GET")
+    );
+}
+
+#[tokio::test]
+async fn postgres_get_lists_ip_rules_in_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/11111111-1111-1111-1111-111111111111",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(postgres_service_with_rules()))
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "get",
+            "11111111-1111-1111-1111-111111111111",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for rule in [
+        "rule-1  203.0.113.0/24:5432  office",
+        "rule-2  198.51.100.7/32:5432",
+        "rule-3  198.51.100.7/32:6432",
+    ] {
+        assert!(stdout.contains(rule), "{rule}: {stdout}");
+    }
+}
+
 #[tokio::test]
 async fn pgbouncer_invalid_file_values_fail_before_any_api_request() {
     let directory = tempfile::tempdir().unwrap();
@@ -21196,7 +21373,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_fil
             "action": "manage",
             "subject": "Dashboard",
             "inverted": false,
-            "integration": "slack",
+            "integration": "mongodb",
             "conditions": {"teamId": "team-1"}
         }]
     });
@@ -21474,7 +21651,7 @@ async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_reques
         &mock,
         &["clickstack", "role", "create", "svc-1", "--file", "-"],
         Some(
-            r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","conditons":null}]}"#,
+            r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","integration":"mongodb","conditons":null}]}"#,
         ),
         false,
     );
