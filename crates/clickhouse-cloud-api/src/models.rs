@@ -193,7 +193,7 @@ pub use organization_private_endpoints::{
     OrganizationPrivateEndpointRegion, OrganizationPrivateEndpointsPatch,
 };
 pub use organizations::{
-    ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances,
+    ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Notification,
     NotificationType, NotificationTypeSeverity, Organization, OrganizationCapabilities,
     OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
 };

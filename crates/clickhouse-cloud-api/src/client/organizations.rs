@@ -278,6 +278,65 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get one page of organization notifications, most recent first (Beta).
+    ///
+    /// Pass `next_cursor` unchanged as `cursor` until it is absent. The server
+    /// defaults `limit` to 100 and clamps values above 250. Date filters are
+    /// RFC 3339 timestamps. Results are restricted to resources the caller can access.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn notification_get_list(
+        &self,
+        organization_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+        severity: Option<&str>,
+        r#type: Option<&str>,
+        resource_id: Option<&str>,
+        resource_type: Option<&str>,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+    ) -> Result<ApiResponse<Vec<Notification>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/notifications");
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(value) = limit {
+            req = req.query(&[("limit", value)]);
+        }
+        if let Some(value) = cursor {
+            req = req.query(&[("cursor", value)]);
+        }
+        if let Some(value) = severity {
+            req = req.query(&[("severity", value)]);
+        }
+        if let Some(value) = r#type {
+            req = req.query(&[("type", value)]);
+        }
+        if let Some(value) = resource_id {
+            req = req.query(&[("resource_id", value)]);
+        }
+        if let Some(value) = resource_type {
+            req = req.query(&[("resource_type", value)]);
+        }
+        if let Some(value) = from_date {
+            req = req.query(&[("from_date", value)]);
+        }
+        if let Some(value) = to_date {
+            req = req.query(&[("to_date", value)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// List notification types
     ///
     /// Returns every notification type the organization is entitled to; types

@@ -168,6 +168,31 @@ impl std::fmt::Display for NotificationTypeSeverity {
     }
 }
 
+/// A retained organization notification (Beta).
+///
+/// Notification types, severities and resource kinds remain open strings.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Notification {
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(rename = "severity", skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(rename = "resourceType", skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
+    #[serde(rename = "resourceId", skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    #[serde(rename = "resourceName", skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "title", skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// `NotificationType` from the ClickHouse Cloud API.
 ///
 /// A notification type the organization is entitled to. `category` and
