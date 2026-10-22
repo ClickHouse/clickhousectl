@@ -728,16 +728,54 @@ fn known_auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
 /// Injectable environment lookup keeps login tests independent of the shell.
 type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
+/// Why a login could not resolve OAuth configuration for an API URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthConfigError {
+    /// The API URL is malformed or has no host.
+    InvalidApiUrl,
+    /// Unknown host: the environment override is unset or empty. The payload
+    /// names the missing variable(s).
+    MissingEnvVars(&'static str),
+    /// `CLICKHOUSECTL_AUTH_URL` was set but rejected by `validated_auth_url`;
+    /// the payload is the validation reason.
+    InvalidAuthUrl(&'static str),
+}
+
+impl std::fmt::Display for AuthConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidApiUrl => write!(f, "the URL is malformed or has no host"),
+            Self::MissingEnvVars(missing) => {
+                let known = KNOWN_CONFIGS
+                    .iter()
+                    .map(|config| config.host)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "known hosts: {known}; for any other host, set {missing}")
+            }
+            Self::InvalidAuthUrl(reason) => {
+                write!(f, "CLICKHOUSECTL_AUTH_URL is invalid: {reason}")
+            }
+        }
+    }
+}
+
 /// Resolve configuration for a new login, never for an existing session.
-fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
+fn auth_config_for_url(api_url: &str) -> Result<AuthConfig, AuthConfigError> {
     auth_config_for_url_with(api_url, &|key| std::env::var(key).ok())
 }
 
-fn auth_config_for_url_with(api_url: &str, env_lookup: EnvLookup<'_>) -> Option<AuthConfig> {
+fn auth_config_for_url_with(
+    api_url: &str,
+    env_lookup: EnvLookup<'_>,
+) -> Result<AuthConfig, AuthConfigError> {
     // Preserve rejection of malformed or hostless API URLs before reading env.
-    url::Url::parse(api_url).ok()?.host_str()?;
+    let parsed = url::Url::parse(api_url).map_err(|_| AuthConfigError::InvalidApiUrl)?;
+    if parsed.host_str().is_none() {
+        return Err(AuthConfigError::InvalidApiUrl);
+    }
     if let Some(config) = known_auth_config_for_url(api_url) {
-        return Some(config);
+        return Ok(config);
     }
 
     // Unknown host: require both env vars, with no built-in fallback.
@@ -746,11 +784,19 @@ fn auth_config_for_url_with(api_url: &str, env_lookup: EnvLookup<'_>) -> Option<
         env("CLICKHOUSECTL_AUTH_URL"),
         env("CLICKHOUSECTL_CLIENT_ID"),
     ) {
-        (Some(auth_url), Some(client_id)) => Some(AuthConfig {
-            auth_url: validated_auth_url(&auth_url).ok()?,
-            client_id,
-        }),
-        _ => None,
+        (Some(auth_url), Some(client_id)) => {
+            let auth_url =
+                validated_auth_url(&auth_url).map_err(AuthConfigError::InvalidAuthUrl)?;
+            Ok(AuthConfig {
+                auth_url,
+                client_id,
+            })
+        }
+        (None, Some(_)) => Err(AuthConfigError::MissingEnvVars("CLICKHOUSECTL_AUTH_URL")),
+        (Some(_), None) => Err(AuthConfigError::MissingEnvVars("CLICKHOUSECTL_CLIENT_ID")),
+        (None, None) => Err(AuthConfigError::MissingEnvVars(
+            "CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID",
+        )),
     }
 }
 
@@ -894,19 +940,8 @@ pub fn is_token_valid(tokens: &TokenStore) -> bool {
 
 pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std::error::Error>> {
     let api_url = normalize_api_url(api_url);
-    let config = auth_config_for_url(&api_url).ok_or_else(|| {
-        format!(
-            "Cannot resolve OAuth configuration for API URL '{}'. Known hosts: {}. \
-             For any other host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID. \
-             {INVALID_AUTH_URL}.",
-            api_url,
-            KNOWN_CONFIGS
-                .iter()
-                .map(|config| config.host)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
+    let config = auth_config_for_url(&api_url)
+        .map_err(|error| format!("Cannot resolve OAuth configuration for '{api_url}': {error}"))?;
 
     let client = oauth_client()?;
 
@@ -1549,10 +1584,15 @@ mod tests {
     #[test]
     fn test_auth_config_lookup() {
         let lookup = |url: &str| auth_config_for_url_with(url, &|_| None);
-        assert!(lookup("https://api.clickhouse.cloud/v1").is_some());
-        assert!(lookup("https://api.control-plane.clickhouse-staging.com/v1").is_some());
-        assert!(lookup("https://api.control-plane.clickhouse-dev.com/v1").is_some());
-        assert!(lookup("https://api.unknown.com/v1").is_none());
+        assert!(lookup("https://api.clickhouse.cloud/v1").is_ok());
+        assert!(lookup("https://api.control-plane.clickhouse-staging.com/v1").is_ok());
+        assert!(lookup("https://api.control-plane.clickhouse-dev.com/v1").is_ok());
+        assert_eq!(
+            lookup("https://api.unknown.com/v1"),
+            Err(AuthConfigError::MissingEnvVars(
+                "CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID"
+            ))
+        );
 
         // Verify distinct configs without reading the process environment.
         let prod = lookup("https://api.clickhouse.cloud/v1").unwrap();
@@ -1563,9 +1603,33 @@ mod tests {
         assert_ne!(staging.client_id, dev.client_id);
 
         // Must not match known hosts by substring, regardless of the real env.
-        assert!(lookup("https://api.clickhouse.cloud.evil.com/v1").is_none());
-        assert!(lookup("https://evil-api.clickhouse.cloud.attacker.com/v1").is_none());
-        assert!(lookup("https://not-api.clickhouse-staging.com.bad.com/v1").is_none());
+        assert!(lookup("https://api.clickhouse.cloud.evil.com/v1").is_err());
+        assert!(lookup("https://evil-api.clickhouse.cloud.attacker.com/v1").is_err());
+        assert!(lookup("https://not-api.clickhouse-staging.com.bad.com/v1").is_err());
+    }
+
+    #[test]
+    fn auth_config_unset_and_invalid_auth_url_are_distinct_errors() {
+        let api_url = "https://api.example.com/v1";
+
+        // Env vars simply not set: the error names the variables and never
+        // carries the URL-format advice.
+        let error = auth_config_for_url_with(api_url, &|_| None).unwrap_err();
+        assert_eq!(
+            error,
+            AuthConfigError::MissingEnvVars("CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID")
+        );
+        assert!(!error.to_string().contains(INVALID_AUTH_URL), "{error}");
+
+        // Set but invalid: the error carries the validation reason.
+        let error = auth_config_for_url_with(api_url, &|key| match key {
+            "CLICKHOUSECTL_AUTH_URL" => Some("http://auth.example.com".to_owned()),
+            "CLICKHOUSECTL_CLIENT_ID" => Some("custom-client".to_owned()),
+            _ => panic!("unexpected environment lookup: {key}"),
+        })
+        .unwrap_err();
+        assert_eq!(error, AuthConfigError::InvalidAuthUrl(INVALID_AUTH_URL));
+        assert!(error.to_string().contains(INVALID_AUTH_URL), "{error}");
     }
 
     #[test]
@@ -1612,7 +1676,10 @@ mod tests {
                 "CLICKHOUSECTL_CLIENT_ID" => client_id.map(str::to_owned),
                 _ => panic!("unexpected environment lookup: {key}"),
             });
-            assert!(config.is_none(), "{auth_url:?}, {client_id:?}");
+            assert!(
+                matches!(config, Err(AuthConfigError::MissingEnvVars(_))),
+                "{auth_url:?}, {client_id:?}"
+            );
         }
     }
 
@@ -1667,7 +1734,14 @@ mod tests {
             "https://auth.example.com#fragment",
         ] {
             assert!(validated_auth_url(value).is_err(), "{value}");
-            assert!(
+            // An empty value is filtered out as unset before validation, so
+            // it reports the missing variable rather than an invalid URL.
+            let expected = if value.is_empty() {
+                AuthConfigError::MissingEnvVars("CLICKHOUSECTL_AUTH_URL")
+            } else {
+                AuthConfigError::InvalidAuthUrl(INVALID_AUTH_URL)
+            };
+            assert_eq!(
                 auth_config_for_url_with("https://api.example.com", &|key| {
                     Some(
                         if key == "CLICKHOUSECTL_AUTH_URL" {
@@ -1678,7 +1752,8 @@ mod tests {
                         .into(),
                     )
                 })
-                .is_none(),
+                .unwrap_err(),
+                expected,
                 "{value}"
             );
             let mut record = serde_json::to_value(sample_tokens()).unwrap();
@@ -1697,10 +1772,13 @@ mod tests {
     fn auth_config_invalid_api_url_never_reads_environment() {
         for api_url in ["not a URL", "file:///tmp/api", "mailto:user@example.com"] {
             assert!(
-                auth_config_for_url_with(api_url, &|_| {
-                    panic!("invalid API URL must not read environment overrides")
-                })
-                .is_none()
+                matches!(
+                    auth_config_for_url_with(api_url, &|_| {
+                        panic!("invalid API URL must not read environment overrides")
+                    }),
+                    Err(AuthConfigError::InvalidApiUrl)
+                ),
+                "{api_url}"
             );
         }
     }
