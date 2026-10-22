@@ -24078,6 +24078,259 @@ async fn clickstack_alert_and_webhook_writes_fail_fast_for_oauth() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── ClickStack webhook validation and inline alerts (issue #1127) ──────────
+
+#[tokio::test]
+async fn clickstack_webhook_validate_posts_full_body_and_reports_results() {
+    let route = "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate";
+    let body = serde_json::json!({
+        "name":"Receiver", "service":"generic", "url":"https://example.com/hook",
+        "description":"Production", "body":"{\"title\":\"{{title}}\"}",
+        "headers":{"Authorization":"Bearer secret"}, "queryParams":{"team":"ops"}
+    });
+    let stdin = body.to_string();
+    for (result, json) in [
+        (
+            serde_json::json!({"valid":true,"errors":[],"normalized":{
+                "name":"Receiver","service":"generic","url":"https://example.com/hook"
+            }}),
+            true,
+        ),
+        (
+            serde_json::json!({"valid":true,"errors":[],"normalized":{
+                "name":"Receiver","service":"generic","url":"https://example.com/hook"
+            }}),
+            false,
+        ),
+        (
+            serde_json::json!({"valid":false,"errors":[{"path":"url","message":"Invalid URL"}],"normalized":null}),
+            true,
+        ),
+        (
+            serde_json::json!({"valid":false,"errors":[{"path":"url","message":"Invalid URL"}],"normalized":null}),
+            false,
+        ),
+        (serde_json::json!({}), true),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"result":result.clone()})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "webhook",
+                "validate",
+                "svc-1",
+                "--file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(stdin.as_str()),
+            json,
+        );
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, wiremock::http::Method::POST);
+        assert_eq!(requests[0].url.path(), route);
+        assert!(
+            requests[0]
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Basic ")
+        );
+        assert_eq!(requests[0].body_json::<Value>().unwrap(), body);
+        // A null `normalized` (an invalid body) is omitted from the output.
+        let normalized = result.get("normalized").filter(|value| !value.is_null());
+        if json {
+            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output.get("valid"), result.get("valid"));
+            assert_eq!(output.get("errors"), result.get("errors"));
+            assert_eq!(output.get("normalized"), normalized);
+        } else {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let valid = result["valid"].as_bool().unwrap();
+            assert!(stdout.contains(&valid.to_string()), "{stdout}");
+            assert_eq!(stdout.contains("Invalid URL"), !valid, "{stdout}");
+            assert_eq!(
+                stdout.contains("https://example.com/hook"),
+                normalized.is_some(),
+                "{stdout}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn clickstack_webhook_validate_rejects_invalid_bodies_and_oauth_before_http() {
+    let mock = MockServer::start().await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "webhook",
+            "validate",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(r#"{"name":"hook","service":"slack","url":"https://example.com","body":"x"}"#),
+        false,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not supported"));
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let ch_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &mock.uri());
+    let config = directory.path().join("webhook.json");
+    std::fs::write(
+        &config,
+        r#"{"name":"hook","service":"generic","url":"https://example.com"}"#,
+    )
+    .unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "clickstack",
+            "webhook",
+            "validate",
+            "svc-1",
+            "--file",
+            config.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn clickstack_alert_create_sends_inline_alert_without_channels() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result":{"id":"alert-1","source":"inline","displayName":"API errors","tags":[]}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let body = serde_json::json!({
+        "source":"inline", "threshold":5.0, "interval":"5m", "thresholdType":"above",
+        "displayName":"API errors", "tags":["api"],
+        "chartConfig":{
+            "displayType":"stacked_line", "sourceId":"source-1",
+            "select":[{"aggFn":"count"}], "where":"ServiceName:api", "whereLanguage":"lucene"
+        }
+    });
+    let stdin = body.to_string();
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "alert",
+            "create",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(stdin.as_str()),
+        true,
+    );
+    assert_success(&output);
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["displayName"], "API errors");
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body_json::<Value>().unwrap(), body);
+}
+
+#[tokio::test]
+async fn clickstack_alert_list_and_name_selector_use_display_name() {
+    let mock = MockServer::start().await;
+    let alerts = "/v1/organizations/org-1/services/svc-1/clickstack/alerts";
+    Mock::given(method("GET"))
+        .and(path(alerts))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result":[
+                {"id":"alert-1","displayName":"Checkout errors","name":"Errors hit {{value}}","tags":[]},
+                {"id":"alert-2","displayName":"Latency","tags":[]}
+            ]
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{alerts}/alert-1")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result":{"id":"alert-1","displayName":"Checkout errors","tags":[]}
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_clickstack_cli(
+        &mock,
+        &["clickstack", "alert", "list", "svc-1", "--org-id", "org-1"],
+        None,
+        false,
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Checkout errors"), "{stdout}");
+    assert!(!stdout.contains("Errors hit"), "{stdout}");
+
+    for name in ["Checkout errors", "Errors hit {{value}}"] {
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "alert",
+                "get",
+                "svc-1",
+                "--name",
+                name,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+            true,
+        );
+        assert_success(&output);
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output["id"], "alert-1");
+    }
+}
+
 #[tokio::test]
 async fn service_profile_list_sends_exact_queries_and_preserves_json() {
     let mock = MockServer::start().await;

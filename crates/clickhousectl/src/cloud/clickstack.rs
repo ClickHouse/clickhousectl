@@ -84,6 +84,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     )
     .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_WEBHOOKS])]),
     Permission::api(
+        "clickstack webhook validate",
+        &[&op::CLICK_STACK_VALIDATE_WEBHOOK],
+    ),
+    Permission::api(
         "clickstack saved-search list",
         &[&op::CLICK_STACK_LIST_SAVED_SEARCHES],
     ),
@@ -122,7 +126,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
+use crate::cloud::config::{
+    deserialize_strict_config, deserialize_strict_value, read_config_value, read_typed_config,
+};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use clap::Subcommand;
@@ -137,7 +143,8 @@ use clickhouse_cloud_api::models::{
     ClickStackSource, ClickStackSourceResponse, ClickStackTraceSource,
     ClickStackTraceSourceUsetextindexforimplicitcolumn, ClickStackUpdateAlertRequest,
     ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
-    ClickStackValidateDashboardResponse, ClickStackWebhook, ClickStackWebhookInput,
+    ClickStackValidateDashboardResponse, ClickStackValidateWebhookResponse, ClickStackWebhook,
+    ClickStackWebhookInput,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -164,6 +171,10 @@ pub enum ClickStackCommands {
         command: DashboardCommands,
     },
     /// Manage ClickStack alerts
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  `list` shows each alert's displayName; `name` is the notification title template.
+  `--name` selects the one alert whose displayName or name template equals the value.")]
     Alert {
         #[command(subcommand)]
         command: AlertCommands,
@@ -194,6 +205,32 @@ impl ClickStackCommands {
     }
 }
 
+/// An existing alert is selected by its positional ID or exact name.
+#[derive(clap::Args, Debug, Clone)]
+#[group(skip)]
+pub struct AlertSelector {
+    /// Existing alert ID
+    #[arg(
+        id = "resource_id",
+        value_name = "ID",
+        required_unless_present = "name",
+        conflicts_with = "name"
+    )]
+    pub id: Option<String>,
+    /// Exact alert displayName or name template
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+impl From<AlertSelector> for NameSelector {
+    fn from(selector: AlertSelector) -> Self {
+        Self {
+            id: selector.id,
+            name: selector.name,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum AlertCommands {
     /// List ClickStack alerts
@@ -206,12 +243,16 @@ pub enum AlertCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         #[command(flatten)]
-        target: NameSelector,
+        target: AlertSelector,
     },
     /// Create a ClickStack alert
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Both channel and channels are required by the current API contract.
+  Requires threshold, interval and thresholdType; channel and channels (1-10 distinct) are optional.
+  Source tile needs dashboardId and tileId, saved_search needs savedSearchId, and inline
+  needs chartConfig (a line, stacked_bar, stacked_line or number chart).
+  displayName defaults to the saved search, tile or chart name; tags to the saved search's
+  or dashboard's (inline alerts default to none).
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Create {
         /// Service ID (from `cloud service list`)
@@ -228,13 +269,17 @@ CONTEXT FOR AGENTS:
     /// Replace a ClickStack alert
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Both channel and channels are required by the current API contract.
+  Requires threshold, interval and thresholdType; channel and channels (1-10 distinct) are optional.
+  Source tile needs dashboardId and tileId, saved_search needs savedSearchId, and inline
+  needs chartConfig (a line, stacked_bar, stacked_line or number chart).
+  displayName defaults to the saved search, tile or chart name; tags to the saved search's
+  or dashboard's (inline alerts default to none).
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
         #[command(flatten)]
-        target: NameSelector,
+        target: AlertSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -249,7 +294,7 @@ CONTEXT FOR AGENTS:
         /// Service ID (from `cloud service list`)
         service_id: String,
         #[command(flatten)]
-        target: NameSelector,
+        target: AlertSelector,
     },
 }
 
@@ -304,13 +349,35 @@ pub enum WebhookCommands {
         #[command(flatten)]
         target: NameSelector,
     },
+    /// Validate a webhook body without saving it
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Validation never persists the webhook and does not check name uniqueness.
+  Uses API key authentication under the CLI's write-command policy.")]
+    Validate {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Webhook JSON body path, or `-` for stdin
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
+        config_file: String,
+    },
 }
 
 impl WebhookCommands {
     pub fn is_write(&self) -> bool {
         match self {
             Self::List { .. } => false,
-            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
+            // Validation is side-effect-free, but the Cloud API exposes it as POST;
+            // classify it consistently with API-key-only mutation-style endpoints.
+            Self::Create { .. }
+            | Self::Update { .. }
+            | Self::Delete { .. }
+            | Self::Validate { .. } => true,
         }
     }
 }
@@ -618,16 +685,14 @@ fn validate_role_permissions(value: &Value, source: &str) -> CloudResult<()> {
     for (index, permission) in permissions.iter().enumerate() {
         let path = format!("permissions[{index}]");
         let checked = match field(permission, "integration").and_then(Value::as_str) {
-            Some("clickhouse") => deserialize_strict_config::<ClickStackClickHouseCASLPermission>(
-                permission.clone(),
-                source,
+            Some("clickhouse") => strict_union_variant::<ClickStackClickHouseCASLPermission>(
+                permission, &path, source,
             )
             .map(drop),
-            Some("mongodb") => deserialize_strict_config::<ClickStackMongoDBCASLPermission>(
-                permission.clone(),
-                source,
-            )
-            .map(drop),
+            Some("mongodb") => {
+                strict_union_variant::<ClickStackMongoDBCASLPermission>(permission, &path, source)
+                    .map(drop)
+            }
             Some(other) => {
                 return Err(invalid_clickstack_request(
                     source,
@@ -641,9 +706,7 @@ fn validate_role_permissions(value: &Value, source: &str) -> CloudResult<()> {
                 ));
             }
         };
-        checked.map_err(|error| {
-            invalid_clickstack_request(source, format!("invalid {path}: {}", error.message))
-        })?;
+        checked?;
         // A MongoDB condition value is an untagged string-or-`$regex` union,
         // which serde buffers before matching, so the strict check above cannot
         // see an unknown key inside a `$regex` object.
@@ -688,7 +751,7 @@ fn build_update_dashboard_request(
 
 fn build_create_alert_request(config_file: &str) -> CloudResult<ClickStackCreateAlertRequest> {
     let value = read_config_value(config_file)?;
-    validate_alert_channels(&value, config_file)?;
+    validate_alert_unions(&value, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_create_alert_request(&request, config_file)?;
     Ok(request)
@@ -696,7 +759,7 @@ fn build_create_alert_request(config_file: &str) -> CloudResult<ClickStackCreate
 
 fn build_update_alert_request(config_file: &str) -> CloudResult<ClickStackUpdateAlertRequest> {
     let value = read_config_value(config_file)?;
-    validate_alert_channels(&value, config_file)?;
+    validate_alert_unions(&value, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_update_alert_request(&request, config_file)?;
     Ok(request)
@@ -737,14 +800,7 @@ fn invalid_clickstack_request(source: &str, message: impl std::fmt::Display) -> 
 fn validate_alert_channel(value: &Value, path: &str, source: &str) -> CloudResult<()> {
     match field(value, "type").and_then(Value::as_str) {
         Some("email") => {
-            let channel =
-                deserialize_strict_config::<ClickStackAlertChannelEmail>(value.clone(), source)
-                    .map_err(|error| {
-                        invalid_clickstack_request(
-                            source,
-                            format!("invalid {path}: {}", error.message),
-                        )
-                    })?;
+            let channel = strict_union_variant::<ClickStackAlertChannelEmail>(value, path, source)?;
             if channel.r#type.to_string() != "email" {
                 return Err(invalid_clickstack_request(
                     source,
@@ -754,10 +810,7 @@ fn validate_alert_channel(value: &Value, path: &str, source: &str) -> CloudResul
         }
         Some("webhook") => {
             let channel =
-                deserialize_strict_config::<ClickStackAlertChannelWebhook>(value.clone(), source)
-                    .map_err(|error| {
-                    invalid_clickstack_request(source, format!("invalid {path}: {}", error.message))
-                })?;
+                strict_union_variant::<ClickStackAlertChannelWebhook>(value, path, source)?;
             if channel.r#type.to_string() != "webhook" {
                 return Err(invalid_clickstack_request(
                     source,
@@ -793,12 +846,16 @@ fn validate_alert_channel(value: &Value, path: &str, source: &str) -> CloudResul
 }
 
 fn validate_alert_source_ids(
-    alert_source: &str,
+    alert_source: Option<&str>,
     dashboard_id: Option<&str>,
     tile_id: Option<&str>,
     saved_search_id: Option<&str>,
+    has_chart_config: bool,
     source: &str,
 ) -> CloudResult<()> {
+    let Some(alert_source) = alert_source else {
+        return Ok(());
+    };
     match alert_source {
         "tile" if dashboard_id.is_none() || tile_id.is_none() => {
             return Err(invalid_clickstack_request(
@@ -822,6 +879,12 @@ fn validate_alert_source_ids(
             return Err(invalid_clickstack_request(
                 source,
                 "source saved_search cannot include dashboardId or tileId",
+            ));
+        }
+        "inline" if !has_chart_config => {
+            return Err(invalid_clickstack_request(
+                source,
+                "source inline requires chartConfig",
             ));
         }
         _ => {}
@@ -873,13 +936,24 @@ fn validate_alert_numeric_values(
     Ok(())
 }
 
-fn validate_alert_channels(value: &Value, source: &str) -> CloudResult<()> {
-    let channel = field(value, "channel").ok_or_else(|| {
-        invalid_clickstack_request(source, "channel is required by the current API contract")
-    })?;
-    validate_alert_channel(channel, "channel", source)?;
-    let channels = field(value, "channels")
-        .and_then(Value::as_array)
+/// Strictly check the alert's raw-JSON unions: `channel`, each `channels`
+/// entry and `chartConfig`. All three are optional; each is checked when sent.
+fn validate_alert_unions(value: &Value, source: &str) -> CloudResult<()> {
+    if let Some(channel) = field(value, "channel") {
+        validate_alert_channel(channel, "channel", source)?;
+    }
+    if let Some(channels) = field(value, "channels") {
+        validate_alert_channel_list(channels, source)?;
+    }
+    if let Some(config) = field(value, "chartConfig") {
+        validate_alert_chart_config(config, "chartConfig", source)?;
+    }
+    Ok(())
+}
+
+fn validate_alert_channel_list(channels: &Value, source: &str) -> CloudResult<()> {
+    let channels = channels
+        .as_array()
         .ok_or_else(|| invalid_clickstack_request(source, "channels must be an array"))?;
     if !(1..=10).contains(&channels.len()) {
         return Err(invalid_clickstack_request(
@@ -899,25 +973,6 @@ fn validate_alert_channels(value: &Value, source: &str) -> CloudResult<()> {
     Ok(())
 }
 
-/// The spec no longer requires `source`, but the CLI keeps requiring it, as it
-/// did before: without it the alert's target cannot be checked.
-fn missing_alert_source(source: &str) -> CloudError {
-    invalid_clickstack_request(source, "source is required by the current API contract")
-}
-
-/// Inline alerts are not exposed yet. `chartConfig` is a union the library
-/// dispatches through raw JSON, so the strict request-body check could not see
-/// unknown fields inside it; it is rejected as it was before the spec added it.
-fn validate_alert_chart_config(present: bool, source: &str) -> CloudResult<()> {
-    if present {
-        return Err(invalid_clickstack_request(
-            source,
-            "unknown field `chartConfig`",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_create_alert_request(
     request: &ClickStackCreateAlertRequest,
     source: &str,
@@ -927,25 +982,17 @@ fn validate_create_alert_request(
         ClickStackCreateAlertRequestSource as AlertSource,
         ClickStackCreateAlertRequestThresholdtype as ThresholdType,
     };
-    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        Some(AlertSource::Saved_search) => "saved_search",
-        Some(AlertSource::Tile) => "tile",
-        // Inline alerts (with their `chartConfig`) are not exposed yet, so
-        // `inline` is rejected as it was before the spec added it.
-        Some(AlertSource::Inline) => {
-            return Err(invalid_clickstack_request(
-                source,
-                "unknown source `inline`",
-            ));
-        }
+        Some(AlertSource::Saved_search) => Some("saved_search"),
+        Some(AlertSource::Tile) => Some("tile"),
+        Some(AlertSource::Inline) => Some("inline"),
         Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
-        None => return Err(missing_alert_source(source)),
+        None => None,
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -974,6 +1021,7 @@ fn validate_create_alert_request(
         request.dashboard_id.as_deref(),
         request.tile_id.as_deref(),
         request.saved_search_id.as_deref(),
+        request.chart_config.is_some(),
         source,
     )?;
     validate_alert_numeric_values(
@@ -995,25 +1043,17 @@ fn validate_update_alert_request(
         ClickStackUpdateAlertRequestSource as AlertSource,
         ClickStackUpdateAlertRequestThresholdtype as ThresholdType,
     };
-    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        Some(AlertSource::Saved_search) => "saved_search",
-        Some(AlertSource::Tile) => "tile",
-        // Inline alerts (with their `chartConfig`) are not exposed yet, so
-        // `inline` is rejected as it was before the spec added it.
-        Some(AlertSource::Inline) => {
-            return Err(invalid_clickstack_request(
-                source,
-                "unknown source `inline`",
-            ));
-        }
+        Some(AlertSource::Saved_search) => Some("saved_search"),
+        Some(AlertSource::Tile) => Some("tile"),
+        Some(AlertSource::Inline) => Some("inline"),
         Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
-        None => return Err(missing_alert_source(source)),
+        None => None,
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -1042,6 +1082,7 @@ fn validate_update_alert_request(
         request.dashboard_id.as_deref(),
         request.tile_id.as_deref(),
         request.saved_search_id.as_deref(),
+        request.chart_config.is_some(),
         source,
     )?;
     validate_alert_numeric_values(
@@ -1054,12 +1095,6 @@ fn validate_update_alert_request(
     )
 }
 
-fn invalid_dashboard(source: &str, message: impl std::fmt::Display) -> CloudError {
-    CloudError::new(format!(
-        "invalid dashboard request body in config {source}: {message}"
-    ))
-}
-
 fn require_discriminator<'a>(
     value: &'a Value,
     key: &str,
@@ -1068,15 +1103,15 @@ fn require_discriminator<'a>(
 ) -> CloudResult<&'a str> {
     field(value, key)
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_dashboard(source, format!("{path}.{key} must be a string")))
+        .ok_or_else(|| invalid_clickstack_request(source, format!("{path}.{key} must be a string")))
 }
 
-fn strict_dashboard_variant<T>(value: &Value, path: &str, source: &str) -> CloudResult<T>
+fn strict_union_variant<T>(value: &Value, path: &str, source: &str) -> CloudResult<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    deserialize_strict_config::<T>(value.clone(), source)
-        .map_err(|error| invalid_dashboard(source, format!("invalid {path}: {}", error.message)))
+    deserialize_strict_value::<T>(value.clone())
+        .map_err(|detail| invalid_clickstack_request(source, format!("invalid {path}: {detail}")))
 }
 
 macro_rules! reject_unknown_enum {
@@ -1084,7 +1119,7 @@ macro_rules! reject_unknown_enum {
         #[allow(clippy::collapsible_match)]
         match $value {
             $variant($binding) => {
-                return Err(invalid_dashboard(
+                return Err(invalid_clickstack_request(
                     $source,
                     format!("unknown {} value `{}`", $path, $binding),
                 ))
@@ -1223,8 +1258,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
 
     match require_discriminator(value, "type", path, source)? {
         "search" => {
-            let on_click =
-                strict_dashboard_variant::<ClickStackOnClickSearch>(value, path, source)?;
+            let on_click = strict_union_variant::<ClickStackOnClickSearch>(value, path, source)?;
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickSearchType::Unknown,
@@ -1248,8 +1282,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             )?;
         }
         "dashboard" => {
-            let on_click =
-                strict_dashboard_variant::<ClickStackOnClickDashboard>(value, path, source)?;
+            let on_click = strict_union_variant::<ClickStackOnClickDashboard>(value, path, source)?;
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickDashboardType::Unknown,
@@ -1273,8 +1306,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             )?;
         }
         "external" => {
-            let on_click =
-                strict_dashboard_variant::<ClickStackOnClickExternal>(value, path, source)?;
+            let on_click = strict_union_variant::<ClickStackOnClickExternal>(value, path, source)?;
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickExternalType::Unknown,
@@ -1284,7 +1316,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             );
         }
         other => {
-            return Err(invalid_dashboard(
+            return Err(invalid_clickstack_request(
                 source,
                 format!("unknown {path}.type `{other}`; expected search, dashboard, or external"),
             ));
@@ -1295,7 +1327,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
         let target_path = format!("{path}.target");
         match require_discriminator(target, "mode", &target_path, source)? {
             "id" => {
-                let target = strict_dashboard_variant::<ClickStackOnClickTargetIdVariant>(
+                let target = strict_union_variant::<ClickStackOnClickTargetIdVariant>(
                     target,
                     &target_path,
                     source,
@@ -1309,7 +1341,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 );
             }
             "template" => {
-                let target = strict_dashboard_variant::<ClickStackOnClickTargetTemplateVariant>(
+                let target = strict_union_variant::<ClickStackOnClickTargetTemplateVariant>(
                     target,
                     &target_path,
                     source,
@@ -1323,7 +1355,7 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 );
             }
             other => {
-                return Err(invalid_dashboard(
+                return Err(invalid_clickstack_request(
                     source,
                     format!("unknown {target_path}.mode `{other}`; expected id or template"),
                 ));
@@ -1347,7 +1379,7 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
         let rule_path = format!("{path}.colorRules[{index}]");
         match require_discriminator(rule, "operator", &rule_path, source)? {
             "gt" | "gte" | "lt" | "lte" => {
-                let condition = strict_dashboard_variant::<ClickStackNumericColorCondition>(
+                let condition = strict_union_variant::<ClickStackNumericColorCondition>(
                     rule, &rule_path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1366,7 +1398,7 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 );
             }
             "between" => {
-                let condition = strict_dashboard_variant::<ClickStackBetweenColorCondition>(
+                let condition = strict_union_variant::<ClickStackBetweenColorCondition>(
                     rule, &rule_path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1385,7 +1417,7 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 );
             }
             "eq" | "neq" => {
-                let condition = strict_dashboard_variant::<ClickStackEqualityColorCondition>(
+                let condition = strict_union_variant::<ClickStackEqualityColorCondition>(
                     rule, &rule_path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1405,14 +1437,14 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 let valid_value = condition.value.as_str().is_some()
                     || condition.value.as_f64().is_some_and(f64::is_finite);
                 if !valid_value {
-                    return Err(invalid_dashboard(
+                    return Err(invalid_clickstack_request(
                         source,
                         format!("{rule_path}.value must be a finite number or string"),
                     ));
                 }
             }
             other => {
-                return Err(invalid_dashboard(
+                return Err(invalid_clickstack_request(
                     source,
                     format!("unknown {rule_path}.operator `{other}`"),
                 ));
@@ -1457,7 +1489,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(|| config_type.to_string());
-        return Err(invalid_dashboard(
+        return Err(invalid_clickstack_request(
             source,
             format!("unknown {path}.configType `{rendered}`; expected sql or omission"),
         ));
@@ -1466,9 +1498,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
     match display_type {
         "line" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackLineRawSqlChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackLineRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackLineRawSqlChartConfigConfigtype::Unknown,
@@ -1483,15 +1514,23 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     format!("{path}.displayType"),
                     source
                 );
+                if let Some(interpolation) = &config.line_interpolation {
+                    reject_unknown_enum!(
+                        interpolation,
+                        ClickStackLineRawSqlChartConfigLineinterpolation::Unknown,
+                        unknown,
+                        format!("{path}.lineInterpolation"),
+                        source
+                    );
+                }
                 validate_optional_number_format(
                     config.number_format.as_ref(),
                     &format!("{path}.numberFormat"),
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackLineBuilderChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackLineBuilderChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackLineBuilderChartConfigDisplaytype::Unknown,
@@ -1499,6 +1538,15 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     format!("{path}.displayType"),
                     source
                 );
+                if let Some(interpolation) = &config.line_interpolation {
+                    reject_unknown_enum!(
+                        interpolation,
+                        ClickStackLineBuilderChartConfigLineinterpolation::Unknown,
+                        unknown,
+                        format!("{path}.lineInterpolation"),
+                        source
+                    );
+                }
                 validate_common_builder_fields(
                     config.formulas.as_ref(),
                     &config.select,
@@ -1510,9 +1558,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
         }
         "stacked_bar" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackBarRawSqlChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackBarRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackBarRawSqlChartConfigConfigtype::Unknown,
@@ -1533,9 +1580,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackBarBuilderChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackBarBuilderChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackBarBuilderChartConfigDisplaytype::Unknown,
@@ -1552,9 +1598,71 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 )?;
             }
         }
+        "stacked_line" => {
+            if config_type.is_some() {
+                let config = strict_union_variant::<ClickStackStackedLineRawSqlChartConfig>(
+                    value, path, source,
+                )?;
+                reject_unknown_enum!(
+                    &config.config_type,
+                    ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
+                    unknown,
+                    format!("{path}.configType"),
+                    source
+                );
+                reject_unknown_enum!(
+                    &config.display_type,
+                    ClickStackStackedLineRawSqlChartConfigDisplaytype::Unknown,
+                    unknown,
+                    format!("{path}.displayType"),
+                    source
+                );
+                if let Some(interpolation) = &config.line_interpolation {
+                    reject_unknown_enum!(
+                        interpolation,
+                        ClickStackStackedLineRawSqlChartConfigLineinterpolation::Unknown,
+                        unknown,
+                        format!("{path}.lineInterpolation"),
+                        source
+                    );
+                }
+                validate_optional_number_format(
+                    config.number_format.as_ref(),
+                    &format!("{path}.numberFormat"),
+                    source,
+                )?;
+            } else {
+                let config = strict_union_variant::<ClickStackStackedLineBuilderChartConfig>(
+                    value, path, source,
+                )?;
+                reject_unknown_enum!(
+                    &config.display_type,
+                    ClickStackStackedLineBuilderChartConfigDisplaytype::Unknown,
+                    unknown,
+                    format!("{path}.displayType"),
+                    source
+                );
+                if let Some(interpolation) = &config.line_interpolation {
+                    reject_unknown_enum!(
+                        interpolation,
+                        ClickStackStackedLineBuilderChartConfigLineinterpolation::Unknown,
+                        unknown,
+                        format!("{path}.lineInterpolation"),
+                        source
+                    );
+                }
+                validate_common_builder_fields(
+                    config.formulas.as_ref(),
+                    &config.select,
+                    config.number_format.as_ref(),
+                    path,
+                    source,
+                )?;
+            }
+        }
         "bar" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackCategoricalBarRawSqlChartConfig>(
+                let config = strict_union_variant::<ClickStackCategoricalBarRawSqlChartConfig>(
                     value, path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1577,7 +1685,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackCategoricalBarBuilderChartConfig>(
+                let config = strict_union_variant::<ClickStackCategoricalBarBuilderChartConfig>(
                     value, path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1598,9 +1706,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
         }
         "table" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackTableRawSqlChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackTableRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackTableRawSqlChartConfigConfigtype::Unknown,
@@ -1621,9 +1728,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackTableBuilderChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackTableBuilderChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackTableBuilderChartConfigDisplaytype::Unknown,
@@ -1645,9 +1751,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
         }
         "number" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackNumberRawSqlChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackNumberRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
@@ -1677,7 +1782,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackNumberBuilderChartConfig>(
+                let config = strict_union_variant::<ClickStackNumberBuilderChartConfig>(
                     value, path, source,
                 )?;
                 reject_unknown_enum!(
@@ -1726,9 +1831,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
         }
         "pie" => {
             if config_type.is_some() {
-                let config = strict_dashboard_variant::<ClickStackPieRawSqlChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackPieRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackPieRawSqlChartConfigConfigtype::Unknown,
@@ -1749,9 +1853,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     source,
                 )?;
             } else {
-                let config = strict_dashboard_variant::<ClickStackPieBuilderChartConfig>(
-                    value, path, source,
-                )?;
+                let config =
+                    strict_union_variant::<ClickStackPieBuilderChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackPieBuilderChartConfigDisplaytype::Unknown,
@@ -1769,56 +1872,84 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "heatmap" => {
-            // Only the distribution heatmap is accepted, as before the spec
-            // added the series heatmap; `heatmapMode: "series"` is rejected below.
-            let config = strict_dashboard_variant::<ClickStackHeatmapDistributionChartConfig>(
-                value, path, source,
-            )?;
-            reject_unknown_enum!(
-                &config.display_type,
-                ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
-                unknown,
-                format!("{path}.displayType"),
-                source
-            );
-            if let Some(mode) = &config.heatmap_mode {
+            // The heatmap union dispatches on `heatmapMode`; an omitted mode
+            // is the distribution heatmap, so a series-only field such as
+            // `groupBy` without `heatmapMode: "series"` is reported as unknown.
+            let series = match field(value, "heatmapMode") {
+                None => false,
+                Some(Value::String(mode)) if mode == "distribution" => false,
+                Some(Value::String(mode)) if mode == "series" => true,
+                Some(other) => {
+                    let rendered = other
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| other.to_string());
+                    return Err(invalid_clickstack_request(
+                        source,
+                        format!(
+                            "unknown {path}.heatmapMode `{rendered}`; expected distribution, series, or omission"
+                        ),
+                    ));
+                }
+            };
+            if series {
+                let config = strict_union_variant::<ClickStackHeatmapSeriesChartConfig>(
+                    value, path, source,
+                )?;
                 reject_unknown_enum!(
-                    mode,
-                    ClickStackHeatmapDistributionChartConfigHeatmapmode::Unknown,
+                    &config.display_type,
+                    ClickStackHeatmapSeriesChartConfigDisplaytype::Unknown,
                     unknown,
-                    format!("{path}.heatmapMode"),
+                    format!("{path}.displayType"),
                     source
                 );
-            }
-            if let Some(language) = &config.where_language {
+                validate_common_builder_fields(
+                    None,
+                    &config.select,
+                    config.number_format.as_ref(),
+                    path,
+                    source,
+                )?;
+            } else {
+                let config = strict_union_variant::<ClickStackHeatmapDistributionChartConfig>(
+                    value, path, source,
+                )?;
                 reject_unknown_enum!(
-                    language,
-                    ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
+                    &config.display_type,
+                    ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
                     unknown,
-                    format!("{path}.whereLanguage"),
+                    format!("{path}.displayType"),
                     source
                 );
-            }
-            for (index, item) in config.select.iter().enumerate() {
-                if let Some(scale) = &item.heatmap_scale_type {
+                if let Some(language) = &config.where_language {
                     reject_unknown_enum!(
-                        scale,
-                        ClickStackHeatmapSelectItemHeatmapscaletype::Unknown,
+                        language,
+                        ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
                         unknown,
-                        format!("{path}.select[{index}].heatmapScaleType"),
+                        format!("{path}.whereLanguage"),
                         source
                     );
                 }
+                for (index, item) in config.select.iter().enumerate() {
+                    if let Some(scale) = &item.heatmap_scale_type {
+                        reject_unknown_enum!(
+                            scale,
+                            ClickStackHeatmapSelectItemHeatmapscaletype::Unknown,
+                            unknown,
+                            format!("{path}.select[{index}].heatmapScaleType"),
+                            source
+                        );
+                    }
+                }
+                validate_optional_number_format(
+                    config.number_format.as_ref(),
+                    &format!("{path}.numberFormat"),
+                    source,
+                )?;
             }
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
         }
         "search" => {
-            let config =
-                strict_dashboard_variant::<ClickStackSearchChartConfig>(value, path, source)?;
+            let config = strict_union_variant::<ClickStackSearchChartConfig>(value, path, source)?;
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackSearchChartConfigDisplaytype::Unknown,
@@ -1835,9 +1966,8 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             );
         }
         "event_patterns" => {
-            let config = strict_dashboard_variant::<ClickStackEventPatternsChartConfig>(
-                value, path, source,
-            )?;
+            let config =
+                strict_union_variant::<ClickStackEventPatternsChartConfig>(value, path, source)?;
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackEventPatternsChartConfigDisplaytype::Unknown,
@@ -1857,7 +1987,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
         }
         "markdown" => {
             let config =
-                strict_dashboard_variant::<ClickStackMarkdownChartConfig>(value, path, source)?;
+                strict_union_variant::<ClickStackMarkdownChartConfig>(value, path, source)?;
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackMarkdownChartConfigDisplaytype::Unknown,
@@ -1867,10 +1997,231 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             );
         }
         other => {
-            return Err(invalid_dashboard(
+            return Err(invalid_clickstack_request(
                 source,
                 format!(
-                    "unknown {path}.displayType `{other}`; expected line, stacked_bar, bar, table, number, pie, heatmap, search, event_patterns, or markdown"
+                    "unknown {path}.displayType `{other}`; expected line, stacked_bar, stacked_line, bar, table, number, pie, heatmap, search, event_patterns, or markdown"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Strictly check an inline alert's `chartConfig` against the variant its
+/// `displayType` and `configType` select. The library's alert chart union
+/// dispatches through raw JSON, so the strict request-body check cannot see
+/// unknown fields inside it.
+fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::*;
+
+    let display_type = require_discriminator(value, "displayType", path, source)?;
+    let raw_sql = match field(value, "configType") {
+        None => false,
+        Some(Value::String(kind)) if kind == "sql" => true,
+        Some(other) => {
+            let rendered = other
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| other.to_string());
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown {path}.configType `{rendered}`; expected sql or omission"),
+            ));
+        }
+    };
+    // Every variant carries the alert overlay's `whereLanguage`.
+    macro_rules! check_where_language {
+        ($config:expr) => {
+            if let Some(language) = &$config.where_language {
+                reject_unknown_enum!(
+                    language,
+                    ClickStackAlertChartConfigOverlayWherelanguage::Unknown,
+                    unknown,
+                    format!("{path}.whereLanguage"),
+                    source
+                );
+            }
+        };
+    }
+    macro_rules! check_optional_enum {
+        ($value:expr, $variant:path, $name:literal) => {
+            if let Some(value) = &$value {
+                reject_unknown_enum!(
+                    value,
+                    $variant,
+                    unknown,
+                    format!("{path}.{}", $name),
+                    source
+                );
+            }
+        };
+    }
+
+    match (display_type, raw_sql) {
+        ("line", true) => {
+            let config =
+                strict_union_variant::<ClickStackAlertLineRawSqlChartConfig>(value, path, source)?;
+            reject_unknown_enum!(
+                &config.config_type,
+                ClickStackLineRawSqlChartConfigConfigtype::Unknown,
+                unknown,
+                format!("{path}.configType"),
+                source
+            );
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackLineRawSqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("line", false) => {
+            let config =
+                strict_union_variant::<ClickStackAlertLineBuilderChartConfig>(value, path, source)?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackLineBuilderChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_common_builder_fields(
+                config.formulas.as_ref(),
+                &config.select,
+                config.number_format.as_ref(),
+                path,
+                source,
+            )?;
+        }
+        ("stacked_bar", true) => {
+            let config =
+                strict_union_variant::<ClickStackAlertBarRawSqlChartConfig>(value, path, source)?;
+            reject_unknown_enum!(
+                &config.config_type,
+                ClickStackBarRawSqlChartConfigConfigtype::Unknown,
+                unknown,
+                format!("{path}.configType"),
+                source
+            );
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("stacked_bar", false) => {
+            let config =
+                strict_union_variant::<ClickStackAlertBarBuilderChartConfig>(value, path, source)?;
+            check_where_language!(config);
+            validate_common_builder_fields(
+                config.formulas.as_ref(),
+                &config.select,
+                config.number_format.as_ref(),
+                path,
+                source,
+            )?;
+        }
+        ("stacked_line", true) => {
+            let config = strict_union_variant::<ClickStackAlertStackedLineRawSqlChartConfig>(
+                value, path, source,
+            )?;
+            reject_unknown_enum!(
+                &config.config_type,
+                ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
+                unknown,
+                format!("{path}.configType"),
+                source
+            );
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackStackedLineRawSqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("stacked_line", false) => {
+            let config = strict_union_variant::<ClickStackAlertStackedLineBuilderChartConfig>(
+                value, path, source,
+            )?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackStackedLineBuilderChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_common_builder_fields(
+                config.formulas.as_ref(),
+                &config.select,
+                config.number_format.as_ref(),
+                path,
+                source,
+            )?;
+        }
+        ("number", true) => {
+            let config = strict_union_variant::<ClickStackAlertNumberRawSqlChartConfig>(
+                value, path, source,
+            )?;
+            reject_unknown_enum!(
+                &config.config_type,
+                ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
+                unknown,
+                format!("{path}.configType"),
+                source
+            );
+            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+            validate_number_color_rules(value, path, source)?;
+        }
+        ("number", false) => {
+            let config = strict_union_variant::<ClickStackAlertNumberBuilderChartConfig>(
+                value, path, source,
+            )?;
+            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
+            if let Some(background) = &config.background_chart {
+                reject_unknown_enum!(
+                    &background.r#type,
+                    ClickStackBackgroundChartType::Unknown,
+                    unknown,
+                    format!("{path}.backgroundChart.type"),
+                    source
+                );
+                check_optional_enum!(
+                    background.color,
+                    ClickStackChartColor::Unknown,
+                    "backgroundChart.color"
+                );
+            }
+            check_where_language!(config);
+            validate_common_builder_fields(
+                config.formulas.as_ref(),
+                &config.select,
+                config.number_format.as_ref(),
+                path,
+                source,
+            )?;
+            validate_number_color_rules(value, path, source)?;
+        }
+        (other, _) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!(
+                    "unknown {path}.displayType `{other}`; expected line, stacked_bar, stacked_line, or number"
                 ),
             ));
         }
@@ -1885,8 +2236,7 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
     };
     match field(value, "type") {
         None => {
-            let saved =
-                strict_dashboard_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
+            let saved = strict_union_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
             if let Some(kind) = &saved.r#type {
                 reject_unknown_enum!(
                     kind,
@@ -1899,8 +2249,7 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
             Ok(())
         }
         Some(Value::String(kind)) if kind == "sql" => {
-            let saved =
-                strict_dashboard_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
+            let saved = strict_union_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
             if let Some(kind) = &saved.r#type {
                 reject_unknown_enum!(
                     kind,
@@ -1913,9 +2262,8 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
             Ok(())
         }
         Some(Value::String(kind)) if kind == "variable" => {
-            let saved = strict_dashboard_variant::<ClickStackVariableSavedFilterValue>(
-                value, path, source,
-            )?;
+            let saved =
+                strict_union_variant::<ClickStackVariableSavedFilterValue>(value, path, source)?;
             reject_unknown_enum!(
                 &saved.r#type,
                 ClickStackVariableSavedFilterValueType::Unknown,
@@ -1925,7 +2273,7 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
             );
             Ok(())
         }
-        Some(other) => Err(invalid_dashboard(
+        Some(other) => Err(invalid_clickstack_request(
             source,
             format!("unknown {path}.type `{other}`; expected sql, variable, or omission"),
         )),
@@ -1942,8 +2290,7 @@ enum DashboardFilterShape {
 
 /// Strictly check one dashboard filter against the variant its `type` selects.
 /// The library's filter unions dispatch through raw JSON, so the strict
-/// request-body check cannot see unknown fields inside one. Only the
-/// `QUERY_EXPRESSION` kind is accepted, as before the spec added other kinds.
+/// request-body check cannot see unknown fields inside one.
 fn validate_dashboard_filter(
     value: &Value,
     shape: DashboardFilterShape,
@@ -1952,59 +2299,85 @@ fn validate_dashboard_filter(
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickStackFilterMaxSelections, ClickStackFilterMinSelections,
+        ClickStackPrometheusLabelFilter, ClickStackPrometheusLabelFilterInput,
         ClickStackQueryExpressionFilter, ClickStackQueryExpressionFilterInput,
         ClickStackQueryExpressionFilterInputSourcemetrictype,
-        ClickStackQueryExpressionFilterInputWherelanguage,
+        ClickStackQueryExpressionFilterInputWherelanguage, ClickStackSourceFilter,
+        ClickStackSourceFilterInput, ClickStackStaticListFilter, ClickStackStaticListFilterInput,
     };
+    // Each kind's with-`id` schema is its input schema plus `id`, so the two
+    // shapes share every enum field; `$fields` extracts the ones to check.
+    macro_rules! strict_filter {
+        ($input:ty, $with_id:ty, |$filter:ident| $fields:expr) => {
+            match shape {
+                DashboardFilterShape::Input => {
+                    let $filter = strict_union_variant::<$input>(value, path, source)?;
+                    $fields
+                }
+                DashboardFilterShape::WithId => {
+                    let $filter = strict_union_variant::<$with_id>(value, path, source)?;
+                    $fields
+                }
+            }
+        };
+    }
     let kind = require_discriminator(value, "type", path, source)?;
-    if kind != "QUERY_EXPRESSION" {
-        return Err(invalid_dashboard(
-            source,
-            format!("unknown {path}.type value `{kind}`"),
-        ));
-    }
-    // Both shapes share the input schema's enum fields; only `id` differs.
-    let (source_metric_type, where_language, min_selections, max_selections) = match shape {
-        DashboardFilterShape::Input => {
-            let filter = strict_dashboard_variant::<ClickStackQueryExpressionFilterInput>(
-                value, path, source,
-            )?;
-            (
-                filter.source_metric_type,
-                filter.where_language,
-                filter.min_selections,
-                filter.max_selections,
-            )
+    let (min_selections, max_selections) = match kind {
+        "QUERY_EXPRESSION" => {
+            let (source_metric_type, where_language, min_selections, max_selections) = strict_filter!(
+                ClickStackQueryExpressionFilterInput,
+                ClickStackQueryExpressionFilter,
+                |filter| (
+                    filter.source_metric_type,
+                    filter.where_language,
+                    filter.min_selections,
+                    filter.max_selections,
+                )
+            );
+            if let Some(metric_type) = &source_metric_type {
+                reject_unknown_enum!(
+                    metric_type,
+                    ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
+                    unknown,
+                    format!("{path}.sourceMetricType"),
+                    source
+                );
+            }
+            if let Some(language) = &where_language {
+                reject_unknown_enum!(
+                    language,
+                    ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
+                    unknown,
+                    format!("{path}.whereLanguage"),
+                    source
+                );
+            }
+            (min_selections, max_selections)
         }
-        DashboardFilterShape::WithId => {
-            let filter =
-                strict_dashboard_variant::<ClickStackQueryExpressionFilter>(value, path, source)?;
-            (
-                filter.source_metric_type,
-                filter.where_language,
-                filter.min_selections,
-                filter.max_selections,
-            )
+        "STATIC_LIST" => strict_filter!(
+            ClickStackStaticListFilterInput,
+            ClickStackStaticListFilter,
+            |filter| (filter.min_selections, filter.max_selections)
+        ),
+        "PROMETHEUS_LABEL" => strict_filter!(
+            ClickStackPrometheusLabelFilterInput,
+            ClickStackPrometheusLabelFilter,
+            |filter| (filter.min_selections, filter.max_selections)
+        ),
+        "SOURCE_FILTER" => strict_filter!(
+            ClickStackSourceFilterInput,
+            ClickStackSourceFilter,
+            |filter| (filter.min_selections, filter.max_selections)
+        ),
+        other => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!(
+                    "unknown {path}.type `{other}`; expected QUERY_EXPRESSION, STATIC_LIST, PROMETHEUS_LABEL, or SOURCE_FILTER"
+                ),
+            ));
         }
     };
-    if let Some(metric_type) = &source_metric_type {
-        reject_unknown_enum!(
-            metric_type,
-            ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
-            unknown,
-            format!("{path}.sourceMetricType"),
-            source
-        );
-    }
-    if let Some(language) = &where_language {
-        reject_unknown_enum!(
-            language,
-            ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
-            unknown,
-            format!("{path}.whereLanguage"),
-            source
-        );
-    }
     if let Some(min_selections) = &min_selections {
         reject_unknown_enum!(
             min_selections,
@@ -2241,6 +2614,20 @@ fn source_name_record(source: ClickStackSourceResponse) -> CloudResult<NamedReco
     })
 }
 
+/// `--name` selects an alert whose UI `displayName` or `name` template equals
+/// the value. A match records the value itself, so an alert matching on both
+/// fields counts once; other alerts keep the display name for the ambiguity
+/// check, and one with neither field still fails resolution.
+fn alert_name_record(alert: ClickStackAlertResponse, wanted: &str) -> NamedRecord {
+    let matched = [alert.display_name.as_deref(), alert.name.as_deref()].contains(&Some(wanted));
+    let candidate = if matched {
+        Some(wanted.to_owned())
+    } else {
+        alert.display_name.or(alert.name)
+    };
+    (candidate, alert.id)
+}
+
 fn webhook_name_record(webhook: ClickStackWebhook) -> CloudResult<NamedRecord> {
     Ok(match webhook {
         ClickStackWebhook::ClickStackSlackWebhook(webhook) => (webhook.name, webhook.id),
@@ -2318,6 +2705,7 @@ async fn resolve_clickstack_target(
         }
     };
     let kind = resource.kind();
+    let wanted = name.as_str();
     let records = match resource {
         ClickStackResource::Source => client
             .click_stack_list_sources(org_id, service_id)
@@ -2348,7 +2736,7 @@ async fn resolve_clickstack_target(
                     )
                     .await?
                     .into_iter()
-                    .map(|alert| (alert.name, alert.id))
+                    .map(|alert| alert_name_record(alert, wanted))
                     .collect())
             })
             .await?
@@ -2421,7 +2809,7 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
                 client,
                 &org_id,
                 &service_id,
-                target,
+                target.into(),
                 ClickStackResource::Alert,
             )
             .await?;
@@ -2452,7 +2840,7 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
                 client,
                 &org_id,
                 &service_id,
-                target,
+                target.into(),
                 ClickStackResource::Alert,
             )
             .await?;
@@ -2467,7 +2855,7 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
                 client,
                 &org_id,
                 &service_id,
-                target,
+                target.into(),
                 ClickStackResource::Alert,
             )
             .await?;
@@ -2539,6 +2927,17 @@ async fn run_webhook(
                 .await?;
             print_deleted("ClickStack webhook", &webhook_id, json);
             Ok(())
+        }
+        WebhookCommands::Validate {
+            service_id,
+            config_file,
+        } => {
+            let request = build_webhook_request(&config_file)?;
+            let org_id = resolve_org_id(client).await?;
+            let validation = client
+                .click_stack_validate_webhook(&org_id, &service_id, &request)
+                .await?;
+            print_detail(&validation, json)
         }
     }
 }
@@ -2993,6 +3392,11 @@ fn print_dashboard_list(dashboards: &[ClickStackDashboardResponse], json: bool) 
     Ok(())
 }
 
+/// The UI display name, falling back to the notification name template.
+fn alert_display_name(alert: &ClickStackAlertResponse) -> Option<&str> {
+    alert.display_name.as_deref().or(alert.name.as_deref())
+}
+
 fn print_alert_list(alerts: &[ClickStackAlertResponse], json: bool) -> CloudResult<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(alerts)?);
@@ -3014,7 +3418,7 @@ fn print_alert_list(alerts: &[ClickStackAlertResponse], json: bool) -> CloudResu
     let rows = alerts
         .iter()
         .map(|alert| Row {
-            name: or_absent(alert.name.as_deref()),
+            name: or_absent(alert_display_name(alert)),
             id: or_absent(alert.id.as_deref()),
             source: or_absent(alert.source.as_ref()),
             state: or_absent(alert.state.as_ref()),
@@ -3267,6 +3671,20 @@ impl CloudClient {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    async fn click_stack_validate_webhook(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ClickStackWebhookInput,
+    ) -> CloudResult<ClickStackValidateWebhookResponse> {
+        let response = self
+            .api()
+            .click_stack_validate_webhook(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
     }
 
     async fn click_stack_list_dashboards(
@@ -3684,6 +4102,11 @@ mod tests {
             "config_file",
             &["config-file"],
         );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "webhook", "validate", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
     }
 
     use super::*;
@@ -3780,7 +4203,7 @@ mod tests {
             "saved-search",
         ] {
             for operation in ["list", "create", "validate"] {
-                if operation == "validate" && family != "dashboard" {
+                if operation == "validate" && !matches!(family, "dashboard" | "webhook") {
                     continue;
                 }
                 let mut args = vec![
@@ -3971,6 +4394,79 @@ mod tests {
         )
         .unwrap();
         assert!(webhook_name_record(unknown).is_err());
+    }
+
+    fn resolve_alert_name(alerts: Value, wanted: &str) -> CloudResult<String> {
+        let alerts: Vec<ClickStackAlertResponse> = serde_json::from_value(alerts).unwrap();
+        let records = alerts
+            .into_iter()
+            .map(|alert| alert_name_record(alert, wanted))
+            .collect::<Vec<_>>();
+        select_named_id(
+            "ClickStack alert",
+            wanted,
+            records
+                .iter()
+                .map(|(name, id)| (name.as_deref(), id.as_deref())),
+        )
+    }
+
+    #[test]
+    fn alert_names_match_display_name_or_name_template() {
+        let alerts = serde_json::json!([
+            {"id":"by-display","displayName":"Checkout errors","name":"Errors hit {{value}}"},
+            {"id":"by-template","displayName":"Latency","name":"Slow {{group}}"},
+            {"id":"both","displayName":"Same","name":"Same"},
+            {"id":"untemplated","displayName":"Disk"}
+        ]);
+        for (wanted, expected) in [
+            ("Checkout errors", "by-display"),
+            ("Slow {{group}}", "by-template"),
+            // One alert matching on both fields is still a single match.
+            ("Same", "both"),
+            ("Disk", "untemplated"),
+        ] {
+            assert_eq!(
+                resolve_alert_name(alerts.clone(), wanted).unwrap(),
+                expected
+            );
+        }
+        let error = resolve_alert_name(alerts.clone(), "Errors").unwrap_err();
+        assert!(
+            error.message.contains("no ClickStack alert found"),
+            "{error}"
+        );
+
+        // A displayName on one alert and a name template on another collide.
+        let error = resolve_alert_name(
+            serde_json::json!([
+                {"id":"first","displayName":"Shared"},
+                {"id":"second","displayName":"Other","name":"Shared"}
+            ]),
+            "Shared",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("found 2"), "{error}");
+        assert!(error.message.contains("positional ID"), "{error}");
+
+        // An alert with neither field cannot prove the value is unique.
+        let error =
+            resolve_alert_name(serde_json::json!([{"id":"nameless"}]), "Shared").unwrap_err();
+        assert!(error.message.contains("without a name"), "{error}");
+    }
+
+    #[test]
+    fn alert_list_name_prefers_display_name_over_name_template() {
+        let alerts: Vec<ClickStackAlertResponse> = serde_json::from_value(serde_json::json!([
+            {"displayName":"Checkout errors","name":"Errors hit {{value}}"},
+            {"name":"Slow {{group}}"},
+            {}
+        ]))
+        .unwrap();
+        assert_eq!(
+            alerts.iter().map(alert_display_name).collect::<Vec<_>>(),
+            [Some("Checkout errors"), Some("Slow {{group}}"), None]
+        );
     }
 
     #[tokio::test]
@@ -4172,6 +4668,45 @@ mod tests {
         assert_eq!(target.id.as_deref(), Some("webhook-1"));
         assert_eq!(config_file, "webhook.json");
 
+        let command = parse_clickstack(&[
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "webhook",
+            "validate",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ]);
+        let ClickStackCommands::Webhook {
+            command:
+                WebhookCommands::Validate {
+                    service_id,
+                    config_file,
+                },
+        } = command
+        else {
+            panic!("expected webhook validate")
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(config_file, "-");
+        assert_eq!(
+            Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "webhook",
+                "validate",
+                "svc-1",
+            ])
+            .err()
+            .unwrap()
+            .kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
         assert!(
             Cli::try_parse_from([
                 "clickhousectl",
@@ -4198,6 +4733,7 @@ mod tests {
             ("webhook", "create", true),
             ("webhook", "update", true),
             ("webhook", "delete", true),
+            ("webhook", "validate", true),
         ] {
             let mut args = vec![
                 "clickhousectl",
@@ -4213,7 +4749,7 @@ mod tests {
             ) {
                 args.push("resource-1");
             }
-            if matches!(operation, "create" | "update") {
+            if matches!(operation, "create" | "update" | "validate") {
                 args.extend(["--file", "body.json"]);
             }
             assert_eq!(
@@ -4252,7 +4788,8 @@ mod tests {
                 {"type":"webhook","webhookId":"hook-1","webhookService":"pagerduty_api","severity":"warning"},
                 {"type":"email","emailRecipients":["ops@example.com","dev@example.com"]}
             ],
-            "name":"Latency", "message":"Too slow", "note":"See runbook", "numConsecutiveWindows":3
+            "name":"Latency", "displayName":"Checkout latency", "tags":["checkout","p1"],
+            "message":"Too slow", "note":"See runbook", "numConsecutiveWindows":3
         });
         std::fs::write(&config_file, maximal.to_string()).unwrap();
         let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
@@ -4262,6 +4799,93 @@ mod tests {
         assert_eq!(update.dashboard_id.as_deref(), Some("dash-1"));
         assert_eq!(update.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&update).unwrap(), maximal);
+    }
+
+    #[test]
+    fn alert_builders_accept_optional_source_and_channels_and_every_inline_chart() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("alert.json");
+        let path = config_file.to_str().unwrap();
+        let bare = serde_json::json!({"threshold":1.0,"interval":"5m","thresholdType":"above"});
+        let builder = |display: &str| serde_json::json!({"displayType":display,"sourceId":"source-1","select":[{"aggFn":"count"}]});
+        let raw_sql = |display: &str| serde_json::json!({"configType":"sql","displayType":display,"connectionId":"conn-1","sqlTemplate":"SELECT 1"});
+        let mut bodies = vec![bare.clone()];
+        for display in ["line", "stacked_bar", "stacked_line", "number"] {
+            for config in [builder(display), raw_sql(display)] {
+                let mut body = bare.clone();
+                body["source"] = Value::String("inline".into());
+                body["chartConfig"] = config;
+                bodies.push(body);
+            }
+        }
+        let mut overlay = bare.clone();
+        overlay["source"] = Value::String("inline".into());
+        overlay["chartConfig"] = serde_json::json!({
+            "displayType":"line", "sourceId":"source-1", "select":[{"aggFn":"count"}],
+            "name":"Errors", "where":"ServiceName:api", "whereLanguage":"lucene",
+            "lineInterpolation":"step"
+        });
+        overlay["displayName"] = Value::String("API errors".into());
+        overlay["tags"] = serde_json::json!(["api"]);
+        bodies.push(overlay);
+        for body in bodies {
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let create = build_create_alert_request(path).unwrap();
+            assert_eq!(serde_json::to_value(&create).unwrap(), body);
+            let update = build_update_alert_request(path).unwrap();
+            assert_eq!(serde_json::to_value(&update).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn alert_builders_strictly_check_inline_chart_configs() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("alert.json");
+        let path = config_file.to_str().unwrap();
+        for (config, expected) in [
+            (
+                serde_json::json!({"displayType":"table","sourceId":"s","select":[{"aggFn":"count"}]}),
+                "unknown chartConfig.displayType `table`",
+            ),
+            (
+                serde_json::json!({"displayType":"line","sourceId":"s","select":[{"aggFn":"count"}],"colour":"red"}),
+                "colour",
+            ),
+            (
+                serde_json::json!({"configType":"promql","displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
+                "unknown chartConfig.configType `promql`",
+            ),
+            (
+                serde_json::json!({"displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
+                "missing field `select`",
+            ),
+            (
+                serde_json::json!({"displayType":"stacked_line","sourceId":"s","select":[{"aggFn":"count"}],"lineInterpolation":"curvy"}),
+                "chartConfig.lineInterpolation",
+            ),
+            (
+                serde_json::json!({"displayType":"number","sourceId":"s","select":[{"aggFn":"count"}],"whereLanguage":"kql"}),
+                "chartConfig.whereLanguage",
+            ),
+            (
+                serde_json::json!({"displayType":"number","sourceId":"s","select":[{"aggFn":"count"}],"color":"plaid"}),
+                "chartConfig.color",
+            ),
+            (
+                serde_json::json!({"sourceId":"s"}),
+                "chartConfig.displayType must be a string",
+            ),
+        ] {
+            let body = serde_json::json!({
+                "source":"inline", "chartConfig":config,
+                "threshold":1, "interval":"5m", "thresholdType":"above"
+            });
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let error = build_create_alert_request(path).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+            let error = build_update_alert_request(path).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
     }
 
     #[test]
@@ -4331,10 +4955,6 @@ mod tests {
                 "between 1 and 10",
             ),
             (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channels":[{"type":"email","emailRecipients":[]}]}),
-                "channel is required",
-            ),
-            (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","numConsecutiveWindows":0,"channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
                 "numConsecutiveWindows",
             ),
@@ -4344,24 +4964,16 @@ mod tests {
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
             assert!(error.message.contains(expected), "{error}");
         }
-        // The spec now makes `source`, `channel` and `channels` optional and adds
-        // inline alerts with a `chartConfig`; the CLI keeps requiring the first
-        // three and keeps rejecting inline alerts, on create and update alike.
-        let mut missing_source = base.clone();
-        missing_source.as_object_mut().unwrap().remove("source");
-        let mut missing_channels = base.clone();
-        missing_channels.as_object_mut().unwrap().remove("channels");
+        // `source`, `channel` and `channels` are optional; only `source: inline`
+        // demands a `chartConfig`, on create and update alike.
         let mut inline = base.clone();
         inline["source"] = Value::String("inline".into());
-        let mut chart_config = base.clone();
-        chart_config["chartConfig"] = serde_json::json!({
-            "displayType":"line", "sourceId":"s", "select":[{"aggFn":"count"}]
-        });
+        inline.as_object_mut().unwrap().remove("savedSearchId");
+        let mut bad_channels = base.clone();
+        bad_channels["channels"] = serde_json::json!({"type":"email"});
         for (body, expected) in [
-            (missing_source, "source is required"),
-            (missing_channels, "channels must be an array"),
-            (inline, "unknown source `inline`"),
-            (chart_config, "unknown field `chartConfig`"),
+            (inline, "source inline requires chartConfig"),
+            (bad_channels, "channels must be an array"),
         ] {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
@@ -4505,7 +5117,7 @@ mod tests {
                     "displayType":"line", "sourceId":"src-1", "select":select,
                     "groupBy":"service", "asRatio":false, "alignDateRangeToGranularity":true,
                     "fillNulls":true, "fitYAxisToData":true, "compareToPreviousPeriod":true,
-                    "seriesLimit":5, "showOperandSeries":false,
+                    "seriesLimit":5, "showOperandSeries":false, "lineInterpolation":"step",
                     "formulas":[{"expression":"A * 100", "alias":"percent", "numberFormat":number_format()}]
                 }),
             ),
@@ -4606,22 +5218,67 @@ mod tests {
                     "displayType":"markdown", "markdown":"# Service health"
                 }),
             ),
+            dashboard_tile(
+                "stacked-line-builder",
+                17,
+                serde_json::json!({
+                    "displayType":"stacked_line", "sourceId":"src-1", "select":select,
+                    "groupBy":"service", "asRatio":false, "alignDateRangeToGranularity":true,
+                    "fillNulls":true, "lineInterpolation":"linear", "seriesLimit":3,
+                    "showOperandSeries":false, "numberFormat":number_format(),
+                    "formulas":[{"expression":"A"}]
+                }),
+            ),
+            dashboard_tile("stacked-line-sql", 18, {
+                let mut config = raw("stacked_line");
+                config["lineInterpolation"] = Value::String("smooth".into());
+                config["fillNulls"] = Value::Bool(true);
+                config
+            }),
+            dashboard_tile(
+                "heatmap-series",
+                19,
+                serde_json::json!({
+                    "displayType":"heatmap", "heatmapMode":"series", "sourceId":"src-1",
+                    "select":select, "groupBy":"ServiceName", "numberFormat":number_format()
+                }),
+            ),
         ];
         tiles[0]["id"] = Value::String("tile-1".into());
         tiles[0]["containerId"] = Value::String("health".into());
         tiles[0]["tabId"] = Value::String("errors".into());
-        let mut filter = serde_json::json!({
-            "name":"Service", "expression":"ServiceName", "sourceId":"src-1",
-            "type":"QUERY_EXPRESSION", "where":"true", "whereLanguage":"sql",
-            "sourceMetricType":"gauge", "appliesToSourceIds":["src-1"],
-            "isBroadcastEnabled":true, "isVariableEnabled":true, "variableName":"service"
-        });
+        let mut filters = [
+            serde_json::json!({
+                "name":"Service", "expression":"ServiceName", "sourceId":"src-1",
+                "type":"QUERY_EXPRESSION", "where":"true", "whereLanguage":"sql",
+                "sourceMetricType":"gauge", "appliesToSourceIds":["src-1"],
+                "isBroadcastEnabled":true, "isVariableEnabled":true, "variableName":"service",
+                "minSelections":1, "maxSelections":1
+            }),
+            serde_json::json!({
+                "type":"STATIC_LIST", "name":"Environment", "options":["prod","staging"],
+                "isBroadcastEnabled":false, "isVariableEnabled":true, "variableName":"env",
+                "isGlobalRequirement":false, "minSelections":0, "maxSelections":1
+            }),
+            serde_json::json!({
+                "type":"PROMETHEUS_LABEL", "name":"Pod", "sourceId":"src-2", "label":"pod",
+                "match":"up{job=\"api\"}", "isBroadcastEnabled":false,
+                "isVariableEnabled":true, "variableName":"pod"
+            }),
+            serde_json::json!({
+                "type":"SOURCE_FILTER", "name":"Cluster", "sourceId":"src-1",
+                "expression":"cluster", "appliesToSourceIds":["src-1"],
+                "isBroadcastEnabled":true, "isVariableEnabled":true, "variableName":"cluster"
+            }),
+        ];
         if update {
-            filter["id"] = Value::String("filter-1".into());
+            for (index, filter) in filters.iter_mut().enumerate() {
+                filter["id"] = Value::String(format!("filter-{index}"));
+            }
         }
         serde_json::json!({
             "name":"Service overview", "tiles":tiles, "tags":["production","api"],
-            "filters":[filter], "savedQuery":"level:error", "savedQueryLanguage":"lucene",
+            "filters":filters, "savedQuery":"level:error", "savedQueryLanguage":"lucene",
             "savedFilterValues":[
                 {"type":"sql","condition":"ServiceName = 'api'"},
                 {"type":"variable","name":"service","values":["api","worker"]}
@@ -4643,18 +5300,33 @@ mod tests {
         let create_body = complete_dashboard(false);
         std::fs::write(&config_file, create_body.to_string()).unwrap();
         let create = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.tiles.len(), 17);
+        assert_eq!(create.tiles.len(), 20);
+        use clickhouse_cloud_api::models::{ClickStackFilter, ClickStackFilterInput};
         let Some(
             [
-                clickhouse_cloud_api::models::ClickStackFilterInput::ClickStackQueryExpressionFilterInput(
-                    filter,
-                ),
+                ClickStackFilterInput::ClickStackQueryExpressionFilterInput(filter),
+                ClickStackFilterInput::ClickStackStaticListFilterInput(static_list),
+                ClickStackFilterInput::ClickStackPrometheusLabelFilterInput(label),
+                ClickStackFilterInput::ClickStackSourceFilterInput(source_filter),
             ],
         ) = create.filters.as_deref()
         else {
-            panic!("expected one query-expression filter: {:?}", create.filters);
+            panic!("expected one filter of each kind: {:?}", create.filters);
         };
         assert_eq!(filter.variable_name.as_deref(), Some("service"));
+        assert_eq!(static_list.options, ["prod", "staging"]);
+        assert_eq!(label.label, "pod");
+        assert_eq!(source_filter.variable_name, "cluster");
+        assert!(matches!(
+            &create.tiles[17].config,
+            Some(clickhouse_cloud_api::models::ClickStackTileConfig::ClickStackStackedLineChartConfig(_))
+        ));
+        assert!(matches!(
+            &create.tiles[19].config,
+            Some(clickhouse_cloud_api::models::ClickStackTileConfig::ClickStackHeatmapChartConfig(
+                clickhouse_cloud_api::models::ClickStackHeatmapChartConfig::ClickStackHeatmapSeriesChartConfig(_)
+            ))
+        ));
         assert_eq!(create.saved_filter_values.as_ref().unwrap().len(), 2);
         assert_eq!(serde_json::to_value(&create).unwrap(), create_body);
 
@@ -4663,15 +5335,19 @@ mod tests {
         let update = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap();
         let Some(
             [
-                clickhouse_cloud_api::models::ClickStackFilter::ClickStackQueryExpressionFilter(
-                    filter,
-                ),
+                ClickStackFilter::ClickStackQueryExpressionFilter(filter),
+                ClickStackFilter::ClickStackStaticListFilter(static_list),
+                ClickStackFilter::ClickStackPrometheusLabelFilter(label),
+                ClickStackFilter::ClickStackSourceFilter(source_filter),
             ],
         ) = update.filters.as_deref()
         else {
-            panic!("expected one query-expression filter: {:?}", update.filters);
+            panic!("expected one filter of each kind: {:?}", update.filters);
         };
-        assert_eq!(filter.id, "filter-1");
+        assert_eq!(
+            [&filter.id, &static_list.id, &label.id, &source_filter.id],
+            ["filter-0", "filter-1", "filter-2", "filter-3"]
+        );
         assert_eq!(
             update.containers.as_ref().unwrap()[0]
                 .tabs
@@ -4721,16 +5397,54 @@ mod tests {
                 "valuess",
             ),
             (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"series","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
-                "unknown tiles[0].config.heatmapMode value `series`",
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"bands","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
+                "unknown tiles[0].config.heatmapMode `bands`",
+            ),
+            (
+                // A series heatmap selects aggregates, not distribution items.
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"series","sourceId":"s","select":[{"aggFn":"count","heatmapScaleType":"log"}]}}]}),
+                "heatmapScaleType",
+            ),
+            (
+                // `groupBy` belongs to the series heatmap only.
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","sourceId":"s","groupBy":"g","select":[{"valueExpression":"v"}]}}]}),
+                "groupBy",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
+                "unknown tiles[0].config.lineInterpolation value `curvy`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","configType":"sql","connectionId":"c","sqlTemplate":"SELECT 1","seriesLimit":1}}]}),
+                "seriesLimit",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
+                "unknown tiles[0].config.lineInterpolation value `curvy`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),
                 "filters[0].type must be a string",
             ),
             (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"]}]}),
-                "unknown filters[0].type value `STATIC_LIST`",
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"SOURCE","name":"f","expression":"e","sourceId":"s"}]}),
+                "unknown filters[0].type `SOURCE`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"expression":"e"}]}),
+                "expression",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"maxSelections":3}]}),
+                "unknown filters[0].maxSelections value `3`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"PROMETHEUS_LABEL","name":"f","sourceId":"s","label":"pod","matcher":"up"}]}),
+                "matcher",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"SOURCE_FILTER","name":"f","sourceId":"s","expression":"cluster"}]}),
+                "variableName",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","expresion":"x"}]}),
@@ -4751,13 +5465,28 @@ mod tests {
         }
 
         // Update bodies check each filter against the schema that carries `id`.
-        let filter = serde_json::json!({"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s"});
-        let body = serde_json::json!({"name":"bad","tiles":[],"filters":[filter]});
-        std::fs::write(&config_file, body.to_string()).unwrap();
-        build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
-        let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
-        assert!(error.message.contains("invalid filters[0]"), "{error}");
-        assert!(error.message.contains("`id`"), "{error}");
+        for filter in [
+            serde_json::json!({"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s"}),
+            serde_json::json!({"type":"STATIC_LIST","name":"f","options":["a"]}),
+            serde_json::json!({"type":"PROMETHEUS_LABEL","name":"f","sourceId":"s","label":"pod"}),
+            serde_json::json!({"type":"SOURCE_FILTER","name":"f","sourceId":"s","expression":"e","variableName":"v"}),
+        ] {
+            let body = serde_json::json!({"name":"bad","tiles":[],"filters":[filter]});
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
+            let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains("invalid filters[0]"), "{error}");
+            assert!(error.message.contains("`id`"), "{error}");
+            // The nested failure names the config once.
+            assert_eq!(
+                error
+                    .message
+                    .matches("invalid request body in config")
+                    .count(),
+                1,
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -4895,6 +5624,20 @@ mod tests {
                 build_update_role_request(config_file.to_str().unwrap()).unwrap_err(),
             ] {
                 assert!(error.message.contains(expected), "{error}");
+                // Each permission failure names the config exactly once.
+                let prefix = format!(
+                    "invalid request body in config {}: ",
+                    config_file.to_str().unwrap()
+                );
+                assert!(error.message.starts_with(&prefix), "{error}");
+                assert_eq!(
+                    error
+                        .message
+                        .matches("invalid request body in config")
+                        .count(),
+                    1,
+                    "{error}"
+                );
             }
         }
     }

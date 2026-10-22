@@ -76,10 +76,13 @@ Create a webhook first, then reference its ID in an alert. A generic `webhook.js
 ```
 
 ```bash
+clickhousectl cloud clickstack webhook validate <service-id> --file webhook.json
 clickhousectl cloud clickstack webhook create <service-id> --file webhook.json
 ```
 
-Protect JSON files containing authorization headers or other secrets. The current alert contract requires both `channel` and `channels`. A minimal tile alert definition is:
+Validation checks the body, URL and body template without saving the webhook; it does not check that the name is unique. Protect JSON files containing authorization headers or other secrets.
+
+An alert needs `threshold`, `thresholdType` and `interval`. `channel` and `channels` are optional; `channels` takes 1 to 10 distinct entries. A tile alert definition is:
 
 ```json
 {
@@ -101,4 +104,27 @@ clickhousectl cloud clickstack alert create <service-id> --file alert.json
 clickhousectl cloud clickstack alert get <service-id> <alert-id>
 ```
 
-Inspect `state` and `executionErrors`, as well as notification destinations. A `saved_search` alert uses `savedSearchId` instead of dashboard/tile IDs. The `30s` interval requires that feature enabled for the team. Updates must retain both channel fields and every other desired setting.
+Inspect `state` and `executionErrors`, as well as notification destinations. A `saved_search` alert uses `savedSearchId` instead of dashboard/tile IDs. The `30s` interval requires that feature enabled for the team. Updates replace the alert, so retain the channel fields and every other desired setting.
+
+An alert's `displayName` is the name shown in the UI and in `alert list`; its optional `name` is a Handlebars template for the notification title. For `alert get`, `update` and `delete`, `--name` selects the alert whose `displayName` or `name` equals the value, and fails if more than one alert matches.
+
+`displayName` defaults to the name of the saved search, tile or chart the alert queries, and `tags` default to the saved search's or dashboard's tags. An `inline` alert carries its own chart in `chartConfig` (a `line`, `stacked_bar`, `stacked_line` or `number` chart) instead of referencing a dashboard tile, and has no tags unless you set them:
+
+```json
+{
+  "source": "inline",
+  "displayName": "API errors",
+  "tags": ["api"],
+  "chartConfig": {
+    "displayType": "line",
+    "sourceId": "<source-id>",
+    "select": [{"aggFn": "count"}],
+    "where": "ServiceName:api",
+    "whereLanguage": "lucene"
+  },
+  "threshold": 100,
+  "thresholdType": "above",
+  "interval": "5m",
+  "channels": [{"type":"webhook","webhookId":"<webhook-id>","webhookService":"generic"}]
+}
+```
