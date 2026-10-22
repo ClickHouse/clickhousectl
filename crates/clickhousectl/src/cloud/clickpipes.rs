@@ -1965,6 +1965,13 @@ pub struct BigQueryCreateArgs {
     #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
     pub sync_interval_seconds: Option<i64>,
 
+    /// CDC sync schedule as a cron expression (not with snapshot replication)
+    ///
+    /// 5-field cron or a descriptor such as @hourly, at most once a minute.
+    /// UTC unless prefixed with CRON_TZ=<zone>. Replaces --sync-interval-seconds.
+    #[arg(long, value_name = "CRON", conflicts_with = "sync_interval_seconds")]
+    pub sync_cron: Option<String>,
+
     /// Parallel table pulls per CDC sync (not with snapshot replication)
     #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
     pub query_cdc_pull_sync_parallelism: Option<i64>,
@@ -5972,6 +5979,11 @@ fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
             )));
         }
     }
+    if args.replication_mode == "snapshot" && args.sync_cron.is_some() {
+        return Err(CloudError::usage(
+            "--sync-cron cannot be used with --replication-mode snapshot",
+        ));
+    }
     match (
         args.replication_mode.as_str(),
         args.replication_method.as_deref(),
@@ -6089,7 +6101,7 @@ fn build_bigquery_request(
         snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
         replication_method: args.replication_method.clone(),
         sync_interval_seconds: args.sync_interval_seconds,
-        sync_cron: None,
+        sync_cron: args.sync_cron.clone(),
         query_cdc_pull_sync_parallelism: args.query_cdc_pull_sync_parallelism,
         sync_delay_seconds: args.sync_delay_seconds,
         pull_window_size_seconds: args.pull_window_size_seconds,
@@ -13041,6 +13053,7 @@ mod tests {
             replication_mode: "snapshot".into(),
             replication_method: None,
             sync_interval_seconds: None,
+            sync_cron: None,
             query_cdc_pull_sync_parallelism: None,
             sync_delay_seconds: None,
             pull_window_size_seconds: None,
@@ -13081,6 +13094,7 @@ mod tests {
         assert_eq!(source.settings.initial_load_parallelism, None);
         assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.sync_cron, None);
     }
 
     #[test]
@@ -15172,6 +15186,7 @@ mod tests {
         };
         assert_eq!(defaults.replication_method, None);
         assert_eq!(defaults.sync_interval_seconds, None);
+        assert_eq!(defaults.sync_cron, None);
         assert_eq!(defaults.query_cdc_pull_sync_parallelism, None);
         assert_eq!(defaults.sync_delay_seconds, None);
         assert_eq!(defaults.pull_window_size_seconds, None);
@@ -15189,6 +15204,113 @@ mod tests {
         let mut repeated = base.to_vec();
         repeated.extend(["--sync-delay-seconds", "0", "--sync-delay-seconds", "1"]);
         assert_rejected(&repeated);
+    }
+
+    #[test]
+    fn parses_bigquery_sync_cron_and_rejects_it_with_sync_interval() {
+        let base = [
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "cdc",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.orders:orders",
+            "--replication-mode",
+            "cdc_only",
+            "--replication-method",
+            "query_based",
+        ];
+        for value in ["0 * * * *", "@hourly", "CRON_TZ=Europe/London 30 2 * * *"] {
+            let mut command = base.to_vec();
+            command.extend(["--sync-cron", value]);
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::BigQuery(args),
+            } = parse_clickpipe(&command)
+            else {
+                panic!("expected BigQuery create")
+            };
+            assert_eq!(args.sync_cron.as_deref(), Some(value));
+            assert_eq!(args.sync_interval_seconds, None);
+        }
+
+        let mut conflicting = base.to_vec();
+        conflicting.extend(["--sync-cron", "@hourly", "--sync-interval-seconds", "60"]);
+        assert_eq!(
+            clickpipe_parse_error(&conflicting).kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+
+        let mut repeated = base.to_vec();
+        repeated.extend(["--sync-cron", "@hourly", "--sync-cron", "@daily"]);
+        assert_rejected(&repeated);
+    }
+
+    #[test]
+    fn rejects_bigquery_sync_cron_in_snapshot_mode_before_reading_key_file() {
+        let base = [
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "snap",
+            "--service-account-file",
+            "/missing/key.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.orders:orders",
+            "--sync-cron",
+            "@hourly",
+        ];
+        let mut explicit = base.to_vec();
+        explicit.extend(["--replication-mode", "snapshot"]);
+        for command in [base.to_vec(), explicit] {
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::BigQuery(args),
+            } = parse_clickpipe(&command)
+            else {
+                panic!("expected BigQuery create")
+            };
+            assert_eq!(args.replication_mode, "snapshot");
+            let error = build_bigquery_request(&args).unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            assert_eq!(
+                error.message,
+                "--sync-cron cannot be used with --replication-mode snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn builds_bigquery_sync_cron_in_place_of_the_sync_interval() {
+        let mut args = bigquery_builder_args("/unused/key.json".into());
+        args.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+        args.service_account_file = None;
+        args.project_id = Some("source-project".into());
+        args.replication_mode = "cdc".into();
+        args.replication_method = Some("query_based".into());
+        args.sync_cron = Some("CRON_TZ=Europe/London 0 * * * *".into());
+        args.table_mappings.clear();
+        args.table_mappings_json = vec![
+            r#"{"sourceDatasetName":"sales","sourceTable":"orders","targetTable":"orders_raw","queryCdcWatermarkColumn":"updated_at"}"#.into(),
+        ];
+
+        let request = build_bigquery_request(&args).unwrap();
+
+        let source = request.source.bigquery.as_ref().expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryWorkloadIdentitySource(source) = source else {
+            panic!("expected workload-identity source");
+        };
+        assert_eq!(
+            source.settings.sync_cron.as_deref(),
+            Some("CRON_TZ=Europe/London 0 * * * *")
+        );
+        assert_eq!(source.settings.sync_interval_seconds, None);
     }
 
     #[test]
