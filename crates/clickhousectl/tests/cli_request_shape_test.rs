@@ -5079,6 +5079,271 @@ async fn postgres_get_human_output_shows_access_rules_and_restore_point() {
     }
 }
 
+// ── Postgres restore access rules ─────────────────────────────────────────
+
+const RESTORE_SOURCE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+/// The allow-all rules the restore endpoint creates on every restored service.
+fn postgres_restore_default_rules() -> Value {
+    serde_json::json!([
+        {"id": "default-5432", "source": "0.0.0.0/0", "portRange": "5432"},
+        {"id": "default-6432", "source": "0.0.0.0/0", "portRange": "6432"}
+    ])
+}
+
+fn postgres_restore_args(extra: &[&'static str]) -> Vec<&'static str> {
+    let mut args = vec![
+        "postgres",
+        "restore",
+        RESTORE_SOURCE_ID,
+        "--name",
+        "restored",
+        "--restore-target",
+        "2026-09-01T12:00:00Z",
+        "--org-id",
+        "org-1",
+    ];
+    args.extend(extra);
+    args
+}
+
+async fn mount_postgres_restore(mock: &MockServer, rules: Value) {
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{RESTORE_SOURCE_ID}/restoredService"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": ACCESS_RULE_POSTGRES_ID,
+                "state": "creating",
+                "tags": [{"key": "env", "value": "prod"}],
+                "ipAccessList": rules,
+            },
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+async fn mount_postgres_source(mock: &MockServer, service: Value, expected: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{RESTORE_SOURCE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+        })))
+        .expect(expected)
+        .mount(mock)
+        .await;
+}
+
+/// Mount the PATCH that replaces the restored service's rules. It must carry
+/// the restored tags, because the API clears tags a PATCH omits.
+async fn mount_postgres_restored_patch(mock: &MockServer, patch: Value, applied: Value) {
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}"
+        )))
+        .and(body_json(serde_json::json!({
+            "tags": [{"key": "env", "value": "prod"}],
+            "ipAccessList": patch,
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": ACCESS_RULE_POSTGRES_ID, "ipAccessList": applied},
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+/// UAT F1: a restored copy of a restricted source must not keep the restore
+/// endpoint's allow-all rules. The source's rules are read before restoring,
+/// then replace the defaults.
+#[tokio::test]
+async fn postgres_restore_copies_the_source_access_rules() {
+    let mock = MockServer::start().await;
+    mount_postgres_source(
+        &mock,
+        serde_json::json!({"id": RESTORE_SOURCE_ID, "ipAccessList": postgres_access_rules_response()}),
+        1,
+    )
+    .await;
+    mount_postgres_restore(&mock, postgres_restore_default_rules()).await;
+    let applied = serde_json::json!([
+        {"id": "rule-11", "source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+        {"id": "rule-12", "source": "198.51.100.7/32", "portRange": "5432..6432"}
+    ]);
+    mount_postgres_restored_patch(
+        &mock,
+        serde_json::json!({
+            "add": [
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"source": "198.51.100.7/32", "portRange": "5432..6432"}
+            ],
+            "remove": [{"id": "default-5432"}, {"id": "default-6432"}]
+        }),
+        applied.clone(),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &postgres_restore_args(&[]));
+    assert_success(&output);
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["ipAccessList"], applied);
+    let source = format!("/v1/organizations/org-1/postgres/{RESTORE_SOURCE_ID}");
+    let restored = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".into(), source.clone()),
+            ("POST".into(), format!("{source}/restoredService")),
+            ("PATCH".into(), restored),
+        ]
+    );
+}
+
+/// `--ip-allow` and `--block-public-access` replace the defaults without
+/// reading the source.
+#[tokio::test]
+async fn postgres_restore_access_flags_replace_the_default_rules() {
+    for (flags, add) in [
+        (
+            vec!["--ip-allow", "203.0.113.0/24:5432=office"],
+            serde_json::json!([
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"}
+            ]),
+        ),
+        (vec!["--block-public-access"], serde_json::json!([])),
+    ] {
+        let mock = MockServer::start().await;
+        mount_postgres_source(&mock, serde_json::json!({}), 0).await;
+        mount_postgres_restore(&mock, postgres_restore_default_rules()).await;
+        mount_postgres_restored_patch(
+            &mock,
+            serde_json::json!({
+                "add": add,
+                "remove": [{"id": "default-5432"}, {"id": "default-6432"}]
+            }),
+            serde_json::json!([]),
+        )
+        .await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &postgres_restore_args(&flags));
+        assert_success(&output);
+    }
+}
+
+/// A source whose rules already match the restore's defaults needs no PATCH.
+#[tokio::test]
+async fn postgres_restore_skips_the_patch_when_rules_already_match() {
+    let mock = MockServer::start().await;
+    mount_postgres_source(
+        &mock,
+        serde_json::json!({"ipAccessList": [
+            {"id": "source-1", "source": "0.0.0.0/0", "portRange": "5432", "description": ""},
+            {"id": "source-2", "source": "0.0.0.0/0", "portRange": "6432"}
+        ]}),
+        1,
+    )
+    .await;
+    mount_postgres_restore(&mock, postgres_restore_default_rules()).await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &postgres_restore_args(&[]));
+    assert_success(&output);
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["ipAccessList"], postgres_restore_default_rules());
+    assert_eq!(received_request_shape(&mock).await.len(), 2);
+}
+
+/// Copying an incomplete rule list would silently drop restrictions, so the
+/// restore is refused before anything is created.
+#[tokio::test]
+async fn postgres_restore_refuses_a_source_without_complete_access_rules() {
+    for source in [
+        serde_json::json!({"id": RESTORE_SOURCE_ID}),
+        serde_json::json!({"ipAccessList": [{"id": "rule-1", "portRange": "5432"}]}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_postgres_source(&mock, source, 1).await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &postgres_restore_args(&[]));
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--block-public-access"), "{stderr}");
+        assert_eq!(received_request_shape(&mock).await.len(), 1);
+    }
+}
+
+/// When the rules cannot be applied, the restored service still exists with
+/// allow-all rules, so the error names it and how to fix it.
+#[tokio::test]
+async fn postgres_restore_rule_failure_names_the_restored_service() {
+    let mock = MockServer::start().await;
+    mount_postgres_restore(&mock, postgres_restore_default_rules()).await;
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "status": 500,
+            "error": "boom",
+        })))
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &postgres_restore_args(&["--block-public-access"]),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(ACCESS_RULE_POSTGRES_ID), "{stderr}");
+    assert!(stderr.contains("--remove-ip-allow"), "{stderr}");
+}
+
+/// A sparse restore response omits the rule IDs, so they are read back from
+/// the restored service before the PATCH.
+#[tokio::test]
+async fn postgres_restore_reads_rules_omitted_from_a_sparse_response() {
+    let mock = MockServer::start().await;
+    mount_postgres_service_response(
+        &mock,
+        "POST",
+        &format!("/v1/organizations/org-1/postgres/{RESTORE_SOURCE_ID}/restoredService"),
+        serde_json::json!({"id": ACCESS_RULE_POSTGRES_ID}),
+    )
+    .await;
+    mount_postgres_service_response(
+        &mock,
+        "GET",
+        &format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}"),
+        serde_json::json!({
+            "id": ACCESS_RULE_POSTGRES_ID,
+            "tags": [{"key": "env", "value": "prod"}],
+            "ipAccessList": postgres_restore_default_rules(),
+        }),
+    )
+    .await;
+    mount_postgres_restored_patch(
+        &mock,
+        serde_json::json!({
+            "add": [],
+            "remove": [{"id": "default-5432"}, {"id": "default-6432"}]
+        }),
+        serde_json::json!([]),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &postgres_restore_args(&["--block-public-access"]),
+    );
+    assert_success(&output);
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["ipAccessList"], serde_json::json!([]));
+}
+
 // ── Postgres list --filter validation (issue #603) ────────────────────────
 
 fn postgres_list_response() -> ResponseTemplate {
@@ -5373,6 +5638,7 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
                 "restored",
                 "--restore-target",
                 "2026-09-01T12:00:00Z",
+                "--block-public-access",
             ],
         ),
     ] {
@@ -5384,6 +5650,7 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
             serde_json::json!({"id": ROLE_TEST_POSTGRES_ID}),
         )
         .await;
+        mount_sparse_restored_get(&mock, endpoint).await;
         args.extend(["--org-id", "org-1"]);
 
         let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
@@ -5406,10 +5673,25 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
             service.clone(),
         )
         .await;
+        mount_sparse_restored_get(&json_mock, endpoint).await;
         let json_output = invoke_cli_with_cloud_credentials(&json_mock, &args);
         assert_success(&json_output);
         let json: Value = serde_json::from_slice(&json_output.stdout).expect("valid JSON response");
         assert_eq!(json, service);
+    }
+}
+
+/// A sparse restore response sends the CLI to `get` for the rules it
+/// replaces; these already match `--block-public-access`, so nothing is patched.
+async fn mount_sparse_restored_get(mock: &MockServer, endpoint: &str) {
+    if endpoint == "restoredService" {
+        mount_postgres_service_response(
+            mock,
+            "GET",
+            &format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}"),
+            serde_json::json!({"id": ROLE_TEST_POSTGRES_ID, "tags": [], "ipAccessList": []}),
+        )
+        .await;
     }
 }
 
@@ -20192,6 +20474,7 @@ fn pgbouncer_write_commands<'a>(
                 "2026-08-01T00:00:00Z",
                 "--pg-bouncer-config-file",
                 map_file,
+                "--block-public-access",
             ],
             "POST",
             "/v1/organizations/org-1/postgres/pg-1/restoredService",
@@ -20214,6 +20497,18 @@ fn pgbouncer_write_commands<'a>(
             "/v1/organizations/org-1/postgres/pg-1/config",
         ),
     ]
+}
+
+/// The write-path response, plus for a restore the ID, tags and (blocked)
+/// rules the CLI reads to decide whether the restored rules need a PATCH.
+fn restored_service_response(endpoint: &str, result: &Value) -> Value {
+    let mut result = result.clone();
+    if endpoint.ends_with("/restoredService") {
+        result["id"] = serde_json::json!("22222222-3333-4444-5555-666666666666");
+        result["tags"] = serde_json::json!([]);
+        result["ipAccessList"] = serde_json::json!([]);
+    }
+    result
 }
 
 fn invoke_pgbouncer_cli(mock: &MockServer, args: &[&str]) -> std::process::Output {
@@ -20255,7 +20550,7 @@ async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
                 "fake-secret-for-tests",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": configuration, "status": 200,
+                "result": restored_service_response(endpoint, &configuration), "status": 200,
             })))
             .expect(1)
             .mount(&mock)
@@ -20840,6 +21135,7 @@ fn pg_config_file_write_commands<'a>(
                 "2026-08-01T00:00:00Z",
                 "--pg-config-file",
                 pg_config_file,
+                "--block-public-access",
             ],
             "POST",
             "/v1/organizations/org-1/postgres/pg-1/restoredService",
@@ -20904,7 +21200,7 @@ async fn pg_config_files_preserve_valid_values_in_every_write_path() {
         Mock::given(method(verb))
             .and(path(endpoint))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": instance_config,
+                "result": restored_service_response(endpoint, &instance_config),
                 "status": 200
             })))
             .expect(1)
@@ -28944,9 +29240,12 @@ async fn selectors_postgres_sources_keep_new_resource_names_in_the_body() {
                 .and(path(format!(
                     "/v1/organizations/org-1/postgres/{id}/{endpoint}"
                 )))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"result": restored_service_response(
+                        &format!("/{endpoint}"),
+                        &serde_json::json!({}),
+                    )}),
+                ))
                 .expect(1)
                 .mount(&mock)
                 .await;
@@ -28958,7 +29257,11 @@ async fn selectors_postgres_sources_keep_new_resource_names_in_the_body() {
             }
             args.extend(["--name", "created", "--org-id", "org-1"]);
             if endpoint == "restoredService" {
-                args.extend(["--restore-target", "2026-09-01T12:00:00Z"]);
+                args.extend([
+                    "--restore-target",
+                    "2026-09-01T12:00:00Z",
+                    "--block-public-access",
+                ]);
             }
             let output = invoke_cli_with_cloud_credentials(&mock, &args);
             assert_success(&output);

@@ -108,6 +108,8 @@ clickhousectl cloud postgres restore <postgres-id> \
 clickhousectl cloud postgres get <restored-postgres-id>
 ```
 
+**The restore endpoint gives every restored service allow-all IPv4 rules on 5432 and 6432**, so `restore` then replaces them with the source's current IPv4 rules (not the rules at the restore target). Pass `--ip-allow` rules or `--block-public-access` to set the restored rules instead, as on create. If the source's rules cannot be read completely, nothing is restored. If they cannot be applied after the restore, the command fails and names the restored service, which still exists with the allow-all rules: remove them with `update --remove-ip-allow`. The API does not expose IPv6 rules, so they are neither copied nor removed; check them in the Cloud console.
+
 Restore and read-replica creation return a new service ID without a password. Wait for `running` and obtain valid credentials separately; do not assume the source's current password works for a historical restore or replica.
 
 `promote` and `switchover` also return after acceptance. Promotion makes a read replica an independent primary; confirm `isPrimary: true` on that replica, while the source stays primary. HA switchover changes the active internal node; service-level state, `isPrimary`, and readiness cannot prove that it completed.
