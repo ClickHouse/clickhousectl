@@ -639,26 +639,41 @@ struct AuthConfig {
     client_id: String,
 }
 
-/// Known API host → (auth URL, client id) mappings.
+struct KnownAuthConfig {
+    host: &'static str,
+    auth_url: &'static str,
+    client_id: &'static str,
+}
+
+impl From<&KnownAuthConfig> for AuthConfig {
+    fn from(config: &KnownAuthConfig) -> Self {
+        Self {
+            auth_url: config.auth_url.to_owned(),
+            client_id: config.client_id.to_owned(),
+        }
+    }
+}
+
+/// Known API host → authorization configuration mappings.
 ///
 /// Any host not listed here requires `CLICKHOUSECTL_AUTH_URL` and
 /// `CLICKHOUSECTL_CLIENT_ID` to be set; there is no built-in fallback.
-const KNOWN_CONFIGS: &[(&str, &str, &str)] = &[
-    (
-        "api.clickhouse.cloud",
-        "https://auth.clickhouse.cloud",
-        "9q6XAueAs47R4X5d1d6FbjbJqjsrA2ZJ",
-    ),
-    (
-        "api.control-plane.clickhouse-staging.com",
-        "https://auth.control-plane.clickhouse-staging.com",
-        "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
-    ),
-    (
-        "api.control-plane.clickhouse-dev.com",
-        "https://auth.control-plane.clickhouse-dev.com",
-        "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
-    ),
+const KNOWN_CONFIGS: &[KnownAuthConfig] = &[
+    KnownAuthConfig {
+        host: "api.clickhouse.cloud",
+        auth_url: "https://auth.clickhouse.cloud",
+        client_id: "9q6XAueAs47R4X5d1d6FbjbJqjsrA2ZJ",
+    },
+    KnownAuthConfig {
+        host: "api.control-plane.clickhouse-staging.com",
+        auth_url: "https://auth.control-plane.clickhouse-staging.com",
+        client_id: "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
+    },
+    KnownAuthConfig {
+        host: "api.control-plane.clickhouse-dev.com",
+        auth_url: "https://auth.control-plane.clickhouse-dev.com",
+        client_id: "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
+    },
 ];
 
 /// Look up bundled configuration without consulting the environment.
@@ -668,11 +683,8 @@ fn known_auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
 
     KNOWN_CONFIGS
         .iter()
-        .find(|(known_host, _, _)| host == *known_host)
-        .map(|(_, auth_url, client_id)| AuthConfig {
-            auth_url: (*auth_url).to_string(),
-            client_id: (*client_id).to_string(),
-        })
+        .find(|config| host == config.host)
+        .map(AuthConfig::from)
 }
 
 /// Injectable environment lookup keeps login tests independent of the shell.
@@ -853,7 +865,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
             api_url,
             KNOWN_CONFIGS
                 .iter()
-                .map(|(h, _, _)| *h)
+                .map(|config| config.host)
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -1520,15 +1532,31 @@ mod tests {
     }
 
     #[test]
+    fn known_auth_config_converts_named_fields_to_owned_values() {
+        let known = KnownAuthConfig {
+            host: "api.example.com",
+            auth_url: "https://auth.example.com",
+            client_id: "example-client",
+        };
+        assert_eq!(
+            AuthConfig::from(&known),
+            AuthConfig {
+                auth_url: "https://auth.example.com".into(),
+                client_id: "example-client".into(),
+            }
+        );
+    }
+
+    #[test]
     fn auth_config_known_hosts_ignore_environment() {
-        for (host, auth_url, client_id) in KNOWN_CONFIGS {
-            let api_url = format!("https://{host}/v1");
+        for known in KNOWN_CONFIGS {
+            let api_url = format!("https://{}/v1", known.host);
             let config = auth_config_for_url_with(&api_url, &|_| {
                 panic!("built-in host must not read environment overrides")
             })
             .unwrap();
-            assert_eq!(config.auth_url, *auth_url);
-            assert_eq!(config.client_id, *client_id);
+            assert_eq!(config.auth_url, known.auth_url);
+            assert_eq!(config.client_id, known.client_id);
         }
     }
 
