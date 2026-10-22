@@ -34974,7 +34974,8 @@ mod access_negotiation {
             if state != "missing" {
                 std::fs::write(tokens.join("tokens.json"), serde_json::to_vec(&serde_json::json!({
                     "access_token": "test-bearer-token", "refresh_token": "refresh-secret", "expires_at": 1,
-                    "api_url": format!("{}/v1", issuer.uri())
+                    "api_url": format!("{}/v1", issuer.uri()),
+                    "auth_config": {"auth_url": issuer.uri(), "client_id": "test-client"}
                 })).unwrap()).unwrap();
                 Mock::given(method("POST")).and(path("/oauth/token"))
                     .respond_with(if state == "refresh" {
@@ -35689,12 +35690,25 @@ mod access_negotiation {
             let dir = tempfile::tempdir().unwrap();
             let token_dir = access_credentials(dir.path());
             if token_state != "missing" {
-                std::fs::write(token_dir.join("tokens.json"), serde_json::to_vec(&serde_json::json!({
+                // `auth_config` is required for the record to load at all. The
+                // saved config only drives refresh for the states that must
+                // reach it; `unknown-host` keeps a legacy record without one,
+                // which no environment can repair, so the file must survive.
+                let mut record = serde_json::json!({
                     "access_token": "test-bearer-token",
                     "refresh_token": if token_state == "no-refresh" { "" } else { "refresh-secret" },
                     "expires_at": 1,
                     "api_url": format!("{}/v1", server.uri()),
-                })).unwrap()).unwrap();
+                });
+                if token_state != "unknown-host" {
+                    record["auth_config"] =
+                        serde_json::json!({"auth_url": server.uri(), "client_id": "test-client"});
+                }
+                std::fs::write(
+                    token_dir.join("tokens.json"),
+                    serde_json::to_vec(&record).unwrap(),
+                )
+                .unwrap();
             }
             let mut command = access_command(dir.path());
             command.args([
@@ -35764,6 +35778,7 @@ mod access_negotiation {
             serde_json::to_vec(&serde_json::json!({
                 "access_token": "test-bearer-token", "refresh_token": "refresh-secret",
                 "expires_at": 1, "api_url": format!("{}/v1", issuer.uri()),
+                "auth_config": {"auth_url": issuer.uri(), "client_id": "test-client"},
             }))
             .unwrap(),
         )
