@@ -203,7 +203,7 @@ pub async fn run(
                 })?;
                 login_with_api_key(&key, &secret, api_url, json).await
             } else {
-                let url = api_url.unwrap_or("https://api.clickhouse.cloud");
+                let url = api_url.unwrap_or(DEFAULT_API_URL);
                 let tokens = device_auth_login(url)
                     .await
                     .map_err(|error| Error::Cloud(error.to_string()))?;
@@ -633,7 +633,7 @@ fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std
     Ok((api_key, api_secret))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AuthConfig {
     auth_url: String,
     client_id: String,
@@ -661,18 +661,25 @@ const KNOWN_CONFIGS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
+/// Look up bundled configuration without consulting the environment.
+fn known_auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
     let parsed = url::Url::parse(api_url).ok()?;
     let host = parsed.host_str()?;
 
-    if let Some(config) = KNOWN_CONFIGS
+    KNOWN_CONFIGS
         .iter()
         .find(|(known_host, _, _)| host == *known_host)
         .map(|(_, auth_url, client_id)| AuthConfig {
             auth_url: (*auth_url).to_string(),
             client_id: (*client_id).to_string(),
         })
-    {
+}
+
+/// Resolve configuration for a new login, never for an existing session.
+fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
+    // Preserve rejection of malformed or hostless API URLs before reading env.
+    url::Url::parse(api_url).ok()?.host_str()?;
+    if let Some(config) = known_auth_config_for_url(api_url) {
         return Some(config);
     }
 
@@ -709,12 +716,9 @@ pub struct TokenStore {
     pub refresh_token: String,
     pub expires_at: i64,
     /// The API base URL these tokens were issued for (e.g. "https://api.clickhouse.cloud/v1").
-    #[serde(default = "default_api_url")]
     pub api_url: String,
-}
-
-fn default_api_url() -> String {
-    DEFAULT_API_URL.to_string()
+    /// Complete authorization configuration resolved at login, never at refresh.
+    auth_config: AuthConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -933,6 +937,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
                 refresh_token: token_resp.refresh_token.unwrap_or_default(),
                 expires_at: now + token_resp.expires_in,
                 api_url: api_url.clone(),
+                auth_config: config,
             };
             return Ok(tokens);
         }
@@ -961,13 +966,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
 pub async fn refresh_access_token(
     tokens: &TokenStore,
 ) -> Result<TokenStore, Box<dyn std::error::Error>> {
-    let config = auth_config_for_url(&tokens.api_url).ok_or_else(|| {
-        format!(
-            "Cannot refresh: unknown API host in '{}'. \
-                 For a non-standard host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID.",
-            tokens.api_url
-        )
-    })?;
+    let config = &tokens.auth_config;
 
     let client = crate::http::client_builder().build()?;
 
@@ -1005,6 +1004,7 @@ pub async fn refresh_access_token(
             .unwrap_or_else(|| tokens.refresh_token.clone()),
         expires_at: now + token_resp.expires_in,
         api_url: tokens.api_url.clone(),
+        auth_config: config.clone(),
     })
 }
 
@@ -1028,17 +1028,8 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
         Ok(new_tokens) => {
             save_tokens(&new_tokens)?;
         }
-        Err(err) => {
-            // If the auth config for this host can't even be resolved (e.g. a
-            // custom host whose CLICKHOUSECTL_AUTH_URL / CLICKHOUSECTL_CLIENT_ID
-            // are unset), the refresh token is still valid: don't destroy it and
-            // don't silently fall back to another host. Surface the actionable,
-            // fail-fast error instead.
-            if auth_config_for_url(&tokens.api_url).is_none() {
-                return Err(err);
-            }
-            // Genuine refresh rejection (revoked/expired): clear stale tokens so
-            // we fall back to API keys.
+        Err(_) => {
+            // Failed refresh requires a new login.
             clear_tokens();
             if !json {
                 eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
@@ -1222,6 +1213,7 @@ mod tests {
             refresh_token: "refresh456".to_string(),
             expires_at: 1700000000,
             api_url: "https://api.clickhouse.cloud/v1".into(),
+            auth_config: known_auth_config_for_url(DEFAULT_API_URL).unwrap(),
         };
         let json = serde_json::to_string(&tokens).unwrap();
         let parsed: TokenStore = serde_json::from_str(&json).unwrap();
@@ -1229,6 +1221,7 @@ mod tests {
         assert_eq!(parsed.refresh_token, "refresh456");
         assert_eq!(parsed.expires_at, 1700000000);
         assert_eq!(parsed.api_url, "https://api.clickhouse.cloud/v1");
+        assert_eq!(parsed.auth_config, tokens.auth_config);
     }
 
     #[test]
@@ -1238,6 +1231,7 @@ mod tests {
             refresh_token: "r".into(),
             expires_at: 1700000000,
             api_url: "https://api.control-plane.clickhouse-staging.com/v1".into(),
+            auth_config: sample_auth_config(),
         };
         let json = serde_json::to_string(&tokens).unwrap();
         assert!(json.contains("clickhouse-staging.com"));
@@ -1249,10 +1243,95 @@ mod tests {
     }
 
     #[test]
-    fn test_token_deserialization_defaults_to_production() {
-        let json = r#"{"access_token":"a","refresh_token":"r","expires_at":1700000000}"#;
-        let parsed: TokenStore = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.api_url, "https://api.clickhouse.cloud/v1");
+    fn token_deserialization_requires_complete_configuration() {
+        let complete = serde_json::to_value(sample_tokens()).unwrap();
+        for missing in ["api_url", "auth_config"] {
+            let mut record = complete.clone();
+            record.as_object_mut().unwrap().remove(missing);
+            assert!(serde_json::from_value::<TokenStore>(record).is_err());
+        }
+        for missing in ["auth_url", "client_id"] {
+            let mut record = complete.clone();
+            record["auth_config"]
+                .as_object_mut()
+                .unwrap()
+                .remove(missing);
+            assert!(serde_json::from_value::<TokenStore>(record).is_err());
+        }
+        let mut record = complete;
+        record["auth_config"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<TokenStore>(record).is_err());
+    }
+
+    #[test]
+    fn load_tokens_rejects_old_records_for_known_and_custom_hosts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("tokens.json");
+        let legacy = tmp.path().join("legacy.json");
+        for api_url in [DEFAULT_API_URL, "https://custom.example.com/v1"] {
+            let old = serde_json::json!({
+                "access_token": "a", "refresh_token": "r",
+                "expires_at": 4102444800_i64, "api_url": api_url
+            });
+            std::fs::write(&global, serde_json::to_vec(&old).unwrap()).unwrap();
+            std::fs::write(&legacy, serde_json::to_vec(&old).unwrap()).unwrap();
+            assert!(load_tokens_from(&global, &legacy).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_uses_saved_config_even_for_a_known_api_host() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("client_id=saved-client"))
+            .and(body_string_contains("refresh_token=r"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed", "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&issuer)
+            .await;
+        let mut tokens = sample_tokens();
+        tokens.auth_config = AuthConfig {
+            auth_url: issuer.uri(),
+            client_id: "saved-client".into(),
+        };
+        let refreshed = refresh_access_token(&tokens).await.unwrap();
+        assert_eq!(refreshed.api_url, DEFAULT_API_URL);
+        assert_eq!(refreshed.auth_config, tokens.auth_config);
+        assert_eq!(refreshed.access_token, "refreshed");
+    }
+
+    #[test]
+    fn saved_auth_config_survives_legacy_path_migration_and_login_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global/tokens.json");
+        let legacy = tmp.path().join("legacy/tokens.json");
+        let mut tokens = sample_tokens();
+        tokens.auth_config = AuthConfig {
+            auth_url: "https://auth-a.example.com".into(),
+            client_id: "client-a".into(),
+        };
+        save_tokens_to(&legacy, &tokens).unwrap();
+        let migrated = load_tokens_from(&global, &legacy).unwrap();
+        assert_eq!(migrated.auth_config, tokens.auth_config);
+        assert!(!legacy.exists());
+
+        tokens.access_token = "new-access".into();
+        tokens.refresh_token = "new-refresh".into();
+        tokens.auth_config = AuthConfig {
+            auth_url: "https://auth-b.example.com".into(),
+            client_id: "client-b".into(),
+        };
+        save_tokens_to(&global, &tokens).unwrap();
+        let replaced = load_tokens_from(&global, &legacy).unwrap();
+        assert_eq!(replaced.access_token, tokens.access_token);
+        assert_eq!(replaced.refresh_token, tokens.refresh_token);
+        assert_eq!(replaced.auth_config, tokens.auth_config);
     }
 
     #[test]
@@ -1264,6 +1343,7 @@ mod tests {
             refresh_token: "r".into(),
             expires_at: now + 3600,
             api_url: DEFAULT_API_URL.into(),
+            auth_config: sample_auth_config(),
         };
         assert!(is_token_valid(&valid));
 
@@ -1272,6 +1352,7 @@ mod tests {
             refresh_token: "r".into(),
             expires_at: now - 10,
             api_url: DEFAULT_API_URL.into(),
+            auth_config: sample_auth_config(),
         };
         assert!(!is_token_valid(&expired));
 
@@ -1280,6 +1361,7 @@ mod tests {
             refresh_token: "r".into(),
             expires_at: now + 30, // within 60s buffer
             api_url: DEFAULT_API_URL.into(),
+            auth_config: sample_auth_config(),
         };
         assert!(!is_token_valid(&near_expiry));
     }
@@ -1310,6 +1392,14 @@ mod tests {
             refresh_token: "r".into(),
             expires_at: chrono::Utc::now().timestamp() + 3600,
             api_url: DEFAULT_API_URL.into(),
+            auth_config: sample_auth_config(),
+        }
+    }
+
+    fn sample_auth_config() -> AuthConfig {
+        AuthConfig {
+            auth_url: "https://auth.example.com".into(),
+            client_id: "test-client".into(),
         }
     }
 
