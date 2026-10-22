@@ -663,13 +663,22 @@ impl CloudClient {
                     "Unable to refresh OAuth identity: {error}. Run `clickhousectl cloud auth login` to re-authenticate."
                 ))
             })?;
-        Self::from_access_tokens(crate::cloud::auth::load_tokens(), url_override)
+        Self::from_access_tokens(
+            crate::cloud::auth::load_tokens(),
+            url_override,
+            // Membership and assignable-role discovery use the typed client
+            // directly, outside the handshake's `operation` wrapper, so this
+            // client carries the same 30-second access-operation bound; a
+            // server holding a response open must not stall either command.
+            Some(crate::cloud::access::OPERATION_TIMEOUT),
+        )
     }
 
     #[cfg(feature = "experimental-access-negotiation")]
     fn from_access_tokens(
         tokens: Option<crate::cloud::auth::TokenStore>,
         url_override: Option<&str>,
+        timeout: Option<std::time::Duration>,
     ) -> Result<Self> {
         let tokens = tokens
             .filter(crate::cloud::auth::is_token_valid)
@@ -688,7 +697,7 @@ impl CloudClient {
                     url_override.unwrap_or(&tokens.api_url),
                 ),
             },
-            None,
+            timeout,
         )
     }
 
@@ -967,6 +976,48 @@ mod tests {
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
+    /// The access client's per-request bound must actually reach reqwest and
+    /// classify as a timeout: a response held open past the bound fails with
+    /// `FailureKind::Timeout` instead of stalling. `for_access` supplies
+    /// `access::OPERATION_TIMEOUT`; a short bound here keeps the test fast.
+    #[tokio::test]
+    #[cfg(feature = "experimental-access-negotiation")]
+    async fn access_client_applies_the_access_operation_bound_to_discovery() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        let tokens = serde_json::from_value(serde_json::json!({
+            "access_token": "test-token", "refresh_token": "unused",
+            "expires_at": 4102444800_i64,
+            "api_url": format!("{}/v1", server.uri()),
+            "auth_config": {"auth_url": server.uri(), "client_id": "test-client"},
+        }))
+        .unwrap();
+        let client =
+            CloudClient::from_access_tokens(Some(tokens), None, Some(Duration::from_millis(300)))
+                .unwrap();
+        let error = client
+            .api()
+            .organization_get_list(None, None)
+            .await
+            .map(|_| ())
+            .map_err(|error| client.convert_error(error))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.failure.as_ref().map(|f| &f.kind),
+                Some(crate::failure::FailureKind::Timeout)
+            ),
+            "expected a timeout classification: {error}"
+        );
+    }
+
     #[test]
     #[cfg(feature = "experimental-access-negotiation")]
     fn access_client_uses_explicit_saved_or_legacy_default_api_base() {
@@ -991,7 +1042,7 @@ mod tests {
                 value["api_url"] = saved.into();
             }
             let tokens = serde_json::from_value(value).unwrap();
-            let client = CloudClient::from_access_tokens(Some(tokens), explicit).unwrap();
+            let client = CloudClient::from_access_tokens(Some(tokens), explicit, None).unwrap();
             assert_eq!(client.base_url(), expected);
             assert_eq!(client.auth_source(), AuthSource::OAuthTokens);
             assert!(client.is_bearer_auth());

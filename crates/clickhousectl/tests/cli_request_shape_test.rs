@@ -35566,6 +35566,47 @@ mod access_negotiation {
         }
     }
 
+    /// Discovery runs on the typed client directly, outside the handshake's
+    /// `operation` wrapper, so `for_access` must hand the client the 30-second
+    /// access-operation bound itself: a server holding the response open
+    /// fails the command near the bound instead of stalling until the mock's
+    /// delay elapses. The mock delays longer than the bound; without the
+    /// client timeout the command would only finish after it.
+    #[tokio::test]
+    async fn access_roles_discovery_gives_up_within_the_operation_bound() {
+        let started = std::time::Instant::now();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/roles"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([]))
+                    .set_delay(std::time::Duration::from_secs(90)),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = access_credentials(dir.path());
+        write_oauth_tokens(&tokens, &server.uri());
+        let output = access_roles_command(dir.path(), true)
+            .args(["--org", "org"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "discovery must give up within the operation bound, not wait out the mock"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("test-bearer-token"));
+        assert_access_output_has_no_credentials(&output);
+    }
+
     #[tokio::test]
     async fn access_request_uses_oauth_for_discovery_and_filing_with_saved_or_explicit_url() {
         for explicit_url in [false, true] {

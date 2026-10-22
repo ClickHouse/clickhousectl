@@ -54,7 +54,10 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// How often to poll the request's status as a fallback to the loopback redirect.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+/// The access-operation bound: every single access HTTP request — discovery
+/// through the typed client, and each handshake step — must give up after
+/// this long so a server holding a response open cannot stall the command.
+pub(super) const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_EPOCH_MILLIS: i64 = 8_640_000_000_000_000;
 
 #[derive(Subcommand)]
