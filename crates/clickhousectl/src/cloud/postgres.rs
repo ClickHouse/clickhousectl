@@ -66,6 +66,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     ),
     Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
+        Conditional::new("Applying access rules", &[&op::POSTGRES_SERVICE_PATCH]),
     ]),
     Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
@@ -96,13 +98,13 @@ use clickhouse_cloud_api::models::{
     PgConfigDefaultTransactionIsolation, PgConfigEnableParallelHash, PgConfigIoMethod,
     PgConfigLogLockWaits, PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType,
     PgIdProperty, PgProvider, PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig,
-    PostgresIpAccessListEntry, PostgresIpAccessListPatch, PostgresIpAccessListRuleReference,
-    PostgresLogEntry, PostgresLogsGetListSortorder, PostgresMetrics, PostgresService,
-    PostgresServiceListItem, PostgresServicePatchRequest, PostgresServicePostRequest,
-    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
-    PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
-    PostgresSlowQueryPatternDetail, ResourceTagsV1, ResourceTagsV1Response,
-    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse, PostgresIpAccessListPatch,
+    PostgresIpAccessListRuleReference, PostgresLogEntry, PostgresLogsGetListSortorder,
+    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
+    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
+    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
+    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
@@ -381,6 +383,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Creates a NEW service from the source's backups; the source is untouched.
   --restore-target must fall inside the source's backup retention window.
+  Copies the source's current IPv4 access rules unless --ip-allow or --block-public-access is given.
   The response has no password; use its ID with `get`, then reset it if no valid password is known.
   Do not assume the source's current password matches the historical restore.")]
     Restore {
@@ -402,6 +405,19 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Allowed IPv4 address or CIDR and ports, replacing the source's rules (repeatable)
+        ///
+        /// PORTS is a port or inclusive range, e.g. 5432 (Postgres), 6432
+        /// (PgBouncer) or 5432..6432.
+        #[arg(
+            long = "ip-allow",
+            value_name = "IP_OR_CIDR:PORTS[=DESCRIPTION]",
+            value_parser = parse_postgres_ip_access_entry
+        )]
+        ip_allow: Vec<PostgresIpAccessListEntry>,
+        /// Restore with no access rules, blocking public access
+        #[arg(long, conflicts_with = "ip_allow")]
+        block_public_access: bool,
     },
 
     /// Restart a Postgres service
@@ -936,6 +952,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
+            ip_allow,
+            block_public_access,
         } => {
             let opts = PostgresRestoreOptions {
                 name: &name,
@@ -943,6 +961,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                ip_allow: &ip_allow,
+                block_public_access,
             };
             postgres_restore(client, &postgres_id.resolve(client).await?, opts, json).await
         }
@@ -1258,6 +1278,75 @@ fn build_postgres_ip_access_list_patch(
             .map(|id| PostgresIpAccessListRuleReference { id: id.clone() })
             .collect(),
     })
+}
+
+/// Copy a source service's access rules as create entries, without their IDs.
+/// `None` when the source omitted its rule list or a rule's address or ports,
+/// since copying a partial list would silently drop restrictions.
+fn postgres_entries_from_rules(
+    rules: Option<&[PostgresIpAccessListEntryResponse]>,
+) -> Option<Vec<PostgresIpAccessListEntry>> {
+    rules?
+        .iter()
+        .map(|rule| {
+            Some(PostgresIpAccessListEntry {
+                description: rule.description.clone(),
+                id: None,
+                port_range: rule.port_range.clone()?,
+                source: rule.source.clone()?,
+            })
+        })
+        .collect()
+}
+
+/// The `ipAccessList` patch that turns a restored service's `current` rules
+/// into `desired`: remove each current rule with no exact match, add each
+/// desired rule with none. `None` when they already match. A rule matches on
+/// address, ports and description; an absent and an empty description match.
+fn plan_postgres_restored_access_rules(
+    current: &[PostgresIpAccessListEntryResponse],
+    desired: &[PostgresIpAccessListEntry],
+) -> CloudResult<Option<PostgresIpAccessListPatch>> {
+    type Key<'a> = (Option<&'a str>, Option<&'a str>, &'a str);
+    fn current_key(rule: &PostgresIpAccessListEntryResponse) -> Key<'_> {
+        (
+            rule.source.as_deref(),
+            rule.port_range.as_deref(),
+            rule.description.as_deref().unwrap_or(""),
+        )
+    }
+    fn desired_key(rule: &PostgresIpAccessListEntry) -> Key<'_> {
+        (
+            Some(rule.source.as_str()),
+            Some(rule.port_range.as_str()),
+            rule.description.as_deref().unwrap_or(""),
+        )
+    }
+    let mut remove = Vec::new();
+    for rule in current {
+        if desired.iter().any(|d| desired_key(d) == current_key(rule)) {
+            continue;
+        }
+        let id = rule.id.clone().ok_or_else(|| {
+            CloudError::new(
+                "the API returned an access rule without an ID, so it cannot be removed",
+            )
+        })?;
+        remove.push(PostgresIpAccessListRuleReference { id });
+    }
+    let add: Vec<_> = desired
+        .iter()
+        .filter(|d| {
+            !current
+                .iter()
+                .any(|rule| current_key(rule) == desired_key(d))
+        })
+        .cloned()
+        .collect();
+    Ok(
+        (!add.is_empty() || !remove.is_empty())
+            .then_some(PostgresIpAccessListPatch { add, remove }),
+    )
 }
 
 fn generate_compliant_password() -> String {
@@ -1611,6 +1700,8 @@ pub struct PostgresRestoreOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
+    pub ip_allow: &'a [PostgresIpAccessListEntry],
+    pub block_public_access: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2572,21 +2663,40 @@ pub async fn postgres_restore(
         .map_err(|e| CloudError::new(format!("invalid restore-target: {}", e)))?
         .with_timezone(&chrono::Utc);
 
+    let org_id = resolve_org_id(client).await?;
+
+    // The restore endpoint takes no access rules and allows all addresses on
+    // 5432 and 6432, so the rules are applied afterwards. Read the source's
+    // first, so a source whose rules cannot be copied creates nothing.
+    let desired = match postgres_create_ip_access_list(opts.ip_allow, opts.block_public_access) {
+        Some(rules) => rules,
+        None => {
+            let source = client.get_postgres_service(&org_id, postgres_id).await?;
+            postgres_entries_from_rules(source.ip_access_list.as_deref()).ok_or_else(|| {
+                CloudError::new(format!(
+                    "the API did not return complete access rules for source {postgres_id}, so \
+                     they cannot be copied and nothing was restored; pass --ip-allow or \
+                     --block-public-access to set the restored service's rules"
+                ))
+            })?
+        }
+    };
+
     let req = PostgresServiceRestoreRequest {
         name: opts.name.to_string(),
         restore_target,
-        tags,
+        tags: tags.clone(),
         pg_config,
         pg_bouncer_config,
     };
-
-    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
+
+    let svc = apply_restored_access_rules(client, &org_id, svc, &desired, tags).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -2597,6 +2707,78 @@ pub async fn postgres_restore(
         render_postgres_connection_guidance(&svc);
     }
     Ok(())
+}
+
+/// Replace the rules a restore created with `desired`, returning the service
+/// to show. Any failure names the restored service, which then still exists
+/// with rules that may allow all addresses.
+async fn apply_restored_access_rules(
+    client: &CloudClient,
+    org_id: &str,
+    svc: PostgresService,
+    desired: &[PostgresIpAccessListEntry],
+    requested_tags: Option<Vec<ResourceTagsV1>>,
+) -> CloudResult<PostgresService> {
+    let Some(restored_id) = svc.id.as_ref().map(ToString::to_string) else {
+        return Err(CloudError::new(
+            "the restore was accepted, but the API returned no service ID, so its access \
+             rules were not applied; find the new service with `cloud postgres list` and \
+             set its rules with `cloud postgres update --remove-ip-allow`",
+        ));
+    };
+    let unapplied = |error: CloudError| CloudError {
+        message: format!(
+            "restored service {restored_id} was created, but its access rules were not fully \
+             applied and it may allow all addresses on 5432 and 6432: {}. Read its rules with \
+             `cloud postgres get {restored_id}` and fix them with \
+             `cloud postgres update {restored_id} --remove-ip-allow <rule-id>`",
+            error.message
+        ),
+        ..error
+    };
+
+    // Sparse restore responses omit fields; the PATCH needs the rule IDs, and
+    // the complete tag set because the API clears tags a PATCH omits.
+    let current = if svc.ip_access_list.is_some() && svc.tags.is_some() {
+        svc.clone()
+    } else {
+        client
+            .get_postgres_service(org_id, &restored_id)
+            .await
+            .map_err(unapplied)?
+    };
+    let rules = current.ip_access_list.as_deref().ok_or_else(|| {
+        unapplied(CloudError::new(
+            "the API did not return the restored service's access rules",
+        ))
+    })?;
+    let Some(patch) = plan_postgres_restored_access_rules(rules, desired).map_err(unapplied)?
+    else {
+        return Ok(svc);
+    };
+    let tags = match current.tags {
+        Some(tags) => merge_response_tags(Some(tags), &[], &[]).map_err(unapplied)?,
+        None => requested_tags.unwrap_or_default(),
+    };
+    let req = build_postgres_update_request(None, None, None, Some(tags), Some(patch));
+    let patched = client
+        .patch_postgres_service(org_id, &restored_id, &req)
+        .await
+        .map_err(unapplied)?;
+    if patched.ip_access_list.is_some() {
+        return Ok(patched);
+    }
+    client
+        .get_postgres_service(org_id, &restored_id)
+        .await
+        .map_err(|error| CloudError {
+            message: format!(
+                "access rules were applied to restored service {restored_id}, but reading it \
+                 back failed: {}. Check it with `cloud postgres get {restored_id}`",
+                error.message
+            ),
+            ..error
+        })
 }
 
 /// Issues a state command that does not need operation-specific guidance.
@@ -3156,6 +3338,21 @@ impl CloudClient {
                 query.app,
                 query.timestamp,
             )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Update a Postgres service.
+    async fn patch_postgres_service(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresServicePatchRequest,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .api()
+            .postgres_service_patch(org_id, postgres_id, request)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -4850,6 +5047,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_postgres_restore_access_rule_flags() {
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "restore",
+            "pg-1",
+            "--name",
+            "restored",
+            "--restore-target",
+            "2026-04-16T12:00:00Z",
+        ];
+        let restore = |extra: &[&str]| {
+            let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+            let PostgresCommands::Restore {
+                ip_allow,
+                block_public_access,
+                ..
+            } = parse_postgres(&args)
+            else {
+                panic!("expected restore");
+            };
+            (ip_allow, block_public_access)
+        };
+
+        assert_eq!(restore(&[]), (Vec::new(), false));
+        assert_eq!(restore(&["--block-public-access"]), (Vec::new(), true));
+        assert_eq!(
+            restore(&[
+                "--ip-allow",
+                "203.0.113.0/24:5432",
+                "--ip-allow",
+                "198.51.100.7:6432=pooler",
+            ]),
+            (
+                vec![
+                    access_rule("203.0.113.0/24", "5432", None),
+                    access_rule("198.51.100.7", "6432", Some("pooler")),
+                ],
+                false
+            )
+        );
+
+        let args: Vec<&str> = base
+            .iter()
+            .copied()
+            .chain(["--ip-allow", "203.0.113.0/24:5432", "--block-public-access"])
+            .collect();
+        let err = Cli::try_parse_from(args).err().expect("flags conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn rejects_postgres_restore_invalid_datetime() {
         let err = Cli::try_parse_from([
             "clickhousectl",
@@ -5825,6 +6075,104 @@ mod tests {
             postgres_create_ip_access_list(&rules, false),
             Some(rules.clone())
         );
+    }
+
+    fn response_rule(
+        id: Option<&str>,
+        source: Option<&str>,
+        port_range: Option<&str>,
+        description: Option<&str>,
+    ) -> PostgresIpAccessListEntryResponse {
+        PostgresIpAccessListEntryResponse {
+            description: description.map(str::to_string),
+            id: id.map(str::to_string),
+            port_range: port_range.map(str::to_string),
+            source: source.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn postgres_entries_from_rules_copies_complete_rules_without_ids() {
+        let rules = vec![
+            response_rule(Some("r1"), Some("203.0.113.0/24"), Some("5432"), None),
+            response_rule(
+                Some("r2"),
+                Some("198.51.100.7/32"),
+                Some("6432"),
+                Some("pooler"),
+            ),
+        ];
+        assert_eq!(
+            postgres_entries_from_rules(Some(&rules)),
+            Some(vec![
+                access_rule("203.0.113.0/24", "5432", None),
+                access_rule("198.51.100.7/32", "6432", Some("pooler")),
+            ])
+        );
+        assert_eq!(postgres_entries_from_rules(Some(&[])), Some(Vec::new()));
+    }
+
+    #[test]
+    fn postgres_entries_from_rules_refuses_incomplete_rules() {
+        assert_eq!(postgres_entries_from_rules(None), None);
+        for rule in [
+            response_rule(Some("r1"), None, Some("5432"), None),
+            response_rule(Some("r1"), Some("203.0.113.0/24"), None, None),
+        ] {
+            assert_eq!(postgres_entries_from_rules(Some(&[rule])), None);
+        }
+    }
+
+    #[test]
+    fn plan_postgres_restored_access_rules_replaces_unmatched_rules() {
+        let current = vec![
+            response_rule(Some("d1"), Some("0.0.0.0/0"), Some("5432"), None),
+            response_rule(Some("d2"), Some("0.0.0.0/0"), Some("6432"), None),
+        ];
+        let desired = vec![
+            access_rule("0.0.0.0/0", "6432", Some("")),
+            access_rule("203.0.113.0/24", "5432", Some("office")),
+        ];
+        let patch = plan_postgres_restored_access_rules(&current, &desired)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            patch.remove,
+            vec![PostgresIpAccessListRuleReference { id: "d1".into() }]
+        );
+        assert_eq!(
+            patch.add,
+            vec![access_rule("203.0.113.0/24", "5432", Some("office"))]
+        );
+
+        let blocked = plan_postgres_restored_access_rules(&current, &[])
+            .unwrap()
+            .unwrap();
+        assert!(blocked.add.is_empty());
+        assert_eq!(blocked.remove.len(), 2);
+    }
+
+    #[test]
+    fn plan_postgres_restored_access_rules_skips_matching_rules() {
+        let current = vec![response_rule(
+            Some("d1"),
+            Some("0.0.0.0/0"),
+            Some("5432"),
+            None,
+        )];
+        let desired = vec![access_rule("0.0.0.0/0", "5432", None)];
+        assert_eq!(
+            plan_postgres_restored_access_rules(&current, &desired).unwrap(),
+            None
+        );
+        assert_eq!(plan_postgres_restored_access_rules(&[], &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn plan_postgres_restored_access_rules_refuses_a_rule_without_an_id() {
+        let current = vec![response_rule(None, Some("0.0.0.0/0"), Some("5432"), None)];
+        let err = plan_postgres_restored_access_rules(&current, &[]).unwrap_err();
+        assert!(err.message.contains("without an ID"), "{err}");
     }
 
     fn create_options<'a>(
