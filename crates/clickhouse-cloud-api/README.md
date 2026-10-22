@@ -6,6 +6,13 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`ServicePostRequest` no longer has `encryption_key` or
+`encryption_assumed_role_identifier`, because the spec no longer documents these
+customer-managed disk-key fields on the create request. Remove both fields from struct
+literals and assignments; no replacement request field exists. `Service` still
+reports `encryption_key`, `encryption_assumed_role_identifier`, and
+`encryption_role_id` for existing services.
+
 BigQuery replication modes now include `Cdc` and `CdcOnly`, alongside `Snapshot`,
 matching the modes documented by the API. BigQuery settings add optional `replication_method`, `sync_interval_seconds`,
 `query_cdc_pull_sync_parallelism`, `sync_delay_seconds`, and
