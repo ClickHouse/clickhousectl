@@ -664,7 +664,8 @@ impl CloudClient {
                 ))
             })?;
         Self::from_access_tokens(
-            crate::cloud::auth::load_tokens(),
+            crate::cloud::auth::load_tokens()
+                .map_err(|_| CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_REQUIRED))?,
             url_override,
             // Membership and assignable-role discovery use the typed client
             // directly, outside the handshake's `operation` wrapper, so this
