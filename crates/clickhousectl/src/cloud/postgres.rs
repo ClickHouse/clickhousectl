@@ -84,21 +84,25 @@ use crate::cloud::client::{
 };
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{NameSelector, NamedResource, SourceSelector};
-use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::shared::{
+    parse_datetime, parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id,
+};
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage};
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
-    PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
-    PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig, PostgresLogEntry,
-    PostgresLogsGetListSortorder, PostgresMetrics, PostgresService, PostgresServiceListItem,
-    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
-    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
-    PostgresServiceSetStateCommand, PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
-    ResourceTagsV1, ResourceTagsV1Response, SlowQueryPatternsGetListSortby,
-    SlowQueryPatternsGetListSortorder,
+    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultToastCompression,
+    PgConfigDefaultTransactionIsolation, PgConfigEnableParallelHash, PgConfigIoMethod,
+    PgConfigLogLockWaits, PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType,
+    PgIdProperty, PgProvider, PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig,
+    PostgresIpAccessListEntry, PostgresIpAccessListPatch, PostgresIpAccessListRuleReference,
+    PostgresLogEntry, PostgresLogsGetListSortorder, PostgresMetrics, PostgresService,
+    PostgresServiceListItem, PostgresServicePatchRequest, PostgresServicePostRequest,
+    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
+    PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
+    PostgresSlowQueryPatternDetail, ResourceTagsV1, ResourceTagsV1Response,
+    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
@@ -191,7 +195,9 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   The password and connection string are returned once, here — save them.
   Treat `get` as never returning credentials; `reset-password` is the only way back.
-  Not usable until `cloud postgres get <id>` reports state=running.")]
+  Not usable until `cloud postgres get <id>` reports state=running.
+  Omitting --ip-allow allows all addresses on 5432 (Postgres) and 6432 (PgBouncer); with --ip-allow
+    only the listed rules apply, so add one for each port you need.")]
     Create {
         /// Service name
         #[arg(long)]
@@ -224,12 +230,28 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Allowed IPv4 address or CIDR and ports (repeatable)
+        ///
+        /// PORTS is a port or inclusive range, e.g. 5432 (Postgres), 6432
+        /// (PgBouncer) or 5432..6432.
+        #[arg(
+            long = "ip-allow",
+            value_name = "IP_OR_CIDR:PORTS[=DESCRIPTION]",
+            value_parser = parse_postgres_ip_access_entry
+        )]
+        ip_allow: Vec<PostgresIpAccessListEntry>,
+        /// Create with no access rules, blocking public access
+        #[arg(long, conflicts_with = "ip_allow")]
+        block_public_access: bool,
     },
 
-    /// Update a Postgres service's name, size, HA type or tags
+    /// Update a Postgres service's name, size, HA, tags or access rules
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.")]
+  --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.
+  --remove-ip-allow takes rule IDs from `cloud postgres get`; removals apply before additions.
+  Access rule changes can partially succeed: after a failure, read the rules with
+    `cloud postgres get` before retrying.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
@@ -252,6 +274,20 @@ CONTEXT FOR AGENTS:
         /// Remove all tags; conflicts with --add-tag and --remove-tag
         #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
         clear_tags: bool,
+        /// IPv4 access rule to create, as in `create --ip-allow` (repeatable)
+        #[arg(
+            long = "add-ip-allow",
+            value_name = "IP_OR_CIDR:PORTS[=DESCRIPTION]",
+            value_parser = parse_postgres_ip_access_entry
+        )]
+        add_ip_allow: Vec<PostgresIpAccessListEntry>,
+        /// Access rule ID to remove (repeatable)
+        #[arg(
+            long = "remove-ip-allow",
+            value_name = "RULE_ID",
+            value_parser = clap::builder::NonEmptyStringValueParser::new()
+        )]
+        remove_ip_allow: Vec<String>,
     },
 
     /// Delete a Postgres service
@@ -688,6 +724,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
+            ip_allow,
+            block_public_access,
         } => {
             let opts = PostgresCreateOptions {
                 name: &name,
@@ -699,6 +737,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                ip_allow: &ip_allow,
+                block_public_access,
             };
             postgres_create(client, opts, json).await
         }
@@ -710,6 +750,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             add_tag,
             remove_tag,
             clear_tags,
+            add_ip_allow,
+            remove_ip_allow,
         } => {
             let opts = PostgresUpdateOptions {
                 name: name.as_deref(),
@@ -718,6 +760,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,
                 clear_tags,
+                add_ip_allow: &add_ip_allow,
+                remove_ip_allow: &remove_ip_allow,
             };
             postgres_update(
                 client,
@@ -958,7 +1002,7 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
 /// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
 /// schema. The library stays tolerant when reading responses, so write inputs
 /// are checked here before serde can discard a misspelled field.
-const PG_CONFIG_KEYS: [&str; 38] = [
+const PG_CONFIG_KEYS: [&str; 60] = [
     "autovacuum_analyze_scale_factor",
     "autovacuum_analyze_threshold",
     "autovacuum_freeze_max_age",
@@ -971,19 +1015,38 @@ const PG_CONFIG_KEYS: [&str; 38] = [
     "autovacuum_vacuum_scale_factor",
     "autovacuum_vacuum_threshold",
     "autovacuum_work_mem",
+    "bgwriter_delay",
+    "bgwriter_flush_after",
+    "bgwriter_lru_maxpages",
+    "bgwriter_lru_multiplier",
     "checkpoint_timeout",
+    "default_toast_compression",
     "default_transaction_isolation",
     "effective_cache_size",
     "effective_io_concurrency",
+    "enable_parallel_hash",
+    "hash_mem_multiplier",
     "idle_in_transaction_session_timeout",
     "idle_session_timeout",
+    "io_method",
+    "io_workers",
     "lock_timeout",
+    "log_lock_waits",
+    "log_min_duration_statement",
+    "log_parameter_max_length",
+    "log_temp_files",
+    "logical_decoding_work_mem",
+    "maintenance_io_concurrency",
     "maintenance_work_mem",
     "max_connections",
+    "max_logical_replication_workers",
     "max_parallel_maintenance_workers",
     "max_parallel_workers",
     "max_parallel_workers_per_gather",
+    "max_replication_slots",
     "max_slot_wal_keep_size",
+    "max_sync_workers_per_subscription",
+    "max_wal_senders",
     "max_wal_size",
     "max_worker_processes",
     "min_wal_size",
@@ -991,7 +1054,10 @@ const PG_CONFIG_KEYS: [&str; 38] = [
     "shared_memory_percent",
     "ssl_min_protocol_version",
     "statement_timeout",
+    "temp_buffers",
+    "track_activity_query_size",
     "transaction_timeout",
+    "vacuum_cost_delay",
     "wal_buffers",
     "wal_compression",
     "wal_keep_size",
@@ -1019,7 +1085,11 @@ fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
         }
 
         let allowed = match key.as_str() {
+            "default_toast_compression" => Some(PgConfigDefaultToastCompression::VALUES),
             "default_transaction_isolation" => Some(PgConfigDefaultTransactionIsolation::VALUES),
+            "enable_parallel_hash" => Some(PgConfigEnableParallelHash::VALUES),
+            "io_method" => Some(PgConfigIoMethod::VALUES),
+            "log_lock_waits" => Some(PgConfigLogLockWaits::VALUES),
             "ssl_min_protocol_version" => Some(PgConfigSslMinProtocolVersion::VALUES),
             "wal_compression" => Some(PgConfigWalCompression::VALUES),
             _ => None,
@@ -1115,6 +1185,79 @@ pub(super) fn parse_pg_config_overrides(
     }
     validate_pg_config(&serde_json::Value::Object(out.clone()))?;
     Ok(out)
+}
+
+/// Parse an access rule in `IP_OR_CIDR:PORTS[=DESCRIPTION]` form.
+///
+/// Postgres access rules are IPv4 only, so the first `:` always ends the
+/// source. The description follows the first `=` and is kept byte-for-byte,
+/// including an explicitly empty value, matching the ClickHouse service
+/// `IP_OR_CIDR[=DESCRIPTION]` parser: a trailing `=` sends `"description": ""`.
+fn parse_postgres_ip_access_entry(value: &str) -> Result<PostgresIpAccessListEntry, String> {
+    let invalid = || {
+        "expected IP_OR_CIDR:PORTS[=DESCRIPTION] with an IPv4 address or CIDR and a port \
+         or inclusive range from 1 to 65535 (e.g. 203.0.113.0/24:5432 or 10.0.0.1:5432..6432)"
+            .to_string()
+    };
+    let (rule, description) = value
+        .split_once('=')
+        .map_or((value, None), |(rule, description)| {
+            (rule, Some(description.to_string()))
+        });
+    let (source, ports) = rule.split_once(':').ok_or_else(invalid)?;
+    let source = source.trim();
+    if !parse_ip_or_cidr(source).is_some_and(|address| address.is_ipv4()) {
+        return Err(invalid());
+    }
+    let port_range = parse_postgres_port_range(ports).ok_or_else(invalid)?;
+    Ok(PostgresIpAccessListEntry {
+        description,
+        id: None,
+        port_range,
+        source: source.to_string(),
+    })
+}
+
+/// Validate `PORT` or `START..END` (inclusive, 1-65535) and render it in the
+/// API's canonical form, so `+5432` or `05432` never reach the wire.
+fn parse_postgres_port_range(ports: &str) -> Option<String> {
+    let port = |value: &str| {
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        value.parse::<u16>().ok().filter(|port| *port != 0)
+    };
+    match ports.split_once("..") {
+        Some((start, end)) => {
+            let (start, end) = (port(start)?, port(end)?);
+            (start <= end).then(|| format!("{start}..{end}"))
+        }
+        None => port(ports).map(|port| port.to_string()),
+    }
+}
+
+/// `--ip-allow` rules for create. Omitting both flags omits the field, which
+/// allows all addresses; `--block-public-access` sends `[]`, which allows none.
+fn postgres_create_ip_access_list(
+    ip_allow: &[PostgresIpAccessListEntry],
+    block_public_access: bool,
+) -> Option<Vec<PostgresIpAccessListEntry>> {
+    (block_public_access || !ip_allow.is_empty()).then(|| ip_allow.to_vec())
+}
+
+/// `ipAccessList` patch for update, or `None` when no rule flag was passed.
+/// The patch carries both lists, so the unused side is sent empty.
+fn build_postgres_ip_access_list_patch(
+    add: &[PostgresIpAccessListEntry],
+    remove: &[String],
+) -> Option<PostgresIpAccessListPatch> {
+    (!add.is_empty() || !remove.is_empty()).then(|| PostgresIpAccessListPatch {
+        add: add.to_vec(),
+        remove: remove
+            .iter()
+            .map(|id| PostgresIpAccessListRuleReference { id: id.clone() })
+            .collect(),
+    })
 }
 
 fn generate_compliant_password() -> String {
@@ -1311,6 +1454,40 @@ fn render_postgres_service(svc: &PostgresService) {
             .collect();
         print_line(format!("  Tags: {}", tags.join(", ")));
     }
+    for line in postgres_restore_and_access_lines(svc) {
+        print_line(line);
+    }
+}
+
+/// The restore point and IPv4 access rules, each shown only when the response
+/// carries it: the API omits the rules from most updates and the restore point
+/// until a primary's first backup completes.
+fn postgres_restore_and_access_lines(svc: &PostgresService) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(at) = svc.earliest_restore_time {
+        lines.push(format!("  Earliest restore: {}", at.to_rfc3339()));
+    }
+    let Some(rules) = svc.ip_access_list.as_ref() else {
+        return lines;
+    };
+    if rules.is_empty() {
+        lines.push("  IPv4 access rules: none".to_string());
+        return lines;
+    }
+    lines.push("  IPv4 access rules:".to_string());
+    for rule in rules {
+        let mut line = format!(
+            "    {}: {} ports {}",
+            or_absent(rule.id.as_deref()),
+            or_absent(rule.source.as_deref()),
+            or_absent(rule.port_range.as_deref())
+        );
+        if let Some(description) = rule.description.as_deref().filter(|d| !d.is_empty()) {
+            line.push_str(&format!(" ({description})"));
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 /// Print a short connection handoff without putting a password in argv or a URI.
@@ -1406,6 +1583,8 @@ pub struct PostgresCreateOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
+    pub ip_allow: &'a [PostgresIpAccessListEntry],
+    pub block_public_access: bool,
 }
 
 pub struct PostgresUpdateOptions<'a> {
@@ -1415,6 +1594,8 @@ pub struct PostgresUpdateOptions<'a> {
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
     pub clear_tags: bool,
+    pub add_ip_allow: &'a [PostgresIpAccessListEntry],
+    pub remove_ip_allow: &'a [String],
 }
 
 pub struct PostgresReadReplicaOptions<'a> {
@@ -1964,11 +2145,10 @@ fn postgres_credentials_block(
     }
 }
 
-pub async fn postgres_create(
-    client: &CloudClient,
-    opts: PostgresCreateOptions<'_>,
-    json: bool,
-) -> CloudResult<()> {
+/// Builds the `postgres create` POST body, reading any config files.
+fn build_postgres_create_request(
+    opts: &PostgresCreateOptions<'_>,
+) -> CloudResult<PostgresServicePostRequest> {
     let provider: PgProvider = parse_serde_enum(opts.provider, "provider", PgProvider::VALUES)?;
     let size = parse_pg_size(opts.size)?;
     let pg_version: Option<PgVersion> = opts
@@ -1986,7 +2166,7 @@ pub async fn postgres_create(
         .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
 
-    let req = PostgresServicePostRequest {
+    Ok(PostgresServicePostRequest {
         name: opts.name.to_string(),
         provider,
         region: opts.region.to_string(),
@@ -1996,9 +2176,16 @@ pub async fn postgres_create(
         tags,
         pg_config,
         pg_bouncer_config,
-        // Omitted, not `[]`: an empty list would block public access.
-        ip_access_list: None,
-    };
+        ip_access_list: postgres_create_ip_access_list(opts.ip_allow, opts.block_public_access),
+    })
+}
+
+pub async fn postgres_create(
+    client: &CloudClient,
+    opts: PostgresCreateOptions<'_>,
+    json: bool,
+) -> CloudResult<()> {
+    let req = build_postgres_create_request(&opts)?;
 
     let org_id = resolve_org_id(client).await?;
     let resp = client
@@ -2036,20 +2223,22 @@ pub async fn postgres_create(
 }
 
 /// Builds the `postgres update` PATCH body from the already-parsed pieces
-/// (name, size, HA type, merged tags). Kept separate from `postgres_update`
-/// so the shape sent on the wire is unit-testable without a mock server.
+/// (name, size, HA type, merged tags, access-rule patch). Kept separate from
+/// `postgres_update` so the shape sent on the wire is unit-testable without a
+/// mock server.
 fn build_postgres_update_request(
     name: Option<&str>,
     size: Option<PgSize>,
     ha_type: Option<PgHaType>,
     tags: Option<Vec<ResourceTagsV1>>,
+    ip_access_list: Option<PostgresIpAccessListPatch>,
 ) -> PostgresServicePatchRequest {
     PostgresServicePatchRequest {
         name: name.map(str::to_string),
         size,
         ha_type,
         tags,
-        ip_access_list: None,
+        ip_access_list,
     }
 }
 
@@ -2083,7 +2272,9 @@ pub async fn postgres_update(
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
 
-    let req = build_postgres_update_request(opts.name, size, ha_type, tags);
+    let ip_access_list =
+        build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
+    let req = build_postgres_update_request(opts.name, size, ha_type, tags, ip_access_list);
 
     let resp = client
         .api()
@@ -2819,6 +3010,8 @@ fn render_postgres_backup_page(page: PostgresBackupPage) -> String {
     struct Row {
         #[tabled(rename = "Key")]
         key: String,
+        #[tabled(rename = "Status")]
+        status: String,
         #[tabled(rename = "Last modified")]
         last_modified: String,
     }
@@ -2828,6 +3021,7 @@ fn render_postgres_backup_page(page: PostgresBackupPage) -> String {
     } else {
         let rows = page.result.into_iter().map(|backup| Row {
             key: or_absent(backup.key),
+            status: or_absent(backup.status),
             last_modified: or_absent(
                 backup
                     .last_modified
@@ -3223,7 +3417,7 @@ mod tests {
                 PostgresBackup {
                     key: Some("basebackups_005/0001_backup_stop_sentinel.json".into()),
                     last_modified: Some("2026-03-31T18:17:37Z".parse().unwrap()),
-                    status: None,
+                    status: Some("ready".into()),
                 },
                 PostgresBackup::default(),
             ],
@@ -3234,11 +3428,13 @@ mod tests {
         let rendered = render_postgres_backup_page(page);
         assert!(rendered.contains("| Key"), "{rendered}");
         assert!(rendered.contains("Last modified"), "{rendered}");
+        assert!(rendered.contains("| Status"), "{rendered}");
+        assert!(rendered.contains("| ready"), "{rendered}");
         assert!(rendered.contains("basebackups_005/0001_backup_stop_sentinel.json"));
         assert!(rendered.contains("2026-03-31T18:17:37Z"), "{rendered}");
         assert!(
             rendered.lines().any(|line| {
-                line.split('|').map(str::trim).collect::<Vec<_>>() == ["", "-", "-", ""]
+                line.split('|').map(str::trim).collect::<Vec<_>>() == ["", "-", "-", "-", ""]
             }),
             "{rendered}"
         );
@@ -4232,6 +4428,153 @@ mod tests {
                 panic!("tag diff and clear flags must conflict");
             };
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    const CREATE_ARGS: [&str; 10] = [
+        "clickhousectl",
+        "cloud",
+        "postgres",
+        "create",
+        "--name",
+        "pg1",
+        "--region",
+        "us-east-1",
+        "--size",
+        "m7i.2xlarge",
+    ];
+
+    #[test]
+    fn parses_postgres_create_access_rule_flags() {
+        let PostgresCommands::Create {
+            ip_allow,
+            block_public_access,
+            ..
+        } = parse_postgres(&CREATE_ARGS)
+        else {
+            panic!("expected create");
+        };
+        assert!(ip_allow.is_empty());
+        assert!(!block_public_access);
+
+        let args: Vec<&str> = CREATE_ARGS
+            .into_iter()
+            .chain([
+                "--ip-allow",
+                "203.0.113.0/24:5432=office",
+                "--ip-allow",
+                "198.51.100.7:5432..6432",
+            ])
+            .collect();
+        let PostgresCommands::Create {
+            ip_allow,
+            block_public_access,
+            ..
+        } = parse_postgres(&args)
+        else {
+            panic!("expected create");
+        };
+        assert_eq!(
+            ip_allow,
+            vec![
+                access_rule("203.0.113.0/24", "5432", Some("office")),
+                access_rule("198.51.100.7", "5432..6432", None),
+            ]
+        );
+        assert!(!block_public_access);
+
+        let args: Vec<&str> = CREATE_ARGS
+            .into_iter()
+            .chain(["--block-public-access"])
+            .collect();
+        let PostgresCommands::Create {
+            ip_allow,
+            block_public_access,
+            ..
+        } = parse_postgres(&args)
+        else {
+            panic!("expected create");
+        };
+        assert!(ip_allow.is_empty());
+        assert!(block_public_access);
+    }
+
+    #[test]
+    fn rejects_postgres_create_access_rule_conflicts_and_bad_rules() {
+        for flags in [
+            &["--ip-allow", "203.0.113.7:5432", "--block-public-access"][..],
+            &["--block-public-access", "--ip-allow", "203.0.113.7:5432"][..],
+        ] {
+            let error = Cli::try_parse_from(CREATE_ARGS.into_iter().chain(flags.iter().copied()))
+                .err()
+                .expect("--ip-allow and --block-public-access must conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        for rule in ["203.0.113.7", "2001:db8::/32:5432", "203.0.113.7:70000"] {
+            let error = Cli::try_parse_from(CREATE_ARGS.into_iter().chain(["--ip-allow", rule]))
+                .err()
+                .expect("malformed rule must be rejected by clap");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+        }
+    }
+
+    #[test]
+    fn parses_postgres_update_access_rule_flags() {
+        let PostgresCommands::Update {
+            add_ip_allow,
+            remove_ip_allow,
+            ..
+        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"])
+        else {
+            panic!("expected update");
+        };
+        assert!(add_ip_allow.is_empty());
+        assert!(remove_ip_allow.is_empty());
+
+        let PostgresCommands::Update {
+            add_ip_allow,
+            remove_ip_allow,
+            clear_tags,
+            ..
+        } = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--add-ip-allow",
+            "203.0.113.0/24:5432",
+            "--remove-ip-allow",
+            "rule-1",
+            "--add-ip-allow",
+            "203.0.113.0/24:6432=pooler",
+            "--remove-ip-allow",
+            "rule-2",
+            "--clear-tags",
+        ])
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(
+            add_ip_allow,
+            vec![
+                access_rule("203.0.113.0/24", "5432", None),
+                access_rule("203.0.113.0/24", "6432", Some("pooler")),
+            ]
+        );
+        assert_eq!(remove_ip_allow, vec!["rule-1", "rule-2"]);
+        assert!(clear_tags);
+
+        for flags in [["--add-ip-allow", "203.0.113.7"], ["--remove-ip-allow", ""]] {
+            let error = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "postgres", "update", "pg-1"]
+                    .into_iter()
+                    .chain(flags),
+            )
+            .err()
+            .expect("malformed access rule flag must be rejected by clap");
+            assert_eq!(error.exit_code(), 2, "{flags:?}");
         }
     }
 
@@ -5255,6 +5598,10 @@ mod tests {
             "default_transaction_isolation=read uncommitted",
             "ssl_min_protocol_version=SSLv3",
             "wal_compression=gzip",
+            "default_toast_compression=zstd",
+            "enable_parallel_hash=true",
+            "io_method=posix_aio",
+            "log_lock_waits=1",
         ] {
             let err = parse_pg_config_overrides(&[entry.into()])
                 .unwrap_err()
@@ -5345,7 +5692,7 @@ mod tests {
 
     #[test]
     fn build_postgres_update_request_omits_name_when_not_given() {
-        let req = build_postgres_update_request(None, None, None, None);
+        let req = build_postgres_update_request(None, None, None, None, None);
         assert!(req.name.is_none());
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
@@ -5356,7 +5703,7 @@ mod tests {
 
     #[test]
     fn build_postgres_update_request_clears_tags_explicitly() {
-        let req = build_postgres_update_request(None, None, None, Some(Vec::new()));
+        let req = build_postgres_update_request(None, None, None, Some(Vec::new()), None);
 
         assert_eq!(req.tags, Some(Vec::new()));
         assert_eq!(
@@ -5375,11 +5722,251 @@ mod tests {
                 key: "env".into(),
                 value: Some("prod".into()),
             }]),
+            build_postgres_ip_access_list_patch(
+                &[access_rule("203.0.113.0/24", "5432", Some("office"))],
+                &["rule-1".to_string()],
+            ),
         );
         assert_eq!(req.name.as_deref(), Some("renamed-pg"));
         assert!(req.size.is_some());
         assert_eq!(req.ha_type, Some(PgHaType::Sync));
-        assert_eq!(req.tags.unwrap().len(), 1);
+        assert_eq!(req.tags.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["ipAccessList"],
+            serde_json::json!({
+                "add": [{"source": "203.0.113.0/24", "portRange": "5432", "description": "office"}],
+                "remove": [{"id": "rule-1"}]
+            })
+        );
+    }
+
+    fn access_rule(
+        source: &str,
+        port_range: &str,
+        description: Option<&str>,
+    ) -> PostgresIpAccessListEntry {
+        PostgresIpAccessListEntry {
+            description: description.map(str::to_string),
+            id: None,
+            port_range: port_range.to_string(),
+            source: source.to_string(),
+        }
+    }
+
+    #[test]
+    fn parses_postgres_ip_access_rules() {
+        for (value, source, ports, description) in [
+            ("203.0.113.7:5432", "203.0.113.7", "5432", None),
+            (
+                "10.0.0.0/8:6432=office",
+                "10.0.0.0/8",
+                "6432",
+                Some("office"),
+            ),
+            ("0.0.0.0/0:5432..6432", "0.0.0.0/0", "5432..6432", None),
+            ("192.0.2.1:1..65535=", "192.0.2.1", "1..65535", Some("")),
+            ("192.0.2.1:05432", "192.0.2.1", "5432", None),
+            ("192.0.2.1:5432..5432", "192.0.2.1", "5432..5432", None),
+            (
+                "192.0.2.0/24:5432=a=b: c \u{1f418}",
+                "192.0.2.0/24",
+                "5432",
+                Some("a=b: c \u{1f418}"),
+            ),
+        ] {
+            assert_eq!(
+                parse_postgres_ip_access_entry(value).unwrap(),
+                access_rule(source, ports, description),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_postgres_ip_access_rules() {
+        for value in [
+            "",
+            ":5432",
+            "203.0.113.7",
+            "203.0.113.7=office",
+            "203.0.113.7:",
+            "203.0.113.7:0",
+            "203.0.113.7:65536",
+            "203.0.113.7:+5432",
+            "203.0.113.7:-1",
+            "203.0.113.7:5432-6432",
+            "203.0.113.7:6432..5432",
+            "203.0.113.7:5432..",
+            "203.0.113.7:..6432",
+            "203.0.113.7:5432..6432..7432",
+            "203.0.113.7:postgres",
+            "203.0.113.7: 5432",
+            "10.0.0.0/33:5432",
+            "10.0.0.0/8/9:5432",
+            "not-an-ip:5432",
+            "2001:db8::1:5432",
+            "[2001:db8::1]:5432",
+            "=office:5432",
+        ] {
+            let error = parse_postgres_ip_access_entry(value).unwrap_err();
+            assert!(error.contains("IP_OR_CIDR:PORTS"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn postgres_create_ip_access_list_distinguishes_omitted_from_empty() {
+        assert_eq!(postgres_create_ip_access_list(&[], false), None);
+        assert_eq!(postgres_create_ip_access_list(&[], true), Some(Vec::new()));
+        let rules = vec![
+            access_rule("203.0.113.0/24", "5432", None),
+            access_rule("203.0.113.0/24", "6432", Some("pooler")),
+        ];
+        assert_eq!(
+            postgres_create_ip_access_list(&rules, false),
+            Some(rules.clone())
+        );
+    }
+
+    fn create_options<'a>(
+        ip_allow: &'a [PostgresIpAccessListEntry],
+        block_public_access: bool,
+    ) -> PostgresCreateOptions<'a> {
+        PostgresCreateOptions {
+            name: "pg1",
+            region: "us-east-1",
+            size: "c6gd.large",
+            provider: "aws",
+            pg_version: None,
+            ha_type: None,
+            tags: &[],
+            pg_config_file: None,
+            pg_bouncer_config_file: None,
+            ip_allow,
+            block_public_access,
+        }
+    }
+
+    #[test]
+    fn build_postgres_create_request_minimal_omits_access_rules() {
+        let req = build_postgres_create_request(&create_options(&[], false)).unwrap();
+        assert_eq!(req.name, "pg1");
+        assert_eq!(req.provider, PgProvider::Aws);
+        assert_eq!(req.region, "us-east-1");
+        assert_eq!(req.size, PgSize::C6gd_large);
+        assert!(req.postgres_version.is_none());
+        assert!(req.ha_type.is_none());
+        assert!(req.tags.is_none());
+        assert!(req.pg_config.is_none());
+        assert!(req.pg_bouncer_config.is_none());
+        assert!(req.ip_access_list.is_none());
+        assert!(
+            serde_json::to_value(&req)
+                .unwrap()
+                .get("ipAccessList")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn build_postgres_create_request_sends_rules_or_an_empty_list() {
+        let blocked = build_postgres_create_request(&create_options(&[], true)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&blocked).unwrap()["ipAccessList"],
+            serde_json::json!([])
+        );
+
+        let rules = vec![
+            access_rule("203.0.113.0/24", "5432", Some("office")),
+            access_rule("198.51.100.7", "5432..6432", None),
+        ];
+        let options = PostgresCreateOptions {
+            pg_version: Some("17"),
+            ha_type: Some("sync"),
+            tags: &["env=prod".to_string()][..],
+            ..create_options(&rules, false)
+        };
+        let req = build_postgres_create_request(&options).unwrap();
+        assert_eq!(req.postgres_version, Some(PgVersion::_17));
+        assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.tags.as_ref().unwrap().len(), 1);
+        assert_eq!(req.ip_access_list.as_ref(), Some(&rules));
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["ipAccessList"],
+            serde_json::json!([
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"source": "198.51.100.7", "portRange": "5432..6432"}
+            ])
+        );
+    }
+
+    #[test]
+    fn build_postgres_ip_access_list_patch_minimal_and_maximal() {
+        assert_eq!(build_postgres_ip_access_list_patch(&[], &[]), None);
+
+        let only_remove =
+            build_postgres_ip_access_list_patch(&[], &["rule-1".to_string()]).unwrap();
+        assert_eq!(
+            serde_json::to_value(only_remove).unwrap(),
+            serde_json::json!({"add": [], "remove": [{"id": "rule-1"}]})
+        );
+
+        let rules = vec![
+            access_rule("203.0.113.0/24", "5432", Some("office")),
+            access_rule("198.51.100.7", "6432", None),
+        ];
+        let patch = build_postgres_ip_access_list_patch(
+            &rules,
+            &["rule-1".to_string(), "rule-2".to_string()],
+        )
+        .unwrap();
+        assert_eq!(patch.add, rules);
+        assert!(patch.add.iter().all(|rule| rule.id.is_none()));
+        assert_eq!(
+            patch.remove,
+            vec![
+                PostgresIpAccessListRuleReference {
+                    id: "rule-1".into()
+                },
+                PostgresIpAccessListRuleReference {
+                    id: "rule-2".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn postgres_service_view_shows_restore_point_and_access_rules_when_present() {
+        assert!(postgres_restore_and_access_lines(&PostgresService::default()).is_empty());
+
+        let blocked = PostgresService {
+            ip_access_list: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert_eq!(
+            postgres_restore_and_access_lines(&blocked),
+            vec!["  IPv4 access rules: none"]
+        );
+
+        let svc = PostgresService {
+            earliest_restore_time: Some("2026-10-01T12:00:00Z".parse().unwrap()),
+            ip_access_list: Some(vec![
+                clickhouse_cloud_api::models::PostgresIpAccessListEntryResponse {
+                    description: Some("office".into()),
+                    id: Some("rule-1".into()),
+                    port_range: Some("5432..6432".into()),
+                    source: Some("203.0.113.0/24".into()),
+                },
+                Default::default(),
+            ]),
+            ..Default::default()
+        };
+        let lines = postgres_restore_and_access_lines(&svc);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines[0].contains("2026-10-01T12:00:00"), "{lines:?}");
+        for value in ["rule-1", "203.0.113.0/24", "5432..6432", "office"] {
+            assert!(lines[2].contains(value), "{value}: {lines:?}");
+        }
+        assert_eq!(lines[3].matches(ABSENT).count(), 3, "{lines:?}");
     }
 
     #[test]
@@ -5590,6 +6177,83 @@ mod tests {
     }
 
     #[test]
+    fn pg_config_keys_cover_every_pg_config_field() {
+        // An exhaustive literal: a new library field fails to compile here
+        // until it is added to `PG_CONFIG_KEYS`.
+        let config = PgConfig {
+            autovacuum_analyze_scale_factor: Some(Default::default()),
+            autovacuum_analyze_threshold: Some(Default::default()),
+            autovacuum_freeze_max_age: Some(Default::default()),
+            autovacuum_max_workers: Some(Default::default()),
+            autovacuum_naptime: Some(Default::default()),
+            autovacuum_vacuum_cost_delay: Some(Default::default()),
+            autovacuum_vacuum_cost_limit: Some(Default::default()),
+            autovacuum_vacuum_insert_scale_factor: Some(Default::default()),
+            autovacuum_vacuum_insert_threshold: Some(Default::default()),
+            autovacuum_vacuum_scale_factor: Some(Default::default()),
+            autovacuum_vacuum_threshold: Some(Default::default()),
+            autovacuum_work_mem: Some(Default::default()),
+            bgwriter_delay: Some(Default::default()),
+            bgwriter_flush_after: Some(Default::default()),
+            bgwriter_lru_maxpages: Some(Default::default()),
+            bgwriter_lru_multiplier: Some(Default::default()),
+            checkpoint_timeout: Some(Default::default()),
+            default_toast_compression: Some(Default::default()),
+            default_transaction_isolation: Some(Default::default()),
+            effective_cache_size: Some(Default::default()),
+            effective_io_concurrency: Some(Default::default()),
+            enable_parallel_hash: Some(Default::default()),
+            hash_mem_multiplier: Some(Default::default()),
+            idle_in_transaction_session_timeout: Some(Default::default()),
+            idle_session_timeout: Some(Default::default()),
+            io_method: Some(Default::default()),
+            io_workers: Some(Default::default()),
+            lock_timeout: Some(Default::default()),
+            log_lock_waits: Some(Default::default()),
+            log_min_duration_statement: Some(Default::default()),
+            log_parameter_max_length: Some(Default::default()),
+            log_temp_files: Some(Default::default()),
+            logical_decoding_work_mem: Some(Default::default()),
+            maintenance_io_concurrency: Some(Default::default()),
+            maintenance_work_mem: Some(Default::default()),
+            max_connections: Some(Default::default()),
+            max_logical_replication_workers: Some(Default::default()),
+            max_parallel_maintenance_workers: Some(Default::default()),
+            max_parallel_workers: Some(Default::default()),
+            max_parallel_workers_per_gather: Some(Default::default()),
+            max_replication_slots: Some(Default::default()),
+            max_slot_wal_keep_size: Some(Default::default()),
+            max_sync_workers_per_subscription: Some(Default::default()),
+            max_wal_senders: Some(Default::default()),
+            max_wal_size: Some(Default::default()),
+            max_worker_processes: Some(Default::default()),
+            min_wal_size: Some(Default::default()),
+            random_page_cost: Some(Default::default()),
+            shared_memory_percent: Some(Default::default()),
+            ssl_min_protocol_version: Some(Default::default()),
+            statement_timeout: Some(Default::default()),
+            temp_buffers: Some(Default::default()),
+            track_activity_query_size: Some(Default::default()),
+            transaction_timeout: Some(Default::default()),
+            vacuum_cost_delay: Some(Default::default()),
+            wal_buffers: Some(Default::default()),
+            wal_compression: Some(Default::default()),
+            wal_keep_size: Some(Default::default()),
+            wal_sender_timeout: Some(Default::default()),
+            work_mem: Some(Default::default()),
+        };
+        let serde_json::Value::Object(fields) = serde_json::to_value(config).unwrap() else {
+            panic!("PgConfig must serialize as an object");
+        };
+        let mut expected = PG_CONFIG_KEYS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
     fn pg_config_validation_preserves_every_known_key_and_value() {
         let mut values = serde_json::Map::new();
         for key in PG_CONFIG_KEYS {
@@ -5597,6 +6261,10 @@ mod tests {
                 "default_transaction_isolation" => serde_json::json!("repeatable read"),
                 "ssl_min_protocol_version" => serde_json::json!("TLSv1.3"),
                 "wal_compression" => serde_json::json!("zstd"),
+                "default_toast_compression" => serde_json::json!("lz4"),
+                "enable_parallel_hash" => serde_json::json!("off"),
+                "io_method" => serde_json::json!("io_uring"),
+                "log_lock_waits" => serde_json::json!("on"),
                 "autovacuum_analyze_scale_factor" => serde_json::json!(false),
                 _ => serde_json::json!(0),
             };

@@ -313,29 +313,31 @@ fn parse_ip_access_entry(value: &str) -> CloudResult<IpAccessListEntry> {
             (source, Some(description.to_string()))
         });
     let source = source.trim();
-
-    let (address, prefix) = match source.split_once('/') {
-        Some((address, prefix)) if !prefix.contains('/') => (address, Some(prefix)),
-        Some(_) => return Err(invalid_ip_access_entry(value)),
-        None => (source, None),
-    };
-    let address = address
-        .parse::<IpAddr>()
-        .map_err(|_| invalid_ip_access_entry(value))?;
-    if let Some(prefix) = prefix {
-        let prefix = prefix
-            .parse::<u8>()
-            .map_err(|_| invalid_ip_access_entry(value))?;
-        let max_prefix = if address.is_ipv4() { 32 } else { 128 };
-        if prefix > max_prefix {
-            return Err(invalid_ip_access_entry(value));
-        }
-    }
+    parse_ip_or_cidr(source).ok_or_else(|| invalid_ip_access_entry(value))?;
 
     Ok(IpAccessListEntry {
         source: source.to_string(),
         description,
     })
+}
+
+/// Parse an `ADDRESS[/PREFIX]` source, returning its address when the address
+/// and any prefix length are valid for the address family.
+pub(super) fn parse_ip_or_cidr(source: &str) -> Option<IpAddr> {
+    let (address, prefix) = match source.split_once('/') {
+        Some((address, prefix)) if !prefix.contains('/') => (address, Some(prefix)),
+        Some(_) => return None,
+        None => (source, None),
+    };
+    let address = address.parse::<IpAddr>().ok()?;
+    if let Some(prefix) = prefix {
+        let prefix = prefix.parse::<u8>().ok()?;
+        let max_prefix = if address.is_ipv4() { 32 } else { 128 };
+        if prefix > max_prefix {
+            return None;
+        }
+    }
+    Some(address)
 }
 
 fn invalid_ip_access_entry(value: &str) -> CloudError {
