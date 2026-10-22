@@ -28999,6 +28999,101 @@ async fn old_oauth_records_require_login_even_for_known_hosts_and_fresh_tokens()
 }
 
 #[tokio::test]
+async fn oauth_login_and_refresh_never_follow_redirects() {
+    let api = MockServer::start().await;
+    let destination = MockServer::start().await;
+    for status in [301, 302, 303, 307, 308] {
+        for login in [true, false] {
+            let issuer = MockServer::start().await;
+            let endpoint = if login {
+                "/oauth/device/code"
+            } else {
+                "/oauth/token"
+            };
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/stolen", destination.uri())),
+                )
+                .expect(1)
+                .mount(&issuer)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            let mut command = custom_oauth_command(dir.path(), &api.uri());
+            if login {
+                command
+                    .env("CLICKHOUSECTL_AUTH_URL", issuer.uri())
+                    .env("CLICKHOUSECTL_CLIENT_ID", "client")
+                    .args(["auth", "login"]);
+            } else {
+                let token_path = dir.path().join("home/.clickhouse/tokens.json");
+                std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+                std::fs::write(&token_path, serde_json::to_vec(&serde_json::json!({
+                    "access_token": "expired", "refresh_token": "secret-refresh", "expires_at": 1,
+                    "api_url": api.uri(),
+                    "auth_config": {"auth_url": issuer.uri(), "client_id": "client"}
+                })).unwrap()).unwrap();
+                command.args(["auth", "whoami"]);
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if login { 1 } else { 4 }),
+                "{status}: {output:?}"
+            );
+            assert!(destination.received_requests().await.unwrap().is_empty());
+        }
+    }
+    assert!(api.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn oauth_rejects_insecure_authorization_config_before_requests() {
+    let api = MockServer::start().await;
+    for auth_url in [
+        "http://auth.example.invalid",
+        "ftp://localhost",
+        "not-a-url",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let output = custom_oauth_command(dir.path(), &api.uri())
+            .env("CLICKHOUSECTL_AUTH_URL", auth_url)
+            .env("CLICKHOUSECTL_CLIENT_ID", "client")
+            .args(["auth", "login"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            cloud_runtime_error(&output)["message"]
+                .as_str()
+                .unwrap()
+                .contains("HTTPS")
+        );
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        assert!(!token_path.exists());
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &token_path,
+            serde_json::to_vec(&serde_json::json!({
+                "access_token": "expired", "refresh_token": "secret-refresh", "expires_at": 1,
+                "api_url": api.uri(),
+                "auth_config": {"auth_url": auth_url, "client_id": "client"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = custom_oauth_command(dir.path(), &api.uri())
+            .args(["auth", "whoami"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+    }
+    assert!(api.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn custom_oauth_login_pins_config_through_refresh_and_relogin() {
     let api = MockServer::start().await;
     let issuer_a = MockServer::start().await;
