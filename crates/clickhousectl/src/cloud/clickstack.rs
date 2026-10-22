@@ -670,7 +670,7 @@ fn build_create_dashboard_request(
     config_file: &str,
 ) -> CloudResult<ClickStackCreateDashboardRequest> {
     let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, config_file)?;
+    validate_dashboard_unions(&value, DashboardFilterShape::Input, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_create_dashboard_enums(&request, config_file)?;
     Ok(request)
@@ -680,7 +680,7 @@ fn build_update_dashboard_request(
     config_file: &str,
 ) -> CloudResult<ClickStackUpdateDashboardRequest> {
     let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, config_file)?;
+    validate_dashboard_unions(&value, DashboardFilterShape::WithId, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_update_dashboard_enums(&request, config_file)?;
     Ok(request)
@@ -1730,19 +1730,31 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "heatmap" => {
-            let config =
-                strict_dashboard_variant::<ClickStackHeatmapChartConfig>(value, path, source)?;
+            // Only the distribution heatmap is accepted, as before the spec
+            // added the series heatmap; `heatmapMode: "series"` is rejected below.
+            let config = strict_dashboard_variant::<ClickStackHeatmapDistributionChartConfig>(
+                value, path, source,
+            )?;
             reject_unknown_enum!(
                 &config.display_type,
-                ClickStackHeatmapChartConfigDisplaytype::Unknown,
+                ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
                 unknown,
                 format!("{path}.displayType"),
                 source
             );
+            if let Some(mode) = &config.heatmap_mode {
+                reject_unknown_enum!(
+                    mode,
+                    ClickStackHeatmapDistributionChartConfigHeatmapmode::Unknown,
+                    unknown,
+                    format!("{path}.heatmapMode"),
+                    source
+                );
+            }
             if let Some(language) = &config.where_language {
                 reject_unknown_enum!(
                     language,
-                    ClickStackHeatmapChartConfigWherelanguage::Unknown,
+                    ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
                     unknown,
                     format!("{path}.whereLanguage"),
                     source
@@ -1881,7 +1893,110 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
     }
 }
 
-fn validate_dashboard_unions(value: &Value, source: &str) -> CloudResult<()> {
+/// Which dashboard filter schema a request body carries: create bodies send
+/// filters without an `id`, update bodies send them with one.
+#[derive(Clone, Copy)]
+enum DashboardFilterShape {
+    Input,
+    WithId,
+}
+
+/// Strictly check one dashboard filter against the variant its `type` selects.
+/// The library's filter unions dispatch through raw JSON, so the strict
+/// request-body check cannot see unknown fields inside one. Only the
+/// `QUERY_EXPRESSION` kind is accepted, as before the spec added other kinds.
+fn validate_dashboard_filter(
+    value: &Value,
+    shape: DashboardFilterShape,
+    path: &str,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackFilterMaxSelections, ClickStackFilterMinSelections,
+        ClickStackQueryExpressionFilter, ClickStackQueryExpressionFilterInput,
+        ClickStackQueryExpressionFilterInputSourcemetrictype,
+        ClickStackQueryExpressionFilterInputWherelanguage,
+    };
+    let kind = require_discriminator(value, "type", path, source)?;
+    if kind != "QUERY_EXPRESSION" {
+        return Err(invalid_dashboard(
+            source,
+            format!("unknown {path}.type value `{kind}`"),
+        ));
+    }
+    // Both shapes share the input schema's enum fields; only `id` differs.
+    let (source_metric_type, where_language, min_selections, max_selections) = match shape {
+        DashboardFilterShape::Input => {
+            let filter = strict_dashboard_variant::<ClickStackQueryExpressionFilterInput>(
+                value, path, source,
+            )?;
+            (
+                filter.source_metric_type,
+                filter.where_language,
+                filter.min_selections,
+                filter.max_selections,
+            )
+        }
+        DashboardFilterShape::WithId => {
+            let filter =
+                strict_dashboard_variant::<ClickStackQueryExpressionFilter>(value, path, source)?;
+            (
+                filter.source_metric_type,
+                filter.where_language,
+                filter.min_selections,
+                filter.max_selections,
+            )
+        }
+    };
+    if let Some(metric_type) = &source_metric_type {
+        reject_unknown_enum!(
+            metric_type,
+            ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
+            unknown,
+            format!("{path}.sourceMetricType"),
+            source
+        );
+    }
+    if let Some(language) = &where_language {
+        reject_unknown_enum!(
+            language,
+            ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
+            unknown,
+            format!("{path}.whereLanguage"),
+            source
+        );
+    }
+    if let Some(min_selections) = &min_selections {
+        reject_unknown_enum!(
+            min_selections,
+            ClickStackFilterMinSelections::Unknown,
+            unknown,
+            format!("{path}.minSelections"),
+            source
+        );
+    }
+    if let Some(max_selections) = &max_selections {
+        reject_unknown_enum!(
+            max_selections,
+            ClickStackFilterMaxSelections::Unknown,
+            unknown,
+            format!("{path}.maxSelections"),
+            source
+        );
+    }
+    Ok(())
+}
+
+fn validate_dashboard_unions(
+    value: &Value,
+    filter_shape: DashboardFilterShape,
+    source: &str,
+) -> CloudResult<()> {
+    if let Some(filters) = field(value, "filters").and_then(Value::as_array) {
+        for (index, filter) in filters.iter().enumerate() {
+            validate_dashboard_filter(filter, filter_shape, &format!("filters[{index}]"), source)?;
+        }
+    }
     let Some(tiles) = field(value, "tiles").and_then(Value::as_array) else {
         return Ok(());
     };
@@ -1933,10 +2048,7 @@ fn validate_create_dashboard_enums(
     request: &ClickStackCreateDashboardRequest,
     source: &str,
 ) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackCreateDashboardRequestSavedquerylanguage, ClickStackFilterInputSourcemetrictype,
-        ClickStackFilterInputType, ClickStackFilterInputWherelanguage,
-    };
+    use clickhouse_cloud_api::models::ClickStackCreateDashboardRequestSavedquerylanguage;
     if let Some(language) = &request.saved_query_language {
         reject_unknown_enum!(
             language,
@@ -1946,34 +2058,6 @@ fn validate_create_dashboard_enums(
             source
         );
     }
-    for (index, filter) in request.filters.iter().flatten().enumerate() {
-        let path = format!("filters[{index}]");
-        if let Some(metric_type) = &filter.source_metric_type {
-            reject_unknown_enum!(
-                metric_type,
-                ClickStackFilterInputSourcemetrictype::Unknown,
-                unknown,
-                format!("{path}.sourceMetricType"),
-                source
-            );
-        }
-        reject_unknown_enum!(
-            &filter.r#type,
-            ClickStackFilterInputType::Unknown,
-            unknown,
-            format!("{path}.type"),
-            source
-        );
-        if let Some(language) = &filter.where_language {
-            reject_unknown_enum!(
-                language,
-                ClickStackFilterInputWherelanguage::Unknown,
-                unknown,
-                format!("{path}.whereLanguage"),
-                source
-            );
-        }
-    }
     Ok(())
 }
 
@@ -1981,10 +2065,7 @@ fn validate_update_dashboard_enums(
     request: &ClickStackUpdateDashboardRequest,
     source: &str,
 ) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackFilterSourcemetrictype, ClickStackFilterType, ClickStackFilterWherelanguage,
-        ClickStackUpdateDashboardRequestSavedquerylanguage,
-    };
+    use clickhouse_cloud_api::models::ClickStackUpdateDashboardRequestSavedquerylanguage;
     if let Some(language) = &request.saved_query_language {
         reject_unknown_enum!(
             language,
@@ -1993,34 +2074,6 @@ fn validate_update_dashboard_enums(
             "savedQueryLanguage",
             source
         );
-    }
-    for (index, filter) in request.filters.iter().flatten().enumerate() {
-        let path = format!("filters[{index}]");
-        if let Some(metric_type) = &filter.source_metric_type {
-            reject_unknown_enum!(
-                metric_type,
-                ClickStackFilterSourcemetrictype::Unknown,
-                unknown,
-                format!("{path}.sourceMetricType"),
-                source
-            );
-        }
-        reject_unknown_enum!(
-            &filter.r#type,
-            ClickStackFilterType::Unknown,
-            unknown,
-            format!("{path}.type"),
-            source
-        );
-        if let Some(language) = &filter.where_language {
-            reject_unknown_enum!(
-                language,
-                ClickStackFilterWherelanguage::Unknown,
-                unknown,
-                format!("{path}.whereLanguage"),
-                source
-            );
-        }
     }
     Ok(())
 }
@@ -4527,17 +4580,34 @@ mod tests {
         std::fs::write(&config_file, create_body.to_string()).unwrap();
         let create = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(create.tiles.len(), 17);
-        assert_eq!(
-            create.filters.as_ref().unwrap()[0].variable_name.as_deref(),
-            Some("service")
-        );
+        let Some(
+            [
+                clickhouse_cloud_api::models::ClickStackFilterInput::ClickStackQueryExpressionFilterInput(
+                    filter,
+                ),
+            ],
+        ) = create.filters.as_deref()
+        else {
+            panic!("expected one query-expression filter: {:?}", create.filters);
+        };
+        assert_eq!(filter.variable_name.as_deref(), Some("service"));
         assert_eq!(create.saved_filter_values.as_ref().unwrap().len(), 2);
         assert_eq!(serde_json::to_value(&create).unwrap(), create_body);
 
         let update_body = complete_dashboard(true);
         std::fs::write(&config_file, update_body.to_string()).unwrap();
         let update = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(update.filters.as_ref().unwrap()[0].id, "filter-1");
+        let Some(
+            [
+                clickhouse_cloud_api::models::ClickStackFilter::ClickStackQueryExpressionFilter(
+                    filter,
+                ),
+            ],
+        ) = update.filters.as_deref()
+        else {
+            panic!("expected one query-expression filter: {:?}", update.filters);
+        };
+        assert_eq!(filter.id, "filter-1");
         assert_eq!(
             update.containers.as_ref().unwrap()[0]
                 .tabs
@@ -4586,11 +4656,44 @@ mod tests {
                 serde_json::json!({"name":"bad","tiles":[],"savedFilterValues":[{"type":"variable","name":"v","values":[],"valuess":[]}]}),
                 "valuess",
             ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"series","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
+                "unknown tiles[0].config.heatmapMode value `series`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),
+                "filters[0].type must be a string",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"]}]}),
+                "unknown filters[0].type value `STATIC_LIST`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","expresion":"x"}]}),
+                "expresion",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","whereLanguage":"kql"}]}),
+                "unknown filters[0].whereLanguage value `kql`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","minSelections":2}]}),
+                "unknown filters[0].minSelections value `2`",
+            ),
         ] {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
             assert!(error.message.contains(expected), "{error}");
         }
+
+        // Update bodies check each filter against the schema that carries `id`.
+        let filter = serde_json::json!({"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s"});
+        let body = serde_json::json!({"name":"bad","tiles":[],"filters":[filter]});
+        std::fs::write(&config_file, body.to_string()).unwrap();
+        build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
+        let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
+        assert!(error.message.contains("invalid filters[0]"), "{error}");
+        assert!(error.message.contains("`id`"), "{error}");
     }
 
     #[test]

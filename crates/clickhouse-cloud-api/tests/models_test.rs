@@ -360,12 +360,16 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         ClickStackBarChartConfig,
         ClickStackCategoricalBarChartConfig,
         ClickStackDashboardChartSeries,
+        ClickStackFilter,
+        ClickStackFilterInput,
+        ClickStackHeatmapChartConfig,
         ClickStackLineChartConfig,
         ClickStackNumberChartConfig,
         ClickStackOnClick,
         ClickStackOnClickTarget,
         ClickStackPieChartConfig,
         ClickStackSource,
+        ClickStackStackedLineChartConfig,
         ClickStackTableChartConfig,
         ClickStackTileConfig,
         ClickStackWebhook,
@@ -4224,7 +4228,10 @@ fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
         ClickStackClickHouseCASLPermissionConditions => ClickStackClickHouseCASLPermissionConditionsResponse,
         ClickStackClickHouseCASLPermissionConditionsFrom => ClickStackClickHouseCASLPermissionConditionsFromResponse,
         ClickStackMongoDBCASLPermission => ClickStackMongoDBCASLPermissionResponse,
-        ClickStackFilter => ClickStackFilterResponse,
+        ClickStackQueryExpressionFilter => ClickStackQueryExpressionFilterResponse,
+        ClickStackStaticListFilter => ClickStackStaticListFilterResponse,
+        ClickStackPrometheusLabelFilter => ClickStackPrometheusLabelFilterResponse,
+        ClickStackSourceFilter => ClickStackSourceFilterResponse,
         ClickStackFilterSettingsColumn => ClickStackFilterSettingsColumnResponse,
         ClickStackHighlightedAttributeExpression => ClickStackHighlightedAttributeExpressionResponse,
         ClickStackLogSource => ClickStackLogSourceResponse,
@@ -4308,7 +4315,8 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
         ClickStackDashboardContainerTab => ClickStackDashboardContainerTabResponse,
         ClickStackEqualityColorCondition => ClickStackEqualityColorConditionResponse,
         ClickStackEventPatternsChartConfig => ClickStackEventPatternsChartConfigResponse,
-        ClickStackHeatmapChartConfig => ClickStackHeatmapChartConfigResponse,
+        ClickStackHeatmapDistributionChartConfig => ClickStackHeatmapDistributionChartConfigResponse,
+        ClickStackHeatmapSeriesChartConfig => ClickStackHeatmapSeriesChartConfigResponse,
         ClickStackHeatmapSelectItem => ClickStackHeatmapSelectItemResponse,
         ClickStackLineBuilderChartConfig => ClickStackLineBuilderChartConfigResponse,
         ClickStackLineRawSqlChartConfig => ClickStackLineRawSqlChartConfigResponse,
@@ -4327,6 +4335,8 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
         ClickStackPieRawSqlChartConfig => ClickStackPieRawSqlChartConfigResponse,
         ClickStackSearchChartConfig => ClickStackSearchChartConfigResponse,
         ClickStackSelectItem => ClickStackSelectItemResponse,
+        ClickStackStackedLineBuilderChartConfig => ClickStackStackedLineBuilderChartConfigResponse,
+        ClickStackStackedLineRawSqlChartConfig => ClickStackStackedLineRawSqlChartConfigResponse,
         ClickStackTableBuilderChartConfig => ClickStackTableBuilderChartConfigResponse,
         ClickStackTableRawSqlChartConfig => ClickStackTableRawSqlChartConfigResponse,
     );
@@ -4796,10 +4806,13 @@ fn clickstack_filter_applies_to_source_ids_round_trip() {
         "id": "f-1",
         "name": "errors",
         "sourceId": "src-1",
-        "type": "sql",
+        "type": "QUERY_EXPRESSION",
         "appliesToSourceIds": ["src-1", "src-2"]
     }"#;
     let filter: ClickStackFilter = serde_json::from_str(json).unwrap();
+    let ClickStackFilter::ClickStackQueryExpressionFilter(filter) = filter else {
+        panic!("expected the query-expression variant, got {filter:?}");
+    };
     assert_eq!(
         filter.applies_to_source_ids,
         Some(vec!["src-1".to_string(), "src-2".to_string()])
@@ -4809,7 +4822,7 @@ fn clickstack_filter_applies_to_source_ids_round_trip() {
     assert_eq!(v["appliesToSourceIds"][1], "src-2");
 
     // Absent -> None -> dropped.
-    let filter = ClickStackFilter::default();
+    let filter = ClickStackQueryExpressionFilter::default();
     assert_eq!(filter.applies_to_source_ids, None);
     let v = serde_json::to_value(&filter).unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
@@ -4821,10 +4834,13 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
         "expression": "level = 'error'",
         "name": "errors",
         "sourceId": "src-1",
-        "type": "sql",
+        "type": "QUERY_EXPRESSION",
         "appliesToSourceIds": ["src-9"]
     }"#;
     let filter: ClickStackFilterInput = serde_json::from_str(json).unwrap();
+    let ClickStackFilterInput::ClickStackQueryExpressionFilterInput(filter) = filter else {
+        panic!("expected the query-expression variant, got {filter:?}");
+    };
     assert_eq!(
         filter.applies_to_source_ids,
         Some(vec!["src-9".to_string()])
@@ -4832,7 +4848,7 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
     let v = serde_json::to_value(&filter).unwrap();
     assert_eq!(v["appliesToSourceIds"][0], "src-9");
 
-    let v = serde_json::to_value(ClickStackFilterInput::default()).unwrap();
+    let v = serde_json::to_value(ClickStackQueryExpressionFilterInput::default()).unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
 }
 
@@ -5503,12 +5519,15 @@ fn clickstack_tile_config_heatmap_variant() {
     }"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
     match cfg {
-        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(
+            ClickStackHeatmapChartConfig::ClickStackHeatmapDistributionChartConfig(h),
+        ) => {
             assert_eq!(h.source_id, "src-1");
             assert_eq!(
                 h.display_type,
-                ClickStackHeatmapChartConfigDisplaytype::Heatmap
+                ClickStackHeatmapDistributionChartConfigDisplaytype::Heatmap
             );
+            assert_eq!(h.heatmap_mode, None);
             assert_eq!(h.select.len(), 1);
             assert_eq!(h.select[0].value_expression, "latency_ms");
         }
@@ -9838,4 +9857,711 @@ fn notification_tolerates_missing_null_and_future_values() {
     assert_eq!(future.r#type.as_deref(), Some("future.type"));
     assert_eq!(future.severity.as_deref(), Some("future.severity"));
     assert_eq!(future.resource_type.as_deref(), Some("future.resource"));
+}
+
+/// One spec-shaped payload per `ClickStackFilter` branch, each built from every
+/// property of its `*FilterInput` schema plus the `id` the full schema adds.
+fn clickstack_filter_kind_payloads() -> [(&'static str, serde_json::Value); 4] {
+    [
+        (
+            "QUERY_EXPRESSION",
+            serde_json::json!({
+                "type": "QUERY_EXPRESSION", "id": "f-1", "name": "Environment",
+                "expression": "environment", "sourceId": "src-1",
+                "sourceMetricType": "exponential histogram", "where": "ServiceName:api",
+                "whereLanguage": "lucene", "appliesToSourceIds": ["src-1"],
+                "isBroadcastEnabled": true, "isVariableEnabled": true,
+                "variableName": "environment", "minSelections": 1,
+                "isGlobalRequirement": true, "maxSelections": 1
+            }),
+        ),
+        (
+            "STATIC_LIST",
+            serde_json::json!({
+                "type": "STATIC_LIST", "id": "f-2", "name": "Environment",
+                "options": ["prod", "staging"], "isBroadcastEnabled": false,
+                "isVariableEnabled": true, "variableName": "environment",
+                "minSelections": 0, "isGlobalRequirement": false, "maxSelections": 1
+            }),
+        ),
+        (
+            "PROMETHEUS_LABEL",
+            serde_json::json!({
+                "type": "PROMETHEUS_LABEL", "id": "f-3", "name": "Pod",
+                "sourceId": "src-2", "label": "pod", "match": "up{job=\"api\"}",
+                "isBroadcastEnabled": false, "isVariableEnabled": true,
+                "variableName": "pod", "minSelections": 1,
+                "isGlobalRequirement": false, "maxSelections": 1
+            }),
+        ),
+        (
+            "SOURCE_FILTER",
+            serde_json::json!({
+                "type": "SOURCE_FILTER", "id": "f-4", "name": "Cluster",
+                "sourceId": "src-3", "expression": "cluster",
+                "appliesToSourceIds": ["src-3"], "isBroadcastEnabled": true,
+                "isVariableEnabled": true, "variableName": "cluster",
+                "minSelections": 0, "isGlobalRequirement": true, "maxSelections": 1
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn clickstack_filter_unions_route_each_kind_to_its_variant() {
+    // Dispatch reads `type` alone, so each spec-shaped payload must land in its
+    // own arm of the update-request, create-request and response unions — and
+    // never in the first arm that happens to deserialize — then serialize back
+    // unchanged.
+    for (kind, payload) in clickstack_filter_kind_payloads() {
+        let filter: ClickStackFilter = serde_json::from_value(payload.clone()).unwrap();
+        let matched = match (kind, &filter) {
+            ("QUERY_EXPRESSION", ClickStackFilter::ClickStackQueryExpressionFilter(f)) => {
+                assert_eq!(f.id, "f-1");
+                assert_eq!(f.expression, "environment");
+                assert_eq!(
+                    f.source_metric_type,
+                    Some(
+                        ClickStackQueryExpressionFilterInputSourcemetrictype::Exponential_histogram
+                    )
+                );
+                assert_eq!(
+                    f.where_language,
+                    Some(ClickStackQueryExpressionFilterInputWherelanguage::Lucene)
+                );
+                assert_eq!(f.min_selections, Some(ClickStackFilterMinSelections::One));
+                assert_eq!(f.max_selections, Some(ClickStackFilterMaxSelections::One));
+                true
+            }
+            ("STATIC_LIST", ClickStackFilter::ClickStackStaticListFilter(f)) => {
+                assert_eq!(f.id, "f-2");
+                assert_eq!(f.options, ["prod", "staging"]);
+                assert_eq!(f.min_selections, Some(ClickStackFilterMinSelections::Zero));
+                true
+            }
+            ("PROMETHEUS_LABEL", ClickStackFilter::ClickStackPrometheusLabelFilter(f)) => {
+                assert_eq!(f.id, "f-3");
+                assert_eq!(f.label, "pod");
+                assert_eq!(f.r#match.as_deref(), Some("up{job=\"api\"}"));
+                true
+            }
+            ("SOURCE_FILTER", ClickStackFilter::ClickStackSourceFilter(f)) => {
+                assert_eq!(f.id, "f-4");
+                assert_eq!(f.variable_name, "cluster");
+                assert_eq!(f.is_global_requirement, Some(true));
+                true
+            }
+            _ => false,
+        };
+        assert!(matched, "{kind} routed to {filter:?}");
+        assert_eq!(serde_json::to_value(&filter).unwrap(), payload);
+
+        let mut input_payload = payload.clone();
+        input_payload.as_object_mut().unwrap().remove("id");
+        let input: ClickStackFilterInput = serde_json::from_value(input_payload.clone()).unwrap();
+        let matched = matches!(
+            (kind, &input),
+            (
+                "QUERY_EXPRESSION",
+                ClickStackFilterInput::ClickStackQueryExpressionFilterInput(_)
+            ) | (
+                "STATIC_LIST",
+                ClickStackFilterInput::ClickStackStaticListFilterInput(_)
+            ) | (
+                "PROMETHEUS_LABEL",
+                ClickStackFilterInput::ClickStackPrometheusLabelFilterInput(_)
+            ) | (
+                "SOURCE_FILTER",
+                ClickStackFilterInput::ClickStackSourceFilterInput(_)
+            )
+        );
+        assert!(matched, "{kind} input routed to {input:?}");
+        assert_eq!(serde_json::to_value(&input).unwrap(), input_payload);
+
+        let response: ClickStackFilterResponse = serde_json::from_value(payload.clone()).unwrap();
+        let matched = match (kind, &response) {
+            ("QUERY_EXPRESSION", ClickStackFilterResponse::ClickStackQueryExpressionFilter(f)) => {
+                f.expression.as_deref() == Some("environment")
+            }
+            ("STATIC_LIST", ClickStackFilterResponse::ClickStackStaticListFilter(f)) => {
+                f.options.as_deref() == Some(&["prod".to_string(), "staging".to_string()][..])
+            }
+            ("PROMETHEUS_LABEL", ClickStackFilterResponse::ClickStackPrometheusLabelFilter(f)) => {
+                f.label.as_deref() == Some("pod")
+            }
+            ("SOURCE_FILTER", ClickStackFilterResponse::ClickStackSourceFilter(f)) => {
+                f.variable_name.as_deref() == Some("cluster")
+            }
+            _ => false,
+        };
+        assert!(matched, "{kind} response routed to {response:?}");
+        assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_filter_dispatch_ignores_the_payload_shape() {
+    // A static-list body relabelled as a source filter is still a source filter
+    // in the tolerant response union: dispatch never falls through to whichever
+    // all-`Option` arm accepts the shape.
+    let mut payload = clickstack_filter_kind_payloads()[1].1.clone();
+    payload["type"] = "SOURCE_FILTER".into();
+    let response: ClickStackFilterResponse = serde_json::from_value(payload.clone()).unwrap();
+    assert!(
+        matches!(
+            response,
+            ClickStackFilterResponse::ClickStackSourceFilter(_)
+        ),
+        "{response:?}"
+    );
+    // The strict request union cannot fit it (a source filter needs
+    // `expression` and `sourceId`), so it keeps the raw JSON rather than
+    // retrying the static-list arm the shape would fit.
+    let filter: ClickStackFilter = serde_json::from_value(payload.clone()).unwrap();
+    assert_eq!(filter, ClickStackFilter::Unknown(payload));
+}
+
+#[test]
+fn clickstack_filter_unknown_or_missing_type_round_trips() {
+    for json in [
+        r#"{"type":"FUTURE_KIND","id":"f-9","name":"x"}"#,
+        r#"{"id":"f-9","name":"x","expression":"e","sourceId":"s"}"#,
+    ] {
+        assert_unknown_variant_round_trips(json, |f: &ClickStackFilter| {
+            matches!(f, ClickStackFilter::Unknown(_))
+        });
+        assert_unknown_variant_round_trips(json, |f: &ClickStackFilterInput| {
+            matches!(f, ClickStackFilterInput::Unknown(_))
+        });
+        assert_unknown_variant_round_trips(json, |f: &ClickStackFilterResponse| {
+            matches!(f, ClickStackFilterResponse::Unknown(_))
+        });
+    }
+}
+
+#[test]
+fn clickstack_filter_response_treats_dropped_and_null_fields_as_absent() {
+    for (kind, _) in clickstack_filter_kind_payloads() {
+        for json in [
+            serde_json::json!({"type": kind}),
+            serde_json::json!({
+                "type": kind, "id": null, "name": null, "expression": null,
+                "sourceId": null, "options": null, "label": null, "match": null,
+                "sourceMetricType": null, "where": null, "whereLanguage": null,
+                "appliesToSourceIds": null, "isBroadcastEnabled": null,
+                "isVariableEnabled": null, "variableName": null, "minSelections": null,
+                "isGlobalRequirement": null, "maxSelections": null
+            }),
+        ] {
+            let response: ClickStackFilterResponse = serde_json::from_value(json).unwrap();
+            let sparse = match &response {
+                ClickStackFilterResponse::ClickStackQueryExpressionFilter(f) => {
+                    f.id.is_none()
+                        && f.expression.is_none()
+                        && f.source_metric_type.is_none()
+                        && f.min_selections.is_none()
+                        && f.max_selections.is_none()
+                        && f.is_global_requirement.is_none()
+                }
+                ClickStackFilterResponse::ClickStackStaticListFilter(f) => {
+                    f.id.is_none() && f.options.is_none() && f.variable_name.is_none()
+                }
+                ClickStackFilterResponse::ClickStackPrometheusLabelFilter(f) => {
+                    f.label.is_none() && f.r#match.is_none() && f.source_id.is_none()
+                }
+                ClickStackFilterResponse::ClickStackSourceFilter(f) => {
+                    f.expression.is_none() && f.variable_name.is_none()
+                }
+                ClickStackFilterResponse::Unknown(_) => false,
+            };
+            assert!(sparse, "{kind}: {response:?}");
+            // Absent fields are omitted, never re-emitted as `null`.
+            assert_eq!(
+                serde_json::to_value(&response).unwrap(),
+                serde_json::json!({"type": kind})
+            );
+        }
+    }
+}
+
+#[test]
+fn clickstack_filter_try_from_response_converts_every_kind() {
+    for (kind, payload) in clickstack_filter_kind_payloads() {
+        let response: ClickStackFilterResponse = serde_json::from_value(payload.clone()).unwrap();
+        let request = ClickStackFilter::try_from(response).unwrap();
+        assert!(
+            !matches!(request, ClickStackFilter::Unknown(_)),
+            "{kind}: {request:?}"
+        );
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_filter_try_from_response_names_every_missing_required_field() {
+    for (json, expected) in [
+        (
+            r#"{"type":"QUERY_EXPRESSION"}"#,
+            &["expression", "id", "name", "sourceId"][..],
+        ),
+        (
+            r#"{"type":"STATIC_LIST","id":"f"}"#,
+            &["name", "options"][..],
+        ),
+        (
+            r#"{"type":"PROMETHEUS_LABEL","name":"n"}"#,
+            &["id", "label", "sourceId"][..],
+        ),
+        (
+            r#"{"type":"SOURCE_FILTER","id":"f","name":"n","sourceId":"s"}"#,
+            &["expression", "variableName"][..],
+        ),
+    ] {
+        let response: ClickStackFilterResponse = serde_json::from_str(json).unwrap();
+        let error = ClickStackFilter::try_from(response).unwrap_err();
+        assert_eq!(error.fields(), expected, "{json}");
+    }
+
+    // An unmodelled kind passes through losslessly.
+    let json = r#"{"type":"FUTURE_KIND","id":"f"}"#;
+    let response: ClickStackFilterResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackFilter::try_from(response).unwrap();
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn clickstack_filter_request_variants_stay_strict() {
+    // Each create-request filter variant requires its schema's required fields.
+    macro_rules! assert_rejects_empty {
+        ($($model:ty),+ $(,)?) => {
+            $(
+                assert!(
+                    serde_json::from_str::<$model>("{}").is_err(),
+                    "{} accepted a payload missing its required fields",
+                    stringify!($model),
+                );
+            )+
+        };
+    }
+    assert_rejects_empty!(
+        ClickStackQueryExpressionFilterInput,
+        ClickStackStaticListFilterInput,
+        ClickStackPrometheusLabelFilterInput,
+        ClickStackSourceFilterInput,
+    );
+    // The update-request variant adds a required `id` on top of the input.
+    let mut payload = clickstack_filter_kind_payloads()[0].1.clone();
+    payload.as_object_mut().unwrap().remove("id");
+    assert!(serde_json::from_value::<ClickStackQueryExpressionFilter>(payload.clone()).is_err());
+    serde_json::from_value::<ClickStackQueryExpressionFilterInput>(payload).unwrap();
+}
+
+#[test]
+fn clickstack_filter_selection_counts_are_integer_enums() {
+    let filter: ClickStackStaticListFilterInput = serde_json::from_value(serde_json::json!({
+        "type": "STATIC_LIST", "name": "n", "options": ["a"],
+        "minSelections": 1, "maxSelections": 1
+    }))
+    .unwrap();
+    assert_eq!(
+        filter.min_selections,
+        Some(ClickStackFilterMinSelections::One)
+    );
+    assert_eq!(
+        filter.max_selections,
+        Some(ClickStackFilterMaxSelections::One)
+    );
+    let v = serde_json::to_value(&filter).unwrap();
+    assert_eq!(v["minSelections"], 1);
+    assert_eq!(v["maxSelections"], 1);
+
+    // A value the spec does not list is kept, not rejected.
+    let min: ClickStackFilterMinSelections = serde_json::from_str("2").unwrap();
+    assert_eq!(min, ClickStackFilterMinSelections::Unknown(2));
+    assert_eq!(serde_json::to_string(&min).unwrap(), "2");
+    assert_eq!(min.to_string(), "2");
+    let zero: ClickStackFilterMinSelections = serde_json::from_str("0").unwrap();
+    assert_eq!(zero, ClickStackFilterMinSelections::Zero);
+    let max: ClickStackFilterMaxSelections = serde_json::from_str("3").unwrap();
+    assert_eq!(max, ClickStackFilterMaxSelections::Unknown(3));
+}
+
+#[test]
+fn clickstack_dashboard_response_carries_every_filter_kind() {
+    let filters: Vec<serde_json::Value> = clickstack_filter_kind_payloads()
+        .into_iter()
+        .map(|(_, payload)| payload)
+        .collect();
+    let dashboard: ClickStackDashboardResponse = serde_json::from_value(serde_json::json!({
+        "id": "d-1", "name": "Overview", "tiles": [], "filters": filters
+    }))
+    .unwrap();
+    assert!(matches!(
+        dashboard.filters.as_deref(),
+        Some([
+            ClickStackFilterResponse::ClickStackQueryExpressionFilter(_),
+            ClickStackFilterResponse::ClickStackStaticListFilter(_),
+            ClickStackFilterResponse::ClickStackPrometheusLabelFilter(_),
+            ClickStackFilterResponse::ClickStackSourceFilter(_),
+        ])
+    ));
+}
+
+#[test]
+fn clickstack_heatmap_chart_config_routes_each_mode_to_its_variant() {
+    let distribution = serde_json::json!({
+        "displayType": "heatmap", "heatmapMode": "distribution", "sourceId": "src-1",
+        "select": [{"valueExpression": "Duration", "countExpression": "count()", "heatmapScaleType": "log"}],
+        "where": "ServiceName = 'api'", "whereLanguage": "sql"
+    });
+    let series = serde_json::json!({
+        "displayType": "heatmap", "heatmapMode": "series", "sourceId": "src-1",
+        "select": [{"aggFn": "count"}], "groupBy": "ServiceName"
+    });
+    let mut implicit_distribution = distribution.clone();
+    implicit_distribution
+        .as_object_mut()
+        .unwrap()
+        .remove("heatmapMode");
+
+    for payload in [&distribution, &implicit_distribution] {
+        let config: ClickStackHeatmapChartConfig = serde_json::from_value(payload.clone()).unwrap();
+        let ClickStackHeatmapChartConfig::ClickStackHeatmapDistributionChartConfig(d) = &config
+        else {
+            panic!("expected the distribution variant, got {config:?}");
+        };
+        assert_eq!(d.select[0].value_expression, "Duration");
+        assert_eq!(
+            d.where_language,
+            Some(ClickStackHeatmapDistributionChartConfigWherelanguage::Sql)
+        );
+        assert_eq!(serde_json::to_value(&config).unwrap(), *payload);
+
+        let response: ClickStackHeatmapChartConfigResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert!(
+            matches!(
+                response,
+                ClickStackHeatmapChartConfigResponse::ClickStackHeatmapDistributionChartConfig(_)
+            ),
+            "{response:?}"
+        );
+    }
+
+    let config: ClickStackHeatmapChartConfig = serde_json::from_value(series.clone()).unwrap();
+    let ClickStackHeatmapChartConfig::ClickStackHeatmapSeriesChartConfig(s) = &config else {
+        panic!("expected the series variant, got {config:?}");
+    };
+    assert_eq!(
+        s.heatmap_mode,
+        ClickStackHeatmapSeriesChartConfigHeatmapmode::Series
+    );
+    assert_eq!(s.group_by.as_deref(), Some("ServiceName"));
+    assert_eq!(s.select[0].agg_fn, ClickStackSelectItemAggfn::Count);
+    assert_eq!(serde_json::to_value(&config).unwrap(), series);
+
+    let response: ClickStackHeatmapChartConfigResponse =
+        serde_json::from_value(series.clone()).unwrap();
+    let ClickStackHeatmapChartConfigResponse::ClickStackHeatmapSeriesChartConfig(s) = &response
+    else {
+        panic!("expected the series variant, got {response:?}");
+    };
+    assert_eq!(s.group_by.as_deref(), Some("ServiceName"));
+
+    // Reached through the tile config's `displayType: "heatmap"` arm.
+    let tile: ClickStackTileConfigResponse = serde_json::from_value(series.clone()).unwrap();
+    assert!(matches!(
+        tile,
+        ClickStackTileConfigResponse::ClickStackHeatmapChartConfig(
+            ClickStackHeatmapChartConfigResponse::ClickStackHeatmapSeriesChartConfig(_)
+        )
+    ));
+}
+
+#[test]
+fn clickstack_heatmap_chart_config_guards_series_payloads_without_a_mode() {
+    // A series payload whose `heatmapMode` is dropped still carries the
+    // series-only `groupBy`, so it must not be read as a distribution heatmap.
+    let json = r#"{"displayType":"heatmap","sourceId":"s","select":[{"aggFn":"count"}],"groupBy":"ServiceName"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackHeatmapChartConfig| {
+        matches!(c, ClickStackHeatmapChartConfig::Unknown(_))
+    });
+    assert_unknown_variant_round_trips(json, |c: &ClickStackHeatmapChartConfigResponse| {
+        matches!(c, ClickStackHeatmapChartConfigResponse::Unknown(_))
+    });
+    let json = r#"{"displayType":"heatmap","heatmapMode":"timeline","sourceId":"s"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackHeatmapChartConfigResponse| {
+        matches!(c, ClickStackHeatmapChartConfigResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_heatmap_chart_config_response_treats_dropped_and_null_fields_as_absent() {
+    let response: ClickStackHeatmapChartConfigResponse =
+        serde_json::from_str(r#"{"heatmapMode":"series","groupBy":null,"select":null}"#).unwrap();
+    assert_eq!(
+        response,
+        ClickStackHeatmapChartConfigResponse::ClickStackHeatmapSeriesChartConfig(
+            ClickStackHeatmapSeriesChartConfigResponse {
+                heatmap_mode: Some(ClickStackHeatmapSeriesChartConfigHeatmapmode::Series),
+                ..Default::default()
+            }
+        )
+    );
+    let response: ClickStackHeatmapChartConfigResponse =
+        serde_json::from_str(r#"{"displayType":"heatmap","where":null}"#).unwrap();
+    assert_eq!(
+        response,
+        ClickStackHeatmapChartConfigResponse::ClickStackHeatmapDistributionChartConfig(
+            ClickStackHeatmapDistributionChartConfigResponse {
+                display_type: Some(ClickStackHeatmapDistributionChartConfigDisplaytype::Heatmap),
+                ..Default::default()
+            }
+        )
+    );
+}
+
+#[test]
+fn clickstack_tile_config_stacked_line_routes_builder_and_raw_sql() {
+    let builder = serde_json::json!({
+        "displayType": "stacked_line", "sourceId": "src-1", "select": [{"aggFn": "count"}],
+        "groupBy": "service", "asRatio": false, "alignDateRangeToGranularity": true,
+        "fillNulls": true, "lineInterpolation": "step", "seriesLimit": 5,
+        "formulas": [{"expression": "A * 100"}], "showOperandSeries": false
+    });
+    let raw = serde_json::json!({
+        "displayType": "stacked_line", "configType": "sql", "connectionId": "conn-1",
+        "sqlTemplate": "SELECT 1", "sourceId": "src-1", "fillNulls": false,
+        "alignDateRangeToGranularity": false, "lineInterpolation": "smooth"
+    });
+
+    let tile: ClickStackTileConfig = serde_json::from_value(builder.clone()).unwrap();
+    let ClickStackTileConfig::ClickStackStackedLineChartConfig(
+        ClickStackStackedLineChartConfig::ClickStackStackedLineBuilderChartConfig(b),
+    ) = &tile
+    else {
+        panic!("expected the stacked-line builder variant, got {tile:?}");
+    };
+    assert_eq!(
+        b.display_type,
+        ClickStackStackedLineBuilderChartConfigDisplaytype::Stacked_line
+    );
+    assert_eq!(
+        b.line_interpolation,
+        Some(ClickStackStackedLineBuilderChartConfigLineinterpolation::Step)
+    );
+    assert_eq!(b.series_limit, Some(5));
+    assert_eq!(serde_json::to_value(&tile).unwrap(), builder);
+
+    let tile: ClickStackTileConfig = serde_json::from_value(raw.clone()).unwrap();
+    let ClickStackTileConfig::ClickStackStackedLineChartConfig(
+        ClickStackStackedLineChartConfig::ClickStackStackedLineRawSqlChartConfig(r),
+    ) = &tile
+    else {
+        panic!("expected the stacked-line raw SQL variant, got {tile:?}");
+    };
+    assert_eq!(r.connection_id, "conn-1");
+    assert_eq!(
+        r.line_interpolation,
+        Some(ClickStackStackedLineRawSqlChartConfigLineinterpolation::Smooth)
+    );
+    assert_eq!(serde_json::to_value(&tile).unwrap(), raw);
+
+    let tile: ClickStackTileConfigResponse = serde_json::from_value(builder).unwrap();
+    assert!(matches!(
+        tile,
+        ClickStackTileConfigResponse::ClickStackStackedLineChartConfig(
+            ClickStackStackedLineChartConfigResponse::ClickStackStackedLineBuilderChartConfig(_)
+        )
+    ));
+    let tile: ClickStackTileConfigResponse = serde_json::from_value(raw.clone()).unwrap();
+    assert!(matches!(
+        tile,
+        ClickStackTileConfigResponse::ClickStackStackedLineChartConfig(
+            ClickStackStackedLineChartConfigResponse::ClickStackStackedLineRawSqlChartConfig(_)
+        )
+    ));
+
+    // A raw-SQL body that lost its `configType` is kept out of the builder arm.
+    let mut unmarked = raw;
+    unmarked.as_object_mut().unwrap().remove("configType");
+    assert_unknown_variant_round_trips(
+        &unmarked.to_string(),
+        |c: &ClickStackStackedLineChartConfigResponse| {
+            matches!(c, ClickStackStackedLineChartConfigResponse::Unknown(_))
+        },
+    );
+}
+
+#[test]
+fn clickstack_stacked_line_response_treats_dropped_and_null_fields_as_absent() {
+    let response: ClickStackStackedLineChartConfigResponse = serde_json::from_str(
+        r#"{"displayType":"stacked_line","lineInterpolation":null,"select":null,"seriesLimit":null}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        response,
+        ClickStackStackedLineChartConfigResponse::ClickStackStackedLineBuilderChartConfig(
+            ClickStackStackedLineBuilderChartConfigResponse {
+                display_type: Some(
+                    ClickStackStackedLineBuilderChartConfigDisplaytype::Stacked_line
+                ),
+                ..Default::default()
+            }
+        )
+    );
+    let response: ClickStackStackedLineChartConfigResponse =
+        serde_json::from_str(r#"{"configType":"sql","connectionId":null}"#).unwrap();
+    assert_eq!(
+        response,
+        ClickStackStackedLineChartConfigResponse::ClickStackStackedLineRawSqlChartConfig(
+            ClickStackStackedLineRawSqlChartConfigResponse {
+                config_type: Some(ClickStackStackedLineRawSqlChartConfigConfigtype::Sql),
+                ..Default::default()
+            }
+        )
+    );
+}
+
+#[test]
+fn clickstack_line_charts_carry_line_interpolation() {
+    let builder: ClickStackLineBuilderChartConfig = serde_json::from_value(serde_json::json!({
+        "displayType": "line", "sourceId": "s", "select": [], "lineInterpolation": "linear"
+    }))
+    .unwrap();
+    assert_eq!(
+        builder.line_interpolation,
+        Some(ClickStackLineBuilderChartConfigLineinterpolation::Linear)
+    );
+    assert_eq!(
+        serde_json::to_value(&builder).unwrap()["lineInterpolation"],
+        "linear"
+    );
+    let raw: ClickStackLineRawSqlChartConfig = serde_json::from_value(serde_json::json!({
+        "displayType": "line", "configType": "sql", "connectionId": "c",
+        "sqlTemplate": "SELECT 1", "lineInterpolation": "step"
+    }))
+    .unwrap();
+    assert_eq!(
+        raw.line_interpolation,
+        Some(ClickStackLineRawSqlChartConfigLineinterpolation::Step)
+    );
+    let unknown: ClickStackLineBuilderChartConfigLineinterpolation =
+        serde_json::from_str(r#""cubic""#).unwrap();
+    assert_eq!(
+        unknown,
+        ClickStackLineBuilderChartConfigLineinterpolation::Unknown("cubic".to_string())
+    );
+
+    // Absent or null in a response is `None`, and absent is omitted on output.
+    for json in [r#"{}"#, r#"{"lineInterpolation":null}"#] {
+        let response: ClickStackLineBuilderChartConfigResponse =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(response.line_interpolation, None);
+        let response: ClickStackLineRawSqlChartConfigResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.line_interpolation, None);
+        assert!(
+            serde_json::to_value(&response)
+                .unwrap()
+                .get("lineInterpolation")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn clickstack_number_raw_sql_chart_carries_color_rules() {
+    let config: ClickStackNumberRawSqlChartConfig = serde_json::from_value(serde_json::json!({
+        "displayType": "number", "configType": "sql", "connectionId": "c",
+        "sqlTemplate": "SELECT 1",
+        "colorRules": [{"operator": "gt", "value": 100.0, "color": "chart-error"}]
+    }))
+    .unwrap();
+    let rules = config.color_rules.as_deref().unwrap();
+    assert!(matches!(
+        rules,
+        [ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(_)]
+    ));
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["colorRules"][0]["operator"],
+        "gt"
+    );
+    for json in [r#"{}"#, r#"{"colorRules":null}"#] {
+        let response: ClickStackNumberRawSqlChartConfigResponse =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(response.color_rules, None);
+    }
+    let response: ClickStackNumberRawSqlChartConfigResponse = serde_json::from_str(
+        r#"{"colorRules":[{"operator":"eq","value":"ok","color":"chart-success"}]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        response.color_rules.as_deref(),
+        Some([ClickStackNumberTileColorConditionResponse::ClickStackEqualityColorCondition(_)])
+    ));
+}
+
+#[test]
+fn clickstack_tiles_carry_a_description() {
+    let tile: ClickStackTileInput = serde_json::from_value(serde_json::json!({
+        "name": "Error Rate", "x": 0, "y": 0, "w": 6, "h": 3,
+        "description": "Share of API requests that returned a 5xx response."
+    }))
+    .unwrap();
+    assert_eq!(
+        tile.description.as_deref(),
+        Some("Share of API requests that returned a 5xx response.")
+    );
+    let v = serde_json::to_value(ClickStackTileInput::default()).unwrap();
+    assert!(v.get("description").is_none());
+
+    let output: ClickStackTileOutput =
+        serde_json::from_str(r#"{"id":"t-1","description":"tooltip"}"#).unwrap();
+    assert_eq!(output.description.as_deref(), Some("tooltip"));
+    for json in [r#"{}"#, r#"{"description":null}"#] {
+        let output: ClickStackTileOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.description, None);
+    }
+}
+
+#[test]
+fn clickstack_variable_saved_filter_value_carries_all() {
+    let saved: ClickStackSavedFilterValue = serde_json::from_value(serde_json::json!({
+        "type": "variable", "name": "cluster", "values": [], "all": true
+    }))
+    .unwrap();
+    let ClickStackSavedFilterValue::ClickStackVariableSavedFilterValue(value) = &saved else {
+        panic!("expected the variable variant, got {saved:?}");
+    };
+    assert_eq!(value.all, Some(true));
+
+    for json in [
+        r#"{"type":"variable","name":"n","values":[]}"#,
+        r#"{"type":"variable","name":"n","values":[],"all":null}"#,
+    ] {
+        let response: ClickStackVariableSavedFilterValueResponse =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(response.all, None);
+    }
+
+    // Write-back keeps `all`.
+    let response: ClickStackVariableSavedFilterValueResponse =
+        serde_json::from_str(r#"{"type":"variable","name":"n","values":[],"all":true}"#).unwrap();
+    let request = ClickStackVariableSavedFilterValue::try_from(response).unwrap();
+    assert_eq!(request.all, Some(true));
+}
+
+#[test]
+fn clickstack_time_chart_series_accepts_stacked_line() {
+    let display: ClickStackTimeChartSeriesDisplaytype =
+        serde_json::from_str(r#""stacked_line""#).unwrap();
+    assert_eq!(display, ClickStackTimeChartSeriesDisplaytype::Stacked_line);
+    assert_eq!(display.to_string(), "stacked_line");
+    assert_eq!(
+        serde_json::to_string(&display).unwrap(),
+        r#""stacked_line""#
+    );
 }

@@ -44,6 +44,50 @@ restriction) and replaces the `String` fields `action` and `subject` with the sh
 `ClickStackCASLPermissionConditions` alias is removed because the API no longer defines it.
 Each new request type has an all-`Option` `*Response` variant.
 
+ClickStack dashboard filters are now unions, a breaking change for Rust callers.
+`ClickStackFilterInput` (in `ClickStackCreateDashboardRequest`), `ClickStackFilter` (in
+`ClickStackUpdateDashboardRequest`) and `ClickStackFilterResponse` (in
+`ClickStackDashboardResponse`) were structs; they are now enums dispatched on the required
+`type` field, with an `Unknown(serde_json::Value)` catch-all for a `type` this crate does
+not know or a payload that does not fit the arm it selects. The arms are the query-expression
+filter (`QUERY_EXPRESSION`, the old struct's shape), the static-list filter (`STATIC_LIST`,
+a fixed `options` list), the Prometheus-label filter (`PROMETHEUS_LABEL`, a `label` and
+optional `match` selector) and the source filter (`SOURCE_FILTER`, a column the source's
+`filterSettings` declares, with a required `variable_name`). Create-request arms hold the
+`ClickStack*FilterInput` structs; update-request arms hold `ClickStack*Filter`, which adds
+the required `id`; response arms hold the all-`Option` `ClickStack*FilterResponse`
+structs. Every kind gains `is_global_requirement`, and `min_selections`/`max_selections`
+typed as the integer enums `ClickStackFilterMinSelections` (`0` or `1`) and
+`ClickStackFilterMaxSelections` (`1`), whose `Unknown(i64)` keeps any other value. The
+`ClickStackFilterType`, `ClickStackFilterSourcemetrictype` and `ClickStackFilterWherelanguage`
+enums and their `ClickStackFilterInput*` twins are replaced by
+`ClickStackQueryExpressionFilterInputType`, `...Sourcemetrictype` and `...Wherelanguage`,
+shared by the query-expression input, request and response structs. Wrap a struct literal
+in its arm, for example
+`ClickStackFilter::ClickStackQueryExpressionFilter(ClickStackQueryExpressionFilter { .. })`,
+and `match` a response arm before reading its fields. `TryFrom<ClickStackFilterResponse>
+for ClickStackFilter` converts a fetched filter for write-back, naming any missing
+required field by wire name and passing `Unknown` through verbatim.
+
+ClickStack heatmap tiles are now a union too: `ClickStackHeatmapChartConfig` and
+`ClickStackHeatmapChartConfigResponse` were structs and are now enums dispatched on
+`heatmapMode`. The `ClickStackHeatmapDistributionChartConfig` arm keeps the old struct's
+fields, renames its enums to `ClickStackHeatmapDistributionChartConfigDisplaytype` and
+`...Wherelanguage`, and adds an optional `heatmap_mode`; an absent `heatmapMode` selects
+it. The new `ClickStackHeatmapSeriesChartConfig` arm (`heatmapMode: "series"`, required)
+colors one row per `group_by` value from ordinary `ClickStackSelectItem`s. A payload
+without a `heatmapMode` that carries the series-only `groupBy` lands in `Unknown`. Tile
+configs gain a `stacked_line` display type: the `ClickStackStackedLineChartConfig` arm of
+`ClickStackTileConfig` (and its `*Response`) is a builder/raw-SQL union over
+`ClickStackStackedLineBuilderChartConfig` and `ClickStackStackedLineRawSqlChartConfig`,
+dispatched on `configType` like the line chart. `ClickStackTimeChartSeriesDisplaytype`
+gains `Stacked_line`. The line builder and raw-SQL charts gain `line_interpolation`
+(`smooth`, `linear` or `step`), the raw-SQL number chart gains `color_rules`, tiles
+(`ClickStackTileInput`, `ClickStackTileOutput`) gain a `description` tooltip, and
+`ClickStackVariableSavedFilterValue` gains `all`, which `TryFrom` carries back. Each new
+type has an all-`Option` `*Response` variant; struct-literal callers need the new fields
+as `None` or `..Default::default()`.
+
 Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
 takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
 all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends
