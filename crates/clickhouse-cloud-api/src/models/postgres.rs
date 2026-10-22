@@ -1005,12 +1005,25 @@ pub struct PostgresService {
     pub connection_string: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<PgCreatedAtProperty>,
+    /// Earliest point in time the service can be restored to with
+    /// `postgres_instance_restore`. Only present for a primary service once its
+    /// first backup has completed.
+    #[serde(
+        rename = "earliestRestoreTime",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub earliest_restore_time: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<PgIdProperty>,
+    /// IPv4 access rules shown in the console; IPv6 rules are not included.
+    /// Returned when reading or configuring access, omitted from other service
+    /// updates.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<PostgresIpAccessListEntryResponse>>,
     #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
     pub is_primary: Option<PgIsPrimaryProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1033,6 +1046,68 @@ pub struct PostgresService {
     pub tags: Option<PgTagsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+}
+
+/// `PostgresIpAccessListEntry` from the ClickHouse Cloud API: one IPv4 TCP
+/// access rule of a Postgres service.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Rule ID returned by the service. Set it to edit an existing rule; leave it
+    /// `None` to create one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Port or inclusive range from 1 to 65535: `"5432"` for Postgres, `"6432"`
+    /// for PgBouncer, or a range such as `"5432..6432"`.
+    #[serde(rename = "portRange")]
+    pub port_range: String,
+    /// IPv4 address or CIDR allowed to connect.
+    pub source: String,
+}
+
+/// `PostgresIpAccessListEntry` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`PostgresIpAccessListEntry`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing. Writing a fetched rule back to the API goes
+/// through `TryFrom<PostgresIpAccessListEntryResponse>` (see
+/// [`crate::convert`]).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListEntryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Rule ID assigned by the service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "portRange", skip_serializing_if = "Option::is_none")]
+    pub port_range: Option<String>,
+    /// IPv4 address or CIDR allowed to connect, as a canonical CIDR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// `PostgresIpAccessListPatch` from the ClickHouse Cloud API: changes to a
+/// Postgres service's access rules.
+///
+/// The API applies `remove` before `add`. Updates can partially succeed, so
+/// read the current list before retrying. Both lists are sent, like
+/// [`crate::models::IpAccessListPatch`]; leave the side you do not need
+/// empty.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListPatch {
+    /// Rules to create (no `id`) or edit (the returned `id`).
+    pub add: Vec<PostgresIpAccessListEntry>,
+    /// Rules to remove by their returned IDs.
+    pub remove: Vec<PostgresIpAccessListRuleReference>,
+}
+
+/// `PostgresIpAccessListRuleReference` from the ClickHouse Cloud API: an
+/// existing access rule, by the ID the service returned for it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListRuleReference {
+    pub id: String,
 }
 
 /// `PostgresServiceListItem` from the ClickHouse Cloud API.
@@ -1074,6 +1149,9 @@ pub struct PostgresServicePasswordResource {
 pub struct PostgresServicePatchRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
+    /// Access-rule changes: removals by ID, then additions and edits.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<PostgresIpAccessListPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<PgNameProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1087,6 +1165,12 @@ pub struct PostgresServicePatchRequest {
 pub struct PostgresServicePostRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
+    /// IPv4 TCP access rules to apply at creation. `None` omits the field, which
+    /// allows all IPv4 and IPv6 addresses on Postgres (5432) and PgBouncer
+    /// (6432); `Some(vec![])` is sent as `[]` and blocks public access. When
+    /// provided, only these rules are allowed, so include a rule for each port.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<PostgresIpAccessListEntry>>,
     pub name: PgNameProperty,
     #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
@@ -1667,4 +1751,9 @@ pub struct PostgresBackup {
     /// Time the backup was last written to.
     #[serde(rename = "lastModified", skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+    /// Status of the backup. Only completed backups are listed, so the API
+    /// documents this as always `ready`; the spec does not constrain it to an
+    /// enum.
+    #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }

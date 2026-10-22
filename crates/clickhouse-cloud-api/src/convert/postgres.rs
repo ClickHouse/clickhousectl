@@ -95,3 +95,32 @@ impl TryFrom<PostgresInstanceConfigResponse> for PostgresInstanceConfig {
         }
     }
 }
+
+impl TryFrom<PostgresIpAccessListEntryResponse> for PostgresIpAccessListEntry {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched access rule into one that can be sent back.
+    ///
+    /// The returned `id` is kept, so writing the rule back through
+    /// `PostgresIpAccessListPatch::add` edits that rule instead of creating a
+    /// new one. A rule without `portRange` or `source` cannot be written back:
+    /// inventing either would open or close the wrong port or address.
+    fn try_from(value: PostgresIpAccessListEntryResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.port_range.is_none() {
+            missing.push("portRange");
+        }
+        if value.source.is_none() {
+            missing.push("source");
+        }
+        match (value.port_range, value.source) {
+            (Some(port_range), Some(source)) => Ok(Self {
+                description: value.description,
+                id: value.id,
+                port_range,
+                source,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}

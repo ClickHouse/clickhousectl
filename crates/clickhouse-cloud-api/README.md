@@ -6,6 +6,21 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
+takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
+all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends
+`[]` and blocks public access. `PostgresServicePatchRequest.ip_access_list` takes a
+`PostgresIpAccessListPatch`, whose `remove` list (`PostgresIpAccessListRuleReference`
+IDs) is applied before its `add` list; an `add` entry with an `id` edits that rule
+and one without creates a rule. Both lists are required, like `IpAccessListPatch`,
+so leave the unused one empty. `PostgresService` reports `ip_access_list` as
+all-`Option` `PostgresIpAccessListEntryResponse` entries, which convert back with
+`TryFrom` (missing `portRange` or `source` is reported by wire name), and gains
+`earliest_restore_time`, the earliest `postgres_instance_restore` target.
+`PostgresBackup` gains `status`, a string the API documents as always `ready`.
+Struct-literal callers of these types need the new fields as `None` or
+`..Default::default()`.
+
 `PgConfig` and `PgConfigResponse` gain 22 Postgres settings: `bgwriter_delay`,
 `bgwriter_flush_after`, `bgwriter_lru_maxpages`, `bgwriter_lru_multiplier`,
 `default_toast_compression`, `enable_parallel_hash`, `hash_mem_multiplier`,

@@ -8539,7 +8539,9 @@ fn service_post_request_backup_encryption_config_serialization() {
 fn postgres_backup_tolerates_missing_and_null_fields() {
     for wire in [
         serde_json::json!({}),
-        serde_json::json!({"key": null, "lastModified": null, "futureField": 1}),
+        serde_json::json!({
+            "key": null, "lastModified": null, "status": null, "futureField": 1
+        }),
     ] {
         let backup: PostgresBackup = serde_json::from_value(wire).unwrap();
         assert_eq!(backup, PostgresBackup::default());
@@ -8551,7 +8553,8 @@ fn postgres_backup_tolerates_missing_and_null_fields() {
 fn postgres_backup_round_trips_every_field() {
     let wire = serde_json::json!({
         "key": "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
-        "lastModified": "2026-03-31T18:17:37Z"
+        "lastModified": "2026-03-31T18:17:37Z",
+        "status": "ready"
     });
     let backup: PostgresBackup = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(
@@ -8559,7 +8562,189 @@ fn postgres_backup_round_trips_every_field() {
         Some("basebackups_005/000000010000000000000002_backup_stop_sentinel.json")
     );
     assert!(backup.last_modified.is_some());
+    assert_eq!(backup.status.as_deref(), Some("ready"));
     assert_eq!(serde_json::to_value(backup).unwrap(), wire);
+}
+
+#[test]
+fn postgres_service_access_list_and_restore_time_tolerate_missing_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"ipAccessList": null, "earliestRestoreTime": null}),
+    ] {
+        let pg: PostgresService = serde_json::from_value(wire).unwrap();
+        assert_eq!(pg.ip_access_list, None);
+        assert_eq!(pg.earliest_restore_time, None);
+        assert_eq!(serde_json::to_value(pg).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn postgres_service_round_trips_access_list_and_restore_time() {
+    let wire = serde_json::json!({
+        "earliestRestoreTime": "2026-03-31T18:17:37Z",
+        "ipAccessList": [
+            {
+                "id": "rule-1",
+                "source": "203.0.113.0/24",
+                "portRange": "5432",
+                "description": "office"
+            },
+            {"source": "198.51.100.7/32", "portRange": "5432..6432"}
+        ]
+    });
+    let pg: PostgresService = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        pg.earliest_restore_time,
+        Some("2026-03-31T18:17:37Z".parse().unwrap())
+    );
+    let rules = pg.ip_access_list.as_ref().unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].id.as_deref(), Some("rule-1"));
+    assert_eq!(rules[0].port_range.as_deref(), Some("5432"));
+    assert_eq!(rules[1].description, None);
+    assert_eq!(serde_json::to_value(pg).unwrap(), wire);
+}
+
+#[test]
+fn postgres_ip_access_list_entry_response_tolerates_missing_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "id": null, "source": null, "portRange": null, "description": null,
+            "futureField": 1
+        }),
+    ] {
+        let entry: PostgresIpAccessListEntryResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(entry, PostgresIpAccessListEntryResponse::default());
+        assert_eq!(serde_json::to_value(entry).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn postgres_ip_access_list_request_types_are_strict() {
+    // `source` and `portRange` are required on a rule, `id` on a rule
+    // reference, and both lists on a patch: a body missing one is rejected
+    // rather than silently defaulted.
+    assert!(serde_json::from_str::<PostgresIpAccessListEntry>("{}").is_err());
+    assert!(
+        serde_json::from_str::<PostgresIpAccessListEntry>(r#"{"source":"203.0.113.0/24"}"#)
+            .is_err()
+    );
+    assert!(serde_json::from_str::<PostgresIpAccessListEntry>(r#"{"portRange":"5432"}"#).is_err());
+    assert!(serde_json::from_str::<PostgresIpAccessListRuleReference>("{}").is_err());
+    assert!(serde_json::from_str::<PostgresIpAccessListPatch>(r#"{"add":[]}"#).is_err());
+    assert!(serde_json::from_str::<PostgresIpAccessListPatch>(r#"{"remove":[]}"#).is_err());
+
+    // A new rule omits `id` and `description`.
+    let entry = PostgresIpAccessListEntry {
+        source: "203.0.113.0/24".to_string(),
+        port_range: "5432".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        serde_json::json!({"source": "203.0.113.0/24", "portRange": "5432"})
+    );
+}
+
+#[test]
+fn postgres_ip_access_list_entry_response_converts_back_into_a_request_entry() {
+    let entry = PostgresIpAccessListEntry::try_from(PostgresIpAccessListEntryResponse {
+        id: Some("rule-1".to_string()),
+        source: Some("203.0.113.0/24".to_string()),
+        port_range: Some("6432".to_string()),
+        description: Some("office".to_string()),
+    })
+    .unwrap();
+    // The returned `id` survives, so writing the rule back edits it.
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        serde_json::json!({
+            "id": "rule-1", "source": "203.0.113.0/24", "portRange": "6432",
+            "description": "office"
+        })
+    );
+
+    let missing_port = PostgresIpAccessListEntry::try_from(PostgresIpAccessListEntryResponse {
+        source: Some("203.0.113.0/24".to_string()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert_eq!(missing_port.fields(), ["portRange"]);
+
+    let missing_both =
+        PostgresIpAccessListEntry::try_from(PostgresIpAccessListEntryResponse::default())
+            .unwrap_err();
+    assert_eq!(missing_both.fields(), ["portRange", "source"]);
+}
+
+#[test]
+fn postgres_service_post_request_distinguishes_omitted_and_empty_access_list() {
+    let base = PostgresServicePostRequest {
+        name: "pg-new".to_string(),
+        provider: PgProvider::Aws,
+        region: "us-east-1".to_string(),
+        size: PgSize::C6gd_large,
+        ..Default::default()
+    };
+    // Omitted allows all IPv4 and IPv6 addresses.
+    let omitted = serde_json::to_value(&base).unwrap();
+    assert!(omitted.get("ipAccessList").is_none(), "{omitted}");
+
+    // An empty list blocks public access, so it must reach the wire as `[]`.
+    let blocked = PostgresServicePostRequest {
+        ip_access_list: Some(Vec::new()),
+        ..base.clone()
+    };
+    let blocked = serde_json::to_value(&blocked).unwrap();
+    assert_eq!(blocked["ipAccessList"], serde_json::json!([]));
+
+    let allowed = PostgresServicePostRequest {
+        ip_access_list: Some(vec![PostgresIpAccessListEntry {
+            source: "203.0.113.0/24".to_string(),
+            port_range: "5432".to_string(),
+            ..Default::default()
+        }]),
+        ..base
+    };
+    assert_eq!(
+        serde_json::to_value(&allowed).unwrap()["ipAccessList"],
+        serde_json::json!([{"source": "203.0.113.0/24", "portRange": "5432"}])
+    );
+}
+
+#[test]
+fn postgres_service_patch_request_serializes_the_access_list_patch() {
+    let untouched = PostgresServicePatchRequest::default();
+    assert_eq!(
+        serde_json::to_value(&untouched).unwrap(),
+        serde_json::json!({})
+    );
+
+    let patch = PostgresServicePatchRequest {
+        ip_access_list: Some(PostgresIpAccessListPatch {
+            add: vec![PostgresIpAccessListEntry {
+                id: Some("rule-1".to_string()),
+                source: "203.0.113.0/24".to_string(),
+                port_range: "6432".to_string(),
+                description: None,
+            }],
+            remove: vec![PostgresIpAccessListRuleReference {
+                id: "rule-2".to_string(),
+            }],
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap(),
+        serde_json::json!({
+            "ipAccessList": {
+                "add": [{"id": "rule-1", "source": "203.0.113.0/24", "portRange": "6432"}],
+                "remove": [{"id": "rule-2"}]
+            }
+        })
+    );
 }
 
 #[test]

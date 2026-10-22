@@ -110,6 +110,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PostgresBackup::default(),
     );
     assert_same_type(
+        api::PostgresIpAccessListEntry::default(),
+        api::models::PostgresIpAccessListEntry::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListEntryResponse::default(),
+        api::models::PostgresIpAccessListEntryResponse::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListPatch::default(),
+        api::models::PostgresIpAccessListPatch::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListRuleReference::default(),
+        api::models::PostgresIpAccessListRuleReference::default(),
+    );
+    assert_same_type(
         api::WhoamiUser::default(),
         api::models::WhoamiUser::default(),
     );
