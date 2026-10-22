@@ -74,18 +74,10 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         command => command,
     };
 
-    // Refresh OAuth tokens if needed. A refresh failure (or unresolvable
-    // custom-host config) is only fatal when OAuth is the sole auth source:
-    // API keys from flags, the credentials file, or env outrank OAuth, so if
-    // any are present we proceed on those and leave the stale tokens alone.
-    auth::ensure_fresh_tokens(json).await.or_else(|e| {
-        if resolve_active_auth_source(args.api_key.as_deref(), args.api_secret.as_deref()).is_none()
-        {
-            Err(Error::Cloud(e.to_string()))
-        } else {
-            Ok(())
-        }
-    })?;
+    // Refresh failures clear unusable tokens; returned errors are storage failures.
+    auth::ensure_fresh_tokens(json)
+        .await
+        .map_err(|e| Error::Cloud(e.to_string()))?;
 
     let client = CloudClient::new(
         args.api_key.as_deref(),

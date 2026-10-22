@@ -1709,6 +1709,7 @@ fn write_oauth_tokens(sandbox: &Sandbox, control_uri: &str) {
             "refresh_token": "unused",
             "expires_at": 4102444800u64,
             "api_url": format!("{control_uri}/v1"),
+            "auth_config": {"auth_url": control_uri, "client_id": "test-client"},
         }))
         .unwrap(),
     )
