@@ -77,6 +77,7 @@ impl TryFrom<crate::models::ClickPipeBigQueryPipeSettingsResponse>
             pull_window_size_seconds: value.pull_window_size_seconds,
             query_cdc_pull_sync_parallelism: value.query_cdc_pull_sync_parallelism,
             replication_method: value.replication_method,
+            sync_cron: value.sync_cron,
             sync_delay_seconds: value.sync_delay_seconds,
             sync_interval_seconds: value.sync_interval_seconds,
         })

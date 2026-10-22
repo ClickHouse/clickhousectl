@@ -9287,6 +9287,51 @@ fn bigquery_cdc_response_fields_tolerate_absence_and_null() {
 }
 
 #[test]
+fn bigquery_sync_cron_round_trips_writes_back_and_tolerates_absence() {
+    let settings = serde_json::json!({
+        "replicationMode": "cdc", "replicationMethod": "query_based",
+        "syncCron": "CRON_TZ=Europe/London 0 * * * *"
+    });
+    let response: ClickPipeBigQueryPipeSettingsResponse =
+        serde_json::from_value(settings.clone()).unwrap();
+    assert_eq!(
+        response.sync_cron.as_deref(),
+        Some("CRON_TZ=Europe/London 0 * * * *")
+    );
+    let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+    assert_eq!(
+        request.sync_cron.as_deref(),
+        Some("CRON_TZ=Europe/London 0 * * * *")
+    );
+    assert_eq!(request.sync_interval_seconds, None);
+    assert_eq!(serde_json::to_value(&request).unwrap(), settings);
+
+    let unset = ClickPipeBigQueryPipeSettings {
+        replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&unset).unwrap(),
+        serde_json::json!({"replicationMode": "snapshot"})
+    );
+
+    for value in [
+        serde_json::json!({"replicationMode": "cdc"}),
+        serde_json::json!({"replicationMode": "cdc", "syncCron": null}),
+    ] {
+        let response: ClickPipeBigQueryPipeSettingsResponse =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(response.sync_cron, None);
+        let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+        assert_eq!(request.sync_cron, None);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"replicationMode": "cdc"})
+        );
+    }
+}
+
+#[test]
 fn bigquery_replication_modes_cover_cdc_and_preserve_future_values() {
     for (wire, expected) in [
         (
