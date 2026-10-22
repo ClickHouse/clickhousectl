@@ -43,6 +43,12 @@ restriction) and replaces the `String` fields `action` and `subject` with the sh
 `$options`; in responses each value stays raw `serde_json::Value`. The
 `ClickStackCASLPermissionConditions` alias is removed because the API no longer defines it.
 Each new request type has an all-`Option` `*Response` variant.
+`TryFrom<ClickStackCASLPermissionResponse> for ClickStackCASLPermission`, and the
+same conversion for each arm and its nested ClickHouse conditions, converts a fetched
+permission for write-back, naming any missing required field by wire name and passing
+`Unknown` through verbatim. A MongoDB condition value that is neither a string nor a
+`$regex` object is never dropped: the arm conversion reports it as `conditions`, and the
+union conversion writes the permission back verbatim as `Unknown`.
 
 ClickStack dashboard filters are now unions, a breaking change for Rust callers.
 `ClickStackFilterInput` (in `ClickStackCreateDashboardRequest`), `ClickStackFilter` (in

@@ -6350,6 +6350,127 @@ fn clickstack_casl_permission_variant_defaults_round_trip_to_their_own_variant()
 }
 
 #[test]
+fn clickstack_casl_permission_try_from_response_converts_every_integration() {
+    for payload in [
+        clickhouse_casl_permission_json(),
+        mongodb_casl_permission_json(),
+    ] {
+        let response: ClickStackCASLPermissionResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        let request = ClickStackCASLPermission::try_from(response).unwrap();
+        assert!(
+            !matches!(request, ClickStackCASLPermission::Unknown(_)),
+            "{request:?}"
+        );
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+    }
+
+    // The variant conversions round-trip on their own too.
+    let response: ClickStackClickHouseCASLPermissionResponse =
+        serde_json::from_value(clickhouse_casl_permission_json()).unwrap();
+    let request = ClickStackClickHouseCASLPermission::try_from(response).unwrap();
+    assert_eq!(
+        request,
+        serde_json::from_value::<ClickStackClickHouseCASLPermission>(
+            clickhouse_casl_permission_json()
+        )
+        .unwrap()
+    );
+    let response: ClickStackMongoDBCASLPermissionResponse =
+        serde_json::from_value(mongodb_casl_permission_json()).unwrap();
+    let request = ClickStackMongoDBCASLPermission::try_from(response).unwrap();
+    assert_eq!(
+        request,
+        serde_json::from_value::<ClickStackMongoDBCASLPermission>(mongodb_casl_permission_json())
+            .unwrap()
+    );
+}
+
+#[test]
+fn clickstack_casl_permission_try_from_response_names_every_missing_required_field() {
+    for (json, expected) in [
+        (
+            r#"{"integration":"clickhouse"}"#,
+            &["action", "subject"][..],
+        ),
+        (
+            r#"{"integration":"mongodb","action":"read"}"#,
+            &["subject"][..],
+        ),
+        // Nested ClickHouse conditions name their own wire fields, unprefixed.
+        (
+            r#"{"integration":"clickhouse","action":"read","subject":"Source","conditions":{}}"#,
+            &["connection", "from", "where", "whereLanguage"][..],
+        ),
+        (
+            r#"{"integration":"clickhouse","action":"read","subject":"Source","conditions":
+                {"connection":"c","where":"1","whereLanguage":"sql","from":{"databaseName":"d"}}}"#,
+            &["tableName"][..],
+        ),
+    ] {
+        let response: ClickStackCASLPermissionResponse = serde_json::from_str(json).unwrap();
+        assert!(
+            !matches!(response, ClickStackCASLPermissionResponse::Unknown(_)),
+            "{json}"
+        );
+        let error = ClickStackCASLPermission::try_from(response).unwrap_err();
+        assert_eq!(error.fields(), expected, "{json}");
+    }
+
+    // The variant conversions also require the discriminator itself.
+    let error = ClickStackClickHouseCASLPermission::try_from(
+        ClickStackClickHouseCASLPermissionResponse::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.fields(), ["action", "integration", "subject"]);
+    let error = ClickStackMongoDBCASLPermission::try_from(
+        ClickStackMongoDBCASLPermissionResponse::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.fields(), ["action", "integration", "subject"]);
+
+    // An unmodelled integration passes through losslessly.
+    let json = r#"{"integration":"postgres","action":"read"}"#;
+    let response: ClickStackCASLPermissionResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackCASLPermission::try_from(response).unwrap();
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn clickstack_mongodb_casl_conditions_without_a_request_shape_are_never_dropped() {
+    // A condition value that is neither a string nor a `$regex` object.
+    let mut payload = mongodb_casl_permission_json();
+    payload["conditions"]["count"] = serde_json::json!({"$gt": 3});
+
+    // The variant conversion names `conditions` instead of dropping the value,
+    // which would widen the permission.
+    let response: ClickStackMongoDBCASLPermissionResponse =
+        serde_json::from_value(payload.clone()).unwrap();
+    let error = ClickStackMongoDBCASLPermission::try_from(response).unwrap_err();
+    assert_eq!(error.fields(), ["conditions"]);
+
+    // The union conversion writes the permission back verbatim, exactly as the
+    // request union deserializes the same body.
+    let response: ClickStackCASLPermissionResponse =
+        serde_json::from_value(payload.clone()).unwrap();
+    let request = ClickStackCASLPermission::try_from(response).unwrap();
+    assert_eq!(request, ClickStackCASLPermission::Unknown(payload.clone()));
+    assert_eq!(
+        serde_json::from_value::<ClickStackCASLPermission>(payload.clone()).unwrap(),
+        request
+    );
+
+    // A missing required field is still reported, alongside `conditions`.
+    payload.as_object_mut().unwrap().remove("action");
+    let response: ClickStackCASLPermissionResponse = serde_json::from_value(payload).unwrap();
+    let error = ClickStackCASLPermission::try_from(response).unwrap_err();
+    assert_eq!(error.fields(), ["action", "conditions"]);
+}
+
+#[test]
 fn clickstack_casl_permission_variants_stay_strict_on_the_request_side() {
     // Each required field of the request variants is `T`: dropping one fails
     // the variant (and so routes the union payload to `Unknown`).

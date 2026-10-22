@@ -1156,3 +1156,194 @@ impl TryFrom<ClickStackFilterResponse> for ClickStackFilter {
         })
     }
 }
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsFromResponse>
+    for ClickStackClickHouseCASLPermissionConditionsFrom
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsFromResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.database_name.is_none() {
+            missing.push("databaseName");
+        }
+        if value.table_name.is_none() {
+            missing.push("tableName");
+        }
+        match (value.database_name, value.table_name) {
+            (Some(database_name), Some(table_name)) => Ok(Self {
+                database_name,
+                table_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsResponse>
+    for ClickStackClickHouseCASLPermissionConditions
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.connection.is_none() {
+            missing.push("connection");
+        }
+        if value.from.is_none() {
+            missing.push("from");
+        }
+        if value.r#where.is_none() {
+            missing.push("where");
+        }
+        if value.where_language.is_none() {
+            missing.push("whereLanguage");
+        }
+        match (
+            value.connection,
+            value.from,
+            value.r#where,
+            value.where_language,
+        ) {
+            (Some(connection), Some(from), Some(r#where), Some(where_language)) => Ok(Self {
+                connection,
+                from: from.try_into()?,
+                r#where,
+                where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionResponse> for ClickStackClickHouseCASLPermission {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackClickHouseCASLPermissionResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, value.integration, value.subject) {
+            (Some(action), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions: value.conditions.map(TryInto::try_into).transpose()?,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+/// Types fetched MongoDB conditions for a request, or `None` when a value is
+/// neither a string nor a `$regex` object and so has no request shape.
+fn mongodb_casl_conditions(
+    conditions: &ClickStackMongoDBCASLPermissionConditionsResponse,
+) -> Option<ClickStackMongoDBCASLPermissionConditions> {
+    use serde::Deserialize;
+    conditions
+        .iter()
+        .map(|(field, value)| {
+            ClickStackMongoDBCASLPermissionConditionValue::deserialize(value)
+                .ok()
+                .map(|value| (field.clone(), value))
+        })
+        .collect()
+}
+
+impl TryFrom<ClickStackMongoDBCASLPermissionResponse> for ClickStackMongoDBCASLPermission {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched MongoDB permission into a request permission.
+    ///
+    /// Response condition values are raw JSON. A value the request type cannot
+    /// hold — neither a string nor a `$regex` object — is reported as
+    /// `conditions` rather than dropped, because dropping a condition would
+    /// widen what the permission grants. Converting the whole
+    /// [`ClickStackCASLPermissionResponse`] instead writes such a permission
+    /// back verbatim.
+    fn try_from(value: ClickStackMongoDBCASLPermissionResponse) -> Result<Self, Self::Error> {
+        // Outer `None`: present conditions with a value that has no request shape.
+        let conditions = match &value.conditions {
+            Some(conditions) => mongodb_casl_conditions(conditions).map(Some),
+            None => Some(None),
+        };
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if conditions.is_none() {
+            missing.push("conditions");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, conditions, value.integration, value.subject) {
+            (Some(action), Some(conditions), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackCASLPermissionResponse> for ClickStackCASLPermission {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched role permission into a create/update-request permission.
+    ///
+    /// Every field the permission's `integration` requires has to be present in
+    /// the response, nested ClickHouse `conditions` included; a missing one is
+    /// named rather than invented. An `Unknown` payload — an `integration` this
+    /// crate does not model, or a body that did not fit the variant its
+    /// `integration` selected — converts losslessly into the request union's own
+    /// `Unknown` arm. So does a complete MongoDB permission whose `conditions`
+    /// hold a value with no request shape, as the request union would
+    /// deserialize that body; the arm keeps the fields this crate models.
+    fn try_from(value: ClickStackCASLPermissionResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(permission) => {
+                let verbatim = permission
+                    .conditions
+                    .as_ref()
+                    .is_some_and(|conditions| mongodb_casl_conditions(conditions).is_none())
+                    .then(|| {
+                        serde_json::to_value(&permission)
+                            .expect("a response permission always serializes to JSON")
+                    });
+                match (
+                    ClickStackMongoDBCASLPermission::try_from(permission),
+                    verbatim,
+                ) {
+                    (Ok(permission), _) => Self::ClickStackMongoDBCASLPermission(permission),
+                    (Err(error), Some(raw)) if error.fields() == ["conditions"] => {
+                        Self::Unknown(raw)
+                    }
+                    (Err(error), _) => return Err(error),
+                }
+            }
+            ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(permission) => {
+                Self::ClickStackClickHouseCASLPermission(permission.try_into()?)
+            }
+            ClickStackCASLPermissionResponse::Unknown(raw) => Self::Unknown(raw),
+        })
+    }
+}
