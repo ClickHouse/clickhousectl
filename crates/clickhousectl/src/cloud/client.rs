@@ -1020,27 +1020,29 @@ mod tests {
 
     #[test]
     #[cfg(feature = "experimental-access-negotiation")]
-    fn access_client_uses_explicit_saved_or_legacy_default_api_base() {
+    fn access_client_uses_explicit_or_saved_api_base() {
+        // Records are complete: both `api_url` and `auth_config` are required
+        // at deserialization (rejection covered by the authentication tests),
+        // and endpoint selection only runs on a loaded record.
         for (saved, explicit, expected) in [
             (
-                Some("https://saved.example/v1/"),
+                "https://saved.example/v1/",
                 None,
                 "https://saved.example/v1",
             ),
             (
-                Some("https://saved.example/v1"),
+                "https://saved.example/v1",
                 Some("http://localhost:2023/"),
                 "http://localhost:2023/v1",
             ),
-            (None, None, DEFAULT_BASE_URL),
+            (DEFAULT_BASE_URL, None, DEFAULT_BASE_URL),
         ] {
-            let mut value = serde_json::json!({
+            let value = serde_json::json!({
                 "access_token": "test-token", "refresh_token": "unused",
                 "expires_at": 4102444800_i64,
+                "api_url": saved,
+                "auth_config": {"auth_url": "https://auth.example.com", "client_id": "test-client"},
             });
-            if let Some(saved) = saved {
-                value["api_url"] = saved.into();
-            }
             let tokens = serde_json::from_value(value).unwrap();
             let client = CloudClient::from_access_tokens(Some(tokens), explicit, None).unwrap();
             assert_eq!(client.base_url(), expected);
