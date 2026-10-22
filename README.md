@@ -122,10 +122,15 @@ Creation returns before provisioning finishes. Queries use OAuth for read-only S
 The Query API may time out while SQL continues running. Check the outcome before retrying a write. Use a native client for long queries and bulk loads. Named endpoint lists return one page; pass `pagination.nextCursor` from JSON output to `query-api-endpoint list --cursor` to continue. See [create and operate a Cloud service](docs/guides/cloud-service.md) and [SQL and Query API behavior](docs/reference/query-api.md).
 
 ### Create ClickHouse Managed Postgres
-When environment credentials are configured but a credentials file or explicit
-CLI flags take precedence, clickhousectl prints a one-line note to stderr.
-`cloud auth status` also marks the environment credentials as configured but
-inactive and identifies the source that outranked them.
+
+```bash
+clickhousectl cloud postgres create --name app-db \
+  --provider aws --region us-east-1 --size c6gd.xlarge --pg-version 18
+clickhousectl cloud postgres get <postgres-id>
+clickhousectl cloud postgres certs get <postgres-id> --output ca.pem
+```
+
+Save any initial password and connection string, wait for `state=running`, then connect with `psql` using verified TLS. The [ClickHouse Managed Postgres guide](docs/guides/managed-postgres.md) covers that flow, configuration changes, read-only OAuth queries, and recovery. ClickHouse Managed Postgres commands are beta.
 
 ### Discover assignable roles
 
@@ -165,15 +170,9 @@ Pass `--debug` to a Cloud resource command to print the resolved credential sour
 
 Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
 
-`--url` is an advanced debugging override for targeting a non-production Cloud control plane. Release builds accept the option but omit it from `--help`; development builds show it. For `cloud service query`, set `CLICKHOUSE_CLOUD_QUERY_HOST` separately to override the Query API host.
-```bash
-clickhousectl cloud postgres create --name app-db \
-  --provider aws --region us-east-1 --size c6gd.xlarge --pg-version 18
-clickhousectl cloud postgres get <postgres-id>
-clickhousectl cloud postgres certs get <postgres-id> --output ca.pem
-```
+When environment credentials are configured but a credentials file or explicit CLI flags take precedence, clickhousectl prints a one-line note to stderr. `cloud auth status` also marks the environment credentials as configured but inactive and identifies the source that outranked them.
 
-Save any initial password and connection string, wait for `state=running`, then connect with `psql` using verified TLS. The [ClickHouse Managed Postgres guide](docs/guides/managed-postgres.md) covers that flow, configuration changes, read-only OAuth queries, and recovery. ClickHouse Managed Postgres commands are beta.
+`--url` is an advanced debugging override for targeting a non-production Cloud control plane. Release builds accept the option but omit it from `--help`; development builds show it. For `cloud service query`, set `CLICKHOUSE_CLOUD_QUERY_HOST` separately to override the Query API host.
 
 ### Ingest with ClickPipes
 
