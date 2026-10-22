@@ -594,11 +594,76 @@ fn build_source_request(config_file: &str) -> CloudResult<ClickStackSource> {
 }
 
 fn build_create_role_request(config_file: &str) -> CloudResult<ClickStackCreateRoleRequest> {
-    read_typed_config(config_file)
+    let value = read_config_value(config_file)?;
+    validate_role_permissions(&value, config_file)?;
+    deserialize_strict_config(value, config_file)
 }
 
 fn build_update_role_request(config_file: &str) -> CloudResult<ClickStackUpdateRoleRequest> {
-    read_typed_config(config_file)
+    let value = read_config_value(config_file)?;
+    validate_role_permissions(&value, config_file)?;
+    deserialize_strict_config(value, config_file)
+}
+
+/// Strictly check each permission against the variant its `integration`
+/// selects. The library's permission union dispatches through raw JSON, so
+/// the strict request-body check cannot see unknown fields inside one.
+fn validate_role_permissions(value: &Value, source: &str) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackClickHouseCASLPermission, ClickStackMongoDBCASLPermission,
+    };
+    let Some(permissions) = field(value, "permissions").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for (index, permission) in permissions.iter().enumerate() {
+        let path = format!("permissions[{index}]");
+        let checked = match field(permission, "integration").and_then(Value::as_str) {
+            Some("clickhouse") => deserialize_strict_config::<ClickStackClickHouseCASLPermission>(
+                permission.clone(),
+                source,
+            )
+            .map(drop),
+            Some("mongodb") => deserialize_strict_config::<ClickStackMongoDBCASLPermission>(
+                permission.clone(),
+                source,
+            )
+            .map(drop),
+            Some(other) => {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("unknown {path}.integration `{other}`; expected clickhouse or mongodb"),
+                ));
+            }
+            None => {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("{path}.integration must be clickhouse or mongodb"),
+                ));
+            }
+        };
+        checked.map_err(|error| {
+            invalid_clickstack_request(source, format!("invalid {path}: {}", error.message))
+        })?;
+        // A MongoDB condition value is an untagged string-or-`$regex` union,
+        // which serde buffers before matching, so the strict check above cannot
+        // see an unknown key inside a `$regex` object.
+        let conditions = field(permission, "conditions")
+            .filter(|_| field(permission, "integration") == Some(&Value::from("mongodb")))
+            .and_then(Value::as_object);
+        for (name, condition) in conditions.into_iter().flatten() {
+            if let Some(key) = condition.as_object().and_then(|object| {
+                object
+                    .keys()
+                    .find(|key| !["$regex", "$options"].contains(&key.as_str()))
+            }) {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("unknown field `{path}.conditions.{name}.{key}`"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_create_dashboard_request(
@@ -4596,22 +4661,75 @@ mod tests {
 
     #[test]
     fn role_builders_cover_minimal_and_complete_permissions() {
+        use clickhouse_cloud_api::models::ClickStackCASLPermission;
+
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("role.json");
         std::fs::write(&config_file, r#"{"name":"reader","permissions":[]}"#).unwrap();
         let minimal = build_create_role_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(minimal.name, "reader");
 
-        let maximal = r#"{"name":"ops","description":"operators","permissions":[{"action":"manage","subject":"Dashboard","inverted":true,"integration":"slack","conditions":{"teamId":"team-1"}}]}"#;
-        std::fs::write(&config_file, maximal).unwrap();
+        let maximal = serde_json::json!({"name":"ops","description":"operators","permissions":[
+            {"action":"manage","subject":"Dashboard","fields":["name"],"inverted":true,"integration":"mongodb","conditions":{"team":"team-1","name":{"$regex":"^prod-","$options":"i"}}},
+            {"action":"read","subject":"Source","inverted":false,"integration":"clickhouse","conditions":{"connection":"connection-1","from":{"databaseName":"default","tableName":"otel_logs"},"where":"ServiceName = 'checkout'","whereLanguage":"sql"}}
+        ]});
+        std::fs::write(&config_file, maximal.to_string()).unwrap();
         let create = build_create_role_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.permissions[0].integration.as_deref(), Some("slack"));
-        assert_eq!(
-            create.permissions[0].conditions.as_ref().unwrap()["teamId"],
-            "team-1"
-        );
+        assert!(matches!(
+            create.permissions.as_slice(),
+            [
+                ClickStackCASLPermission::ClickStackMongoDBCASLPermission(_),
+                ClickStackCASLPermission::ClickStackClickHouseCASLPermission(_),
+            ]
+        ));
+        // The request body is sent exactly as written.
+        assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
         let update = build_update_role_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(update.permissions[0].inverted, Some(true));
+        assert_eq!(
+            serde_json::to_value(&update).unwrap()["permissions"],
+            maximal["permissions"]
+        );
+    }
+
+    #[test]
+    fn role_builders_check_each_permission_against_its_integration() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("role.json");
+        for (permission, expected) in [
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard"}),
+                "permissions[0].integration must be clickhouse or mongodb",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"slack"}),
+                "unknown permissions[0].integration `slack`",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditons":{}}),
+                "conditons",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"connection":"c","from":{"databaseName":"d","tableName":"t","schema":"s"},"where":"x","whereLanguage":"sql"}}),
+                "conditions.from.schema",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"team":"team-1"}}),
+                "invalid permissions[0]",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditions":{"name":{"$regex":"^a","$optons":"i"}}}),
+                "unknown field `permissions[0].conditions.name.$optons`",
+            ),
+        ] {
+            let body = serde_json::json!({"name":"r","permissions":[permission]});
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            for error in [
+                build_create_role_request(config_file.to_str().unwrap()).unwrap_err(),
+                build_update_role_request(config_file.to_str().unwrap()).unwrap_err(),
+            ] {
+                assert!(error.message.contains(expected), "{error}");
+            }
+        }
     }
 
     #[test]
@@ -4688,8 +4806,8 @@ mod tests {
                 .contains("unknown source discriminator `logs`")
         );
 
-        let error = deserialize_strict_config::<ClickStackCreateRoleRequest>(
-            serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","conditons":{}}]}),
+        let error = validate_role_permissions(
+            &serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","integration":"mongodb","conditons":{}}]}),
             "test",
         )
         .unwrap_err();

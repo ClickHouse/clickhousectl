@@ -4220,7 +4220,10 @@ fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
 
     assert_split_strictness!(
         ClickStackAggregatedColumn => ClickStackAggregatedColumnResponse,
-        ClickStackCASLPermission => ClickStackCASLPermissionResponse,
+        ClickStackClickHouseCASLPermission => ClickStackClickHouseCASLPermissionResponse,
+        ClickStackClickHouseCASLPermissionConditions => ClickStackClickHouseCASLPermissionConditionsResponse,
+        ClickStackClickHouseCASLPermissionConditionsFrom => ClickStackClickHouseCASLPermissionConditionsFromResponse,
+        ClickStackMongoDBCASLPermission => ClickStackMongoDBCASLPermissionResponse,
         ClickStackFilter => ClickStackFilterResponse,
         ClickStackFilterSettingsColumn => ClickStackFilterSettingsColumnResponse,
         ClickStackHighlightedAttributeExpression => ClickStackHighlightedAttributeExpressionResponse,
@@ -6087,120 +6090,434 @@ fn serialize_clickstack_create_connection_request_omits_none() {
     );
 }
 
+/// A ClickHouse-integration permission built from every property of
+/// `ClickStackClickHouseCASLPermission` and its row-policy conditions.
+fn clickhouse_casl_permission_json() -> serde_json::Value {
+    serde_json::json!({
+        "action": "read",
+        "subject": "Source",
+        "fields": ["Body", "ServiceName"],
+        "inverted": false,
+        "integration": "clickhouse",
+        "conditions": {
+            "connection": "507f1f77bcf86cd799439011",
+            "from": {"databaseName": "default", "tableName": "otel_logs"},
+            "where": "ServiceName = 'checkout'",
+            "whereLanguage": "sql"
+        }
+    })
+}
+
+/// A MongoDB-integration permission built from every property of
+/// `ClickStackMongoDBCASLPermission`, with both condition value shapes.
+fn mongodb_casl_permission_json() -> serde_json::Value {
+    serde_json::json!({
+        "action": "manage",
+        "subject": "Dashboard",
+        "fields": ["name"],
+        "inverted": true,
+        "integration": "mongodb",
+        "conditions": {
+            "team": "team-1",
+            "name": {"$regex": "^prod-", "$options": "i"}
+        }
+    })
+}
+
 #[test]
-fn deserialize_clickstack_role_with_nested_conditions() {
-    let json = r#"{
+fn clickstack_casl_permission_request_routes_each_shape_to_its_variant() {
+    let permission: ClickStackCASLPermission =
+        serde_json::from_value(clickhouse_casl_permission_json()).unwrap();
+    let ClickStackCASLPermission::ClickStackClickHouseCASLPermission(clickhouse) = &permission
+    else {
+        panic!("expected the ClickHouse variant, got {permission:?}");
+    };
+    assert_eq!(clickhouse.action, ClickStackCASLPermissionAction::Read);
+    assert_eq!(clickhouse.subject, ClickStackCASLPermissionSubject::Source);
+    assert_eq!(
+        clickhouse.integration,
+        ClickStackClickHouseCASLPermissionIntegration::Clickhouse
+    );
+    assert_eq!(
+        clickhouse.fields.as_deref(),
+        Some(&["Body".to_string(), "ServiceName".to_string()][..])
+    );
+    assert_eq!(clickhouse.inverted, Some(false));
+    let conditions = clickhouse.conditions.as_ref().unwrap();
+    assert_eq!(conditions.connection, "507f1f77bcf86cd799439011");
+    assert_eq!(conditions.from.database_name, "default");
+    assert_eq!(conditions.from.table_name, "otel_logs");
+    assert_eq!(conditions.r#where, "ServiceName = 'checkout'");
+    assert_eq!(
+        conditions.where_language,
+        ClickStackClickHouseCASLPermissionConditionsWherelanguage::Sql
+    );
+
+    let permission: ClickStackCASLPermission =
+        serde_json::from_value(mongodb_casl_permission_json()).unwrap();
+    let ClickStackCASLPermission::ClickStackMongoDBCASLPermission(mongodb) = &permission else {
+        panic!("expected the MongoDB variant, got {permission:?}");
+    };
+    assert_eq!(mongodb.action, ClickStackCASLPermissionAction::Manage);
+    assert_eq!(mongodb.subject, ClickStackCASLPermissionSubject::Dashboard);
+    assert_eq!(
+        mongodb.integration,
+        ClickStackMongoDBCASLPermissionIntegration::Mongodb
+    );
+    assert_eq!(mongodb.inverted, Some(true));
+    let conditions = mongodb.conditions.as_ref().unwrap();
+    assert_eq!(
+        conditions["team"],
+        ClickStackMongoDBCASLPermissionConditionValue::String("team-1".to_string())
+    );
+    assert_eq!(
+        conditions["name"],
+        ClickStackMongoDBCASLPermissionConditionValue::Regex(
+            ClickStackMongoDBCASLPermissionRegexCondition {
+                regex: "^prod-".to_string(),
+                options: Some("i".to_string()),
+            }
+        )
+    );
+}
+
+#[test]
+fn clickstack_casl_permission_response_routes_each_shape_to_its_variant() {
+    let permission: ClickStackCASLPermissionResponse =
+        serde_json::from_value(clickhouse_casl_permission_json()).unwrap();
+    let ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(clickhouse) =
+        &permission
+    else {
+        panic!("expected the ClickHouse variant, got {permission:?}");
+    };
+    assert_eq!(
+        clickhouse.action,
+        Some(ClickStackCASLPermissionAction::Read)
+    );
+    let conditions = clickhouse.conditions.as_ref().unwrap();
+    assert_eq!(
+        conditions.connection.as_deref(),
+        Some("507f1f77bcf86cd799439011")
+    );
+    assert_eq!(
+        conditions.from.as_ref().unwrap().table_name.as_deref(),
+        Some("otel_logs")
+    );
+    assert_eq!(
+        conditions.where_language,
+        Some(ClickStackClickHouseCASLPermissionConditionsWherelanguage::Sql)
+    );
+
+    let permission: ClickStackCASLPermissionResponse =
+        serde_json::from_value(mongodb_casl_permission_json()).unwrap();
+    let ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(mongodb) = &permission
+    else {
+        panic!("expected the MongoDB variant, got {permission:?}");
+    };
+    assert_eq!(
+        mongodb.integration,
+        Some(ClickStackMongoDBCASLPermissionIntegration::Mongodb)
+    );
+    // Response condition values stay raw JSON, whatever shape they take.
+    let conditions = mongodb.conditions.as_ref().unwrap();
+    assert_eq!(conditions["team"], "team-1");
+    assert_eq!(conditions["name"]["$regex"], "^prod-");
+}
+
+#[test]
+fn clickstack_casl_permission_dispatch_ignores_the_payload_shape() {
+    // Dispatch reads `integration` alone. Every response arm is all-`Option`,
+    // so shape-based `untagged` matching would accept any object in the first
+    // arm; a ClickHouse row policy must not become a MongoDB permission, and a
+    // MongoDB query must not become a ClickHouse one.
+    let mut clickhouse_conditions_as_mongodb = clickhouse_casl_permission_json();
+    clickhouse_conditions_as_mongodb["integration"] = "mongodb".into();
+    let permission: ClickStackCASLPermissionResponse =
+        serde_json::from_value(clickhouse_conditions_as_mongodb.clone()).unwrap();
+    assert!(
+        matches!(
+            permission,
+            ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(_)
+        ),
+        "{permission:?}"
+    );
+
+    let mut mongodb_conditions_as_clickhouse = mongodb_casl_permission_json();
+    mongodb_conditions_as_clickhouse["integration"] = "clickhouse".into();
+    // `conditions.name` is an object where the ClickHouse shape has no such
+    // key, and the ClickHouse `from` is absent: the request variant cannot be
+    // built, so the request union keeps the payload verbatim in `Unknown`.
+    let permission: ClickStackCASLPermission =
+        serde_json::from_value(mongodb_conditions_as_clickhouse.clone()).unwrap();
+    assert_eq!(
+        permission,
+        ClickStackCASLPermission::Unknown(mongodb_conditions_as_clickhouse)
+    );
+
+    // No integration, or one this crate does not know, never guesses a variant.
+    for integration in [None, Some("postgres")] {
+        let mut payload = mongodb_casl_permission_json();
+        match integration {
+            Some(integration) => payload["integration"] = integration.into(),
+            None => {
+                payload.as_object_mut().unwrap().remove("integration");
+            }
+        }
+        let request: ClickStackCASLPermission = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(request, ClickStackCASLPermission::Unknown(payload.clone()));
+        let response: ClickStackCASLPermissionResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(
+            response,
+            ClickStackCASLPermissionResponse::Unknown(payload.clone())
+        );
+        assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_round_trips_in_both_positions() {
+    for payload in [
+        clickhouse_casl_permission_json(),
+        mongodb_casl_permission_json(),
+    ] {
+        let request: ClickStackCASLPermission = serde_json::from_value(payload.clone()).unwrap();
+        assert!(!matches!(request, ClickStackCASLPermission::Unknown(_)));
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+        let back: ClickStackCASLPermission =
+            serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+        assert_eq!(back, request);
+
+        let response: ClickStackCASLPermissionResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert!(!matches!(
+            response,
+            ClickStackCASLPermissionResponse::Unknown(_)
+        ));
+        assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_variant_defaults_round_trip_to_their_own_variant() {
+    // Each variant's `integration` defaults to its own wire value, so a
+    // default-built request variant still carries its discriminator.
+    let clickhouse = ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
+        ClickStackClickHouseCASLPermission::default(),
+    );
+    let mongodb = ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
+        ClickStackMongoDBCASLPermission::default(),
+    );
+    for permission in [clickhouse, mongodb] {
+        let json = serde_json::to_value(&permission).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ClickStackCASLPermission>(json).unwrap(),
+            permission
+        );
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_variants_stay_strict_on_the_request_side() {
+    // Each required field of the request variants is `T`: dropping one fails
+    // the variant (and so routes the union payload to `Unknown`).
+    for (payload, required) in [
+        (clickhouse_casl_permission_json(), "action"),
+        (clickhouse_casl_permission_json(), "subject"),
+        (clickhouse_casl_permission_json(), "integration"),
+        (mongodb_casl_permission_json(), "action"),
+        (mongodb_casl_permission_json(), "subject"),
+        (mongodb_casl_permission_json(), "integration"),
+    ] {
+        let mut payload = payload;
+        payload.as_object_mut().unwrap().remove(required);
+        let integration = payload.get("integration").cloned();
+        let accepted = if integration.is_none() {
+            serde_json::from_value::<ClickStackClickHouseCASLPermission>(payload.clone()).is_ok()
+                || serde_json::from_value::<ClickStackMongoDBCASLPermission>(payload.clone())
+                    .is_ok()
+        } else if integration == Some("clickhouse".into()) {
+            serde_json::from_value::<ClickStackClickHouseCASLPermission>(payload.clone()).is_ok()
+        } else {
+            serde_json::from_value::<ClickStackMongoDBCASLPermission>(payload.clone()).is_ok()
+        };
+        assert!(!accepted, "accepted a permission without `{required}`");
+        assert!(matches!(
+            serde_json::from_value::<ClickStackCASLPermission>(payload).unwrap(),
+            ClickStackCASLPermission::Unknown(_)
+        ));
+    }
+    for required in ["connection", "from", "where", "whereLanguage"] {
+        let mut conditions = clickhouse_casl_permission_json()["conditions"].clone();
+        conditions.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<ClickStackClickHouseCASLPermissionConditions>(conditions)
+                .is_err(),
+            "accepted ClickHouse conditions without `{required}`"
+        );
+    }
+    for required in ["databaseName", "tableName"] {
+        let mut from = clickhouse_casl_permission_json()["conditions"]["from"].clone();
+        from.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<ClickStackClickHouseCASLPermissionConditionsFrom>(from)
+                .is_err(),
+            "accepted a ClickHouse `from` without `{required}`"
+        );
+    }
+    // A MongoDB condition value is a string or a `$regex` object, nothing else.
+    for value in [
+        serde_json::json!({"$options": "i"}),
+        serde_json::json!(3),
+        serde_json::json!(["a"]),
+    ] {
+        assert!(
+            serde_json::from_value::<ClickStackMongoDBCASLPermissionConditions>(
+                serde_json::json!({ "name": value })
+            )
+            .is_err(),
+            "accepted MongoDB condition value {value}"
+        );
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_responses_tolerate_missing_and_null_fields() {
+    assert_eq!(
+        serde_json::from_str::<ClickStackClickHouseCASLPermissionResponse>("{}").unwrap(),
+        ClickStackClickHouseCASLPermissionResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackClickHouseCASLPermissionResponse>(
+            r#"{"action":null,"subject":null,"fields":null,"inverted":null,"integration":null,"conditions":null}"#
+        )
+        .unwrap(),
+        ClickStackClickHouseCASLPermissionResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackClickHouseCASLPermissionConditionsResponse>(
+            r#"{"connection":null,"from":null,"where":null,"whereLanguage":null}"#
+        )
+        .unwrap(),
+        ClickStackClickHouseCASLPermissionConditionsResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackClickHouseCASLPermissionConditionsFromResponse>(
+            r#"{"databaseName":null,"tableName":null}"#
+        )
+        .unwrap(),
+        ClickStackClickHouseCASLPermissionConditionsFromResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackMongoDBCASLPermissionResponse>(
+            r#"{"action":null,"subject":null,"fields":null,"inverted":null,"integration":null,"conditions":null}"#
+        )
+        .unwrap(),
+        ClickStackMongoDBCASLPermissionResponse::default()
+    );
+
+    // A dispatched permission with only its discriminator keeps that variant,
+    // and serializes without inventing the absent fields.
+    let permission: ClickStackCASLPermissionResponse =
+        serde_json::from_str(r#"{"integration":"clickhouse","action":null}"#).unwrap();
+    assert_eq!(
+        permission,
+        ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(
+            ClickStackClickHouseCASLPermissionResponse {
+                integration: Some(ClickStackClickHouseCASLPermissionIntegration::Clickhouse),
+                ..Default::default()
+            }
+        )
+    );
+    assert_eq!(
+        serde_json::to_value(&permission).unwrap(),
+        serde_json::json!({"integration": "clickhouse"})
+    );
+}
+
+#[test]
+fn deserialize_clickstack_role_with_both_permission_kinds() {
+    let json = serde_json::json!({
         "id": "role-1",
         "name": "Deploy Bot",
         "description": "Manages dashboards via Terraform",
         "isPredefined": false,
-        "permissions": [
-            {
-                "action": "read",
-                "subject": "dashboard",
-                "inverted": false,
-                "integration": "mongodb",
-                "conditions": {
-                    "teamId": "team-1",
-                    "tags": ["prod", "eu"]
-                }
-            }
-        ]
-    }"#;
-    let role: ClickStackRole = serde_json::from_str(json).unwrap();
+        "permissions": [mongodb_casl_permission_json(), clickhouse_casl_permission_json()]
+    });
+    let role: ClickStackRole = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(role.id.as_deref(), Some("role-1"));
     assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
     assert_eq!(role.is_predefined, Some(false));
     let permissions = role.permissions.as_deref().expect("permissions present");
-    assert_eq!(permissions.len(), 1);
+    assert!(matches!(
+        permissions,
+        [
+            ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(_),
+            ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(_),
+        ]
+    ));
 
-    let perm = &permissions[0];
-    assert_eq!(perm.action.as_deref(), Some("read"));
-    assert_eq!(perm.subject.as_deref(), Some("dashboard"));
-    assert_eq!(perm.inverted, Some(false));
-    assert_eq!(perm.integration, Some("mongodb".to_string()));
-
-    // Free-form conditions land as serde_json::Value with the nested content intact.
-    let conditions = perm.conditions.as_ref().unwrap();
-    assert_eq!(conditions["teamId"], "team-1");
-    assert_eq!(conditions["tags"][0], "prod");
-    assert_eq!(conditions["tags"][1], "eu");
-}
-
-#[test]
-fn clickstack_role_round_trip() {
-    let role = ClickStackRole {
+    // Optional role fields are omitted when absent, and the role round-trips.
+    let sparse = ClickStackRole {
         id: Some("role-1".to_string()),
-        name: Some("Deploy Bot".to_string()),
-        is_predefined: Some(false),
-        permissions: Some(vec![ClickStackCASLPermissionResponse {
-            action: Some("manage".to_string()),
-            subject: Some("all".to_string()),
-            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
-            ..Default::default()
-        }]),
         ..Default::default()
     };
-    let v = serde_json::to_value(&role).unwrap();
-    assert_eq!(v["id"], "role-1");
-    assert_eq!(v["isPredefined"], false);
-    assert_eq!(v["permissions"][0]["action"], "manage");
-    assert_eq!(v["permissions"][0]["subject"], "all");
-    assert_eq!(v["permissions"][0]["conditions"]["teamId"], "team-1");
-
-    // Optional fields dropped when None.
+    let v = serde_json::to_value(&sparse).unwrap();
     assert!(v.get("description").is_none());
     assert!(v.get("createdAt").is_none());
-    assert!(v.get("updatedAt").is_none());
-
-    let back: ClickStackRole = serde_json::from_value(v).unwrap();
+    assert!(v.get("permissions").is_none());
+    assert_eq!(serde_json::to_value(&role).unwrap(), json);
+    let back: ClickStackRole = serde_json::from_value(json).unwrap();
     assert_eq!(back, role);
 }
 
 #[test]
 fn serialize_clickstack_casl_permission_omits_none() {
-    let perm = ClickStackCASLPermission {
-        action: "read".to_string(),
-        subject: "dashboard".to_string(),
-        ..Default::default()
-    };
-    let v = serde_json::to_value(&perm).unwrap();
-    assert_eq!(v["action"], "read");
-    assert_eq!(v["subject"], "dashboard");
-    assert!(v.get("inverted").is_none());
-    assert!(v.get("integration").is_none());
-    assert!(v.get("conditions").is_none());
+    let perm = ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
+        ClickStackMongoDBCASLPermission {
+            action: ClickStackCASLPermissionAction::Read,
+            subject: ClickStackCASLPermissionSubject::Dashboard,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(&perm).unwrap(),
+        serde_json::json!({"action": "read", "subject": "Dashboard", "integration": "mongodb"})
+    );
+    let perm = ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
+        ClickStackClickHouseCASLPermission {
+            action: ClickStackCASLPermissionAction::Read,
+            subject: ClickStackCASLPermissionSubject::All,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(&perm).unwrap(),
+        serde_json::json!({"action": "read", "subject": "all", "integration": "clickhouse"})
+    );
 }
 
 #[test]
 fn serialize_clickstack_create_role_request_omits_none() {
     let req = ClickStackCreateRoleRequest {
         name: "Deploy Bot".to_string(),
-        permissions: vec![ClickStackCASLPermission {
-            action: "read".to_string(),
-            subject: "dashboard".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![serde_json::from_value(mongodb_casl_permission_json()).unwrap()],
         ..Default::default()
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["name"], "Deploy Bot");
-    assert_eq!(v["permissions"][0]["action"], "read");
+    assert_eq!(v["permissions"][0], mongodb_casl_permission_json());
     assert!(v.get("description").is_none());
 }
 
 #[test]
 fn serialize_clickstack_update_role_request_omits_none() {
     let req = ClickStackUpdateRoleRequest {
-        permissions: vec![ClickStackCASLPermission {
-            action: "manage".to_string(),
-            subject: "all".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![serde_json::from_value(clickhouse_casl_permission_json()).unwrap()],
         ..Default::default()
     };
     let v = serde_json::to_value(&req).unwrap();
-    assert_eq!(v["permissions"][0]["action"], "manage");
+    assert_eq!(v["permissions"][0], clickhouse_casl_permission_json());
     assert!(v.get("name").is_none());
     assert!(v.get("description").is_none());
 }

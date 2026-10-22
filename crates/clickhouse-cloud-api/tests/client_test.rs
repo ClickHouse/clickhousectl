@@ -4007,8 +4007,9 @@ async fn create_role() {
             "name": "Deploy Bot",
             "permissions": [{
                 "action": "read",
-                "subject": "dashboard",
-                "conditions": { "teamId": "team-1" }
+                "subject": "Dashboard",
+                "integration": "mongodb",
+                "conditions": { "team": "team-1" }
             }]
         })))
         .respond_with(ok_json(serde_json::json!({
@@ -4017,8 +4018,9 @@ async fn create_role() {
             "isPredefined": false,
             "permissions": [{
                 "action": "read",
-                "subject": "dashboard",
-                "conditions": { "teamId": "team-1" }
+                "subject": "Dashboard",
+                "integration": "mongodb",
+                "conditions": { "team": "team-1" }
             }]
         })))
         .mount(&s)
@@ -4026,12 +4028,20 @@ async fn create_role() {
 
     let body = ClickStackCreateRoleRequest {
         name: "Deploy Bot".to_string(),
-        permissions: vec![ClickStackCASLPermission {
-            action: "read".to_string(),
-            subject: "dashboard".to_string(),
-            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
-            ..Default::default()
-        }],
+        permissions: vec![ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
+            ClickStackMongoDBCASLPermission {
+                action: ClickStackCASLPermissionAction::Read,
+                subject: ClickStackCASLPermissionSubject::Dashboard,
+                conditions: Some(
+                    [(
+                        "team".to_string(),
+                        ClickStackMongoDBCASLPermissionConditionValue::String("team-1".to_string()),
+                    )]
+                    .into(),
+                ),
+                ..Default::default()
+            },
+        )],
         ..Default::default()
     };
     let resp = c
@@ -4042,6 +4052,10 @@ async fn create_role() {
     assert_eq!(role.id.as_deref(), Some("role-1"));
     assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
     assert_eq!(role.is_predefined, Some(false));
+    assert!(matches!(
+        role.permissions.as_deref(),
+        Some([ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(_)])
+    ));
 }
 
 #[tokio::test]
@@ -4056,7 +4070,7 @@ async fn get_role() {
             "id": "role-1",
             "name": "Read Only",
             "isPredefined": true,
-            "permissions": [{ "action": "read", "subject": "dashboard" }]
+            "permissions": [{ "action": "read", "subject": "Dashboard", "integration": "mongodb" }]
         })))
         .mount(&s)
         .await;
@@ -4079,23 +4093,27 @@ async fn update_role() {
             "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
         ))
         .and(body_partial_json(serde_json::json!({
-            "permissions": [{ "action": "manage", "subject": "all" }]
+            "permissions": [{ "action": "manage", "subject": "all", "integration": "clickhouse" }]
         })))
         .respond_with(ok_json(serde_json::json!({
             "id": "role-1",
             "name": "Deploy Bot",
             "isPredefined": false,
-            "permissions": [{ "action": "manage", "subject": "all" }]
+            "permissions": [{ "action": "manage", "subject": "all", "integration": "clickhouse" }]
         })))
         .mount(&s)
         .await;
 
     let body = ClickStackUpdateRoleRequest {
-        permissions: vec![ClickStackCASLPermission {
-            action: "manage".to_string(),
-            subject: "all".to_string(),
-            ..Default::default()
-        }],
+        permissions: vec![
+            ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
+                ClickStackClickHouseCASLPermission {
+                    action: ClickStackCASLPermissionAction::Manage,
+                    subject: ClickStackCASLPermissionSubject::All,
+                    ..Default::default()
+                },
+            ),
+        ],
         ..Default::default()
     };
     let resp = c
@@ -4105,7 +4123,15 @@ async fn update_role() {
     let role = resp.result.unwrap();
     let permissions = role.permissions.unwrap_or_default();
     assert_eq!(permissions.len(), 1);
-    assert_eq!(permissions[0].action.as_deref(), Some("manage"));
+    let ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(permission) =
+        &permissions[0]
+    else {
+        panic!("expected the ClickHouse variant, got {:?}", permissions[0]);
+    };
+    assert_eq!(
+        permission.action,
+        Some(ClickStackCASLPermissionAction::Manage)
+    );
 }
 
 #[tokio::test]

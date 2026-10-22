@@ -491,6 +491,10 @@ pub(crate) struct EnumInfo {
     /// Named types carried by any variant's payload (union arms), so
     /// response-tree reachability can traverse data-carrying enums.
     pub(crate) variant_type_names: BTreeSet<String>,
+    /// Payload types of the single-field tuple variants, in declaration
+    /// order, so an undiscriminated composition can pair its branches with
+    /// the union arms that carry them.
+    pub(crate) variant_payloads: Vec<TypeNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,6 +675,7 @@ impl RustInventory {
                     let mut values = BTreeSet::new();
                     let mut integer_values = BTreeSet::new();
                     let mut variant_type_names = BTreeSet::new();
+                    let mut variant_payloads = Vec::new();
                     let mut is_value_enum = !container.untagged;
                     let uses_i64_serde_conversion = container.into.as_deref() == Some("i64")
                         && (container.from.as_deref() == Some("i64")
@@ -678,6 +683,11 @@ impl RustInventory {
                     for variant in &item_enum.variants {
                         for field in variant.fields.iter() {
                             collect_type_names(&field.ty, &mut variant_type_names);
+                        }
+                        if let Fields::Unnamed(fields) = &variant.fields
+                            && let [field] = fields.unnamed.iter().collect::<Vec<_>>()[..]
+                        {
+                            variant_payloads.push(TypeNode::from_syn(&field.ty));
                         }
                         let options = serde_options(&variant.attrs)?;
                         if options.untagged || options.other {
@@ -712,6 +722,7 @@ impl RustInventory {
                             is_value_enum,
                             values_const: None,
                             variant_type_names,
+                            variant_payloads,
                         },
                     );
                 }

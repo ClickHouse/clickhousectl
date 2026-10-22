@@ -22,6 +22,28 @@ new fields as `None` or `..Default::default()`. The unused
 `ClickStackValidationErrorItemErrors` types are removed because the API no
 longer defines them; no method returned them.
 
+ClickStack role permissions are now a union, a breaking change for Rust callers.
+`ClickStackCASLPermission` (in `ClickStackCreateRoleRequest` and
+`ClickStackUpdateRoleRequest`) and `ClickStackCASLPermissionResponse` (in
+`ClickStackRole`) were structs; they are now enums with a
+`ClickStackClickHouseCASLPermission` arm, a `ClickStackMongoDBCASLPermission` arm and an
+`Unknown(serde_json::Value)` catch-all, dispatched on the required `integration` field
+(`clickhouse` or `mongodb`). A payload without a known `integration`, or one that does
+not fit the arm it selects, lands in `Unknown` verbatim. Wrap a struct literal in its arm,
+for example `ClickStackCASLPermission::ClickStackMongoDBCASLPermission(ClickStackMongoDBCASLPermission { .. })`,
+and `match` a response arm before reading its fields. Each arm adds `fields` (a CASL field
+restriction) and replaces the `String` fields `action` and `subject` with the shared
+`ClickStackCASLPermissionAction` and `ClickStackCASLPermissionSubject` enums;
+`integration` is the arm's single-value enum and is required in requests. ClickHouse
+`conditions` are a typed row policy (`ClickStackClickHouseCASLPermissionConditions`:
+`connection`, `from` with `database_name`/`table_name`, `where`, and `where_language`,
+`sql` or `lucene`). MongoDB `conditions` map field names to a
+`ClickStackMongoDBCASLPermissionConditionValue`, either `String` or a
+`Regex(ClickStackMongoDBCASLPermissionRegexCondition)` with `$regex` and optional
+`$options`; in responses each value stays raw `serde_json::Value`. The
+`ClickStackCASLPermissionConditions` alias is removed because the API no longer defines it.
+Each new request type has an all-`Option` `*Response` variant.
+
 Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
 takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
 all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends
@@ -415,6 +437,12 @@ referenced schemas. Added, removed, and changed contracts have separate snapshot
 findings with the previous/current contracts and locations. Prose, examples, and
 ordering of property/required sets do not cause contract drift. These findings describe
 specification changes, not necessarily a Rust incompatibility or a backend rollout.
+
+A typed `additionalProperties` map whose value is an inline `oneOf`/`anyOf` must use an
+untagged union whose tuple arms pair one-to-one with the branches; an inline object branch
+pairs with a struct carrying exactly its properties, strict where required in request
+position. A response map value may instead be `serde_json::Value`, the lossless form for an
+undiscriminated composition.
 
 This is structural coverage, not a proof of every possible live value: arbitrary JSON
 payloads remain lossless catch-alls, existing union checks own named/inline variant

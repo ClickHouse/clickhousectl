@@ -347,6 +347,97 @@ impl std::fmt::Display for ClickStackBetweenColorConditionOperator {
     }
 }
 
+/// CASL actions shared by ClickStack role permissions.
+///
+/// Used by `ClickStackClickHouseCASLPermission.action` and
+/// `ClickStackMongoDBCASLPermission.action`, which the spec gives the same values.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCASLPermissionAction {
+    #[serde(rename = "create")]
+    #[default]
+    Create,
+    #[serde(rename = "read")]
+    Read,
+    #[serde(rename = "update")]
+    Update,
+    #[serde(rename = "delete")]
+    Delete,
+    #[serde(rename = "manage")]
+    Manage,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCASLPermissionAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create => write!(f, "create"),
+            Self::Read => write!(f, "read"),
+            Self::Update => write!(f, "update"),
+            Self::Delete => write!(f, "delete"),
+            Self::Manage => write!(f, "manage"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// CASL subjects shared by ClickStack role permissions.
+///
+/// Used by `ClickStackClickHouseCASLPermission.subject` and
+/// `ClickStackMongoDBCASLPermission.subject`, which the spec gives the same values.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCASLPermissionSubject {
+    #[serde(rename = "Alert")]
+    #[default]
+    Alert,
+    #[serde(rename = "Connection")]
+    Connection,
+    #[serde(rename = "Dashboard")]
+    Dashboard,
+    #[serde(rename = "SavedSearch")]
+    SavedSearch,
+    #[serde(rename = "Source")]
+    Source,
+    #[serde(rename = "Team")]
+    Team,
+    #[serde(rename = "User")]
+    User,
+    #[serde(rename = "Webhook")]
+    Webhook,
+    #[serde(rename = "Role")]
+    Role,
+    #[serde(rename = "Notebook")]
+    Notebook,
+    #[serde(rename = "SchemaMigration")]
+    SchemaMigration,
+    #[serde(rename = "all")]
+    All,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCASLPermissionSubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alert => write!(f, "Alert"),
+            Self::Connection => write!(f, "Connection"),
+            Self::Dashboard => write!(f, "Dashboard"),
+            Self::SavedSearch => write!(f, "SavedSearch"),
+            Self::Source => write!(f, "Source"),
+            Self::Team => write!(f, "Team"),
+            Self::User => write!(f, "User"),
+            Self::Webhook => write!(f, "Webhook"),
+            Self::Role => write!(f, "Role"),
+            Self::Notebook => write!(f, "Notebook"),
+            Self::SchemaMigration => write!(f, "SchemaMigration"),
+            Self::All => write!(f, "all"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackCategoricalBarBuilderChartConfig.displayType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackCategoricalBarBuilderChartConfigDisplaytype {
@@ -462,6 +553,49 @@ impl std::fmt::Display for ClickStackChartColor {
             Self::Chart_success => write!(f, "chart-success"),
             Self::Chart_warning => write!(f, "chart-warning"),
             Self::Chart_error => write!(f, "chart-error"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackClickHouseCASLPermission.integration`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackClickHouseCASLPermissionIntegration {
+    #[serde(rename = "clickhouse")]
+    #[default]
+    Clickhouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackClickHouseCASLPermissionIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clickhouse => write!(f, "clickhouse"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackClickHouseCASLPermissionConditions.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackClickHouseCASLPermissionConditionsWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackClickHouseCASLPermissionConditionsWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1164,6 +1298,26 @@ impl std::fmt::Display for ClickStackMetricSourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Metric => write!(f, "metric"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackMongoDBCASLPermission.integration`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackMongoDBCASLPermissionIntegration {
+    #[serde(rename = "mongodb")]
+    #[default]
+    Mongodb,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMongoDBCASLPermissionIntegration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mongodb => write!(f, "mongodb"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

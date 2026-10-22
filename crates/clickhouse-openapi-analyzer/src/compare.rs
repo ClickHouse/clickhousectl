@@ -699,6 +699,14 @@ fn map_value_matches(
         non_nullable.as_object_mut().unwrap().remove("nullable");
         return map_value_matches(rust, spec, inner, &non_nullable, direction);
     }
+    for composition in ["oneOf", "anyOf"] {
+        if let Some(branches) = schema
+            .get(composition)
+            .and_then(serde_json::Value::as_array)
+        {
+            return composition_map_value_matches(rust, spec, ty, branches, direction);
+        }
+    }
     if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
         let Some(schema_name) = reference.strip_prefix("#/components/schemas/") else {
             return false;
@@ -738,6 +746,95 @@ fn map_value_matches(
         },
         _ => false,
     }
+}
+
+/// An inline `oneOf`/`anyOf` map value carries no discriminator, so its typed
+/// form is an untagged union whose tuple variants pair one-to-one with the
+/// branches. A response value may instead be `serde_json::Value`: an untagged
+/// union of all-`Option` arms would greedily route an unknown shape into the
+/// first arm that deserializes and drop its keys, so raw JSON is the only
+/// lossless tolerant representation.
+fn composition_map_value_matches(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    ty: &TypeNode,
+    branches: &[serde_json::Value],
+    direction: Direction,
+) -> bool {
+    let ty = rust.resolve_alias(ty);
+    let TypeNode::Path(name) = ty else {
+        return false;
+    };
+    if direction == Direction::Response && name == "Value" {
+        return true;
+    }
+    let Some(info) = rust.enums.get(name).filter(|info| !info.is_value_enum) else {
+        return false;
+    };
+    let payloads = &info.variant_payloads;
+    let matches = |payload: &TypeNode, branch: &serde_json::Value| {
+        composition_branch_matches(rust, spec, payload, branch, direction)
+    };
+    payloads.len() == branches.len()
+        && branches.iter().all(|branch| {
+            payloads
+                .iter()
+                .filter(|payload| matches(payload, branch))
+                .count()
+                == 1
+        })
+        && payloads
+            .iter()
+            .all(|payload| branches.iter().any(|branch| matches(payload, branch)))
+}
+
+/// One composition branch against one union arm. An inline object branch
+/// must be a struct with exactly its properties, each typed like a map value
+/// and `Option` unless the branch requires it in request position.
+fn composition_branch_matches(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    payload: &TypeNode,
+    branch: &serde_json::Value,
+    direction: Direction,
+) -> bool {
+    let Some(properties) = branch
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .filter(|_| branch.get("$ref").is_none())
+    else {
+        return map_value_matches(rust, spec, payload, branch, direction);
+    };
+    let TypeNode::Path(name) = rust.resolve_alias(payload) else {
+        return false;
+    };
+    let Some(info) = rust.structs.get(name) else {
+        return false;
+    };
+    let required: BTreeSet<&str> = branch
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    info.fields.len() == properties.len()
+        && properties.iter().all(|(key, schema)| {
+            let Some(field) = info.fields.get(key) else {
+                return false;
+            };
+            let ty = rust.resolve_alias(&field.rust_type);
+            match (direction, required.contains(key.as_str()), ty) {
+                (Direction::Request, true, TypeNode::Option(_)) => false,
+                (Direction::Request, true, ty) => {
+                    map_value_matches(rust, spec, ty, schema, direction)
+                }
+                (_, _, TypeNode::Option(inner)) => {
+                    map_value_matches(rust, spec, inner, schema, direction)
+                }
+                _ => false,
+            }
+        })
 }
 
 fn compare_beta_and_deprecation(
@@ -2077,6 +2174,62 @@ mod tests {
             AnalyzerConfig::default(),
         );
         assert!(!report.has_drift(), "{}", report.render_text());
+    }
+
+    fn composition_map_schema() -> serde_json::Value {
+        serde_json::json!({"type": "object", "additionalProperties": {"oneOf": [
+            {"type": "string"},
+            {"type": "object", "required": ["$regex"], "properties": {
+                "$regex": {"type": "string"}, "$options": {"type": "string"}
+            }}
+        ]}})
+    }
+
+    const COMPOSITION_REGEX: &str = r#"pub struct Regex { #[serde(rename = "$regex")] pub regex: String, #[serde(rename = "$options")] pub options: Option<String> }"#;
+
+    #[test]
+    fn additional_properties_pairs_composition_branches_with_union_arms() {
+        let report = analyze_directional(
+            &format!(
+                "#[serde(untagged)] pub enum Entry {{ Text(String), Pattern(Regex) }} {COMPOSITION_REGEX} \
+                 pub type Widget = BTreeMap<String, Entry>; \
+                 pub type WidgetResponse = BTreeMap<String, serde_json::Value>;"
+            ),
+            directional_spec(composition_map_schema(), true, true),
+            AnalyzerConfig::default(),
+        );
+        assert!(!report.has_drift(), "{}", report.render_text());
+    }
+
+    #[test]
+    fn additional_properties_rejects_unpaired_composition_unions() {
+        for models in [
+            // Raw JSON is only a tolerant response representation.
+            "pub type Widget = BTreeMap<String, serde_json::Value>;".to_string(),
+            // A branch with no arm, and an arm duplicating a branch.
+            "#[serde(untagged)] pub enum Entry { Text(String) } pub type Widget = BTreeMap<String, Entry>;".to_string(),
+            format!("#[serde(untagged)] pub enum Entry {{ Text(String), Again(String), Pattern(Regex) }} {COMPOSITION_REGEX} pub type Widget = BTreeMap<String, Entry>;"),
+            // The object arm must carry exactly the branch's properties, with
+            // the required one strict and the optional one `Option`.
+            r#"#[serde(untagged)] pub enum Entry { Text(String), Pattern(Regex) } pub struct Regex { #[serde(rename = "$regex")] pub regex: String } pub type Widget = BTreeMap<String, Entry>;"#.to_string(),
+            r#"#[serde(untagged)] pub enum Entry { Text(String), Pattern(Regex) } pub struct Regex { #[serde(rename = "$regex")] pub regex: Option<String>, #[serde(rename = "$options")] pub options: Option<String> } pub type Widget = BTreeMap<String, Entry>;"#.to_string(),
+            r#"#[serde(untagged)] pub enum Entry { Text(String), Pattern(Regex) } pub struct Regex { #[serde(rename = "$regex")] pub regex: String, #[serde(rename = "$options")] pub options: String } pub type Widget = BTreeMap<String, Entry>;"#.to_string(),
+            // A value enum is not a union.
+            r#"pub enum Entry { #[serde(rename = "a")] A } pub type Widget = BTreeMap<String, Entry>;"#.to_string(),
+        ] {
+            let report = analyze_fixture(&models, composition_map_schema(), AnalyzerConfig::default());
+            assert_eq!(
+                report.findings.len(),
+                1,
+                "{models}: {}",
+                report.render_text()
+            );
+            assert_eq!(
+                report.findings[0].kind,
+                FindingKind::AdditionalPropertiesMismatch,
+                "{models}"
+            );
+        }
     }
 
     #[test]
