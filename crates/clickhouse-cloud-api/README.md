@@ -52,6 +52,12 @@ literals and assignments; no replacement request field exists. `Service` still
 reports `encryption_key`, `encryption_assumed_role_identifier`, and
 `encryption_role_id` for existing services.
 
+`ClickPipeBigQueryPipeSettings` and `ClickPipeBigQueryPipeSettingsResponse` gain
+optional `sync_cron`, a cron expression that schedules CDC syncs in place of
+`sync_interval_seconds`; the API rejects a request that sets both, and snapshot
+pipes omit it. `TryFrom` carries it back to the request type. Struct-literal
+callers need `sync_cron: None` or `..Default::default()`.
+
 BigQuery replication modes now include `Cdc` and `CdcOnly`, alongside `Snapshot`,
 matching the modes documented by the API. BigQuery settings add optional `replication_method`, `sync_interval_seconds`,
 `query_cdc_pull_sync_parallelism`, `sync_delay_seconds`, and

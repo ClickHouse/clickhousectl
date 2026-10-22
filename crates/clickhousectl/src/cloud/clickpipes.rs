@@ -6089,6 +6089,7 @@ fn build_bigquery_request(
         snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
         replication_method: args.replication_method.clone(),
         sync_interval_seconds: args.sync_interval_seconds,
+        sync_cron: None,
         query_cdc_pull_sync_parallelism: args.query_cdc_pull_sync_parallelism,
         sync_delay_seconds: args.sync_delay_seconds,
         pull_window_size_seconds: args.pull_window_size_seconds,
