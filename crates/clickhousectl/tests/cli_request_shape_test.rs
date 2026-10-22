@@ -4814,6 +4814,271 @@ async fn postgres_update_without_tag_flags_refuses_incomplete_or_failed_reads() 
     }
 }
 
+// ── Postgres IP access rules (issue #1125) ────────────────────────────────
+
+const ACCESS_RULE_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+fn postgres_access_rules_response() -> Value {
+    serde_json::json!([
+        {"id": "rule-1", "source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+        {"id": "rule-2", "source": "198.51.100.7/32", "portRange": "5432..6432"}
+    ])
+}
+
+/// Omitting both flags omits `ipAccessList` (allow all), `--block-public-access`
+/// sends `[]`, and each `--ip-allow` becomes one rule without an `id`. A
+/// trailing `=` sends an empty description, as ClickHouse `--ip-allow` does.
+#[tokio::test]
+async fn postgres_create_sends_access_rules_only_when_asked() {
+    let base = serde_json::json!({
+        "name": "pg1", "provider": "aws", "region": "us-east-1", "size": "c6gd.large"
+    });
+    let with_list = |list: Value| {
+        let mut body = base.clone();
+        body["ipAccessList"] = list;
+        body
+    };
+    for (flags, expected) in [
+        (vec![], base.clone()),
+        (
+            vec!["--block-public-access"],
+            with_list(serde_json::json!([])),
+        ),
+        (
+            vec![
+                "--ip-allow",
+                "203.0.113.0/24:5432=office",
+                "--ip-allow",
+                "198.51.100.7:5432..6432",
+                "--ip-allow",
+                "192.0.2.1:6432=",
+            ],
+            with_list(serde_json::json!([
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"source": "198.51.100.7", "portRange": "5432..6432"},
+                {"source": "192.0.2.1", "portRange": "6432", "description": ""}
+            ])),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/org-1/postgres"))
+            .and(body_json(expected.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": ACCESS_RULE_POSTGRES_ID,
+                    "ipAccessList": postgres_access_rules_response(),
+                },
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "postgres",
+            "create",
+            "--org-id",
+            "org-1",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output["ipAccessList"], postgres_access_rules_response());
+    }
+}
+
+#[tokio::test]
+async fn postgres_access_rule_flags_are_usage_errors_before_any_request() {
+    let mock = MockServer::start().await;
+    for args in [
+        &[
+            "postgres",
+            "create",
+            "--org-id",
+            "org-1",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--ip-allow",
+            "203.0.113.7",
+        ][..],
+        &[
+            "postgres",
+            "create",
+            "--org-id",
+            "org-1",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--ip-allow",
+            "203.0.113.7:5432",
+            "--block-public-access",
+        ][..],
+        &[
+            "postgres",
+            "update",
+            ACCESS_RULE_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--add-ip-allow",
+            "2001:db8::/32:5432",
+        ][..],
+    ] {
+        let output = invoke_cli_with_cloud_credentials(&mock, args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+/// Rule changes ride the same PATCH as the preserved tag snapshot; the patch
+/// carries both lists, so a remove-only update sends `add: []`.
+#[tokio::test]
+async fn postgres_update_sends_access_rule_patch() {
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
+    let tags = serde_json::json!([{"key": "env", "value": "prod"}]);
+    for (flags, patch) in [
+        (
+            vec![
+                "--add-ip-allow",
+                "203.0.113.0/24:5432=office",
+                "--remove-ip-allow",
+                "rule-9",
+                "--add-ip-allow",
+                "203.0.113.0/24:6432",
+                "--remove-ip-allow",
+                "rule-8",
+            ],
+            serde_json::json!({
+                "add": [
+                    {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                    {"source": "203.0.113.0/24", "portRange": "6432"}
+                ],
+                "remove": [{"id": "rule-9"}, {"id": "rule-8"}]
+            }),
+        ),
+        (
+            vec!["--remove-ip-allow", "rule-9"],
+            serde_json::json!({"add": [], "remove": [{"id": "rule-9"}]}),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(&postgres_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"id": ACCESS_RULE_POSTGRES_ID, "tags": tags},
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path(&postgres_path))
+            .and(body_json(
+                serde_json::json!({"tags": tags, "ipAccessList": patch}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": ACCESS_RULE_POSTGRES_ID,
+                    "tags": tags,
+                    "ipAccessList": postgres_access_rules_response(),
+                },
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "postgres",
+            "update",
+            ACCESS_RULE_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output["ipAccessList"], postgres_access_rules_response());
+    }
+}
+
+#[tokio::test]
+async fn postgres_update_without_access_rule_flags_omits_the_patch() {
+    let mock = MockServer::start().await;
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
+    Mock::given(method("PATCH"))
+        .and(path(&postgres_path))
+        .and(body_json(serde_json::json!({"tags": []})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": ACCESS_RULE_POSTGRES_ID},
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            ACCESS_RULE_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--clear-tags",
+        ],
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn postgres_get_human_output_shows_access_rules_and_restore_point() {
+    let mock = MockServer::start().await;
+    mount_postgres_service_response(
+        &mock,
+        "GET",
+        &format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}"),
+        serde_json::json!({
+            "id": ACCESS_RULE_POSTGRES_ID,
+            "earliestRestoreTime": "2026-10-01T12:00:00Z",
+            "ipAccessList": postgres_access_rules_response(),
+        }),
+    )
+    .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "get",
+            ACCESS_RULE_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("2026-10-01T12:00:00"), "{stdout}");
+    for rule in postgres_access_rules_response().as_array().unwrap() {
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(rule["id"].as_str().unwrap()))
+            .unwrap_or_else(|| panic!("missing {rule}: {stdout}"));
+        for field in ["source", "portRange", "description"] {
+            if let Some(value) = rule[field].as_str() {
+                assert!(line.contains(value), "{field}: {line}");
+            }
+        }
+    }
+}
+
 // ── Postgres list --filter validation (issue #603) ────────────────────────
 
 fn postgres_list_response() -> ResponseTemplate {
@@ -20573,7 +20838,13 @@ async fn pg_config_files_preserve_valid_values_in_every_write_path() {
         "autovacuum_analyze_scale_factor": false,
         "default_transaction_isolation": "repeatable read",
         "ssl_min_protocol_version": "TLSv1.3",
-        "wal_compression": "zstd"
+        "wal_compression": "zstd",
+        "default_toast_compression": "lz4",
+        "enable_parallel_hash": "off",
+        "io_method": "worker",
+        "log_lock_waits": "on",
+        "bgwriter_delay": "200ms",
+        "max_wal_senders": 10
     });
     let instance_config = serde_json::json!({
         "pgConfig": pg_config,
@@ -20700,11 +20971,17 @@ async fn pg_config_invalid_enum_file_values_fail_before_any_api_request() {
     let directory = tempfile::tempdir().unwrap();
     let pg_config_file = directory.path().join("pg.json");
     let instance_config_file = directory.path().join("config.json");
+    // One server for every case: nothing may reach it.
+    let mock = MockServer::start().await;
 
     for pg_config in [
         serde_json::json!({"default_transaction_isolation": "read uncommitted"}),
         serde_json::json!({"ssl_min_protocol_version": "SSLv3"}),
         serde_json::json!({"wal_compression": "gzip"}),
+        serde_json::json!({"default_toast_compression": "zstd"}),
+        serde_json::json!({"enable_parallel_hash": true}),
+        serde_json::json!({"io_method": "posix_aio"}),
+        serde_json::json!({"log_lock_waits": "yes"}),
     ] {
         std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
         std::fs::write(
@@ -20716,7 +20993,6 @@ async fn pg_config_invalid_enum_file_values_fail_before_any_api_request() {
             pg_config_file.to_str().unwrap(),
             instance_config_file.to_str().unwrap(),
         ) {
-            let mock = MockServer::start().await;
             let output = invoke_pgbouncer_cli(&mock, &args);
             assert_eq!(output.status.code(), Some(1), "{args:?}");
             let error = String::from_utf8_lossy(&output.stderr);

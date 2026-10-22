@@ -26,6 +26,26 @@ Use `sslmode=verify-full` for certificate and hostname verification. If you embe
 
 GCP is available in private preview: use `--provider gcp` with GCP region and instance-size names. Inspect `postgres create --help` for the available options.
 
+## Restrict network access
+
+**Omitting access flags on create allows all IPv4 and IPv6 addresses on Postgres (5432) and PgBouncer (6432).** To restrict it, pass one `--ip-allow IP_OR_CIDR:PORTS[=DESCRIPTION]` per IPv4 rule. `PORTS` is a port or an inclusive range such as `5432..6432`, with no default. Once you pass a rule, only the listed rules apply, so add one for each port you use. `--block-public-access` creates the service with no rules, which blocks public access:
+
+```bash
+clickhousectl cloud postgres create --name app-db \
+  --provider aws --region us-east-1 --size c6gd.xlarge \
+  --ip-allow '203.0.113.0/24:5432=office' --ip-allow '203.0.113.0/24:6432=office'
+```
+
+`get` lists the IPv4 rules with their IDs; IPv6 rules are not shown. Change them with `update`: `--add-ip-allow` creates a rule and `--remove-ip-allow <rule-id>` removes one. Removals apply before additions:
+
+```bash
+clickhousectl cloud postgres get <postgres-id>
+clickhousectl cloud postgres update <postgres-id> \
+  --remove-ip-allow <rule-id> --add-ip-allow '198.51.100.7:5432..6432'
+```
+
+A rule update can partially succeed. After a failure, run `get` and compare the rules before retrying, so a retry does not repeat a change that already applied.
+
 ## Run read-only SQL with OAuth
 
 This route needs no database password or local `psql`, but accepts **only OAuth**. Remove higher-priority key flags, project credentials, environment variables, and `.env` key values before logging in. Review stored Query API key cleanup before clearing the credentials file; see [authentication](../reference/authentication.md).
@@ -64,7 +84,7 @@ Run `SELECT pg_postmaster_start_time()` again: only a later timestamp confirms a
 {"pgConfig":{},"pgBouncerConfig":{"default_pool_size":"16"}}
 ```
 
-`pgConfig` uses supported Cloud GUC names; unknown names and null values are rejected. On create, restore, or read-replica creation, `--pg-bouncer-config-file` takes just the string-valued PgBouncer map, without the two-section wrapper.
+`pgConfig` uses supported Cloud GUC names; unknown names, null values, and values outside a setting's documented set (for example `io_method` or `wal_compression`) are rejected before any request. On create, restore, or read-replica creation, `--pg-bouncer-config-file` takes just the string-valued PgBouncer map, without the two-section wrapper.
 
 Tag updates fetch and replace the complete tag snapshot. Omitted flags preserve it; `--clear-tags` empties it. Avoid concurrent tag edits because one snapshot can overwrite another.
 
@@ -80,7 +100,7 @@ clickhousectl cloud postgres backup list <postgres-id>
 
 Logs accept an inclusive window of at most 30 days; use limit/offset pagination. Metrics and `slow-queries` require ordered RFC 3339 bounds with at most millisecond precision. `postgres prometheus service/org` emits Prometheus text, encoded as one JSON string in JSON mode.
 
-Backup listing shows retained base backups, with cursor pagination. Restore targets a point in time within retention, not a backup key:
+Backup listing shows completed base backups and their status, with cursor pagination. Restore targets a point in time within retention, not a backup key. `get` shows the earliest restorable time once a primary's first backup has completed:
 
 ```bash
 clickhousectl cloud postgres restore <postgres-id> \
