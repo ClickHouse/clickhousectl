@@ -186,6 +186,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                     .transpose()?,
                 metric_source_id: value.metric_source_id,
                 name,
+                order_by_expression: value.order_by_expression,
                 query_settings: value
                     .query_settings
                     .map(|items| {
@@ -518,6 +519,7 @@ impl TryFrom<ClickStackSessionSourceResponse> for ClickStackSessionSource {
                                 .collect::<Result<Vec<_>, _>>()
                         })
                         .transpose()?,
+                    resource_attributes_expression: value.resource_attributes_expression,
                     section: value.section,
                     timestamp_value_expression: value.timestamp_value_expression,
                     trace_source_id,
@@ -723,6 +725,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 connection,
                 default_table_select_expression,
                 disabled: value.disabled,
+                displayed_timestamp_value_expression: value.displayed_timestamp_value_expression,
                 duration_expression,
                 duration_precision,
                 event_attributes_expression: value.event_attributes_expression,
@@ -766,6 +769,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                     .transpose()?,
                 metric_source_id: value.metric_source_id,
                 name,
+                order_by_expression: value.order_by_expression,
                 parent_span_id_expression,
                 query_settings: value
                     .query_settings
@@ -777,6 +781,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                     })
                     .transpose()?,
                 resource_attributes_expression: value.resource_attributes_expression,
+                sample_rate_expression: value.sample_rate_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
                 service_version_expression: value.service_version_expression,
@@ -784,6 +789,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 span_events_value_expression: value.span_events_value_expression,
                 span_id_expression,
                 span_kind_expression,
+                span_links_value_expression: value.span_links_value_expression,
                 span_name_expression,
                 status_code_expression: value.status_code_expression,
                 status_message_expression: value.status_message_expression,
@@ -917,6 +923,7 @@ impl TryFrom<ClickStackVariableSavedFilterValueResponse> for ClickStackVariableS
                 r#type,
                 name,
                 values,
+                all: value.all,
             }),
             _ => Err(MissingRequiredFields::new(missing)),
         }
@@ -934,6 +941,409 @@ impl TryFrom<ClickStackSavedFilterValueResponse> for ClickStackSavedFilterValue 
                 Self::ClickStackVariableSavedFilterValue(value.try_into()?)
             }
             ClickStackSavedFilterValueResponse::Unknown(value) => Self::Unknown(value),
+        })
+    }
+}
+
+impl TryFrom<ClickStackQueryExpressionFilterResponse> for ClickStackQueryExpressionFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackQueryExpressionFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.expression.is_none() {
+            missing.push("expression");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.expression,
+            value.id,
+            value.name,
+            value.source_id,
+            value.r#type,
+        ) {
+            (Some(expression), Some(id), Some(name), Some(source_id), Some(r#type)) => Ok(Self {
+                expression,
+                id,
+                name,
+                source_id,
+                r#type,
+                applies_to_source_ids: value.applies_to_source_ids,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                source_metric_type: value.source_metric_type,
+                variable_name: value.variable_name,
+                r#where: value.r#where,
+                where_language: value.where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackStaticListFilterResponse> for ClickStackStaticListFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackStaticListFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.options.is_none() {
+            missing.push("options");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (value.id, value.name, value.options, value.r#type) {
+            (Some(id), Some(name), Some(options), Some(r#type)) => Ok(Self {
+                id,
+                name,
+                options,
+                r#type,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackPrometheusLabelFilterResponse> for ClickStackPrometheusLabelFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackPrometheusLabelFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.label.is_none() {
+            missing.push("label");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.id,
+            value.label,
+            value.name,
+            value.source_id,
+            value.r#type,
+        ) {
+            (Some(id), Some(label), Some(name), Some(source_id), Some(r#type)) => Ok(Self {
+                id,
+                label,
+                name,
+                source_id,
+                r#type,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                r#match: value.r#match,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackSourceFilterResponse> for ClickStackSourceFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackSourceFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.expression.is_none() {
+            missing.push("expression");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_id.is_none() {
+            missing.push("sourceId");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        if value.variable_name.is_none() {
+            missing.push("variableName");
+        }
+        match (
+            value.expression,
+            value.id,
+            value.name,
+            value.source_id,
+            value.r#type,
+            value.variable_name,
+        ) {
+            (
+                Some(expression),
+                Some(id),
+                Some(name),
+                Some(source_id),
+                Some(r#type),
+                Some(variable_name),
+            ) => Ok(Self {
+                expression,
+                id,
+                name,
+                source_id,
+                r#type,
+                variable_name,
+                applies_to_source_ids: value.applies_to_source_ids,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackFilterResponse> for ClickStackFilter {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched dashboard filter into an update-request filter.
+    ///
+    /// Every field the filter's `type` requires, `id` included, has to be
+    /// present in the response; a missing one is named rather than invented.
+    /// An `Unknown` payload — a `type` this crate does not model, or a body that
+    /// did not fit the variant its `type` selected — converts losslessly into
+    /// the request union's own `Unknown` arm.
+    fn try_from(value: ClickStackFilterResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackFilterResponse::ClickStackQueryExpressionFilter(filter) => {
+                Self::ClickStackQueryExpressionFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackStaticListFilter(filter) => {
+                Self::ClickStackStaticListFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackPrometheusLabelFilter(filter) => {
+                Self::ClickStackPrometheusLabelFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackSourceFilter(filter) => {
+                Self::ClickStackSourceFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::Unknown(raw) => Self::Unknown(raw),
+        })
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsFromResponse>
+    for ClickStackClickHouseCASLPermissionConditionsFrom
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsFromResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.database_name.is_none() {
+            missing.push("databaseName");
+        }
+        if value.table_name.is_none() {
+            missing.push("tableName");
+        }
+        match (value.database_name, value.table_name) {
+            (Some(database_name), Some(table_name)) => Ok(Self {
+                database_name,
+                table_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionConditionsResponse>
+    for ClickStackClickHouseCASLPermissionConditions
+{
+    type Error = MissingRequiredFields;
+    fn try_from(
+        value: ClickStackClickHouseCASLPermissionConditionsResponse,
+    ) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.connection.is_none() {
+            missing.push("connection");
+        }
+        if value.from.is_none() {
+            missing.push("from");
+        }
+        if value.r#where.is_none() {
+            missing.push("where");
+        }
+        if value.where_language.is_none() {
+            missing.push("whereLanguage");
+        }
+        match (
+            value.connection,
+            value.from,
+            value.r#where,
+            value.where_language,
+        ) {
+            (Some(connection), Some(from), Some(r#where), Some(where_language)) => Ok(Self {
+                connection,
+                from: from.try_into()?,
+                r#where,
+                where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackClickHouseCASLPermissionResponse> for ClickStackClickHouseCASLPermission {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackClickHouseCASLPermissionResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, value.integration, value.subject) {
+            (Some(action), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions: value.conditions.map(TryInto::try_into).transpose()?,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+/// Types fetched MongoDB conditions for a request, or `None` when a value is
+/// neither a string nor a `$regex` object and so has no request shape.
+fn mongodb_casl_conditions(
+    conditions: &ClickStackMongoDBCASLPermissionConditionsResponse,
+) -> Option<ClickStackMongoDBCASLPermissionConditions> {
+    use serde::Deserialize;
+    conditions
+        .iter()
+        .map(|(field, value)| {
+            ClickStackMongoDBCASLPermissionConditionValue::deserialize(value)
+                .ok()
+                .map(|value| (field.clone(), value))
+        })
+        .collect()
+}
+
+impl TryFrom<ClickStackMongoDBCASLPermissionResponse> for ClickStackMongoDBCASLPermission {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched MongoDB permission into a request permission.
+    ///
+    /// Response condition values are raw JSON. A value the request type cannot
+    /// hold — neither a string nor a `$regex` object — is reported as
+    /// `conditions` rather than dropped, because dropping a condition would
+    /// widen what the permission grants. Converting the whole
+    /// [`ClickStackCASLPermissionResponse`] instead writes such a permission
+    /// back verbatim.
+    fn try_from(value: ClickStackMongoDBCASLPermissionResponse) -> Result<Self, Self::Error> {
+        // Outer `None`: present conditions with a value that has no request shape.
+        let conditions = match &value.conditions {
+            Some(conditions) => mongodb_casl_conditions(conditions).map(Some),
+            None => Some(None),
+        };
+        let mut missing = Vec::new();
+        if value.action.is_none() {
+            missing.push("action");
+        }
+        if conditions.is_none() {
+            missing.push("conditions");
+        }
+        if value.integration.is_none() {
+            missing.push("integration");
+        }
+        if value.subject.is_none() {
+            missing.push("subject");
+        }
+        match (value.action, conditions, value.integration, value.subject) {
+            (Some(action), Some(conditions), Some(integration), Some(subject)) => Ok(Self {
+                action,
+                conditions,
+                fields: value.fields,
+                integration,
+                inverted: value.inverted,
+                subject,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackCASLPermissionResponse> for ClickStackCASLPermission {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched role permission into a create/update-request permission.
+    ///
+    /// Every field the permission's `integration` requires has to be present in
+    /// the response, nested ClickHouse `conditions` included; a missing one is
+    /// named rather than invented. An `Unknown` payload — an `integration` this
+    /// crate does not model, or a body that did not fit the variant its
+    /// `integration` selected — converts losslessly into the request union's own
+    /// `Unknown` arm. So does a complete MongoDB permission whose `conditions`
+    /// hold a value with no request shape, as the request union would
+    /// deserialize that body; the arm keeps the fields this crate models.
+    fn try_from(value: ClickStackCASLPermissionResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackCASLPermissionResponse::ClickStackMongoDBCASLPermission(permission) => {
+                let verbatim = permission
+                    .conditions
+                    .as_ref()
+                    .is_some_and(|conditions| mongodb_casl_conditions(conditions).is_none())
+                    .then(|| {
+                        serde_json::to_value(&permission)
+                            .expect("a response permission always serializes to JSON")
+                    });
+                match (
+                    ClickStackMongoDBCASLPermission::try_from(permission),
+                    verbatim,
+                ) {
+                    (Ok(permission), _) => Self::ClickStackMongoDBCASLPermission(permission),
+                    (Err(error), Some(raw)) if error.fields() == ["conditions"] => {
+                        Self::Unknown(raw)
+                    }
+                    (Err(error), _) => return Err(error),
+                }
+            }
+            ClickStackCASLPermissionResponse::ClickStackClickHouseCASLPermission(permission) => {
+                Self::ClickStackClickHouseCASLPermission(permission.try_into()?)
+            }
+            ClickStackCASLPermissionResponse::Unknown(raw) => Self::Unknown(raw),
         })
     }
 }

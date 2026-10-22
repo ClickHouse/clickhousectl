@@ -223,6 +223,16 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // `T` would force every IAM_ROLE request to send an empty username and
     // password pair.
     ("ClickPipeMutatePostgresSource", "credentials"),
+    // ClickStackAlertChartConfigOverlay is an `allOf` mixin that every alert
+    // chart config variant adds to its chart config; the spec never uses it on
+    // its own. It carries no `required[]`, so the description fallback marks
+    // all three fields required, but the composed variants require only their
+    // chart config's fields, and the schema's own `where` description says the
+    // field is rejected on raw-SQL variants, so it cannot be required. The
+    // standalone struct keeps the optionality the variants carry.
+    ("ClickStackAlertChartConfigOverlay", "name"),
+    ("ClickStackAlertChartConfigOverlay", "where"),
+    ("ClickStackAlertChartConfigOverlay", "whereLanguage"),
     // Deprecated request fields are feature-gated out in favour of replacements.
     ("OrganizationPrivateEndpointsPatch", "add"),
     // Despite its non-Patch name and descriptions that omit the "Optional"

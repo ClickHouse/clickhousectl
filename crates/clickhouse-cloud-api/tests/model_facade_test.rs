@@ -195,6 +195,62 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ClickStackDashboardResponse::default(),
         api::models::ClickStackDashboardResponse::default(),
     );
+    assert_same_type(
+        api::ClickStackFilter::default(),
+        api::models::ClickStackFilter::default(),
+    );
+    assert_same_type(
+        api::ClickStackFilterResponse::Unknown(serde_json::Value::Null),
+        api::models::ClickStackFilterResponse::Unknown(serde_json::Value::Null),
+    );
+    assert_same_type(
+        api::ClickStackQueryExpressionFilterInput::default(),
+        api::models::ClickStackQueryExpressionFilterInput::default(),
+    );
+    assert_same_type(
+        api::ClickStackStaticListFilter::default(),
+        api::models::ClickStackStaticListFilter::default(),
+    );
+    assert_same_type(
+        api::ClickStackPrometheusLabelFilterResponse::default(),
+        api::models::ClickStackPrometheusLabelFilterResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackSourceFilterInput::default(),
+        api::models::ClickStackSourceFilterInput::default(),
+    );
+    assert_same_type(
+        api::ClickStackFilterMinSelections::default(),
+        api::models::ClickStackFilterMinSelections::default(),
+    );
+    assert_same_type(
+        api::ClickStackFilterMaxSelections::default(),
+        api::models::ClickStackFilterMaxSelections::default(),
+    );
+    assert_same_type(
+        api::ClickStackHeatmapChartConfig::default(),
+        api::models::ClickStackHeatmapChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackHeatmapSeriesChartConfigResponse::default(),
+        api::models::ClickStackHeatmapSeriesChartConfigResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackStackedLineChartConfig::default(),
+        api::models::ClickStackStackedLineChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackStackedLineRawSqlChartConfigResponse::default(),
+        api::models::ClickStackStackedLineRawSqlChartConfigResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackValidateWebhookResponse::default(),
+        api::models::ClickStackValidateWebhookResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackValidateWebhookResponseErrorsItem::default(),
+        api::models::ClickStackValidateWebhookResponseErrorsItem::default(),
+    );
     assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
         api::ReversePrivateEndpoint::default(),

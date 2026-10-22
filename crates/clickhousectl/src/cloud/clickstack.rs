@@ -594,18 +594,83 @@ fn build_source_request(config_file: &str) -> CloudResult<ClickStackSource> {
 }
 
 fn build_create_role_request(config_file: &str) -> CloudResult<ClickStackCreateRoleRequest> {
-    read_typed_config(config_file)
+    let value = read_config_value(config_file)?;
+    validate_role_permissions(&value, config_file)?;
+    deserialize_strict_config(value, config_file)
 }
 
 fn build_update_role_request(config_file: &str) -> CloudResult<ClickStackUpdateRoleRequest> {
-    read_typed_config(config_file)
+    let value = read_config_value(config_file)?;
+    validate_role_permissions(&value, config_file)?;
+    deserialize_strict_config(value, config_file)
+}
+
+/// Strictly check each permission against the variant its `integration`
+/// selects. The library's permission union dispatches through raw JSON, so
+/// the strict request-body check cannot see unknown fields inside one.
+fn validate_role_permissions(value: &Value, source: &str) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackClickHouseCASLPermission, ClickStackMongoDBCASLPermission,
+    };
+    let Some(permissions) = field(value, "permissions").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for (index, permission) in permissions.iter().enumerate() {
+        let path = format!("permissions[{index}]");
+        let checked = match field(permission, "integration").and_then(Value::as_str) {
+            Some("clickhouse") => deserialize_strict_config::<ClickStackClickHouseCASLPermission>(
+                permission.clone(),
+                source,
+            )
+            .map(drop),
+            Some("mongodb") => deserialize_strict_config::<ClickStackMongoDBCASLPermission>(
+                permission.clone(),
+                source,
+            )
+            .map(drop),
+            Some(other) => {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("unknown {path}.integration `{other}`; expected clickhouse or mongodb"),
+                ));
+            }
+            None => {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("{path}.integration must be clickhouse or mongodb"),
+                ));
+            }
+        };
+        checked.map_err(|error| {
+            invalid_clickstack_request(source, format!("invalid {path}: {}", error.message))
+        })?;
+        // A MongoDB condition value is an untagged string-or-`$regex` union,
+        // which serde buffers before matching, so the strict check above cannot
+        // see an unknown key inside a `$regex` object.
+        let conditions = field(permission, "conditions")
+            .filter(|_| field(permission, "integration") == Some(&Value::from("mongodb")))
+            .and_then(Value::as_object);
+        for (name, condition) in conditions.into_iter().flatten() {
+            if let Some(key) = condition.as_object().and_then(|object| {
+                object
+                    .keys()
+                    .find(|key| !["$regex", "$options"].contains(&key.as_str()))
+            }) {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("unknown field `{path}.conditions.{name}.{key}`"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_create_dashboard_request(
     config_file: &str,
 ) -> CloudResult<ClickStackCreateDashboardRequest> {
     let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, config_file)?;
+    validate_dashboard_unions(&value, DashboardFilterShape::Input, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_create_dashboard_enums(&request, config_file)?;
     Ok(request)
@@ -615,7 +680,7 @@ fn build_update_dashboard_request(
     config_file: &str,
 ) -> CloudResult<ClickStackUpdateDashboardRequest> {
     let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, config_file)?;
+    validate_dashboard_unions(&value, DashboardFilterShape::WithId, config_file)?;
     let request = deserialize_strict_config(value, config_file)?;
     validate_update_dashboard_enums(&request, config_file)?;
     Ok(request)
@@ -834,6 +899,25 @@ fn validate_alert_channels(value: &Value, source: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// The spec no longer requires `source`, but the CLI keeps requiring it, as it
+/// did before: without it the alert's target cannot be checked.
+fn missing_alert_source(source: &str) -> CloudError {
+    invalid_clickstack_request(source, "source is required by the current API contract")
+}
+
+/// Inline alerts are not exposed yet. `chartConfig` is a union the library
+/// dispatches through raw JSON, so the strict request-body check could not see
+/// unknown fields inside it; it is rejected as it was before the spec added it.
+fn validate_alert_chart_config(present: bool, source: &str) -> CloudResult<()> {
+    if present {
+        return Err(invalid_clickstack_request(
+            source,
+            "unknown field `chartConfig`",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_create_alert_request(
     request: &ClickStackCreateAlertRequest,
     source: &str,
@@ -843,15 +927,25 @@ fn validate_create_alert_request(
         ClickStackCreateAlertRequestSource as AlertSource,
         ClickStackCreateAlertRequestThresholdtype as ThresholdType,
     };
+    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        AlertSource::Saved_search => "saved_search",
-        AlertSource::Tile => "tile",
-        AlertSource::Unknown(value) => {
+        Some(AlertSource::Saved_search) => "saved_search",
+        Some(AlertSource::Tile) => "tile",
+        // Inline alerts (with their `chartConfig`) are not exposed yet, so
+        // `inline` is rejected as it was before the spec added it.
+        Some(AlertSource::Inline) => {
+            return Err(invalid_clickstack_request(
+                source,
+                "unknown source `inline`",
+            ));
+        }
+        Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
+        None => return Err(missing_alert_source(source)),
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -901,15 +995,25 @@ fn validate_update_alert_request(
         ClickStackUpdateAlertRequestSource as AlertSource,
         ClickStackUpdateAlertRequestThresholdtype as ThresholdType,
     };
+    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        AlertSource::Saved_search => "saved_search",
-        AlertSource::Tile => "tile",
-        AlertSource::Unknown(value) => {
+        Some(AlertSource::Saved_search) => "saved_search",
+        Some(AlertSource::Tile) => "tile",
+        // Inline alerts (with their `chartConfig`) are not exposed yet, so
+        // `inline` is rejected as it was before the spec added it.
+        Some(AlertSource::Inline) => {
+            return Err(invalid_clickstack_request(
+                source,
+                "unknown source `inline`",
+            ));
+        }
+        Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
+        None => return Err(missing_alert_source(source)),
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -1665,19 +1769,31 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "heatmap" => {
-            let config =
-                strict_dashboard_variant::<ClickStackHeatmapChartConfig>(value, path, source)?;
+            // Only the distribution heatmap is accepted, as before the spec
+            // added the series heatmap; `heatmapMode: "series"` is rejected below.
+            let config = strict_dashboard_variant::<ClickStackHeatmapDistributionChartConfig>(
+                value, path, source,
+            )?;
             reject_unknown_enum!(
                 &config.display_type,
-                ClickStackHeatmapChartConfigDisplaytype::Unknown,
+                ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
                 unknown,
                 format!("{path}.displayType"),
                 source
             );
+            if let Some(mode) = &config.heatmap_mode {
+                reject_unknown_enum!(
+                    mode,
+                    ClickStackHeatmapDistributionChartConfigHeatmapmode::Unknown,
+                    unknown,
+                    format!("{path}.heatmapMode"),
+                    source
+                );
+            }
             if let Some(language) = &config.where_language {
                 reject_unknown_enum!(
                     language,
-                    ClickStackHeatmapChartConfigWherelanguage::Unknown,
+                    ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
                     unknown,
                     format!("{path}.whereLanguage"),
                     source
@@ -1816,7 +1932,110 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
     }
 }
 
-fn validate_dashboard_unions(value: &Value, source: &str) -> CloudResult<()> {
+/// Which dashboard filter schema a request body carries: create bodies send
+/// filters without an `id`, update bodies send them with one.
+#[derive(Clone, Copy)]
+enum DashboardFilterShape {
+    Input,
+    WithId,
+}
+
+/// Strictly check one dashboard filter against the variant its `type` selects.
+/// The library's filter unions dispatch through raw JSON, so the strict
+/// request-body check cannot see unknown fields inside one. Only the
+/// `QUERY_EXPRESSION` kind is accepted, as before the spec added other kinds.
+fn validate_dashboard_filter(
+    value: &Value,
+    shape: DashboardFilterShape,
+    path: &str,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackFilterMaxSelections, ClickStackFilterMinSelections,
+        ClickStackQueryExpressionFilter, ClickStackQueryExpressionFilterInput,
+        ClickStackQueryExpressionFilterInputSourcemetrictype,
+        ClickStackQueryExpressionFilterInputWherelanguage,
+    };
+    let kind = require_discriminator(value, "type", path, source)?;
+    if kind != "QUERY_EXPRESSION" {
+        return Err(invalid_dashboard(
+            source,
+            format!("unknown {path}.type value `{kind}`"),
+        ));
+    }
+    // Both shapes share the input schema's enum fields; only `id` differs.
+    let (source_metric_type, where_language, min_selections, max_selections) = match shape {
+        DashboardFilterShape::Input => {
+            let filter = strict_dashboard_variant::<ClickStackQueryExpressionFilterInput>(
+                value, path, source,
+            )?;
+            (
+                filter.source_metric_type,
+                filter.where_language,
+                filter.min_selections,
+                filter.max_selections,
+            )
+        }
+        DashboardFilterShape::WithId => {
+            let filter =
+                strict_dashboard_variant::<ClickStackQueryExpressionFilter>(value, path, source)?;
+            (
+                filter.source_metric_type,
+                filter.where_language,
+                filter.min_selections,
+                filter.max_selections,
+            )
+        }
+    };
+    if let Some(metric_type) = &source_metric_type {
+        reject_unknown_enum!(
+            metric_type,
+            ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
+            unknown,
+            format!("{path}.sourceMetricType"),
+            source
+        );
+    }
+    if let Some(language) = &where_language {
+        reject_unknown_enum!(
+            language,
+            ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
+            unknown,
+            format!("{path}.whereLanguage"),
+            source
+        );
+    }
+    if let Some(min_selections) = &min_selections {
+        reject_unknown_enum!(
+            min_selections,
+            ClickStackFilterMinSelections::Unknown,
+            unknown,
+            format!("{path}.minSelections"),
+            source
+        );
+    }
+    if let Some(max_selections) = &max_selections {
+        reject_unknown_enum!(
+            max_selections,
+            ClickStackFilterMaxSelections::Unknown,
+            unknown,
+            format!("{path}.maxSelections"),
+            source
+        );
+    }
+    Ok(())
+}
+
+fn validate_dashboard_unions(
+    value: &Value,
+    filter_shape: DashboardFilterShape,
+    source: &str,
+) -> CloudResult<()> {
+    if let Some(filters) = field(value, "filters").and_then(Value::as_array) {
+        for (index, filter) in filters.iter().enumerate() {
+            validate_dashboard_filter(filter, filter_shape, &format!("filters[{index}]"), source)?;
+        }
+    }
     let Some(tiles) = field(value, "tiles").and_then(Value::as_array) else {
         return Ok(());
     };
@@ -1868,10 +2087,7 @@ fn validate_create_dashboard_enums(
     request: &ClickStackCreateDashboardRequest,
     source: &str,
 ) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackCreateDashboardRequestSavedquerylanguage, ClickStackFilterInputSourcemetrictype,
-        ClickStackFilterInputType, ClickStackFilterInputWherelanguage,
-    };
+    use clickhouse_cloud_api::models::ClickStackCreateDashboardRequestSavedquerylanguage;
     if let Some(language) = &request.saved_query_language {
         reject_unknown_enum!(
             language,
@@ -1881,34 +2097,6 @@ fn validate_create_dashboard_enums(
             source
         );
     }
-    for (index, filter) in request.filters.iter().flatten().enumerate() {
-        let path = format!("filters[{index}]");
-        if let Some(metric_type) = &filter.source_metric_type {
-            reject_unknown_enum!(
-                metric_type,
-                ClickStackFilterInputSourcemetrictype::Unknown,
-                unknown,
-                format!("{path}.sourceMetricType"),
-                source
-            );
-        }
-        reject_unknown_enum!(
-            &filter.r#type,
-            ClickStackFilterInputType::Unknown,
-            unknown,
-            format!("{path}.type"),
-            source
-        );
-        if let Some(language) = &filter.where_language {
-            reject_unknown_enum!(
-                language,
-                ClickStackFilterInputWherelanguage::Unknown,
-                unknown,
-                format!("{path}.whereLanguage"),
-                source
-            );
-        }
-    }
     Ok(())
 }
 
@@ -1916,10 +2104,7 @@ fn validate_update_dashboard_enums(
     request: &ClickStackUpdateDashboardRequest,
     source: &str,
 ) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackFilterSourcemetrictype, ClickStackFilterType, ClickStackFilterWherelanguage,
-        ClickStackUpdateDashboardRequestSavedquerylanguage,
-    };
+    use clickhouse_cloud_api::models::ClickStackUpdateDashboardRequestSavedquerylanguage;
     if let Some(language) = &request.saved_query_language {
         reject_unknown_enum!(
             language,
@@ -1928,34 +2113,6 @@ fn validate_update_dashboard_enums(
             "savedQueryLanguage",
             source
         );
-    }
-    for (index, filter) in request.filters.iter().flatten().enumerate() {
-        let path = format!("filters[{index}]");
-        if let Some(metric_type) = &filter.source_metric_type {
-            reject_unknown_enum!(
-                metric_type,
-                ClickStackFilterSourcemetrictype::Unknown,
-                unknown,
-                format!("{path}.sourceMetricType"),
-                source
-            );
-        }
-        reject_unknown_enum!(
-            &filter.r#type,
-            ClickStackFilterType::Unknown,
-            unknown,
-            format!("{path}.type"),
-            source
-        );
-        if let Some(language) = &filter.where_language {
-            reject_unknown_enum!(
-                language,
-                ClickStackFilterWherelanguage::Unknown,
-                unknown,
-                format!("{path}.whereLanguage"),
-                source
-            );
-        }
     }
     Ok(())
 }
@@ -4099,11 +4256,11 @@ mod tests {
         });
         std::fs::write(&config_file, maximal.to_string()).unwrap();
         let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.channels.len(), 2);
+        assert_eq!(create.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
         let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(update.dashboard_id.as_deref(), Some("dash-1"));
-        assert_eq!(update.channels.len(), 2);
+        assert_eq!(update.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&update).unwrap(), maximal);
     }
 
@@ -4185,6 +4342,31 @@ mod tests {
         for (body, expected) in invalid {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
+        // The spec now makes `source`, `channel` and `channels` optional and adds
+        // inline alerts with a `chartConfig`; the CLI keeps requiring the first
+        // three and keeps rejecting inline alerts, on create and update alike.
+        let mut missing_source = base.clone();
+        missing_source.as_object_mut().unwrap().remove("source");
+        let mut missing_channels = base.clone();
+        missing_channels.as_object_mut().unwrap().remove("channels");
+        let mut inline = base.clone();
+        inline["source"] = Value::String("inline".into());
+        let mut chart_config = base.clone();
+        chart_config["chartConfig"] = serde_json::json!({
+            "displayType":"line", "sourceId":"s", "select":[{"aggFn":"count"}]
+        });
+        for (body, expected) in [
+            (missing_source, "source is required"),
+            (missing_channels, "channels must be an array"),
+            (inline, "unknown source `inline`"),
+            (chart_config, "unknown field `chartConfig`"),
+        ] {
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+            let error = build_update_alert_request(config_file.to_str().unwrap()).unwrap_err();
             assert!(error.message.contains(expected), "{error}");
         }
         let mut duplicate = base.clone();
@@ -4462,17 +4644,34 @@ mod tests {
         std::fs::write(&config_file, create_body.to_string()).unwrap();
         let create = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(create.tiles.len(), 17);
-        assert_eq!(
-            create.filters.as_ref().unwrap()[0].variable_name.as_deref(),
-            Some("service")
-        );
+        let Some(
+            [
+                clickhouse_cloud_api::models::ClickStackFilterInput::ClickStackQueryExpressionFilterInput(
+                    filter,
+                ),
+            ],
+        ) = create.filters.as_deref()
+        else {
+            panic!("expected one query-expression filter: {:?}", create.filters);
+        };
+        assert_eq!(filter.variable_name.as_deref(), Some("service"));
         assert_eq!(create.saved_filter_values.as_ref().unwrap().len(), 2);
         assert_eq!(serde_json::to_value(&create).unwrap(), create_body);
 
         let update_body = complete_dashboard(true);
         std::fs::write(&config_file, update_body.to_string()).unwrap();
         let update = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(update.filters.as_ref().unwrap()[0].id, "filter-1");
+        let Some(
+            [
+                clickhouse_cloud_api::models::ClickStackFilter::ClickStackQueryExpressionFilter(
+                    filter,
+                ),
+            ],
+        ) = update.filters.as_deref()
+        else {
+            panic!("expected one query-expression filter: {:?}", update.filters);
+        };
+        assert_eq!(filter.id, "filter-1");
         assert_eq!(
             update.containers.as_ref().unwrap()[0]
                 .tabs
@@ -4521,11 +4720,44 @@ mod tests {
                 serde_json::json!({"name":"bad","tiles":[],"savedFilterValues":[{"type":"variable","name":"v","values":[],"valuess":[]}]}),
                 "valuess",
             ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"series","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
+                "unknown tiles[0].config.heatmapMode value `series`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),
+                "filters[0].type must be a string",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"]}]}),
+                "unknown filters[0].type value `STATIC_LIST`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","expresion":"x"}]}),
+                "expresion",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","whereLanguage":"kql"}]}),
+                "unknown filters[0].whereLanguage value `kql`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","minSelections":2}]}),
+                "unknown filters[0].minSelections value `2`",
+            ),
         ] {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
             assert!(error.message.contains(expected), "{error}");
         }
+
+        // Update bodies check each filter against the schema that carries `id`.
+        let filter = serde_json::json!({"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s"});
+        let body = serde_json::json!({"name":"bad","tiles":[],"filters":[filter]});
+        std::fs::write(&config_file, body.to_string()).unwrap();
+        build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
+        let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
+        assert!(error.message.contains("invalid filters[0]"), "{error}");
+        assert!(error.message.contains("`id`"), "{error}");
     }
 
     #[test]
@@ -4596,22 +4828,75 @@ mod tests {
 
     #[test]
     fn role_builders_cover_minimal_and_complete_permissions() {
+        use clickhouse_cloud_api::models::ClickStackCASLPermission;
+
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("role.json");
         std::fs::write(&config_file, r#"{"name":"reader","permissions":[]}"#).unwrap();
         let minimal = build_create_role_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(minimal.name, "reader");
 
-        let maximal = r#"{"name":"ops","description":"operators","permissions":[{"action":"manage","subject":"Dashboard","inverted":true,"integration":"slack","conditions":{"teamId":"team-1"}}]}"#;
-        std::fs::write(&config_file, maximal).unwrap();
+        let maximal = serde_json::json!({"name":"ops","description":"operators","permissions":[
+            {"action":"manage","subject":"Dashboard","fields":["name"],"inverted":true,"integration":"mongodb","conditions":{"team":"team-1","name":{"$regex":"^prod-","$options":"i"}}},
+            {"action":"read","subject":"Source","inverted":false,"integration":"clickhouse","conditions":{"connection":"connection-1","from":{"databaseName":"default","tableName":"otel_logs"},"where":"ServiceName = 'checkout'","whereLanguage":"sql"}}
+        ]});
+        std::fs::write(&config_file, maximal.to_string()).unwrap();
         let create = build_create_role_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.permissions[0].integration.as_deref(), Some("slack"));
-        assert_eq!(
-            create.permissions[0].conditions.as_ref().unwrap()["teamId"],
-            "team-1"
-        );
+        assert!(matches!(
+            create.permissions.as_slice(),
+            [
+                ClickStackCASLPermission::ClickStackMongoDBCASLPermission(_),
+                ClickStackCASLPermission::ClickStackClickHouseCASLPermission(_),
+            ]
+        ));
+        // The request body is sent exactly as written.
+        assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
         let update = build_update_role_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(update.permissions[0].inverted, Some(true));
+        assert_eq!(
+            serde_json::to_value(&update).unwrap()["permissions"],
+            maximal["permissions"]
+        );
+    }
+
+    #[test]
+    fn role_builders_check_each_permission_against_its_integration() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("role.json");
+        for (permission, expected) in [
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard"}),
+                "permissions[0].integration must be clickhouse or mongodb",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"slack"}),
+                "unknown permissions[0].integration `slack`",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditons":{}}),
+                "conditons",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"connection":"c","from":{"databaseName":"d","tableName":"t","schema":"s"},"where":"x","whereLanguage":"sql"}}),
+                "conditions.from.schema",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"team":"team-1"}}),
+                "invalid permissions[0]",
+            ),
+            (
+                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditions":{"name":{"$regex":"^a","$optons":"i"}}}),
+                "unknown field `permissions[0].conditions.name.$optons`",
+            ),
+        ] {
+            let body = serde_json::json!({"name":"r","permissions":[permission]});
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            for error in [
+                build_create_role_request(config_file.to_str().unwrap()).unwrap_err(),
+                build_update_role_request(config_file.to_str().unwrap()).unwrap_err(),
+            ] {
+                assert!(error.message.contains(expected), "{error}");
+            }
+        }
     }
 
     #[test]
@@ -4688,8 +4973,8 @@ mod tests {
                 .contains("unknown source discriminator `logs`")
         );
 
-        let error = deserialize_strict_config::<ClickStackCreateRoleRequest>(
-            serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","conditons":{}}]}),
+        let error = validate_role_permissions(
+            &serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","integration":"mongodb","conditons":{}}]}),
             "test",
         )
         .unwrap_err();

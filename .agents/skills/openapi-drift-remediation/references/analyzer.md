@@ -42,6 +42,10 @@ produce actionable stale findings when no longer needed — remove them during r
   slice of the enum's non-catch-all wire values. The analyzer requires it to equal the variant wire values as a
   set (`FindingKind::EnumValuesMismatch`); this is opt-in, so enums without a `VALUES` const are unchecked.
   **When adding a value to a `VALUES`-bearing enum, update both the variant and the const or CI fails.**
+- A typed map whose `additionalProperties` value is an inline `oneOf`/`anyOf` needs an untagged union with
+  one tuple arm per branch (an inline object branch is a struct with exactly its properties). In response
+  position the map value may be `serde_json::Value` instead: an undiscriminated union of all-`Option` arms
+  would route an unknown shape into the first arm that deserializes.
 - Every spec-deprecated request or response field belongs in `meta.rs::DEPRECATED_FIELDS` and carries
   `#[cfg(feature = "deprecated-fields")]` on the field in its model domain file, so it is absent from the public
   model by default. Request fields that must be gated out but resolve as required are `Option<T>` with a
