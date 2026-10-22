@@ -1996,6 +1996,8 @@ pub async fn postgres_create(
         tags,
         pg_config,
         pg_bouncer_config,
+        // Omitted, not `[]`: an empty list would block public access.
+        ip_access_list: None,
     };
 
     let org_id = resolve_org_id(client).await?;
@@ -2047,6 +2049,7 @@ fn build_postgres_update_request(
         size,
         ha_type,
         tags,
+        ip_access_list: None,
     }
 }
 
@@ -3220,6 +3223,7 @@ mod tests {
                 PostgresBackup {
                     key: Some("basebackups_005/0001_backup_stop_sentinel.json".into()),
                     last_modified: Some("2026-03-31T18:17:37Z".parse().unwrap()),
+                    status: None,
                 },
                 PostgresBackup::default(),
             ],
@@ -5346,6 +5350,8 @@ mod tests {
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
         assert!(req.tags.is_none());
+        assert!(req.ip_access_list.is_none());
+        assert_eq!(serde_json::to_value(req).unwrap(), serde_json::json!({}));
     }
 
     #[test]

@@ -6,6 +6,52 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
+takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
+all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends
+`[]` and blocks public access. `PostgresServicePatchRequest.ip_access_list` takes a
+`PostgresIpAccessListPatch`, whose `remove` list (`PostgresIpAccessListRuleReference`
+IDs) is applied before its `add` list; an `add` entry with an `id` edits that rule
+and one without creates a rule. Both lists are required, like `IpAccessListPatch`,
+so leave the unused one empty. `PostgresService` reports `ip_access_list` as
+all-`Option` `PostgresIpAccessListEntryResponse` entries, which convert back with
+`TryFrom` (missing `portRange` or `source` is reported by wire name), and gains
+`earliest_restore_time`, the earliest `postgres_instance_restore` target.
+`PostgresBackup` gains `status`, a string the API documents as always `ready`.
+Struct-literal callers of these types need the new fields as `None` or
+`..Default::default()`.
+
+`PgConfig` and `PgConfigResponse` gain 22 Postgres settings: `bgwriter_delay`,
+`bgwriter_flush_after`, `bgwriter_lru_maxpages`, `bgwriter_lru_multiplier`,
+`default_toast_compression`, `enable_parallel_hash`, `hash_mem_multiplier`,
+`io_method`, `io_workers`, `log_lock_waits`, `log_min_duration_statement`,
+`log_parameter_max_length`, `log_temp_files`, `logical_decoding_work_mem`,
+`maintenance_io_concurrency`, `max_logical_replication_workers`,
+`max_replication_slots`, `max_sync_workers_per_subscription`, `max_wal_senders`,
+`temp_buffers`, `track_activity_query_size`, and `vacuum_cost_delay`. Numeric
+settings are `serde_json::Value`, like the existing ones, because the API accepts a
+number or a string with a unit. The four enumerated settings use new value enums,
+each with a `VALUES` const and an `Unknown(String)` catch-all:
+`PgConfigDefaultToastCompression` (`pglz`, `lz4`), `PgConfigEnableParallelHash`
+and `PgConfigLogLockWaits` (`on`, `off`), and `PgConfigIoMethod` (`sync`,
+`worker`, `io_uring`). Struct-literal callers of `PgConfig` and
+`PgConfigResponse` need the new fields as `None` or `..Default::default()`.
+
+`PgSize` renames its 61 GCP variants to the API's local-SSD size names, a breaking
+change for Rust callers. C4A, C4 and C4D sizes gain `lssd` before the vCPU count
+(`C4_standard_4` / `c4-standard-4` is now `C4_standard_lssd_4` /
+`c4-standard-lssd-4`), and Z3 sizes gain `highmem` (`Z3_highlssd_8` /
+`z3-highlssd-8` is now `Z3_highmem_highlssd_8` / `z3-highmem-highlssd-8`). The old
+variants are removed without aliases: rename them in code, and a former wire name
+now deserializes as `PgSize::Unknown`. AWS sizes are unchanged.
+
+`ServicePostRequest` no longer has `encryption_key` or
+`encryption_assumed_role_identifier`, because the spec no longer documents these
+customer-managed disk-key fields on the create request. Remove both fields from struct
+literals and assignments; no replacement request field exists. `Service` still
+reports `encryption_key`, `encryption_assumed_role_identifier`, and
+`encryption_role_id` for existing services.
+
 BigQuery replication modes now include `Cdc` and `CdcOnly`, alongside `Snapshot`,
 matching the modes documented by the API. BigQuery settings add optional `replication_method`, `sync_interval_seconds`,
 `query_cdc_pull_sync_parallelism`, `sync_delay_seconds`, and

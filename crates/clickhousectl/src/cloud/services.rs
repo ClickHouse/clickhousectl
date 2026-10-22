@@ -360,14 +360,6 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         readonly: bool,
 
-        /// Customer-provided disk encryption key
-        #[arg(long)]
-        encryption_key: Option<String>,
-
-        /// Role ARN for disk encryption
-        #[arg(long)]
-        encryption_role: Option<String>,
-
         /// Enable Transparent Data Encryption (enterprise only)
         #[arg(long)]
         enable_tde: bool,
@@ -1218,8 +1210,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             release_channel,
             data_warehouse_id,
             readonly,
-            encryption_key,
-            encryption_role,
             enable_tde,
             compliance_type,
             profile,
@@ -1251,8 +1241,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 release_channel,
                 data_warehouse_id,
                 is_readonly: readonly,
-                encryption_key,
-                encryption_role,
                 enable_tde,
                 compliance_type,
                 profile,
@@ -2260,8 +2248,6 @@ struct CreateServiceOptions {
     release_channel: Option<String>,
     data_warehouse_id: Option<String>,
     is_readonly: bool,
-    encryption_key: Option<String>,
-    encryption_role: Option<String>,
     enable_tde: bool,
     compliance_type: Option<String>,
     profile: Option<String>,
@@ -2445,8 +2431,6 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         } else {
             None
         },
-        encryption_key: options.encryption_key.clone(),
-        encryption_assumed_role_identifier: options.encryption_role.clone(),
         has_transparent_data_encryption: if options.enable_tde { Some(true) } else { None },
         compliance_type: match options.compliance_type.as_deref() {
             Some(value) => Some(parse_serde_enum::<ServicePostRequestCompliancetype>(
@@ -5174,8 +5158,6 @@ mod tests {
             release_channel,
             data_warehouse_id,
             readonly,
-            encryption_key,
-            encryption_role,
             enable_tde,
             compliance_type,
             profile,
@@ -5207,8 +5189,6 @@ mod tests {
         assert!(release_channel.is_none());
         assert!(data_warehouse_id.is_none());
         assert!(!readonly);
-        assert!(encryption_key.is_none());
-        assert!(encryption_role.is_none());
         assert!(!enable_tde);
         assert!(compliance_type.is_none());
         assert!(profile.is_none());
@@ -5258,10 +5238,6 @@ mod tests {
             "--data-warehouse-id",
             "dw-1",
             "--readonly",
-            "--encryption-key",
-            "key-1",
-            "--encryption-role",
-            "role-1",
             "--enable-tde",
             "--compliance-type",
             "pci",
@@ -5299,8 +5275,6 @@ mod tests {
             release_channel,
             data_warehouse_id,
             readonly,
-            encryption_key,
-            encryption_role,
             enable_tde,
             compliance_type,
             profile,
@@ -5334,8 +5308,6 @@ mod tests {
         assert_eq!(release_channel.as_deref(), Some("fast"));
         assert_eq!(data_warehouse_id.as_deref(), Some("dw-1"));
         assert!(readonly);
-        assert_eq!(encryption_key.as_deref(), Some("key-1"));
-        assert_eq!(encryption_role.as_deref(), Some("role-1"));
         assert!(enable_tde);
         assert_eq!(compliance_type.as_deref(), Some("pci"));
         assert_eq!(profile.as_deref(), Some("v1-highmem-xs"));
@@ -8291,8 +8263,6 @@ mod tests {
         assert!(request.tags.is_none());
         assert!(request.data_warehouse_id.is_none());
         assert!(request.is_readonly.is_none());
-        assert!(request.encryption_key.is_none());
-        assert!(request.encryption_assumed_role_identifier.is_none());
         assert!(request.has_transparent_data_encryption.is_none());
         assert!(request.compliance_type.is_none());
         assert!(request.profile.is_none());
@@ -8323,8 +8293,6 @@ mod tests {
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
             is_readonly: true,
-            encryption_key: Some("key-1".to_string()),
-            encryption_role: Some("role-1".to_string()),
             enable_tde: true,
             compliance_type: Some("hipaa".to_string()),
             profile: Some("v1-default".to_string()),
@@ -8371,11 +8339,6 @@ mod tests {
         );
         assert_eq!(request.data_warehouse_id.as_deref(), Some("dw-1"));
         assert_eq!(request.is_readonly, Some(true));
-        assert_eq!(request.encryption_key.as_deref(), Some("key-1"));
-        assert_eq!(
-            request.encryption_assumed_role_identifier.as_deref(),
-            Some("role-1")
-        );
         assert_eq!(request.has_transparent_data_encryption, Some(true));
         assert_eq!(
             request.compliance_type,

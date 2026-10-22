@@ -1839,13 +1839,6 @@ pub struct ServicePostRequest {
     pub data_warehouse_id: Option<String>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
-    #[serde(
-        rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
-    pub encryption_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
     #[serde(

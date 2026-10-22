@@ -19959,6 +19959,11 @@ async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
         assert_eq!(requests.len(), 1);
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["pgBouncerConfig"], parameters, "{args:?}");
+        if endpoint == "/v1/organizations/org-1/postgres" {
+            // Create omits `ipAccessList` (allow all); `[]` would block
+            // public access.
+            assert!(body.get("ipAccessList").is_none(), "{body}");
+        }
         if endpoint.ends_with("/config") {
             assert_eq!(body, configuration);
             let output: Value = serde_json::from_slice(&output.stdout).unwrap();

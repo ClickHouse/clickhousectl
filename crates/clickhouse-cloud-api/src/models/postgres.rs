@@ -362,128 +362,128 @@ pub enum PgSize {
     R8gd_24xlarge,
     #[serde(rename = "r8gd.48xlarge")]
     R8gd_48xlarge,
-    #[serde(rename = "c4a-highmem-4")]
-    C4a_highmem_4,
-    #[serde(rename = "c4a-highmem-8")]
-    C4a_highmem_8,
-    #[serde(rename = "c4a-highmem-16")]
-    C4a_highmem_16,
-    #[serde(rename = "c4a-highmem-32")]
-    C4a_highmem_32,
-    #[serde(rename = "c4a-highmem-48")]
-    C4a_highmem_48,
-    #[serde(rename = "c4a-highmem-64")]
-    C4a_highmem_64,
-    #[serde(rename = "c4a-highmem-72")]
-    C4a_highmem_72,
-    #[serde(rename = "c4a-standard-4")]
-    C4a_standard_4,
-    #[serde(rename = "c4a-standard-8")]
-    C4a_standard_8,
-    #[serde(rename = "c4a-standard-16")]
-    C4a_standard_16,
-    #[serde(rename = "c4a-standard-32")]
-    C4a_standard_32,
-    #[serde(rename = "c4a-standard-48")]
-    C4a_standard_48,
-    #[serde(rename = "c4a-standard-64")]
-    C4a_standard_64,
-    #[serde(rename = "c4a-standard-72")]
-    C4a_standard_72,
-    #[serde(rename = "c4-highmem-4")]
-    C4_highmem_4,
-    #[serde(rename = "c4-highmem-8")]
-    C4_highmem_8,
-    #[serde(rename = "c4-highmem-16")]
-    C4_highmem_16,
-    #[serde(rename = "c4-highmem-24")]
-    C4_highmem_24,
-    #[serde(rename = "c4-highmem-32")]
-    C4_highmem_32,
-    #[serde(rename = "c4-highmem-48")]
-    C4_highmem_48,
-    #[serde(rename = "c4-highmem-96")]
-    C4_highmem_96,
-    #[serde(rename = "c4-highmem-144")]
-    C4_highmem_144,
-    #[serde(rename = "c4-highmem-192")]
-    C4_highmem_192,
-    #[serde(rename = "c4-highmem-288")]
-    C4_highmem_288,
-    #[serde(rename = "c4-standard-4")]
-    C4_standard_4,
-    #[serde(rename = "c4-standard-8")]
-    C4_standard_8,
-    #[serde(rename = "c4-standard-16")]
-    C4_standard_16,
-    #[serde(rename = "c4-standard-24")]
-    C4_standard_24,
-    #[serde(rename = "c4-standard-32")]
-    C4_standard_32,
-    #[serde(rename = "c4-standard-48")]
-    C4_standard_48,
-    #[serde(rename = "c4-standard-96")]
-    C4_standard_96,
-    #[serde(rename = "c4-standard-144")]
-    C4_standard_144,
-    #[serde(rename = "c4-standard-192")]
-    C4_standard_192,
-    #[serde(rename = "c4-standard-288")]
-    C4_standard_288,
-    #[serde(rename = "c4d-highmem-8")]
-    C4d_highmem_8,
-    #[serde(rename = "c4d-highmem-16")]
-    C4d_highmem_16,
-    #[serde(rename = "c4d-highmem-32")]
-    C4d_highmem_32,
-    #[serde(rename = "c4d-highmem-48")]
-    C4d_highmem_48,
-    #[serde(rename = "c4d-highmem-64")]
-    C4d_highmem_64,
-    #[serde(rename = "c4d-highmem-96")]
-    C4d_highmem_96,
-    #[serde(rename = "c4d-highmem-192")]
-    C4d_highmem_192,
-    #[serde(rename = "c4d-highmem-384")]
-    C4d_highmem_384,
-    #[serde(rename = "c4d-standard-8")]
-    C4d_standard_8,
-    #[serde(rename = "c4d-standard-16")]
-    C4d_standard_16,
-    #[serde(rename = "c4d-standard-32")]
-    C4d_standard_32,
-    #[serde(rename = "c4d-standard-48")]
-    C4d_standard_48,
-    #[serde(rename = "c4d-standard-64")]
-    C4d_standard_64,
-    #[serde(rename = "c4d-standard-96")]
-    C4d_standard_96,
-    #[serde(rename = "c4d-standard-192")]
-    C4d_standard_192,
-    #[serde(rename = "c4d-standard-384")]
-    C4d_standard_384,
-    #[serde(rename = "z3-highlssd-8")]
-    Z3_highlssd_8,
-    #[serde(rename = "z3-highlssd-16")]
-    Z3_highlssd_16,
-    #[serde(rename = "z3-highlssd-22")]
-    Z3_highlssd_22,
-    #[serde(rename = "z3-highlssd-32")]
-    Z3_highlssd_32,
-    #[serde(rename = "z3-highlssd-44")]
-    Z3_highlssd_44,
-    #[serde(rename = "z3-highlssd-88")]
-    Z3_highlssd_88,
-    #[serde(rename = "z3-standardlssd-14")]
-    Z3_standardlssd_14,
-    #[serde(rename = "z3-standardlssd-22")]
-    Z3_standardlssd_22,
-    #[serde(rename = "z3-standardlssd-44")]
-    Z3_standardlssd_44,
-    #[serde(rename = "z3-standardlssd-88")]
-    Z3_standardlssd_88,
-    #[serde(rename = "z3-standardlssd-176")]
-    Z3_standardlssd_176,
+    #[serde(rename = "c4a-highmem-lssd-4")]
+    C4a_highmem_lssd_4,
+    #[serde(rename = "c4a-highmem-lssd-8")]
+    C4a_highmem_lssd_8,
+    #[serde(rename = "c4a-highmem-lssd-16")]
+    C4a_highmem_lssd_16,
+    #[serde(rename = "c4a-highmem-lssd-32")]
+    C4a_highmem_lssd_32,
+    #[serde(rename = "c4a-highmem-lssd-48")]
+    C4a_highmem_lssd_48,
+    #[serde(rename = "c4a-highmem-lssd-64")]
+    C4a_highmem_lssd_64,
+    #[serde(rename = "c4a-highmem-lssd-72")]
+    C4a_highmem_lssd_72,
+    #[serde(rename = "c4a-standard-lssd-4")]
+    C4a_standard_lssd_4,
+    #[serde(rename = "c4a-standard-lssd-8")]
+    C4a_standard_lssd_8,
+    #[serde(rename = "c4a-standard-lssd-16")]
+    C4a_standard_lssd_16,
+    #[serde(rename = "c4a-standard-lssd-32")]
+    C4a_standard_lssd_32,
+    #[serde(rename = "c4a-standard-lssd-48")]
+    C4a_standard_lssd_48,
+    #[serde(rename = "c4a-standard-lssd-64")]
+    C4a_standard_lssd_64,
+    #[serde(rename = "c4a-standard-lssd-72")]
+    C4a_standard_lssd_72,
+    #[serde(rename = "c4-highmem-lssd-4")]
+    C4_highmem_lssd_4,
+    #[serde(rename = "c4-highmem-lssd-8")]
+    C4_highmem_lssd_8,
+    #[serde(rename = "c4-highmem-lssd-16")]
+    C4_highmem_lssd_16,
+    #[serde(rename = "c4-highmem-lssd-24")]
+    C4_highmem_lssd_24,
+    #[serde(rename = "c4-highmem-lssd-32")]
+    C4_highmem_lssd_32,
+    #[serde(rename = "c4-highmem-lssd-48")]
+    C4_highmem_lssd_48,
+    #[serde(rename = "c4-highmem-lssd-96")]
+    C4_highmem_lssd_96,
+    #[serde(rename = "c4-highmem-lssd-144")]
+    C4_highmem_lssd_144,
+    #[serde(rename = "c4-highmem-lssd-192")]
+    C4_highmem_lssd_192,
+    #[serde(rename = "c4-highmem-lssd-288")]
+    C4_highmem_lssd_288,
+    #[serde(rename = "c4-standard-lssd-4")]
+    C4_standard_lssd_4,
+    #[serde(rename = "c4-standard-lssd-8")]
+    C4_standard_lssd_8,
+    #[serde(rename = "c4-standard-lssd-16")]
+    C4_standard_lssd_16,
+    #[serde(rename = "c4-standard-lssd-24")]
+    C4_standard_lssd_24,
+    #[serde(rename = "c4-standard-lssd-32")]
+    C4_standard_lssd_32,
+    #[serde(rename = "c4-standard-lssd-48")]
+    C4_standard_lssd_48,
+    #[serde(rename = "c4-standard-lssd-96")]
+    C4_standard_lssd_96,
+    #[serde(rename = "c4-standard-lssd-144")]
+    C4_standard_lssd_144,
+    #[serde(rename = "c4-standard-lssd-192")]
+    C4_standard_lssd_192,
+    #[serde(rename = "c4-standard-lssd-288")]
+    C4_standard_lssd_288,
+    #[serde(rename = "c4d-highmem-lssd-8")]
+    C4d_highmem_lssd_8,
+    #[serde(rename = "c4d-highmem-lssd-16")]
+    C4d_highmem_lssd_16,
+    #[serde(rename = "c4d-highmem-lssd-32")]
+    C4d_highmem_lssd_32,
+    #[serde(rename = "c4d-highmem-lssd-48")]
+    C4d_highmem_lssd_48,
+    #[serde(rename = "c4d-highmem-lssd-64")]
+    C4d_highmem_lssd_64,
+    #[serde(rename = "c4d-highmem-lssd-96")]
+    C4d_highmem_lssd_96,
+    #[serde(rename = "c4d-highmem-lssd-192")]
+    C4d_highmem_lssd_192,
+    #[serde(rename = "c4d-highmem-lssd-384")]
+    C4d_highmem_lssd_384,
+    #[serde(rename = "c4d-standard-lssd-8")]
+    C4d_standard_lssd_8,
+    #[serde(rename = "c4d-standard-lssd-16")]
+    C4d_standard_lssd_16,
+    #[serde(rename = "c4d-standard-lssd-32")]
+    C4d_standard_lssd_32,
+    #[serde(rename = "c4d-standard-lssd-48")]
+    C4d_standard_lssd_48,
+    #[serde(rename = "c4d-standard-lssd-64")]
+    C4d_standard_lssd_64,
+    #[serde(rename = "c4d-standard-lssd-96")]
+    C4d_standard_lssd_96,
+    #[serde(rename = "c4d-standard-lssd-192")]
+    C4d_standard_lssd_192,
+    #[serde(rename = "c4d-standard-lssd-384")]
+    C4d_standard_lssd_384,
+    #[serde(rename = "z3-highmem-highlssd-8")]
+    Z3_highmem_highlssd_8,
+    #[serde(rename = "z3-highmem-highlssd-16")]
+    Z3_highmem_highlssd_16,
+    #[serde(rename = "z3-highmem-highlssd-22")]
+    Z3_highmem_highlssd_22,
+    #[serde(rename = "z3-highmem-highlssd-32")]
+    Z3_highmem_highlssd_32,
+    #[serde(rename = "z3-highmem-highlssd-44")]
+    Z3_highmem_highlssd_44,
+    #[serde(rename = "z3-highmem-highlssd-88")]
+    Z3_highmem_highlssd_88,
+    #[serde(rename = "z3-highmem-standardlssd-14")]
+    Z3_highmem_standardlssd_14,
+    #[serde(rename = "z3-highmem-standardlssd-22")]
+    Z3_highmem_standardlssd_22,
+    #[serde(rename = "z3-highmem-standardlssd-44")]
+    Z3_highmem_standardlssd_44,
+    #[serde(rename = "z3-highmem-standardlssd-88")]
+    Z3_highmem_standardlssd_88,
+    #[serde(rename = "z3-highmem-standardlssd-176")]
+    Z3_highmem_standardlssd_176,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -574,67 +574,67 @@ impl std::fmt::Display for PgSize {
             Self::R8gd_16xlarge => write!(f, "r8gd.16xlarge"),
             Self::R8gd_24xlarge => write!(f, "r8gd.24xlarge"),
             Self::R8gd_48xlarge => write!(f, "r8gd.48xlarge"),
-            Self::C4a_highmem_4 => write!(f, "c4a-highmem-4"),
-            Self::C4a_highmem_8 => write!(f, "c4a-highmem-8"),
-            Self::C4a_highmem_16 => write!(f, "c4a-highmem-16"),
-            Self::C4a_highmem_32 => write!(f, "c4a-highmem-32"),
-            Self::C4a_highmem_48 => write!(f, "c4a-highmem-48"),
-            Self::C4a_highmem_64 => write!(f, "c4a-highmem-64"),
-            Self::C4a_highmem_72 => write!(f, "c4a-highmem-72"),
-            Self::C4a_standard_4 => write!(f, "c4a-standard-4"),
-            Self::C4a_standard_8 => write!(f, "c4a-standard-8"),
-            Self::C4a_standard_16 => write!(f, "c4a-standard-16"),
-            Self::C4a_standard_32 => write!(f, "c4a-standard-32"),
-            Self::C4a_standard_48 => write!(f, "c4a-standard-48"),
-            Self::C4a_standard_64 => write!(f, "c4a-standard-64"),
-            Self::C4a_standard_72 => write!(f, "c4a-standard-72"),
-            Self::C4_highmem_4 => write!(f, "c4-highmem-4"),
-            Self::C4_highmem_8 => write!(f, "c4-highmem-8"),
-            Self::C4_highmem_16 => write!(f, "c4-highmem-16"),
-            Self::C4_highmem_24 => write!(f, "c4-highmem-24"),
-            Self::C4_highmem_32 => write!(f, "c4-highmem-32"),
-            Self::C4_highmem_48 => write!(f, "c4-highmem-48"),
-            Self::C4_highmem_96 => write!(f, "c4-highmem-96"),
-            Self::C4_highmem_144 => write!(f, "c4-highmem-144"),
-            Self::C4_highmem_192 => write!(f, "c4-highmem-192"),
-            Self::C4_highmem_288 => write!(f, "c4-highmem-288"),
-            Self::C4_standard_4 => write!(f, "c4-standard-4"),
-            Self::C4_standard_8 => write!(f, "c4-standard-8"),
-            Self::C4_standard_16 => write!(f, "c4-standard-16"),
-            Self::C4_standard_24 => write!(f, "c4-standard-24"),
-            Self::C4_standard_32 => write!(f, "c4-standard-32"),
-            Self::C4_standard_48 => write!(f, "c4-standard-48"),
-            Self::C4_standard_96 => write!(f, "c4-standard-96"),
-            Self::C4_standard_144 => write!(f, "c4-standard-144"),
-            Self::C4_standard_192 => write!(f, "c4-standard-192"),
-            Self::C4_standard_288 => write!(f, "c4-standard-288"),
-            Self::C4d_highmem_8 => write!(f, "c4d-highmem-8"),
-            Self::C4d_highmem_16 => write!(f, "c4d-highmem-16"),
-            Self::C4d_highmem_32 => write!(f, "c4d-highmem-32"),
-            Self::C4d_highmem_48 => write!(f, "c4d-highmem-48"),
-            Self::C4d_highmem_64 => write!(f, "c4d-highmem-64"),
-            Self::C4d_highmem_96 => write!(f, "c4d-highmem-96"),
-            Self::C4d_highmem_192 => write!(f, "c4d-highmem-192"),
-            Self::C4d_highmem_384 => write!(f, "c4d-highmem-384"),
-            Self::C4d_standard_8 => write!(f, "c4d-standard-8"),
-            Self::C4d_standard_16 => write!(f, "c4d-standard-16"),
-            Self::C4d_standard_32 => write!(f, "c4d-standard-32"),
-            Self::C4d_standard_48 => write!(f, "c4d-standard-48"),
-            Self::C4d_standard_64 => write!(f, "c4d-standard-64"),
-            Self::C4d_standard_96 => write!(f, "c4d-standard-96"),
-            Self::C4d_standard_192 => write!(f, "c4d-standard-192"),
-            Self::C4d_standard_384 => write!(f, "c4d-standard-384"),
-            Self::Z3_highlssd_8 => write!(f, "z3-highlssd-8"),
-            Self::Z3_highlssd_16 => write!(f, "z3-highlssd-16"),
-            Self::Z3_highlssd_22 => write!(f, "z3-highlssd-22"),
-            Self::Z3_highlssd_32 => write!(f, "z3-highlssd-32"),
-            Self::Z3_highlssd_44 => write!(f, "z3-highlssd-44"),
-            Self::Z3_highlssd_88 => write!(f, "z3-highlssd-88"),
-            Self::Z3_standardlssd_14 => write!(f, "z3-standardlssd-14"),
-            Self::Z3_standardlssd_22 => write!(f, "z3-standardlssd-22"),
-            Self::Z3_standardlssd_44 => write!(f, "z3-standardlssd-44"),
-            Self::Z3_standardlssd_88 => write!(f, "z3-standardlssd-88"),
-            Self::Z3_standardlssd_176 => write!(f, "z3-standardlssd-176"),
+            Self::C4a_highmem_lssd_4 => write!(f, "c4a-highmem-lssd-4"),
+            Self::C4a_highmem_lssd_8 => write!(f, "c4a-highmem-lssd-8"),
+            Self::C4a_highmem_lssd_16 => write!(f, "c4a-highmem-lssd-16"),
+            Self::C4a_highmem_lssd_32 => write!(f, "c4a-highmem-lssd-32"),
+            Self::C4a_highmem_lssd_48 => write!(f, "c4a-highmem-lssd-48"),
+            Self::C4a_highmem_lssd_64 => write!(f, "c4a-highmem-lssd-64"),
+            Self::C4a_highmem_lssd_72 => write!(f, "c4a-highmem-lssd-72"),
+            Self::C4a_standard_lssd_4 => write!(f, "c4a-standard-lssd-4"),
+            Self::C4a_standard_lssd_8 => write!(f, "c4a-standard-lssd-8"),
+            Self::C4a_standard_lssd_16 => write!(f, "c4a-standard-lssd-16"),
+            Self::C4a_standard_lssd_32 => write!(f, "c4a-standard-lssd-32"),
+            Self::C4a_standard_lssd_48 => write!(f, "c4a-standard-lssd-48"),
+            Self::C4a_standard_lssd_64 => write!(f, "c4a-standard-lssd-64"),
+            Self::C4a_standard_lssd_72 => write!(f, "c4a-standard-lssd-72"),
+            Self::C4_highmem_lssd_4 => write!(f, "c4-highmem-lssd-4"),
+            Self::C4_highmem_lssd_8 => write!(f, "c4-highmem-lssd-8"),
+            Self::C4_highmem_lssd_16 => write!(f, "c4-highmem-lssd-16"),
+            Self::C4_highmem_lssd_24 => write!(f, "c4-highmem-lssd-24"),
+            Self::C4_highmem_lssd_32 => write!(f, "c4-highmem-lssd-32"),
+            Self::C4_highmem_lssd_48 => write!(f, "c4-highmem-lssd-48"),
+            Self::C4_highmem_lssd_96 => write!(f, "c4-highmem-lssd-96"),
+            Self::C4_highmem_lssd_144 => write!(f, "c4-highmem-lssd-144"),
+            Self::C4_highmem_lssd_192 => write!(f, "c4-highmem-lssd-192"),
+            Self::C4_highmem_lssd_288 => write!(f, "c4-highmem-lssd-288"),
+            Self::C4_standard_lssd_4 => write!(f, "c4-standard-lssd-4"),
+            Self::C4_standard_lssd_8 => write!(f, "c4-standard-lssd-8"),
+            Self::C4_standard_lssd_16 => write!(f, "c4-standard-lssd-16"),
+            Self::C4_standard_lssd_24 => write!(f, "c4-standard-lssd-24"),
+            Self::C4_standard_lssd_32 => write!(f, "c4-standard-lssd-32"),
+            Self::C4_standard_lssd_48 => write!(f, "c4-standard-lssd-48"),
+            Self::C4_standard_lssd_96 => write!(f, "c4-standard-lssd-96"),
+            Self::C4_standard_lssd_144 => write!(f, "c4-standard-lssd-144"),
+            Self::C4_standard_lssd_192 => write!(f, "c4-standard-lssd-192"),
+            Self::C4_standard_lssd_288 => write!(f, "c4-standard-lssd-288"),
+            Self::C4d_highmem_lssd_8 => write!(f, "c4d-highmem-lssd-8"),
+            Self::C4d_highmem_lssd_16 => write!(f, "c4d-highmem-lssd-16"),
+            Self::C4d_highmem_lssd_32 => write!(f, "c4d-highmem-lssd-32"),
+            Self::C4d_highmem_lssd_48 => write!(f, "c4d-highmem-lssd-48"),
+            Self::C4d_highmem_lssd_64 => write!(f, "c4d-highmem-lssd-64"),
+            Self::C4d_highmem_lssd_96 => write!(f, "c4d-highmem-lssd-96"),
+            Self::C4d_highmem_lssd_192 => write!(f, "c4d-highmem-lssd-192"),
+            Self::C4d_highmem_lssd_384 => write!(f, "c4d-highmem-lssd-384"),
+            Self::C4d_standard_lssd_8 => write!(f, "c4d-standard-lssd-8"),
+            Self::C4d_standard_lssd_16 => write!(f, "c4d-standard-lssd-16"),
+            Self::C4d_standard_lssd_32 => write!(f, "c4d-standard-lssd-32"),
+            Self::C4d_standard_lssd_48 => write!(f, "c4d-standard-lssd-48"),
+            Self::C4d_standard_lssd_64 => write!(f, "c4d-standard-lssd-64"),
+            Self::C4d_standard_lssd_96 => write!(f, "c4d-standard-lssd-96"),
+            Self::C4d_standard_lssd_192 => write!(f, "c4d-standard-lssd-192"),
+            Self::C4d_standard_lssd_384 => write!(f, "c4d-standard-lssd-384"),
+            Self::Z3_highmem_highlssd_8 => write!(f, "z3-highmem-highlssd-8"),
+            Self::Z3_highmem_highlssd_16 => write!(f, "z3-highmem-highlssd-16"),
+            Self::Z3_highmem_highlssd_22 => write!(f, "z3-highmem-highlssd-22"),
+            Self::Z3_highmem_highlssd_32 => write!(f, "z3-highmem-highlssd-32"),
+            Self::Z3_highmem_highlssd_44 => write!(f, "z3-highmem-highlssd-44"),
+            Self::Z3_highmem_highlssd_88 => write!(f, "z3-highmem-highlssd-88"),
+            Self::Z3_highmem_standardlssd_14 => write!(f, "z3-highmem-standardlssd-14"),
+            Self::Z3_highmem_standardlssd_22 => write!(f, "z3-highmem-standardlssd-22"),
+            Self::Z3_highmem_standardlssd_44 => write!(f, "z3-highmem-standardlssd-44"),
+            Self::Z3_highmem_standardlssd_88 => write!(f, "z3-highmem-standardlssd-88"),
+            Self::Z3_highmem_standardlssd_176 => write!(f, "z3-highmem-standardlssd-176"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -838,6 +838,121 @@ impl PgConfigWalCompression {
     pub const VALUES: &'static [&'static str] = &["off", "on", "lz4", "zstd"];
 }
 
+/// Inline enum for `pgConfig.default_toast_compression`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigDefaultToastCompression {
+    #[serde(rename = "pglz")]
+    #[default]
+    Pglz,
+    #[serde(rename = "lz4")]
+    Lz4,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigDefaultToastCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pglz => write!(f, "pglz"),
+            Self::Lz4 => write!(f, "lz4"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigDefaultToastCompression {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["pglz", "lz4"];
+}
+
+/// Inline enum for `pgConfig.enable_parallel_hash`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigEnableParallelHash {
+    #[serde(rename = "on")]
+    #[default]
+    On,
+    #[serde(rename = "off")]
+    Off,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigEnableParallelHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On => write!(f, "on"),
+            Self::Off => write!(f, "off"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigEnableParallelHash {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["on", "off"];
+}
+
+/// Inline enum for `pgConfig.io_method`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigIoMethod {
+    #[serde(rename = "sync")]
+    #[default]
+    Sync,
+    #[serde(rename = "worker")]
+    Worker,
+    #[serde(rename = "io_uring")]
+    Io_uring,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigIoMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sync => write!(f, "sync"),
+            Self::Worker => write!(f, "worker"),
+            Self::Io_uring => write!(f, "io_uring"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigIoMethod {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["sync", "worker", "io_uring"];
+}
+
+/// Inline enum for `pgConfig.log_lock_waits`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigLogLockWaits {
+    #[serde(rename = "on")]
+    #[default]
+    On,
+    #[serde(rename = "off")]
+    Off,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigLogLockWaits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On => write!(f, "on"),
+            Self::Off => write!(f, "off"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigLogLockWaits {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["on", "off"];
+}
+
 /// Type alias for `pgCreatedAtProperty`.
 pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
 
@@ -890,12 +1005,25 @@ pub struct PostgresService {
     pub connection_string: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<PgCreatedAtProperty>,
+    /// Earliest point in time the service can be restored to with
+    /// `postgres_instance_restore`. Only present for a primary service once its
+    /// first backup has completed.
+    #[serde(
+        rename = "earliestRestoreTime",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub earliest_restore_time: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<PgIdProperty>,
+    /// IPv4 access rules shown in the console; IPv6 rules are not included.
+    /// Returned when reading or configuring access, omitted from other service
+    /// updates.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<PostgresIpAccessListEntryResponse>>,
     #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
     pub is_primary: Option<PgIsPrimaryProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -918,6 +1046,68 @@ pub struct PostgresService {
     pub tags: Option<PgTagsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+}
+
+/// `PostgresIpAccessListEntry` from the ClickHouse Cloud API: one IPv4 TCP
+/// access rule of a Postgres service.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Rule ID returned by the service. Set it to edit an existing rule; leave it
+    /// `None` to create one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Port or inclusive range from 1 to 65535: `"5432"` for Postgres, `"6432"`
+    /// for PgBouncer, or a range such as `"5432..6432"`.
+    #[serde(rename = "portRange")]
+    pub port_range: String,
+    /// IPv4 address or CIDR allowed to connect.
+    pub source: String,
+}
+
+/// `PostgresIpAccessListEntry` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`PostgresIpAccessListEntry`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing. Writing a fetched rule back to the API goes
+/// through `TryFrom<PostgresIpAccessListEntryResponse>` (see
+/// [`crate::convert`]).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListEntryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Rule ID assigned by the service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "portRange", skip_serializing_if = "Option::is_none")]
+    pub port_range: Option<String>,
+    /// IPv4 address or CIDR allowed to connect, as a canonical CIDR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// `PostgresIpAccessListPatch` from the ClickHouse Cloud API: changes to a
+/// Postgres service's access rules.
+///
+/// The API applies `remove` before `add`. Updates can partially succeed, so
+/// read the current list before retrying. Both lists are sent, like
+/// [`crate::models::IpAccessListPatch`]; leave the side you do not need
+/// empty.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListPatch {
+    /// Rules to create (no `id`) or edit (the returned `id`).
+    pub add: Vec<PostgresIpAccessListEntry>,
+    /// Rules to remove by their returned IDs.
+    pub remove: Vec<PostgresIpAccessListRuleReference>,
+}
+
+/// `PostgresIpAccessListRuleReference` from the ClickHouse Cloud API: an
+/// existing access rule, by the ID the service returned for it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresIpAccessListRuleReference {
+    pub id: String,
 }
 
 /// `PostgresServiceListItem` from the ClickHouse Cloud API.
@@ -959,6 +1149,9 @@ pub struct PostgresServicePasswordResource {
 pub struct PostgresServicePatchRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
+    /// Access-rule changes: removals by ID, then additions and edits.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<PostgresIpAccessListPatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<PgNameProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -972,6 +1165,12 @@ pub struct PostgresServicePatchRequest {
 pub struct PostgresServicePostRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
+    /// IPv4 TCP access rules to apply at creation. `None` omits the field, which
+    /// allows all IPv4 and IPv6 addresses on Postgres (5432) and PgBouncer
+    /// (6432); `Some(vec![])` is sent as `[]` and blocks public access. When
+    /// provided, only these rules are allowed, so include a rule for each port.
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<PostgresIpAccessListEntry>>,
     pub name: PgNameProperty,
     #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
@@ -1278,7 +1477,17 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_flush_after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_maxpages: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_toast_compression: Option<PgConfigDefaultToastCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1286,15 +1495,37 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_parallel_hash: Option<PgConfigEnableParallelHash>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_mem_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_lock_waits: Option<PgConfigLogLockWaits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_min_duration_statement: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_parameter_max_length: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_temp_files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_decoding_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_logical_replication_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1302,7 +1533,13 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replication_slots: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sync_workers_per_subscription: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_senders: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1318,7 +1555,13 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_buffers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_activity_query_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vacuum_cost_delay: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1362,7 +1605,17 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_flush_after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_maxpages: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_toast_compression: Option<PgConfigDefaultToastCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1370,15 +1623,37 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_parallel_hash: Option<PgConfigEnableParallelHash>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_mem_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_lock_waits: Option<PgConfigLogLockWaits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_min_duration_statement: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_parameter_max_length: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_temp_files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_decoding_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_logical_replication_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1386,7 +1661,13 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replication_slots: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sync_workers_per_subscription: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_senders: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1402,7 +1683,13 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_buffers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_activity_query_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vacuum_cost_delay: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1464,4 +1751,9 @@ pub struct PostgresBackup {
     /// Time the backup was last written to.
     #[serde(rename = "lastModified", skip_serializing_if = "Option::is_none")]
     pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+    /// Status of the backup. Only completed backups are listed, so the API
+    /// documents this as always `ready`; the spec does not constrain it to an
+    /// enum.
+    #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
