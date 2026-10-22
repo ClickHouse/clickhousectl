@@ -29878,6 +29878,53 @@ async fn old_oauth_records_require_login_even_for_known_hosts_and_fresh_tokens()
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// Legacy production records cannot be refreshed: issuer configuration must be
+// saved by a new login, not reconstructed from the built-in table or current env.
+#[tokio::test]
+async fn expired_legacy_production_tokens_require_login_instead_of_refresh() {
+    let mock = MockServer::start().await;
+    for mode in ["human", "explicit", "agent"] {
+        // The oldest production format also omitted api_url.
+        for includes_api_url in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
+            let token_path = dir.path().join("home/.clickhouse/tokens.json");
+            std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+            let mut legacy = serde_json::json!({
+                "access_token": "expired-production-access",
+                "refresh_token": "legacy-production-refresh",
+                "expires_at": 1
+            });
+            if includes_api_url {
+                legacy["api_url"] = serde_json::json!("https://api.clickhouse.cloud/v1");
+            }
+            let original = serde_json::to_vec(&legacy).unwrap();
+            std::fs::write(&token_path, &original).unwrap();
+            let output = command
+                .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+                .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+                // No environment or built-in configuration may repair the record.
+                .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
+                .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used")
+                .args(["auth", "whoami"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(4), "{mode}: {output:?}");
+            assert!(output.stdout.is_empty());
+            let message = if mode == "human" {
+                String::from_utf8_lossy(&output.stderr).into_owned()
+            } else {
+                let error = cloud_runtime_error(&output);
+                assert_eq!(error["code"], "auth_required");
+                error["message"].as_str().unwrap().to_owned()
+            };
+            assert!(message.contains("cloud auth login"), "{message}");
+            assert_eq!(std::fs::read(&token_path).unwrap(), original);
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn oauth_login_and_refresh_never_follow_redirects() {
     let api = MockServer::start().await;
