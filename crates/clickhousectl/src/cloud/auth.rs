@@ -675,8 +675,15 @@ fn known_auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
         })
 }
 
+/// Injectable environment lookup keeps login tests independent of the shell.
+type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// Resolve configuration for a new login, never for an existing session.
 fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
+    auth_config_for_url_with(api_url, &|key| std::env::var(key).ok())
+}
+
+fn auth_config_for_url_with(api_url: &str, env_lookup: EnvLookup<'_>) -> Option<AuthConfig> {
     // Preserve rejection of malformed or hostless API URLs before reading env.
     url::Url::parse(api_url).ok()?.host_str()?;
     if let Some(config) = known_auth_config_for_url(api_url) {
@@ -684,7 +691,7 @@ fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
     }
 
     // Unknown host: require both env vars, with no built-in fallback.
-    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    let env = |key: &str| env_lookup(key).filter(|v| !v.is_empty());
     match (
         env("CLICKHOUSECTL_AUTH_URL"),
         env("CLICKHOUSECTL_CLIENT_ID"),
@@ -1492,27 +1499,86 @@ mod tests {
 
     #[test]
     fn test_auth_config_lookup() {
-        assert!(auth_config_for_url("https://api.clickhouse.cloud/v1").is_some());
-        assert!(
-            auth_config_for_url("https://api.control-plane.clickhouse-staging.com/v1").is_some()
-        );
-        assert!(auth_config_for_url("https://api.control-plane.clickhouse-dev.com/v1").is_some());
-        assert!(auth_config_for_url("https://api.unknown.com/v1").is_none());
+        let lookup = |url: &str| auth_config_for_url_with(url, &|_| None);
+        assert!(lookup("https://api.clickhouse.cloud/v1").is_some());
+        assert!(lookup("https://api.control-plane.clickhouse-staging.com/v1").is_some());
+        assert!(lookup("https://api.control-plane.clickhouse-dev.com/v1").is_some());
+        assert!(lookup("https://api.unknown.com/v1").is_none());
 
-        // Verify distinct configs
-        let prod = auth_config_for_url("https://api.clickhouse.cloud/v1").unwrap();
-        let staging =
-            auth_config_for_url("https://api.control-plane.clickhouse-staging.com/v1").unwrap();
-        let dev = auth_config_for_url("https://api.control-plane.clickhouse-dev.com/v1").unwrap();
+        // Verify distinct configs without reading the process environment.
+        let prod = lookup("https://api.clickhouse.cloud/v1").unwrap();
+        let staging = lookup("https://api.control-plane.clickhouse-staging.com/v1").unwrap();
+        let dev = lookup("https://api.control-plane.clickhouse-dev.com/v1").unwrap();
         assert_ne!(prod.client_id, staging.client_id);
         assert_ne!(prod.client_id, dev.client_id);
         assert_ne!(staging.client_id, dev.client_id);
 
-        // Must not match on substring — these are hostile URLs that embed a known
-        // host. With no env vars set they fall through to the unknown-host branch.
-        assert!(auth_config_for_url("https://api.clickhouse.cloud.evil.com/v1").is_none());
-        assert!(auth_config_for_url("https://evil-api.clickhouse.cloud.attacker.com/v1").is_none());
-        assert!(auth_config_for_url("https://not-api.clickhouse-staging.com.bad.com/v1").is_none());
+        // Must not match known hosts by substring, regardless of the real env.
+        assert!(lookup("https://api.clickhouse.cloud.evil.com/v1").is_none());
+        assert!(lookup("https://evil-api.clickhouse.cloud.attacker.com/v1").is_none());
+        assert!(lookup("https://not-api.clickhouse-staging.com.bad.com/v1").is_none());
+    }
+
+    #[test]
+    fn auth_config_known_hosts_ignore_environment() {
+        for (host, auth_url, client_id) in KNOWN_CONFIGS {
+            let api_url = format!("https://{host}/v1");
+            let config = auth_config_for_url_with(&api_url, &|_| {
+                panic!("built-in host must not read environment overrides")
+            })
+            .unwrap();
+            assert_eq!(config.auth_url, *auth_url);
+            assert_eq!(config.client_id, *client_id);
+        }
+    }
+
+    #[test]
+    fn auth_config_custom_host_requires_both_nonempty_values() {
+        for (auth_url, client_id) in [
+            (None, None),
+            (Some("https://auth.example.com"), None),
+            (None, Some("client")),
+            (Some(""), Some("client")),
+            (Some("https://auth.example.com"), Some("")),
+            (Some(""), Some("")),
+        ] {
+            let config = auth_config_for_url_with("https://api.example.com/v1", &|key| match key {
+                "CLICKHOUSECTL_AUTH_URL" => auth_url.map(str::to_owned),
+                "CLICKHOUSECTL_CLIENT_ID" => client_id.map(str::to_owned),
+                _ => panic!("unexpected environment lookup: {key}"),
+            });
+            assert!(config.is_none(), "{auth_url:?}, {client_id:?}");
+        }
+    }
+
+    #[test]
+    fn auth_config_custom_host_uses_environment_and_trims_trailing_slashes() {
+        for auth_url in [
+            "https://auth.example.com",
+            "https://auth.example.com/",
+            "https://auth.example.com///",
+        ] {
+            let config = auth_config_for_url_with("https://api.example.com/v1", &|key| match key {
+                "CLICKHOUSECTL_AUTH_URL" => Some(auth_url.to_owned()),
+                "CLICKHOUSECTL_CLIENT_ID" => Some("custom-client".into()),
+                _ => panic!("unexpected environment lookup: {key}"),
+            })
+            .unwrap();
+            assert_eq!(config.auth_url, "https://auth.example.com");
+            assert_eq!(config.client_id, "custom-client");
+        }
+    }
+
+    #[test]
+    fn auth_config_invalid_api_url_never_reads_environment() {
+        for api_url in ["not a URL", "file:///tmp/api", "mailto:user@example.com"] {
+            assert!(
+                auth_config_for_url_with(api_url, &|_| {
+                    panic!("invalid API URL must not read environment overrides")
+                })
+                .is_none()
+            );
+        }
     }
 
     #[test]
