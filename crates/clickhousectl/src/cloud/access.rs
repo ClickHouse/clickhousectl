@@ -500,6 +500,19 @@ fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
     }
 }
 
+/// The client for filing, polling, and claiming: like `oauth_client()` in
+/// `auth.rs`, it never follows redirects. A 307/308 from the claim endpoint
+/// would replay the JSON body — `claimCode` and the secret PKCE
+/// `code_verifier` — to another origin, and dropping the `Authorization`
+/// header on cross-origin redirects does not protect those body fields.
+/// Reject redirects instead of forwarding secrets or replaying the claim POST.
+fn handshake_client() -> CloudResult<reqwest::Client> {
+    crate::http::client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| CloudError::new(format!("failed to build HTTP client: {error}")))
+}
+
 async fn request(
     args: AccessRequestArgs,
     url_override: Option<&str>,
@@ -517,9 +530,7 @@ async fn request(
     let auth = client.request_auth();
     let base_url = client.base_url().to_string();
 
-    let http = crate::http::client_builder()
-        .build()
-        .map_err(|error| CloudError::new(format!("failed to build HTTP client: {error}")))?;
+    let http = handshake_client()?;
 
     // Start the loopback redirect target before filing, so the port is known.
     let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -1425,6 +1436,52 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(permit.unwrap().code, "test-code");
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_client_never_follows_redirects() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for status in [301, 302, 303, 307, 308] {
+            let server = MockServer::start().await;
+            let destination = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/organizations/org/accessRequests/request-1/claim"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/stolen", destination.uri())),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let claimed = claim_access_key(
+                &handshake_client().unwrap(),
+                &format!(
+                    "{}/v1/organizations/org/accessRequests/request-1/claim",
+                    server.uri()
+                ),
+                &RequestAuth::Bearer {
+                    token: "fake".into(),
+                },
+                &ClaimPermit {
+                    code: "claim-code-secret".into(),
+                    deadline: Deadline::new(
+                        Some(epoch_millis().unwrap() + 50),
+                        epoch_millis().unwrap(),
+                        Instant::now(),
+                    )
+                    .unwrap(),
+                },
+                "secret-verifier",
+            )
+            .await;
+            let error = claimed.err().unwrap();
+            assert!(
+                !error.message.contains("secret"),
+                "redirect handling must not leak the verifier: {error}"
+            );
+            assert!(destination.received_requests().await.unwrap().is_empty());
         }
     }
 

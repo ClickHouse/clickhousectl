@@ -35478,6 +35478,94 @@ mod access_negotiation {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
+    /// A 3xx from the claim endpoint must not forward the claim POST's body —
+    /// `claimCode` and the secret PKCE verifier — to the redirect target.
+    #[tokio::test]
+    async fn access_request_claim_never_follows_redirects() {
+        use base64::Engine as _;
+        use sha2::{Digest as _, Sha256};
+        for status in [301, 302, 303, 307, 308] {
+            let server = MockServer::start().await;
+            let destination = MockServer::start().await;
+            let dir = tempfile::tempdir().unwrap();
+            let tokens = access_credentials(dir.path());
+            write_oauth_tokens(&tokens, &server.uri());
+            let credentials_path = dir.path().join(".clickhouse/credentials.json");
+            let before = std::fs::read(&credentials_path).unwrap();
+            let oauth_before = std::fs::read(tokens.join("tokens.json")).unwrap();
+            Mock::given(method("POST"))
+                .and(path("/v1/organizations/org/accessRequests"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                    "requestedRoleIds": [], "requestId": "request-1", "status": "pending",
+                    "approvalUrl": format!("{}/approve/request-1", server.uri()), "expiresAt": 4102444800000_i64,
+                }})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org/accessRequests/request-1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                    "requestedRoleIds": [], "grantedRoleIds": ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                    "requestId": "request-1", "expiresAt": 4102444800000_i64,
+                    "claimCodeExpiresAt": 4102444800000_i64, "status": "approved", "claimCode": "claim-code-secret",
+                }})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/v1/organizations/org/accessRequests/request-1/claim"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/stolen", destination.uri())),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let output = access_command(dir.path())
+                .args(["--org", "org", "--no-browser"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{status}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!stderr.contains("claim-code-secret"));
+            assert!(!stderr.contains("issued-secret"));
+            assert_access_output_has_no_credentials(&output);
+            assert!(output.stdout.is_empty());
+            assert_eq!(std::fs::read(&credentials_path).unwrap(), before);
+            assert_eq!(
+                std::fs::read(tokens.join("tokens.json")).unwrap(),
+                oauth_before
+            );
+            let requests = server.received_requests().await.unwrap();
+            let filed: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            let claim_requests: Vec<_> = requests
+                .iter()
+                .filter(|request| request.url.path().ends_with("/claim"))
+                .collect();
+            assert_eq!(claim_requests.len(), 1);
+            let body: Value = serde_json::from_slice(&claim_requests[0].body).unwrap();
+            assert_eq!(body.as_object().unwrap().len(), 2);
+            assert_eq!(body["claimCode"], "claim-code-secret");
+            let verifier = body["codeVerifier"].as_str().unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(Sha256::digest(verifier.as_bytes())),
+                filed["codeChallenge"]
+            );
+            assert!(destination.received_requests().await.unwrap().is_empty());
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| !request.url.path().starts_with("/approve"))
+            );
+        }
+    }
+
     #[tokio::test]
     async fn access_request_uses_oauth_for_discovery_and_filing_with_saved_or_explicit_url() {
         for explicit_url in [false, true] {
