@@ -775,16 +775,35 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Cloud
     }
 }
 
+/// The largest request line (terminator included) accepted from the loopback
+/// callback before the connection is treated as malformed and ignored.
+const MAX_REQUEST_LINE: usize = 8 * 1024;
+
 /// Read the HTTP request line and return its request target (the second token).
+///
+/// A TCP read may split the request line anywhere — including midway through
+/// the `state` value — so bytes are buffered through the request-line
+/// terminator and only then parsed; parsing whatever a single read happened to
+/// deliver would treat a partial `state` as a CSRF mismatch and abort approval.
+/// An oversized line without a terminator is reported as no target.
 async fn read_request_target(stream: &mut tokio::net::TcpStream) -> Option<String> {
-    let mut buffer = [0u8; 2048];
-    let read = stream.read(&mut buffer).await.ok()?;
-    if read == 0 {
-        return None;
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 2048];
+    loop {
+        let read = stream.read(&mut chunk).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(line_end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let text = String::from_utf8_lossy(&buffer[..line_end]);
+            let line = text.strip_suffix('\r').unwrap_or(&text);
+            return line.split_whitespace().nth(1).map(str::to_string);
+        }
+        if buffer.len() > MAX_REQUEST_LINE {
+            return None;
+        }
     }
-    let text = String::from_utf8_lossy(&buffer[..read]);
-    let first_line = text.lines().next()?;
-    first_line.split_whitespace().nth(1).map(str::to_string)
 }
 
 fn split_target(target: &str) -> (&str, &str) {
@@ -1437,6 +1456,75 @@ mod tests {
                     .unwrap();
             assert_eq!(permit.unwrap().code, "test-code");
         }
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_reassembles_a_request_line_split_across_writes() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(status_body("approved", 4102444800000)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let created = created(4102444800000);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = reqwest::Client::new();
+        let auth = RequestAuth::Bearer {
+            token: "fake".into(),
+        };
+        let url = server.uri();
+        let wait = wait_for_approval(
+            &client,
+            &url,
+            &auth,
+            PendingApproval::new(&created).unwrap(),
+            listener,
+            "state",
+        );
+        let notify = async {
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream
+                .write_all(b"GET /callback?code=test-code&sta")
+                .await
+                .unwrap();
+            // Keep the halves in separate reads; a read need not cover the
+            // whole line, and this split lands midway through the state value.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            stream
+                .write_all(b"te=state HTTP/1.1\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"));
+        };
+        let (permit, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(wait, notify) })
+                .await
+                .unwrap();
+        assert_eq!(permit.unwrap().code, "test-code");
+    }
+
+    #[tokio::test]
+    async fn read_request_target_skips_an_oversized_line_without_a_terminator() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        let oversized = "GET /".to_string() + &"a".repeat(MAX_REQUEST_LINE + 1);
+        let writer = tokio::spawn(async move {
+            // The reader may stop before the tail lands; delivery is best-effort.
+            let _ = client.write_all(oversized.as_bytes()).await;
+        });
+        let target = tokio::time::timeout(Duration::from_secs(2), read_request_target(&mut server))
+            .await
+            .unwrap();
+        assert_eq!(target, None);
+        writer.await.unwrap();
     }
 
     #[tokio::test]
