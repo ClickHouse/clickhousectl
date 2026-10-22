@@ -28773,8 +28773,7 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
     }
 }
 
-// Unrecoverable legacy OAuth tokens must not block higher-precedence API keys.
-// Skipping refresh entirely when keys win is a separate precedence concern.
+// Old OAuth records must not block higher-precedence API keys.
 #[tokio::test]
 async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
     let mock = MockServer::start().await;
@@ -28814,6 +28813,151 @@ async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
     assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     // Old files are ignored, not refreshed or modified; API-key auth succeeds.
     assert!(token_dir.join("tokens.json").exists());
+}
+
+#[tokio::test]
+async fn api_key_precedence_skips_oauth_refresh_and_preserves_tokens() {
+    for source in ["flags", "file", "env", "dotenv", "mixed", "partial-flags"] {
+        let api = MockServer::start().await;
+        let issuer = MockServer::start().await;
+        // If refresh is accidentally attempted it would reject and clear tokens.
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(0)
+            .mount(&issuer)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services"))
+            .and(wiremock::matchers::basic_auth(
+                "winning-key",
+                "winning-secret",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+            )
+            .expect(if source == "partial-flags" { 0 } else { 1 })
+            .mount(&api)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = custom_oauth_command(dir.path(), &api.uri());
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        let original = serde_json::to_vec(&serde_json::json!({
+            "access_token": "expired", "refresh_token": "preserve-refresh", "expires_at": 1,
+            "api_url": api.uri(),
+            "auth_config": {"auth_url": issuer.uri(), "client_id": "saved-client"}
+        }))
+        .unwrap();
+        std::fs::write(&token_path, &original).unwrap();
+        match source {
+            "flags" => {
+                // Populate lower tiers too, proving the same precedence as the client.
+                write_project_api_credentials(dir.path(), "ignored-file", "ignored-secret");
+                command
+                    .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
+                    .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret")
+                    .args(["--api-key", "winning-key", "--api-secret", "winning-secret"]);
+            }
+            "file" => {
+                write_project_api_credentials(dir.path(), "winning-key", "winning-secret");
+                command
+                    .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
+                    .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret");
+            }
+            "env" => {
+                command
+                    .env("CLICKHOUSE_CLOUD_API_KEY", "winning-key")
+                    .env("CLICKHOUSE_CLOUD_API_SECRET", "winning-secret");
+            }
+            "dotenv" => {
+                std::fs::write(dir.path().join(".env"), "CLICKHOUSE_CLOUD_API_KEY=winning-key\nCLICKHOUSE_CLOUD_API_SECRET=winning-secret\n").unwrap();
+            }
+            "mixed" => {
+                command.env("CLICKHOUSE_CLOUD_API_KEY", "winning-key");
+                std::fs::write(
+                    dir.path().join(".env"),
+                    "CLICKHOUSE_CLOUD_API_SECRET=winning-secret\n",
+                )
+                .unwrap();
+            }
+            "partial-flags" => {
+                command.arg("--api-key").arg("winning-key");
+            }
+            _ => unreachable!(),
+        }
+        let output = command
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if source == "partial-flags" { 4 } else { 0 }),
+            "{source}: {output:?}"
+        );
+        assert_eq!(std::fs::read(&token_path).unwrap(), original, "{source}");
+        assert!(
+            issuer.received_requests().await.unwrap().is_empty(),
+            "{source}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn incomplete_lower_priority_keys_do_not_prevent_oauth_refresh() {
+    for source in ["none", "partial-env", "empty-file"] {
+        let api = MockServer::start().await;
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed", "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&issuer)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer refreshed",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+            )
+            .expect(1)
+            .mount(&api)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = custom_oauth_command(dir.path(), &api.uri());
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &token_path,
+            serde_json::to_vec(&serde_json::json!({
+                "access_token": "expired", "refresh_token": "refresh", "expires_at": 1,
+                "api_url": api.uri(),
+                "auth_config": {"auth_url": issuer.uri(), "client_id": "saved-client"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        match source {
+            "partial-env" => {
+                command.env("CLICKHOUSE_CLOUD_API_KEY", "incomplete-key");
+            }
+            "empty-file" => write_project_api_credentials(dir.path(), "", ""),
+            "none" => {}
+            _ => unreachable!(),
+        }
+        let output = command
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+        assert_eq!(saved["access_token"], "refreshed", "{source}");
+    }
 }
 
 fn custom_oauth_command(root: &Path, api_url: &str) -> Command {
