@@ -390,11 +390,14 @@ pub async fn run(
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
+    debug: bool,
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        AccessCommands::Request(args) => request(args, url_override, org_id, org_name, json).await,
-        AccessCommands::Roles => roles(url_override, org_id, org_name, json).await,
+        AccessCommands::Request(args) => {
+            request(args, url_override, org_id, org_name, debug, json).await
+        }
+        AccessCommands::Roles => roles(url_override, org_id, org_name, debug, json).await,
     }
 }
 
@@ -433,9 +436,13 @@ async fn roles(
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
+    debug: bool,
     json: bool,
 ) -> CloudResult<()> {
     let client = CloudClient::for_access(url_override).await?;
+    if debug {
+        super::print_client_diagnostics(&client);
+    }
     let org_id = client
         .resolve_access_organization_id(org_id, org_name)
         .await?;
@@ -521,12 +528,16 @@ async fn request(
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
+    debug: bool,
     json: bool,
 ) -> CloudResult<()> {
     let requested_role_ids = args.requested_role_ids().map_err(CloudError::usage)?;
     // Resolve the user identity and endpoint once for organization discovery
     // and every step of the existing PKCE handshake.
     let client = CloudClient::for_access(url_override).await?;
+    if debug {
+        super::print_client_diagnostics(&client);
+    }
     let org_id = client
         .resolve_access_organization_id(org_id, org_name)
         .await?;

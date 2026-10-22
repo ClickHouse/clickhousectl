@@ -34766,6 +34766,10 @@ mod access_negotiation {
                 let tokens = access_credentials(dir.path());
                 write_oauth_tokens(&tokens, &server.uri());
                 let mut command = access_roles_command(dir.path(), json);
+                let debug = selector != "explicit";
+                if debug {
+                    command.arg("--debug");
+                }
                 if selector == "explicit" {
                     command.args(["--org", ORG]);
                 }
@@ -34780,6 +34784,11 @@ mod access_negotiation {
                     String::from_utf8_lossy(&output.stderr)
                 );
                 assert_access_output_has_no_credentials(&output);
+                if debug {
+                    assert_access_debug_diagnostics(&output, &server.uri());
+                } else {
+                    assert!(!String::from_utf8_lossy(&output.stderr).contains("[debug]"));
+                }
                 if json {
                     assert_eq!(
                         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
@@ -35229,6 +35238,7 @@ mod access_negotiation {
                     assert_eq!(stderr.contains(&approval_url), !scenario.starts_with("create-"), "{scenario}: {stderr}");
                     assert!(!String::from_utf8_lossy(&output.stdout).contains(&approval_url));
                     assert_access_output_has_no_credentials(&output);
+                    assert_access_debug_diagnostics(&output, &server.uri());
                     let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
                     assert!(!combined.contains("claim-code-secret"));
                     assert!(!combined.contains("issued-secret"));
@@ -35309,6 +35319,26 @@ mod access_negotiation {
         let tokens = dir.join("home/.clickhouse");
         std::fs::create_dir_all(&tokens).unwrap();
         tokens
+    }
+
+    fn assert_access_debug_diagnostics(output: &std::process::Output, api_url: &str) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr
+                .matches("[debug] auth source: OAuth tokens (")
+                .count(),
+            1,
+            "{stderr}"
+        );
+        assert!(stderr.contains("home/.clickhouse/tokens.json)"), "{stderr}");
+        assert_eq!(stderr.matches("[debug] api url:").count(), 1, "{stderr}");
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line == format!("[debug] api url: {api_url}/v1")),
+            "{stderr}"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("[debug]"));
     }
 
     fn assert_access_output_has_no_credentials(output: &std::process::Output) {
@@ -35661,6 +35691,7 @@ mod access_negotiation {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_access_output_has_no_credentials(&output);
+            assert_access_debug_diagnostics(&output, &selected.uri());
             assert!(saved.received_requests().await.unwrap().is_empty());
             let requests = selected.received_requests().await.unwrap();
             assert_eq!(requests.len(), 2);
