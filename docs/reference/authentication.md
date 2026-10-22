@@ -21,6 +21,8 @@ clickhousectl cloud auth status
 
 `auth status` shows configured sources, the active source, and identity verification. It can exit 0 with no active credentials, rejected credentials, or an unavailable identity check; use `whoami` or the intended command to test access. Its remote check times out after five seconds.
 
+If a saved OAuth login cannot be read or uses an older format without complete authorization configuration, `auth status` shows OAuth as `Login required`, not `Not configured`, and explains the problem below the table with the command to log in again. JSON output includes this explanation in `oauth_warning`, separate from any identity-verification `warning`; it is shown even when an API key is active. Run `clickhousectl cloud auth login` to log in again. Without a higher-priority API key source, Cloud commands exit 4 (`auth_required` in JSON) with an explicit re-login message. The unusable file is left unchanged; the CLI does not reconstruct its authorization configuration from built-in defaults or environment variables.
+
 For automation, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through a secret manager. The CLI does not save environment credentials. For development it also reads `.env` from the exact current directory; keep that file out of version control and restrict access. Flags are available, but command-line secrets can appear in shell history and process listings.
 
 ## Credential precedence

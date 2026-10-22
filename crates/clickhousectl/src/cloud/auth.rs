@@ -301,8 +301,9 @@ pub async fn run(
                 active: mark(AuthSource::CliFlags),
             });
 
+            let mut oauth_warning = None;
             match load_tokens() {
-                Some(tokens) if is_token_valid(&tokens) => {
+                Ok(Some(tokens)) if is_token_valid(&tokens) => {
                     rows.push(AuthRow {
                         auth_type: "OAuth".into(),
                         status: configured_status(AuthSource::OAuthTokens),
@@ -310,7 +311,7 @@ pub async fn run(
                         active: mark(AuthSource::OAuthTokens),
                     });
                 }
-                Some(_) => {
+                Ok(Some(_)) => {
                     rows.push(AuthRow {
                         auth_type: "OAuth".into(),
                         status: "Expired".into(),
@@ -318,7 +319,16 @@ pub async fn run(
                         active: "-".into(),
                     });
                 }
-                None => {
+                Err(UnusableTokens) => {
+                    oauth_warning = Some(OAUTH_LOGIN_REQUIRED);
+                    rows.push(AuthRow {
+                        auth_type: "OAuth".into(),
+                        status: "Login required".into(),
+                        scope: "-".into(),
+                        active: "-".into(),
+                    });
+                }
+                Ok(None) => {
                     rows.push(AuthRow {
                         auth_type: "OAuth".into(),
                         status: "Not configured".into(),
@@ -409,6 +419,9 @@ pub async fn run(
                             "[debug] auth source: none (incomplete CLI flags: missing {missing})"
                         ));
                     }
+                    None if oauth_warning.is_some() => {
+                        eprint_line("[debug] auth source: none (saved OAuth login unusable)");
+                    }
                     None => eprint_line("[debug] auth source: none (no credentials configured)"),
                 }
             }
@@ -430,16 +443,23 @@ pub async fn run(
                 #[derive(Serialize)]
                 struct StatusOutput<'a> {
                     sources: Vec<AuthRow>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    oauth_warning: Option<&'a str>,
                     #[serde(flatten)]
                     identity: &'a IdentityCheck,
                 }
                 let output = StatusOutput {
                     sources: rows,
+                    oauth_warning,
                     identity: &identity,
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
+                if let Some(warning) = oauth_warning {
+                    println!();
+                    println!("{warning}");
+                }
                 match (&identity.identity, &identity.warning) {
                     (Some(whoami), _) => {
                         println!();
@@ -867,38 +887,51 @@ fn legacy_tokens_path() -> PathBuf {
     crate::init::local_dir().join("tokens.json")
 }
 
-pub fn load_tokens() -> Option<TokenStore> {
-    let global = tokens_path().ok()?;
+/// A saved login could not be read or decoded. Never reconstruct its issuer
+/// from the environment or built-in configuration; a new login is required.
+#[derive(Debug)]
+pub struct UnusableTokens;
+
+pub(super) const OAUTH_LOGIN_REQUIRED: &str =
+    "Saved OAuth login can't be used. Run `clickhousectl cloud auth login` to log in again.";
+
+pub fn load_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
+    let global = tokens_path().map_err(|_| UnusableTokens)?;
     let legacy = legacy_tokens_path();
     load_tokens_from(&global, &legacy)
 }
 
-/// Path-injected core of [`load_tokens`]. Reads the global token file first;
-/// if absent/unreadable, attempts a one-time migration from `legacy_path`
-/// (write the global copy, best-effort delete the legacy file).
+fn read_tokens(path: &std::path::Path) -> Result<Option<TokenStore>, UnusableTokens> {
+    match std::fs::read_to_string(path) {
+        Ok(data) => serde_json::from_str(&data)
+            .map(Some)
+            .map_err(|_| UnusableTokens),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(UnusableTokens),
+    }
+}
+
+/// Path-injected core of [`load_tokens`]. Only an absent global file permits
+/// migration from `legacy_path`. An unusable global file must not be silently
+/// replaced by a different saved login.
 fn load_tokens_from(
     global_path: &std::path::Path,
     legacy_path: &std::path::Path,
-) -> Option<TokenStore> {
-    if let Ok(data) = std::fs::read_to_string(global_path)
-        && let Ok(tokens) = serde_json::from_str::<TokenStore>(&data)
-    {
-        return Some(tokens);
+) -> Result<Option<TokenStore>, UnusableTokens> {
+    if let Some(tokens) = read_tokens(global_path)? {
+        return Ok(Some(tokens));
     }
 
-    // Global file missing or unreadable — try a one-time migration from the
-    // legacy cwd-based path. Best-effort: write the global copy, then delete
-    // the legacy file so it can't re-migrate on the next command.
-    if let Ok(data) = std::fs::read_to_string(legacy_path)
-        && let Ok(tokens) = serde_json::from_str::<TokenStore>(&data)
-    {
+    // Best-effort migration: write the global copy, then delete the legacy
+    // file so it can't re-migrate on the next command.
+    if let Some(tokens) = read_tokens(legacy_path)? {
         if save_tokens_to(global_path, &tokens).is_ok() {
             let _ = std::fs::remove_file(legacy_path);
         }
-        return Some(tokens);
+        return Ok(Some(tokens));
     }
 
-    None
+    Ok(None)
 }
 
 pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>> {
@@ -1102,7 +1135,9 @@ pub async fn refresh_access_token(
 /// If tokens exist and are near-expiry, refresh them. Returns Ok(()) even if
 /// no tokens are present (the user may be using API keys instead).
 pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(tokens) = load_tokens() else {
+    // Leave unusable files intact. The credential resolver reports the re-login
+    // error only if no higher-precedence credential source wins.
+    let Ok(Some(tokens)) = load_tokens() else {
         return Ok(());
     };
 
@@ -1366,7 +1401,7 @@ mod tests {
             });
             std::fs::write(&global, serde_json::to_vec(&old).unwrap()).unwrap();
             std::fs::write(&legacy, serde_json::to_vec(&old).unwrap()).unwrap();
-            assert!(load_tokens_from(&global, &legacy).is_none());
+            assert!(load_tokens_from(&global, &legacy).is_err());
         }
     }
 
@@ -1408,7 +1443,7 @@ mod tests {
             client_id: "client-a".into(),
         };
         save_tokens_to(&legacy, &tokens).unwrap();
-        let migrated = load_tokens_from(&global, &legacy).unwrap();
+        let migrated = load_tokens_from(&global, &legacy).unwrap().unwrap();
         assert_eq!(migrated.auth_config, tokens.auth_config);
         assert!(!legacy.exists());
 
@@ -1419,7 +1454,7 @@ mod tests {
             client_id: "client-b".into(),
         };
         save_tokens_to(&global, &tokens).unwrap();
-        let replaced = load_tokens_from(&global, &legacy).unwrap();
+        let replaced = load_tokens_from(&global, &legacy).unwrap().unwrap();
         assert_eq!(replaced.access_token, tokens.access_token);
         assert_eq!(replaced.refresh_token, tokens.refresh_token);
         assert_eq!(replaced.auth_config, tokens.auth_config);
@@ -1504,7 +1539,9 @@ mod tests {
         let tokens = sample_tokens();
         std::fs::write(&legacy, serde_json::to_string_pretty(&tokens).unwrap()).unwrap();
 
-        let loaded = load_tokens_from(&global, &legacy).expect("legacy file should migrate");
+        let loaded = load_tokens_from(&global, &legacy)
+            .expect("legacy file should migrate")
+            .unwrap();
         assert_eq!(loaded.access_token, "a");
 
         // Migration writes the global copy and deletes the legacy file.
@@ -1542,7 +1579,9 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_tokens_from(&global, &legacy).expect("global file should load");
+        let loaded = load_tokens_from(&global, &legacy)
+            .expect("global file should load")
+            .unwrap();
         assert_eq!(loaded.access_token, "global-wins");
         assert!(legacy.exists(), "legacy file must not be touched");
     }
@@ -1552,19 +1591,49 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("global/.clickhouse/tokens.json");
         let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
-        assert!(load_tokens_from(&global, &legacy).is_none());
+        assert!(load_tokens_from(&global, &legacy).unwrap().is_none());
     }
 
     #[test]
-    fn load_tokens_returns_none_when_both_unparseable() {
+    fn load_tokens_reports_unusable_files_without_modifying_them() {
+        for location in ["global", "legacy"] {
+            for data in [b"not json".as_slice(), b"{}", b"\xff"] {
+                let tmp = tempfile::tempdir().unwrap();
+                let global = tmp.path().join("global.json");
+                let legacy = tmp.path().join("legacy.json");
+                let path = if location == "global" {
+                    &global
+                } else {
+                    &legacy
+                };
+                std::fs::write(path, data).unwrap();
+                assert!(load_tokens_from(&global, &legacy).is_err());
+                assert_eq!(std::fs::read(path).unwrap(), data);
+            }
+        }
+    }
+
+    #[test]
+    fn unusable_global_tokens_do_not_fall_back_to_valid_legacy_tokens() {
         let tmp = tempfile::tempdir().unwrap();
-        let global = tmp.path().join("global/.clickhouse/tokens.json");
-        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
-        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let global = tmp.path().join("global.json");
+        let legacy = tmp.path().join("legacy.json");
         std::fs::write(&global, b"not json").unwrap();
-        std::fs::write(&legacy, b"also not json").unwrap();
-        assert!(load_tokens_from(&global, &legacy).is_none());
+        save_tokens_to(&legacy, &sample_tokens()).unwrap();
+        let original_legacy = std::fs::read(&legacy).unwrap();
+        assert!(load_tokens_from(&global, &legacy).is_err());
+        assert_eq!(std::fs::read(&global).unwrap(), b"not json");
+        assert_eq!(std::fs::read(&legacy).unwrap(), original_legacy);
+    }
+
+    #[test]
+    fn unreadable_token_path_requires_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global.json");
+        let legacy = tmp.path().join("legacy.json");
+        // A directory reliably fails read_to_string even when tests run as root.
+        std::fs::create_dir(&global).unwrap();
+        assert!(load_tokens_from(&global, &legacy).is_err());
     }
 
     #[test]

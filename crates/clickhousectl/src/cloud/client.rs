@@ -172,7 +172,10 @@ type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::C
 
 /// Loader for the OAuth token tier (`~/.clickhouse/tokens.json`). Injected for
 /// the same reason as `CredentialsLookup`.
-type TokensLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::auth::TokenStore>;
+type TokensLookup<'a> = &'a dyn Fn() -> std::result::Result<
+    Option<crate::cloud::auth::TokenStore>,
+    crate::cloud::auth::UnusableTokens,
+>;
 
 /// Treat empty as absent. An exported-but-empty variable (`CLICKHOUSE_..=`)
 /// or a bare `KEY=` line in `.env` yields `Some("")`; collapsing it to `None`
@@ -266,7 +269,9 @@ fn resolve_auth_with_sources(
         });
     }
 
-    if let Some(tokens) = load_tokens()
+    let tokens =
+        load_tokens().map_err(|_| CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_REQUIRED))?;
+    if let Some(tokens) = tokens
         && crate::cloud::auth::is_token_valid(&tokens)
     {
         let base_url = url_override
@@ -1569,8 +1574,11 @@ mod tests {
         None
     }
 
-    fn no_tokens() -> Option<crate::cloud::auth::TokenStore> {
-        None
+    fn no_tokens() -> std::result::Result<
+        Option<crate::cloud::auth::TokenStore>,
+        crate::cloud::auth::UnusableTokens,
+    > {
+        Ok(None)
     }
 
     // A populated credentials file, for asserting the file tier wins over env.
