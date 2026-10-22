@@ -104,6 +104,14 @@ catch-up query when a pipe falls behind. Omitted settings use the service defaul
 Snapshot mode rejects these CDC settings and both CDC table fields. The same
 controls work with workload identity; BigQuery source updates remain unsupported.
 
+To sync on a schedule instead of a fixed interval, replace
+`--sync-interval-seconds` with `--sync-cron`, for example
+`--sync-cron '0 * * * *'` to sync every hour on the hour. It takes a 5-field cron
+expression or a descriptor such as `@hourly`, evaluated in UTC unless prefixed
+with `CRON_TZ=<zone>`, and must not fire more than once a minute. The two flags
+cannot be combined, and snapshot mode rejects `--sync-cron` like the other CDC
+settings. The service, not the CLI, validates the expression itself.
+
 ## Update a pipe
 
 Use `clickpipe update --file patch.json` or `--file -`. For CDC, [stop and wait for `Paused`](../guides/clickpipes.md#pause-update-and-resume-cdc) first. GET responses contain fields that cannot be patched; build a request from the writable fields below.

@@ -8764,6 +8764,7 @@ async fn bigquery_destination_omits_table_columns_managed_table_definition() {
         "snapshotNumberOfParallelTables",
         "replicationMethod",
         "syncIntervalSeconds",
+        "syncCron",
         "queryCdcPullSyncParallelism",
         "syncDelaySeconds",
         "pullWindowSizeSeconds",
@@ -8821,6 +8822,48 @@ async fn bigquery_snapshot_tuning_flags_are_sent_exactly() {
             "initialLoadParallelism": 2.5,
             "snapshotNumRowsPerPartition": 1_000_000.0,
             "snapshotNumberOfParallelTables": 3.0,
+        })
+    );
+}
+
+#[tokio::test]
+async fn bigquery_sync_cron_is_sent_as_the_cdc_schedule() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "scheduled-pipe",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--project-id",
+            "source-project",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--replication-mode",
+            "cdc",
+            "--replication-method",
+            "query_based",
+            "--sync-cron",
+            "CRON_TZ=Europe/London 0 * * * *",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"sales","sourceTable":"orders","targetTable":"orders","queryCdcWatermarkColumn":"updated_at"}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["bigquery"]["settings"],
+        serde_json::json!({
+            "replicationMode": "cdc",
+            "replicationMethod": "query_based",
+            "syncCron": "CRON_TZ=Europe/London 0 * * * *",
         })
     );
 }
