@@ -534,6 +534,15 @@ pub const CLICK_STACK_VALIDATE_DASHBOARD: OperationMetadata = OperationMetadata 
     required_permissions: &["control-plane:service:manage-clickstack-api"],
 };
 
+/// `POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/validate` (`clickStackValidateWebhook`).
+pub const CLICK_STACK_VALIDATE_WEBHOOK: OperationMetadata = OperationMetadata {
+    operation_id: "clickStackValidateWebhook",
+    rust_method: "click_stack_validate_webhook",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/validate",
+    required_permissions: &["control-plane:service:manage-clickstack-api"],
+};
+
 /// `GET /v1/organizations/{organizationId}/creditBalances` (`creditBalancesGet`).
 pub const CREDIT_BALANCES_GET: OperationMetadata = OperationMetadata {
     operation_id: "creditBalancesGet",
@@ -1631,6 +1640,7 @@ pub const ALL: &[OperationMetadata] = &[
     CLICK_STACK_UPDATE_SOURCE,
     CLICK_STACK_UPDATE_WEBHOOK,
     CLICK_STACK_VALIDATE_DASHBOARD,
+    CLICK_STACK_VALIDATE_WEBHOOK,
     CREDIT_BALANCES_GET,
     INSTANCE_CREATE,
     INSTANCE_DELETE,

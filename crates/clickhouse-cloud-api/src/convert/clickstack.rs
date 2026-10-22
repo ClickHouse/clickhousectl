@@ -186,6 +186,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                     .transpose()?,
                 metric_source_id: value.metric_source_id,
                 name,
+                order_by_expression: value.order_by_expression,
                 query_settings: value
                     .query_settings
                     .map(|items| {
@@ -518,6 +519,7 @@ impl TryFrom<ClickStackSessionSourceResponse> for ClickStackSessionSource {
                                 .collect::<Result<Vec<_>, _>>()
                         })
                         .transpose()?,
+                    resource_attributes_expression: value.resource_attributes_expression,
                     section: value.section,
                     timestamp_value_expression: value.timestamp_value_expression,
                     trace_source_id,
@@ -723,6 +725,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 connection,
                 default_table_select_expression,
                 disabled: value.disabled,
+                displayed_timestamp_value_expression: value.displayed_timestamp_value_expression,
                 duration_expression,
                 duration_precision,
                 event_attributes_expression: value.event_attributes_expression,
@@ -766,6 +769,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                     .transpose()?,
                 metric_source_id: value.metric_source_id,
                 name,
+                order_by_expression: value.order_by_expression,
                 parent_span_id_expression,
                 query_settings: value
                     .query_settings
@@ -777,6 +781,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                     })
                     .transpose()?,
                 resource_attributes_expression: value.resource_attributes_expression,
+                sample_rate_expression: value.sample_rate_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
                 service_version_expression: value.service_version_expression,
@@ -784,6 +789,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 span_events_value_expression: value.span_events_value_expression,
                 span_id_expression,
                 span_kind_expression,
+                span_links_value_expression: value.span_links_value_expression,
                 span_name_expression,
                 status_code_expression: value.status_code_expression,
                 status_message_expression: value.status_message_expression,

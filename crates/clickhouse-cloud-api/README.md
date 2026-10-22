@@ -6,6 +6,22 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+The beta `click_stack_validate_webhook` method checks a `ClickStackWebhookInput`
+against the rules used when a webhook is created, without saving it; name
+uniqueness is not checked. It returns `ClickStackValidateWebhookResponse`, with
+`valid`, `errors` (`ClickStackValidateWebhookResponseErrorsItem` path and
+message pairs), and `normalized`, a free-form `serde_json::Value`. ClickStack
+sources gain optional expressions: `ClickStackLogSource` and
+`ClickStackTraceSource` add `order_by_expression`, `ClickStackSessionSource`
+adds `resource_attributes_expression`, and `ClickStackTraceSource` also adds
+`displayed_timestamp_value_expression`, `sample_rate_expression`, and
+`span_links_value_expression`. Each `*Response` variant has the same fields, and
+`TryFrom` carries them back to the request type. Struct-literal callers need the
+new fields as `None` or `..Default::default()`. The unused
+`ClickStackValidationError`, `ClickStackValidationErrorItem`, and
+`ClickStackValidationErrorItemErrors` types are removed because the API no
+longer defines them; no method returned them.
+
 Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
 takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
 all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends

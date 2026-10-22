@@ -4024,6 +4024,7 @@ fn clickstack_source_try_from_response_converts_every_kind() {
                 "keyRollupTable": "logs_keys_1h",
                 "kvRollupTable": "logs_kv_1h",
             },
+            "orderByExpression": "Timestamp DESC",
             "querySettings": [{"setting": "max_threads", "value": "4"}],
         }),
         serde_json::json!({
@@ -4040,6 +4041,10 @@ fn clickstack_source_try_from_response_converts_every_kind() {
             "spanNameExpression": "SpanName",
             "timestampValueExpression": "Timestamp",
             "traceIdExpression": "TraceId",
+            "displayedTimestampValueExpression": "Timestamp",
+            "orderByExpression": "Timestamp DESC",
+            "sampleRateExpression": "SampleRate",
+            "spanLinksValueExpression": "Links",
             "metadataMaterializedViews": {
                 "granularity": "1 hour",
                 "keyRollupTable": "traces_keys_1h",
@@ -4066,6 +4071,7 @@ fn clickstack_source_try_from_response_converts_every_kind() {
             "name": "sessions",
             "connection": "conn-1",
             "from": {"databaseName": "default", "tableName": "sessions"},
+            "resourceAttributesExpression": "ResourceAttributes",
             "traceSourceId": "trace-1",
         }),
         serde_json::json!({
@@ -4355,6 +4361,8 @@ fn clickstack_alert_and_dashboard_response_models_accept_an_empty_payload() {
         ClickStackTileOutput,
         ClickStackValidateDashboardError,
         ClickStackValidateDashboardResponse,
+        ClickStackValidateWebhookResponse,
+        ClickStackValidateWebhookResponseErrorsItem,
     );
 }
 
@@ -6437,6 +6445,137 @@ fn deserialize_clickstack_webhook_unknown_service_round_trips() {
     assert_unknown_variant_round_trips(json, |w: &ClickStackWebhook| {
         matches!(w, ClickStackWebhook::Unknown(_))
     });
+}
+
+#[test]
+fn clickstack_source_expression_fields_missing_or_null_are_none() {
+    // `orderByExpression` (log, trace), `resourceAttributesExpression`
+    // (session), and the trace-only display, sampling and span-link
+    // expressions are optional in the spec: absent or `null` lands as `None`
+    // on the response variants and is omitted from the request variants.
+    let log = serde_json::json!({
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+    });
+    let trace = serde_json::json!({
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanIdExpression": "SpanId",
+        "spanKindExpression": "SpanKind",
+        "spanNameExpression": "SpanName",
+        "timestampValueExpression": "Timestamp",
+        "traceIdExpression": "TraceId",
+    });
+    let session = serde_json::json!({
+        "kind": "session",
+        "name": "sessions",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "sessions"},
+        "traceSourceId": "trace-1",
+    });
+    let with_nulls = |base: &serde_json::Value, keys: &[&str]| {
+        let mut v = base.clone();
+        for key in keys {
+            v[*key] = serde_json::Value::Null;
+        }
+        v
+    };
+    let trace_keys = [
+        "displayedTimestampValueExpression",
+        "orderByExpression",
+        "sampleRateExpression",
+        "spanLinksValueExpression",
+    ];
+
+    for payload in [log.clone(), with_nulls(&log, &["orderByExpression"])] {
+        let response: ClickStackLogSourceResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(response.order_by_expression, None);
+        let request = ClickStackLogSource::try_from(response).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), log);
+    }
+    for payload in [trace.clone(), with_nulls(&trace, &trace_keys)] {
+        let response: ClickStackTraceSourceResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(response.displayed_timestamp_value_expression, None);
+        assert_eq!(response.order_by_expression, None);
+        assert_eq!(response.sample_rate_expression, None);
+        assert_eq!(response.span_links_value_expression, None);
+        let request = ClickStackTraceSource::try_from(response).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), trace);
+    }
+    for payload in [
+        session.clone(),
+        with_nulls(&session, &["resourceAttributesExpression"]),
+    ] {
+        let response: ClickStackSessionSourceResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(response.resource_attributes_expression, None);
+        let request = ClickStackSessionSource::try_from(response).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), session);
+    }
+}
+
+#[test]
+fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
+    let log = ClickStackLogSource {
+        order_by_expression: Some("Timestamp DESC".to_string()),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&log).unwrap();
+    assert_eq!(v["orderByExpression"], "Timestamp DESC");
+
+    let session = ClickStackSessionSource {
+        resource_attributes_expression: Some("ResourceAttributes".to_string()),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&session).unwrap();
+    assert_eq!(v["resourceAttributesExpression"], "ResourceAttributes");
+
+    let trace = ClickStackTraceSource {
+        displayed_timestamp_value_expression: Some("Timestamp".to_string()),
+        order_by_expression: Some("Timestamp DESC".to_string()),
+        sample_rate_expression: Some("SampleRate".to_string()),
+        span_links_value_expression: Some("Links".to_string()),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&trace).unwrap();
+    assert_eq!(v["displayedTimestampValueExpression"], "Timestamp");
+    assert_eq!(v["orderByExpression"], "Timestamp DESC");
+    assert_eq!(v["sampleRateExpression"], "SampleRate");
+    assert_eq!(v["spanLinksValueExpression"], "Links");
+}
+
+#[test]
+fn clickstack_validate_webhook_response_null_fields_are_none() {
+    let null: ClickStackValidateWebhookResponse =
+        serde_json::from_str(r#"{"valid": null, "errors": null, "normalized": null}"#).unwrap();
+    assert_eq!(null, ClickStackValidateWebhookResponse::default());
+    // Absent fields are omitted on serialize, not emitted as `null`.
+    assert_eq!(serde_json::to_value(&null).unwrap(), serde_json::json!({}));
+
+    let item: ClickStackValidateWebhookResponseErrorsItem =
+        serde_json::from_str(r#"{"path": null, "message": null}"#).unwrap();
+    assert_eq!(item, ClickStackValidateWebhookResponseErrorsItem::default());
+
+    let resp: ClickStackValidateWebhookResponse = serde_json::from_str(
+        r#"{"valid": false, "errors": [{"path": "", "message": "Top-level error"}],
+            "normalized": {"name": "hook"}}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.valid, Some(false));
+    let errors = resp.errors.as_ref().expect("errors should populate");
+    assert_eq!(errors[0].path.as_deref(), Some(""));
+    assert_eq!(errors[0].message.as_deref(), Some("Top-level error"));
+    // `normalized` is a free-form Value; its payload is preserved verbatim.
+    assert_eq!(resp.normalized.as_ref().unwrap()["name"], "hook");
 }
 
 #[test]

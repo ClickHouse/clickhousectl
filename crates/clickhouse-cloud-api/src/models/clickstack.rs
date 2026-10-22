@@ -902,6 +902,10 @@ impl std::fmt::Display for ClickStackSource {
 /// Deliberately has no `Default`: every arm's default would serialize to `{}`,
 /// which carries no `kind` and so would not deserialize back to the same
 /// variant. Build a [`ClickStackSource`] instead when writing.
+// The trace arm is the largest because the trace schema has the most
+// expressions. Boxing it would change the public variant type that callers
+// match on, for a size saving that does not matter in a decoded response.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackSourceResponse {
@@ -1210,6 +1214,9 @@ pub type ClickStackCASLPermissionConditions = serde_json::Value;
 
 /// Type alias for `ClickStackValidateDashboardResponseNormalized`.
 pub type ClickStackValidateDashboardResponseNormalized = serde_json::Value;
+
+/// Type alias for `ClickStackValidateWebhookResponseNormalized`.
+pub type ClickStackValidateWebhookResponseNormalized = serde_json::Value;
 
 /// Type alias for `ClickStackWebhookInputHeaders`.
 pub type ClickStackWebhookInputHeaders = std::collections::BTreeMap<String, String>;
@@ -2375,6 +2382,8 @@ pub struct ClickStackLogSource {
     #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
     pub metric_source_id: Option<String>,
     pub name: String,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(
@@ -2484,6 +2493,8 @@ pub struct ClickStackLogSourceResponse {
     pub metric_source_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
     #[serde(
@@ -3510,6 +3521,11 @@ pub struct ClickStackSessionSource {
     pub name: String,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -3542,6 +3558,11 @@ pub struct ClickStackSessionSourceResponse {
     pub name: Option<String>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -3874,6 +3895,11 @@ pub struct ClickStackTraceSource {
     pub default_table_select_expression: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    #[serde(
+        rename = "displayedTimestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub displayed_timestamp_value_expression: Option<String>,
     #[serde(rename = "durationExpression")]
     pub duration_expression: String,
     #[serde(rename = "durationPrecision")]
@@ -3923,6 +3949,8 @@ pub struct ClickStackTraceSource {
     #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
     pub metric_source_id: Option<String>,
     pub name: String,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
     #[serde(rename = "parentSpanIdExpression")]
     pub parent_span_id_expression: String,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
@@ -3932,6 +3960,11 @@ pub struct ClickStackTraceSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(
+        rename = "sampleRateExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sample_rate_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -3950,6 +3983,11 @@ pub struct ClickStackTraceSource {
     pub span_id_expression: String,
     #[serde(rename = "spanKindExpression")]
     pub span_kind_expression: String,
+    #[serde(
+        rename = "spanLinksValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub span_links_value_expression: Option<String>,
     #[serde(rename = "spanNameExpression")]
     pub span_name_expression: String,
     #[serde(
@@ -3995,6 +4033,11 @@ pub struct ClickStackTraceSourceResponse {
     pub default_table_select_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
+    #[serde(
+        rename = "displayedTimestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub displayed_timestamp_value_expression: Option<String>,
     #[serde(rename = "durationExpression", skip_serializing_if = "Option::is_none")]
     pub duration_expression: Option<String>,
     #[serde(rename = "durationPrecision", skip_serializing_if = "Option::is_none")]
@@ -4047,6 +4090,8 @@ pub struct ClickStackTraceSourceResponse {
     pub metric_source_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(rename = "orderByExpression", skip_serializing_if = "Option::is_none")]
+    pub order_by_expression: Option<String>,
     #[serde(
         rename = "parentSpanIdExpression",
         skip_serializing_if = "Option::is_none"
@@ -4059,6 +4104,11 @@ pub struct ClickStackTraceSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(
+        rename = "sampleRateExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sample_rate_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -4077,6 +4127,11 @@ pub struct ClickStackTraceSourceResponse {
     pub span_id_expression: Option<String>,
     #[serde(rename = "spanKindExpression", skip_serializing_if = "Option::is_none")]
     pub span_kind_expression: Option<String>,
+    #[serde(
+        rename = "spanLinksValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub span_links_value_expression: Option<String>,
     #[serde(rename = "spanNameExpression", skip_serializing_if = "Option::is_none")]
     pub span_name_expression: Option<String>,
     #[serde(
@@ -4245,6 +4300,32 @@ pub struct ClickStackValidateDashboardResponse {
     pub valid: Option<bool>,
 }
 
+/// `ClickStackValidateWebhookResponse` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateWebhookResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<ClickStackValidateWebhookResponseErrorsItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalized: Option<ClickStackValidateWebhookResponseNormalized>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid: Option<bool>,
+}
+
+/// `ClickStackValidateWebhookResponseErrorsItem` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateWebhookResponseErrorsItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 /// `ClickStackWebhookInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackWebhookInput {
@@ -4394,18 +4475,4 @@ pub struct ClickStackVariableSavedFilterValueResponse {
     pub name: Option<String>,
     #[serde(rename = "values", skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
-}
-
-/// ClickStack request validation failures.
-pub type ClickStackValidationError = Vec<ClickStackValidationErrorItem>;
-/// Structured validation error details supplied by ClickStack.
-pub type ClickStackValidationErrorItemErrors = std::collections::HashMap<String, serde_json::Value>;
-
-/// `ClickStackValidationErrorItem` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickStackValidationErrorItem {
-    #[serde(rename = "type")]
-    pub r#type: String,
-    #[serde(rename = "errors")]
-    pub errors: ClickStackValidationErrorItemErrors,
 }

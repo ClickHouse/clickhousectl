@@ -795,6 +795,36 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// ClickStack: Validate Webhook
+    ///
+    /// Checks a webhook body without saving it; the API does not check name
+    /// uniqueness.
+    pub async fn click_stack_validate_webhook(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ClickStackWebhookInput,
+    ) -> Result<ApiResponse<ClickStackValidateWebhookResponse>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks/validate"
+        );
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// ClickStack: Validate Dashboard
     pub async fn click_stack_validate_dashboard(
         &self,

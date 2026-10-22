@@ -4347,6 +4347,117 @@ async fn validate_dashboard() {
     assert_eq!(result.normalized, None);
 }
 
+#[tokio::test]
+async fn validate_webhook() {
+    let (s, c) = setup().await;
+
+    // The full body is matched, so optional fields left as `None` must be
+    // omitted from the request rather than sent as `null`.
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+        ))
+        .and(body_json(serde_json::json!({
+            "name": "Generic Alerts",
+            "service": "generic",
+            "url": "ftp://example.com/hook",
+            "body": "{{title}}"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "valid": false,
+            "errors": [
+                {"path": "url", "message": "Invalid url"}
+            ],
+            "normalized": null
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Generic Alerts".to_string(),
+        service: ClickStackWebhookInputService::Generic,
+        url: "ftp://example.com/hook".to_string(),
+        body: Some("{{title}}".to_string()),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_validate_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let result = resp.result.unwrap();
+    assert_eq!(result.valid, Some(false));
+    let errors = result.errors.as_ref().expect("errors should populate");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].path.as_deref(), Some("url"));
+    assert_eq!(errors[0].message.as_deref(), Some("Invalid url"));
+    assert_eq!(result.normalized, None);
+}
+
+#[tokio::test]
+async fn validate_webhook_returns_the_normalized_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "valid": true,
+            "errors": [],
+            "normalized": {
+                "name": "Production Alerts",
+                "service": "slack",
+                "url": "https://hooks.slack.com/services/T/B/X"
+            }
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Production Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_validate_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let result = resp.result.unwrap();
+    assert_eq!(result.valid, Some(true));
+    assert_eq!(result.errors.as_deref(), Some(&[][..]));
+    let normalized = result.normalized.expect("normalized should populate");
+    assert_eq!(normalized["service"], "slack");
+}
+
+#[tokio::test]
+async fn validate_webhook_surfaces_a_bad_request() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "Invalid request body"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c
+        .click_stack_validate_webhook("org-1", "svc-1", &ClickStackWebhookInput::default())
+        .await
+        .expect_err("a 400 must fail the call");
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "Invalid request body");
+        }
+        other => panic!("expected Error::Api, got {other:?}"),
+    }
+}
+
 // ===========================================================================
 // Organization quotas
 // ===========================================================================

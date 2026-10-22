@@ -195,6 +195,14 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ClickStackDashboardResponse::default(),
         api::models::ClickStackDashboardResponse::default(),
     );
+    assert_same_type(
+        api::ClickStackValidateWebhookResponse::default(),
+        api::models::ClickStackValidateWebhookResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackValidateWebhookResponseErrorsItem::default(),
+        api::models::ClickStackValidateWebhookResponseErrorsItem::default(),
+    );
     assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
         api::ReversePrivateEndpoint::default(),
