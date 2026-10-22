@@ -6,6 +6,14 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`PgSize` renames its 61 GCP variants to the API's local-SSD size names, a breaking
+change for Rust callers. C4A, C4 and C4D sizes gain `lssd` before the vCPU count
+(`C4_standard_4` / `c4-standard-4` is now `C4_standard_lssd_4` /
+`c4-standard-lssd-4`), and Z3 sizes gain `highmem` (`Z3_highlssd_8` /
+`z3-highlssd-8` is now `Z3_highmem_highlssd_8` / `z3-highmem-highlssd-8`). The old
+variants are removed without aliases: rename them in code, and a former wire name
+now deserializes as `PgSize::Unknown`. AWS sizes are unchanged.
+
 `ServicePostRequest` no longer has `encryption_key` or
 `encryption_assumed_role_identifier`, because the spec no longer documents these
 customer-managed disk-key fields on the create request. Remove both fields from struct
