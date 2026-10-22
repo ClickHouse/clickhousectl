@@ -635,8 +635,46 @@ fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AuthConfig {
+    #[serde(deserialize_with = "deserialize_auth_url")]
     auth_url: String,
     client_id: String,
+}
+
+const INVALID_AUTH_URL: &str = "Authorization URL must be an absolute HTTPS URL (HTTP is allowed only for localhost or a loopback IP), without userinfo, query, or fragment";
+
+/// Validate before login or token loading, so refresh only uses stored config.
+fn validated_auth_url(value: &str) -> Result<String, &'static str> {
+    let parsed = url::Url::parse(value).map_err(|_| INVALID_AUTH_URL)?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => return Err(INVALID_AUTH_URL),
+    };
+    if !(parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback))
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(INVALID_AUTH_URL);
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_owned())
+}
+
+fn deserialize_auth_url<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    validated_auth_url(&value).map_err(serde::de::Error::custom)
+}
+
+/// OAuth form bodies contain credentials; never forward them via redirects.
+fn oauth_client() -> Result<reqwest::Client, reqwest::Error> {
+    crate::http::client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
 }
 
 struct KnownAuthConfig {
@@ -709,9 +747,7 @@ fn auth_config_for_url_with(api_url: &str, env_lookup: EnvLookup<'_>) -> Option<
         env("CLICKHOUSECTL_CLIENT_ID"),
     ) {
         (Some(auth_url), Some(client_id)) => Some(AuthConfig {
-            // Trim trailing slashes so joining `/oauth/...` can't produce a
-            // rejected double slash (common when copying an issuer URL).
-            auth_url: auth_url.trim_end_matches('/').to_string(),
+            auth_url: validated_auth_url(&auth_url).ok()?,
             client_id,
         }),
         _ => None,
@@ -860,8 +896,9 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
     let api_url = normalize_api_url(api_url);
     let config = auth_config_for_url(&api_url).ok_or_else(|| {
         format!(
-            "Unknown API host in URL '{}'. Known hosts: {}. \
-             For any other host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID.",
+            "Cannot resolve OAuth configuration for API URL '{}'. Known hosts: {}. \
+             For any other host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID. \
+             {INVALID_AUTH_URL}.",
             api_url,
             KNOWN_CONFIGS
                 .iter()
@@ -871,7 +908,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
         )
     })?;
 
-    let client = crate::http::client_builder().build()?;
+    let client = oauth_client()?;
 
     // Step 1: Request device code
     let form_body = format!(
@@ -987,7 +1024,7 @@ pub async fn refresh_access_token(
 ) -> Result<TokenStore, Box<dyn std::error::Error>> {
     let config = &tokens.auth_config;
 
-    let client = crate::http::client_builder().build()?;
+    let client = oauth_client()?;
 
     let form_body = format!(
         "grant_type={}&client_id={}&refresh_token={}",
@@ -1594,6 +1631,65 @@ mod tests {
             .unwrap();
             assert_eq!(config.auth_url, "https://auth.example.com");
             assert_eq!(config.client_id, "custom-client");
+        }
+    }
+
+    #[test]
+    fn authorization_url_requires_https_except_for_loopback() {
+        for value in [
+            "https://auth.example.com",
+            "https://auth.example.com/tenant",
+            "https://127.0.0.1:8443",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://127.255.255.254",
+            "http://[::1]:8080",
+        ] {
+            assert!(validated_auth_url(value).is_ok(), "{value}");
+        }
+        for value in [
+            "",
+            "not a URL",
+            "/relative",
+            "//auth.example.com",
+            "file:///tmp/auth",
+            "ftp://localhost",
+            "http://auth.example.com",
+            "http://0.0.0.0",
+            "http://192.168.1.1",
+            "http://[::]",
+            "http://[2001:db8::1]",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example",
+            "http://localhost@evil.example",
+            "https://user:password@auth.example.com",
+            "https://auth.example.com?redirect=http://evil.example",
+            "https://auth.example.com#fragment",
+        ] {
+            assert!(validated_auth_url(value).is_err(), "{value}");
+            assert!(
+                auth_config_for_url_with("https://api.example.com", &|key| {
+                    Some(
+                        if key == "CLICKHOUSECTL_AUTH_URL" {
+                            value
+                        } else {
+                            "client"
+                        }
+                        .into(),
+                    )
+                })
+                .is_none(),
+                "{value}"
+            );
+            let mut record = serde_json::to_value(sample_tokens()).unwrap();
+            record["auth_config"]["auth_url"] = serde_json::json!(value);
+            assert!(
+                serde_json::from_value::<TokenStore>(record).is_err(),
+                "{value}"
+            );
+        }
+        for known in KNOWN_CONFIGS {
+            assert!(validated_auth_url(known.auth_url).is_ok());
         }
     }
 
