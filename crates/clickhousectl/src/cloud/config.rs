@@ -70,28 +70,38 @@ pub(crate) fn deserialize_strict_config<T>(value: Value, source: &str) -> CloudR
 where
     T: DeserializeOwned,
 {
-    let encoded = serde_json::to_vec(&value)?;
+    deserialize_strict_value(value).map_err(|detail| {
+        CloudError::new(format!("invalid request body in config {source}: {detail}"))
+    })
+}
+
+/// The check behind [`deserialize_strict_config`], returning the bare reason
+/// on failure so a caller checking a nested value can name its own path
+/// without repeating the config prefix.
+pub(crate) fn deserialize_strict_value<T>(value: Value) -> Result<T, String>
+where
+    T: DeserializeOwned,
+{
+    let encoded = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     let mut ignored = Vec::new();
     let request = serde_ignored::deserialize(&mut deserializer, |path| {
         ignored.push(display_ignored_path(&path));
     })
-    .map_err(|error| {
-        CloudError::new(format!("invalid request body in config {source}: {error}"))
-    })?;
+    .map_err(|error| error.to_string())?;
 
     if ignored.is_empty() {
         Ok(request)
     } else {
-        Err(CloudError::new(format!(
-            "invalid request body in config {source}: unknown field{} {}",
+        Err(format!(
+            "unknown field{} {}",
             if ignored.len() == 1 { "" } else { "s" },
             ignored
                 .iter()
                 .map(|path| format!("`{path}`"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        )))
+        ))
     }
 }
 
