@@ -74,10 +74,22 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         command => command,
     };
 
-    // Refresh failures clear unusable tokens; returned errors are storage failures.
-    auth::ensure_fresh_tokens(json)
-        .await
-        .map_err(|e| Error::Cloud(e.to_string()))?;
+    // Explicit key flags select API-key auth (even an incomplete pair must fail
+    // validation without touching OAuth). Otherwise refresh only when no higher
+    // tier wins. Expired OAuth tokens resolve to None, so include that case;
+    // ensure_fresh_tokens is a no-op when no tokens exist or they are still fresh.
+    if args.api_key.is_none()
+        && args.api_secret.is_none()
+        && matches!(
+            resolve_active_auth_source(None, None),
+            None | Some(AuthSource::OAuthTokens)
+        )
+    {
+        // Refresh failures clear unusable tokens; returned errors are storage failures.
+        auth::ensure_fresh_tokens(json)
+            .await
+            .map_err(|e| Error::Cloud(e.to_string()))?;
+    }
 
     let client = CloudClient::new(
         args.api_key.as_deref(),

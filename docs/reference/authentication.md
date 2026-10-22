@@ -33,7 +33,7 @@ The first applicable source wins:
 4. Variables loaded from the current directory's `.env`.
 5. Global OAuth tokens.
 
-Supplying only one credential flag blocks fallback. `auth status` identifies inactive sources; `--debug` on a Cloud command prints the selected credential source and API URL to stderr.
+Supplying only one credential flag blocks fallback. Cloud commands skip OAuth token refresh when a higher-priority API key source wins, leaving saved OAuth tokens unchanged. When OAuth is selected, expired or near-expiry tokens are refreshed before the API request. `auth status` identifies inactive sources; `--debug` on a Cloud command prints the selected credential source and API URL to stderr.
 
 `cloud postgres query` accepts **OAuth only**, unlike `cloud service query`. Remove higher-priority API key sources before using that route. Clearing a saved key file alone is insufficient if exported variables or `.env` still supply a key.
 
