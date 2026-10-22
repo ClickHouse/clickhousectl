@@ -2074,9 +2074,9 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
 name = "is-ai-agent"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5562708736fdf9e8dcc50719e342b0ac0c3d1e365ed76bc0762d5a9e36094a"
+checksum = "2ce34f96fe3c153249008a32aa047b8ccdfadae74615af6eea7ac877c6b3df05"
 
 [[package]]
 name = "is-docker"
