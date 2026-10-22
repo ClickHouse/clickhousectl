@@ -219,6 +219,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PostgresInstanceConfig::default(),
     );
     assert_same_type(
+        api::PgConfigDefaultToastCompression::default(),
+        api::models::PgConfigDefaultToastCompression::default(),
+    );
+    assert_same_type(
+        api::PgConfigEnableParallelHash::default(),
+        api::models::PgConfigEnableParallelHash::default(),
+    );
+    assert_same_type(
+        api::PgConfigIoMethod::default(),
+        api::models::PgConfigIoMethod::default(),
+    );
+    assert_same_type(
+        api::PgConfigLogLockWaits::default(),
+        api::models::PgConfigLogLockWaits::default(),
+    );
+    assert_same_type(
         api::PostgresLogEntry::default(),
         api::models::PostgresLogEntry::default(),
     );

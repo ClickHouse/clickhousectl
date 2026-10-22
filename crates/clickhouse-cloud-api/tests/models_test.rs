@@ -1029,6 +1029,43 @@ fn postgres_config_enum_values_roundtrip_and_match_values() {
         );
         assert_eq!(parsed.to_string(), *value);
     }
+    for value in PgConfigDefaultToastCompression::VALUES {
+        let parsed: PgConfigDefaultToastCompression =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigDefaultToastCompression::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigEnableParallelHash::VALUES {
+        let parsed: PgConfigEnableParallelHash =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigEnableParallelHash::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigIoMethod::VALUES {
+        let parsed: PgConfigIoMethod = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigIoMethod::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigLogLockWaits::VALUES {
+        let parsed: PgConfigLogLockWaits = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigLogLockWaits::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    let future: PgConfigIoMethod = serde_json::from_str(r#""posix_aio""#).unwrap();
+    assert_eq!(future, PgConfigIoMethod::Unknown("posix_aio".to_string()));
+    assert_eq!(future.to_string(), "posix_aio");
 }
 
 #[test]
@@ -8767,6 +8804,83 @@ fn pg_config_carries_new_gucs_through_write_back() {
             "checkpoint_timeout": "5min",
             "shared_memory_percent": 25,
             "wal_buffers": "16MB"
+        })
+    );
+}
+
+#[test]
+fn pg_config_carries_io_logging_and_replication_gucs_through_write_back() {
+    let wire = serde_json::json!({
+        "bgwriter_delay": "200ms",
+        "bgwriter_flush_after": "512kB",
+        "bgwriter_lru_maxpages": 100,
+        "bgwriter_lru_multiplier": 2,
+        "default_toast_compression": "lz4",
+        "enable_parallel_hash": "off",
+        "hash_mem_multiplier": 2,
+        "io_method": "io_uring",
+        "io_workers": 3,
+        "log_lock_waits": "on",
+        "log_min_duration_statement": 1000,
+        "log_parameter_max_length": "-1",
+        "log_temp_files": -1,
+        "logical_decoding_work_mem": "64MB",
+        "maintenance_io_concurrency": 10,
+        "max_logical_replication_workers": 4,
+        "max_replication_slots": 10,
+        "max_sync_workers_per_subscription": 2,
+        "max_wal_senders": 10,
+        "temp_buffers": "8MB",
+        "track_activity_query_size": 4096,
+        "vacuum_cost_delay": "0"
+    });
+    let response: PgConfigResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        response.default_toast_compression,
+        Some(PgConfigDefaultToastCompression::Lz4)
+    );
+    assert_eq!(
+        response.enable_parallel_hash,
+        Some(PgConfigEnableParallelHash::Off)
+    );
+    assert_eq!(response.io_method, Some(PgConfigIoMethod::Io_uring));
+    assert_eq!(response.log_lock_waits, Some(PgConfigLogLockWaits::On));
+    assert_eq!(response.log_temp_files, Some(serde_json::json!(-1)));
+
+    let missing: PgConfigResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, PgConfigResponse::default());
+    let null_fields = wire
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|key| (key.clone(), serde_json::Value::Null))
+        .collect::<serde_json::Map<_, _>>();
+    let nulls: PgConfigResponse =
+        serde_json::from_value(serde_json::Value::Object(null_fields)).unwrap();
+    assert_eq!(nulls, PgConfigResponse::default());
+
+    // Write-back is lossless: every new GUC survives the response -> request
+    // conversion with its wire name and value unchanged.
+    let request = PgConfig::from(response);
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+}
+
+#[test]
+fn pg_config_serializes_only_the_new_gucs_that_are_set() {
+    let config = PgConfig {
+        io_method: Some(PgConfigIoMethod::Worker),
+        io_workers: Some(serde_json::json!(8)),
+        log_min_duration_statement: Some(serde_json::json!("250ms")),
+        max_wal_senders: Some(serde_json::json!(20)),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&config).unwrap(),
+        serde_json::json!({
+            "io_method": "worker",
+            "io_workers": 8,
+            "log_min_duration_statement": "250ms",
+            "max_wal_senders": 20
         })
     );
 }

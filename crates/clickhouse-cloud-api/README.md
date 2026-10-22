@@ -6,6 +6,22 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`PgConfig` and `PgConfigResponse` gain 22 Postgres settings: `bgwriter_delay`,
+`bgwriter_flush_after`, `bgwriter_lru_maxpages`, `bgwriter_lru_multiplier`,
+`default_toast_compression`, `enable_parallel_hash`, `hash_mem_multiplier`,
+`io_method`, `io_workers`, `log_lock_waits`, `log_min_duration_statement`,
+`log_parameter_max_length`, `log_temp_files`, `logical_decoding_work_mem`,
+`maintenance_io_concurrency`, `max_logical_replication_workers`,
+`max_replication_slots`, `max_sync_workers_per_subscription`, `max_wal_senders`,
+`temp_buffers`, `track_activity_query_size`, and `vacuum_cost_delay`. Numeric
+settings are `serde_json::Value`, like the existing ones, because the API accepts a
+number or a string with a unit. The four enumerated settings use new value enums,
+each with a `VALUES` const and an `Unknown(String)` catch-all:
+`PgConfigDefaultToastCompression` (`pglz`, `lz4`), `PgConfigEnableParallelHash`
+and `PgConfigLogLockWaits` (`on`, `off`), and `PgConfigIoMethod` (`sync`,
+`worker`, `io_uring`). Struct-literal callers of `PgConfig` and
+`PgConfigResponse` need the new fields as `None` or `..Default::default()`.
+
 `PgSize` renames its 61 GCP variants to the API's local-SSD size names, a breaking
 change for Rust callers. C4A, C4 and C4D sizes gain `lssd` before the vCPU count
 (`C4_standard_4` / `c4-standard-4` is now `C4_standard_lssd_4` /
