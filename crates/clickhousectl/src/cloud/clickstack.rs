@@ -899,6 +899,25 @@ fn validate_alert_channels(value: &Value, source: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// The spec no longer requires `source`, but the CLI keeps requiring it, as it
+/// did before: without it the alert's target cannot be checked.
+fn missing_alert_source(source: &str) -> CloudError {
+    invalid_clickstack_request(source, "source is required by the current API contract")
+}
+
+/// Inline alerts are not exposed yet. `chartConfig` is a union the library
+/// dispatches through raw JSON, so the strict request-body check could not see
+/// unknown fields inside it; it is rejected as it was before the spec added it.
+fn validate_alert_chart_config(present: bool, source: &str) -> CloudResult<()> {
+    if present {
+        return Err(invalid_clickstack_request(
+            source,
+            "unknown field `chartConfig`",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_create_alert_request(
     request: &ClickStackCreateAlertRequest,
     source: &str,
@@ -908,15 +927,25 @@ fn validate_create_alert_request(
         ClickStackCreateAlertRequestSource as AlertSource,
         ClickStackCreateAlertRequestThresholdtype as ThresholdType,
     };
+    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        AlertSource::Saved_search => "saved_search",
-        AlertSource::Tile => "tile",
-        AlertSource::Unknown(value) => {
+        Some(AlertSource::Saved_search) => "saved_search",
+        Some(AlertSource::Tile) => "tile",
+        // Inline alerts (with their `chartConfig`) are not exposed yet, so
+        // `inline` is rejected as it was before the spec added it.
+        Some(AlertSource::Inline) => {
+            return Err(invalid_clickstack_request(
+                source,
+                "unknown source `inline`",
+            ));
+        }
+        Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
+        None => return Err(missing_alert_source(source)),
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -966,15 +995,25 @@ fn validate_update_alert_request(
         ClickStackUpdateAlertRequestSource as AlertSource,
         ClickStackUpdateAlertRequestThresholdtype as ThresholdType,
     };
+    validate_alert_chart_config(request.chart_config.is_some(), source)?;
     let alert_source = match &request.source {
-        AlertSource::Saved_search => "saved_search",
-        AlertSource::Tile => "tile",
-        AlertSource::Unknown(value) => {
+        Some(AlertSource::Saved_search) => "saved_search",
+        Some(AlertSource::Tile) => "tile",
+        // Inline alerts (with their `chartConfig`) are not exposed yet, so
+        // `inline` is rejected as it was before the spec added it.
+        Some(AlertSource::Inline) => {
+            return Err(invalid_clickstack_request(
+                source,
+                "unknown source `inline`",
+            ));
+        }
+        Some(AlertSource::Unknown(value)) => {
             return Err(invalid_clickstack_request(
                 source,
                 format!("unknown source `{value}`"),
             ));
         }
+        None => return Err(missing_alert_source(source)),
     };
     if let Interval::Unknown(value) = &request.interval {
         return Err(invalid_clickstack_request(
@@ -4217,11 +4256,11 @@ mod tests {
         });
         std::fs::write(&config_file, maximal.to_string()).unwrap();
         let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.channels.len(), 2);
+        assert_eq!(create.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
         let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
         assert_eq!(update.dashboard_id.as_deref(), Some("dash-1"));
-        assert_eq!(update.channels.len(), 2);
+        assert_eq!(update.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&update).unwrap(), maximal);
     }
 
@@ -4303,6 +4342,31 @@ mod tests {
         for (body, expected) in invalid {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
+        // The spec now makes `source`, `channel` and `channels` optional and adds
+        // inline alerts with a `chartConfig`; the CLI keeps requiring the first
+        // three and keeps rejecting inline alerts, on create and update alike.
+        let mut missing_source = base.clone();
+        missing_source.as_object_mut().unwrap().remove("source");
+        let mut missing_channels = base.clone();
+        missing_channels.as_object_mut().unwrap().remove("channels");
+        let mut inline = base.clone();
+        inline["source"] = Value::String("inline".into());
+        let mut chart_config = base.clone();
+        chart_config["chartConfig"] = serde_json::json!({
+            "displayType":"line", "sourceId":"s", "select":[{"aggFn":"count"}]
+        });
+        for (body, expected) in [
+            (missing_source, "source is required"),
+            (missing_channels, "channels must be an array"),
+            (inline, "unknown source `inline`"),
+            (chart_config, "unknown field `chartConfig`"),
+        ] {
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+            let error = build_update_alert_request(config_file.to_str().unwrap()).unwrap_err();
             assert!(error.message.contains(expected), "{error}");
         }
         let mut duplicate = base.clone();

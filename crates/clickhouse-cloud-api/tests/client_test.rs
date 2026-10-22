@@ -2968,6 +2968,68 @@ async fn create_alert() {
 }
 
 #[tokio::test]
+async fn create_inline_alert_sends_chart_config_and_reads_it_back() {
+    let (s, c) = setup().await;
+    let chart_config = serde_json::json!({
+        "displayType": "number", "configType": "sql", "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM otel_logs", "name": "Error count"
+    });
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
+        .and(body_json(serde_json::json!({
+            "source": "inline", "chartConfig": chart_config, "threshold": 5.0,
+            "interval": "5m", "thresholdType": "above", "displayName": "Errors",
+            "tags": ["p1"]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "alert-1", "source": "inline", "chartConfig": chart_config,
+            "displayName": "Errors", "tags": ["p1"]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateAlertRequest {
+        source: Some(ClickStackCreateAlertRequestSource::Inline),
+        chart_config: Some(
+            ClickStackAlertChartConfig::ClickStackAlertNumberChartConfig(
+                ClickStackAlertNumberChartConfig::ClickStackAlertNumberRawSqlChartConfig(
+                    ClickStackAlertNumberRawSqlChartConfig {
+                        connection_id: "conn-1".into(),
+                        sql_template: "SELECT count() FROM otel_logs".into(),
+                        name: Some("Error count".into()),
+                        ..Default::default()
+                    },
+                ),
+            ),
+        ),
+        threshold: 5.0,
+        interval: ClickStackCreateAlertRequestInterval::_5m,
+        display_name: Some("Errors".into()),
+        tags: Some(vec!["p1".into()]),
+        ..Default::default()
+    };
+    let alert = c
+        .click_stack_create_alert("org-1", "svc-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(alert.source, Some(ClickStackAlertResponseSource::Inline));
+    assert_eq!(alert.display_name.as_deref(), Some("Errors"));
+    assert!(matches!(
+        alert.chart_config,
+        Some(
+            ClickStackAlertChartConfigResponse::ClickStackAlertNumberChartConfig(
+                ClickStackAlertNumberChartConfigResponse::ClickStackAlertNumberRawSqlChartConfig(_)
+            )
+        )
+    ));
+}
+
+#[tokio::test]
 async fn get_alert() {
     let (s, c) = setup().await;
 

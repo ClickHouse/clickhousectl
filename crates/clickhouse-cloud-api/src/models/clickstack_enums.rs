@@ -81,6 +81,29 @@ impl std::fmt::Display for ClickStackAlertChannelWebhookType {
     }
 }
 
+/// Inline enum for `ClickStackAlertChartConfigOverlay.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackAlertChartConfigOverlayWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChartConfigOverlayWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackAlertExecutionError.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackAlertExecutionErrorType {
@@ -161,6 +184,8 @@ pub enum ClickStackAlertResponseSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -171,6 +196,7 @@ impl std::fmt::Display for ClickStackAlertResponseSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -653,6 +679,8 @@ pub enum ClickStackCreateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -663,6 +691,7 @@ impl std::fmt::Display for ClickStackCreateAlertRequestSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3147,6 +3176,8 @@ pub enum ClickStackUpdateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    #[serde(rename = "inline")]
+    Inline,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3157,6 +3188,7 @@ impl std::fmt::Display for ClickStackUpdateAlertRequestSource {
         match self {
             Self::Saved_search => write!(f, "saved_search"),
             Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

@@ -356,7 +356,12 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         ClickPipePostPubSubSource,
         ClickStackSavedFilterValue,
         ClickStackSavedFilterValueResponse,
+        ClickStackAlertBarChartConfig,
         ClickStackAlertChannel,
+        ClickStackAlertChartConfig,
+        ClickStackAlertLineChartConfig,
+        ClickStackAlertNumberChartConfig,
+        ClickStackAlertStackedLineChartConfig,
         ClickStackBarChartConfig,
         ClickStackCategoricalBarChartConfig,
         ClickStackDashboardChartSeries,
@@ -4280,10 +4285,10 @@ fn clickstack_response_only_models_accept_an_empty_payload() {
 #[test]
 fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
     // Dashboard containers, tiles' chart configs, select items, number formats,
-    // color conditions, on-click targets and alert channels are sent as well as
-    // returned, so each splits: the request variant keeps the schema's required
-    // fields as `T` and rejects a payload that omits one, while the response
-    // variant accepts any object.
+    // color conditions, on-click targets, alert channels and alert chart configs
+    // are sent as well as returned, so each splits: the request variant keeps
+    // the schema's required fields as `T` and rejects a payload that omits one,
+    // while the response variant accepts any object.
     macro_rules! assert_split_strictness {
         ($($request:ty => $response:ty),+ $(,)?) => {
             $(
@@ -4303,6 +4308,14 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
     }
 
     assert_split_strictness!(
+        ClickStackAlertBarBuilderChartConfig => ClickStackAlertBarBuilderChartConfigResponse,
+        ClickStackAlertBarRawSqlChartConfig => ClickStackAlertBarRawSqlChartConfigResponse,
+        ClickStackAlertLineBuilderChartConfig => ClickStackAlertLineBuilderChartConfigResponse,
+        ClickStackAlertLineRawSqlChartConfig => ClickStackAlertLineRawSqlChartConfigResponse,
+        ClickStackAlertNumberBuilderChartConfig => ClickStackAlertNumberBuilderChartConfigResponse,
+        ClickStackAlertNumberRawSqlChartConfig => ClickStackAlertNumberRawSqlChartConfigResponse,
+        ClickStackAlertStackedLineBuilderChartConfig => ClickStackAlertStackedLineBuilderChartConfigResponse,
+        ClickStackAlertStackedLineRawSqlChartConfig => ClickStackAlertStackedLineRawSqlChartConfigResponse,
         ClickStackAlertChannelEmail => ClickStackAlertChannelEmailResponse,
         ClickStackAlertChannelWebhook => ClickStackAlertChannelWebhookResponse,
         ClickStackBackgroundChart => ClickStackBackgroundChartResponse,
@@ -7612,7 +7625,8 @@ fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
 fn new_clickstack_channels_and_chart_fields_round_trip() {
     let request = ClickStackCreateAlertRequest {
         interval: ClickStackCreateAlertRequestInterval::Value30s,
-        channels: vec![ClickStackAlertChannel::default()],
+        channel: Some(ClickStackAlertChannel::default()),
+        channels: Some(vec![ClickStackAlertChannel::default()]),
         ..Default::default()
     };
     let wire = serde_json::to_value(&request).unwrap();
@@ -10563,5 +10577,436 @@ fn clickstack_time_chart_series_accepts_stacked_line() {
     assert_eq!(
         serde_json::to_string(&display).unwrap(),
         r#""stacked_line""#
+    );
+}
+
+/// Spec-shaped payloads for every arm of `ClickStackAlertChartConfig`:
+/// `(kind, builder, raw SQL)`. Each carries fields only its own variant
+/// defines, plus the alert overlay's `name` (and, on builders, `where`).
+fn clickstack_alert_chart_config_payloads()
+-> [(&'static str, serde_json::Value, serde_json::Value); 4] {
+    [
+        (
+            "Line",
+            serde_json::json!({
+                "displayType": "line", "sourceId": "src-1", "select": [{"aggFn": "count"}],
+                "groupBy": "ServiceName", "lineInterpolation": "step", "fitYAxisToData": true,
+                "name": "Error Rate Query", "where": "ServiceName:api", "whereLanguage": "lucene"
+            }),
+            serde_json::json!({
+                "displayType": "line", "configType": "sql", "connectionId": "conn-1",
+                "sqlTemplate": "SELECT 1", "compareToPreviousPeriod": true,
+                "name": "Error Rate Query"
+            }),
+        ),
+        (
+            "Bar",
+            serde_json::json!({
+                "displayType": "stacked_bar", "sourceId": "src-1", "select": [{"aggFn": "count"}],
+                "seriesLimit": 5, "name": "Errors by service", "where": "level = 'error'",
+                "whereLanguage": "sql"
+            }),
+            serde_json::json!({
+                "displayType": "stacked_bar", "configType": "sql", "connectionId": "conn-1",
+                "sqlTemplate": "SELECT 1", "fillNulls": true, "name": "Errors by service"
+            }),
+        ),
+        (
+            "StackedLine",
+            serde_json::json!({
+                "displayType": "stacked_line", "sourceId": "src-1", "select": [{"aggFn": "count"}],
+                "lineInterpolation": "linear", "showOperandSeries": false,
+                "name": "Latency bands", "where": "ServiceName:api", "whereLanguage": "lucene"
+            }),
+            serde_json::json!({
+                "displayType": "stacked_line", "configType": "sql", "connectionId": "conn-1",
+                "sqlTemplate": "SELECT 1", "lineInterpolation": "smooth", "name": "Latency bands"
+            }),
+        ),
+        (
+            "Number",
+            serde_json::json!({
+                "displayType": "number", "sourceId": "src-1", "select": [{"aggFn": "count"}],
+                "color": "chart-red", "name": "Error count", "where": "level:error",
+                "whereLanguage": "lucene"
+            }),
+            serde_json::json!({
+                "displayType": "number", "configType": "sql", "connectionId": "conn-1",
+                "sqlTemplate": "SELECT count() FROM otel_logs", "color": "chart-green",
+                "name": "Error count"
+            }),
+        ),
+    ]
+}
+
+/// The `{outer}/{inner}` arm names a request alert chart config landed in.
+fn clickstack_alert_chart_config_arm(config: &ClickStackAlertChartConfig) -> String {
+    let inner = match config {
+        ClickStackAlertChartConfig::ClickStackAlertLineChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfig::ClickStackAlertBarChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfig::ClickStackAlertStackedLineChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfig::ClickStackAlertNumberChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfig::Unknown(v) => format!("Unknown({v})"),
+    };
+    format!("{config}/{inner}")
+}
+
+/// The `{outer}/{inner}` arm names a response alert chart config landed in.
+fn clickstack_alert_chart_config_response_arm(
+    config: &ClickStackAlertChartConfigResponse,
+) -> String {
+    let inner = match config {
+        ClickStackAlertChartConfigResponse::ClickStackAlertLineChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfigResponse::ClickStackAlertBarChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfigResponse::ClickStackAlertStackedLineChartConfig(c) => {
+            c.to_string()
+        }
+        ClickStackAlertChartConfigResponse::ClickStackAlertNumberChartConfig(c) => c.to_string(),
+        ClickStackAlertChartConfigResponse::Unknown(v) => format!("Unknown({v})"),
+    };
+    format!("{config}/{inner}")
+}
+
+#[test]
+fn clickstack_alert_chart_config_routes_each_display_type_and_config_type_to_its_variant() {
+    for (kind, builder, raw) in clickstack_alert_chart_config_payloads() {
+        for (payload, variant) in [(builder, "Builder"), (raw, "RawSql")] {
+            let expected = format!(
+                "ClickStackAlert{kind}ChartConfig/ClickStackAlert{kind}{variant}ChartConfig"
+            );
+
+            let config: ClickStackAlertChartConfig =
+                serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(clickstack_alert_chart_config_arm(&config), expected);
+            assert_eq!(serde_json::to_value(&config).unwrap(), payload);
+
+            let response: ClickStackAlertChartConfigResponse =
+                serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(
+                clickstack_alert_chart_config_response_arm(&response),
+                expected
+            );
+            assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+        }
+    }
+
+    // The overlay's fields land on the variant structs themselves.
+    let [(_, line_builder, _), _, _, (_, _, number_raw)] = clickstack_alert_chart_config_payloads();
+    let config: ClickStackAlertChartConfig = serde_json::from_value(line_builder).unwrap();
+    let ClickStackAlertChartConfig::ClickStackAlertLineChartConfig(
+        ClickStackAlertLineChartConfig::ClickStackAlertLineBuilderChartConfig(b),
+    ) = &config
+    else {
+        panic!("expected the line builder variant, got {config:?}");
+    };
+    assert_eq!(b.name.as_deref(), Some("Error Rate Query"));
+    assert_eq!(b.r#where.as_deref(), Some("ServiceName:api"));
+    assert_eq!(
+        b.where_language,
+        Some(ClickStackAlertChartConfigOverlayWherelanguage::Lucene)
+    );
+    assert_eq!(
+        b.line_interpolation,
+        Some(ClickStackLineBuilderChartConfigLineinterpolation::Step)
+    );
+    assert_eq!(b.select[0].agg_fn, ClickStackSelectItemAggfn::Count);
+
+    let response: ClickStackAlertChartConfigResponse = serde_json::from_value(number_raw).unwrap();
+    let ClickStackAlertChartConfigResponse::ClickStackAlertNumberChartConfig(
+        ClickStackAlertNumberChartConfigResponse::ClickStackAlertNumberRawSqlChartConfig(r),
+    ) = &response
+    else {
+        panic!("expected the number raw SQL variant, got {response:?}");
+    };
+    assert_eq!(r.connection_id.as_deref(), Some("conn-1"));
+    assert_eq!(r.name.as_deref(), Some("Error count"));
+    assert_eq!(
+        r.config_type,
+        Some(ClickStackNumberRawSqlChartConfigConfigtype::Sql)
+    );
+}
+
+#[test]
+fn clickstack_alert_chart_config_keeps_payloads_out_of_variants_they_do_not_fit() {
+    for (kind, builder, raw) in clickstack_alert_chart_config_payloads() {
+        // A raw-SQL body that lost its `configType` stays out of the builder
+        // arm, request and response alike, and round-trips verbatim.
+        let mut unmarked = raw.clone();
+        unmarked.as_object_mut().unwrap().remove("configType");
+        // An inner `Unknown` displays as its raw JSON.
+        let expected = format!("ClickStackAlert{kind}ChartConfig/{unmarked}");
+        let config: ClickStackAlertChartConfig = serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(clickstack_alert_chart_config_arm(&config), expected);
+        assert_eq!(serde_json::to_value(&config).unwrap(), unmarked);
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_response_arm(&response),
+            expected
+        );
+        assert_eq!(serde_json::to_value(&response).unwrap(), unmarked);
+
+        // The request builder keeps the chart config's required fields.
+        let mut sourceless = builder.clone();
+        sourceless.as_object_mut().unwrap().remove("sourceId");
+        let config: ClickStackAlertChartConfig =
+            serde_json::from_value(sourceless.clone()).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_arm(&config),
+            format!("ClickStackAlert{kind}ChartConfig/{sourceless}")
+        );
+        // The request raw-SQL variant does too.
+        let mut templateless = raw.clone();
+        templateless.as_object_mut().unwrap().remove("sqlTemplate");
+        let config: ClickStackAlertChartConfig =
+            serde_json::from_value(templateless.clone()).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_arm(&config),
+            format!("ClickStackAlert{kind}ChartConfig/{templateless}")
+        );
+        // A response tolerates both, per field.
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(sourceless).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_response_arm(&response),
+            format!("ClickStackAlert{kind}ChartConfig/ClickStackAlert{kind}BuilderChartConfig")
+        );
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(templateless).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_response_arm(&response),
+            format!("ClickStackAlert{kind}ChartConfig/ClickStackAlert{kind}RawSqlChartConfig")
+        );
+
+        // Display types an alert cannot use, or none at all, are Unknown.
+        for display_type in [Some("pie"), Some("table"), Some("bar"), None] {
+            let mut other = builder.clone();
+            match display_type {
+                Some(value) => other["displayType"] = serde_json::Value::from(value),
+                None => {
+                    other.as_object_mut().unwrap().remove("displayType");
+                }
+            }
+            assert_unknown_variant_round_trips(
+                &other.to_string(),
+                |c: &ClickStackAlertChartConfig| {
+                    matches!(c, ClickStackAlertChartConfig::Unknown(_))
+                },
+            );
+            assert_unknown_variant_round_trips(
+                &other.to_string(),
+                |c: &ClickStackAlertChartConfigResponse| {
+                    matches!(c, ClickStackAlertChartConfigResponse::Unknown(_))
+                },
+            );
+        }
+    }
+
+    // A recognized discriminator whose payload changed shape is kept verbatim.
+    let json = r#"{"displayType":"number","configType":"sql","sqlTemplate":5}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChartConfigResponse| {
+        matches!(
+            c,
+            ClickStackAlertChartConfigResponse::ClickStackAlertNumberChartConfig(
+                ClickStackAlertNumberChartConfigResponse::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_alert_chart_config_responses_treat_dropped_and_null_fields_as_absent() {
+    macro_rules! assert_absent_and_null_are_none {
+        ($($response:ty),+ $(,)?) => {
+            $(
+                for wire in [
+                    "{}",
+                    r#"{"name":null,"where":null,"whereLanguage":null,"sourceId":null,"numberFormat":null}"#,
+                ] {
+                    let parsed: $response = serde_json::from_str(wire).unwrap();
+                    assert_eq!(parsed, <$response>::default(), "{} from {wire}", stringify!($response));
+                    assert_eq!(serde_json::to_value(&parsed).unwrap(), serde_json::json!({}));
+                }
+            )+
+        };
+    }
+    assert_absent_and_null_are_none!(
+        ClickStackAlertBarBuilderChartConfigResponse,
+        ClickStackAlertBarRawSqlChartConfigResponse,
+        ClickStackAlertLineBuilderChartConfigResponse,
+        ClickStackAlertLineRawSqlChartConfigResponse,
+        ClickStackAlertNumberBuilderChartConfigResponse,
+        ClickStackAlertNumberRawSqlChartConfigResponse,
+        ClickStackAlertStackedLineBuilderChartConfigResponse,
+        ClickStackAlertStackedLineRawSqlChartConfigResponse,
+    );
+
+    let response: ClickStackAlertChartConfigResponse =
+        serde_json::from_str(r#"{"displayType":"stacked_line","name":null,"select":null}"#)
+            .unwrap();
+    assert_eq!(
+        response,
+        ClickStackAlertChartConfigResponse::ClickStackAlertStackedLineChartConfig(
+            ClickStackAlertStackedLineChartConfigResponse::ClickStackAlertStackedLineBuilderChartConfig(
+                ClickStackAlertStackedLineBuilderChartConfigResponse {
+                    display_type: Some(
+                        ClickStackStackedLineBuilderChartConfigDisplaytype::Stacked_line
+                    ),
+                    ..Default::default()
+                }
+            )
+        )
+    );
+}
+
+#[test]
+fn clickstack_alert_chart_config_overlay_fields_are_all_optional() {
+    let overlay: ClickStackAlertChartConfigOverlay = serde_json::from_str("{}").unwrap();
+    assert_eq!(overlay, ClickStackAlertChartConfigOverlay::default());
+    let wire = serde_json::json!({"name": "Q", "where": "a:b", "whereLanguage": "sql"});
+    let overlay: ClickStackAlertChartConfigOverlay = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        overlay.where_language,
+        Some(ClickStackAlertChartConfigOverlayWherelanguage::Sql)
+    );
+    assert_eq!(serde_json::to_value(&overlay).unwrap(), wire);
+    let language: ClickStackAlertChartConfigOverlayWherelanguage =
+        serde_json::from_str(r#""kql""#).unwrap();
+    assert_eq!(
+        language,
+        ClickStackAlertChartConfigOverlayWherelanguage::Unknown("kql".into())
+    );
+}
+
+#[test]
+fn clickstack_alert_sources_accept_inline() {
+    assert_eq!(
+        serde_json::from_str::<ClickStackAlertResponseSource>(r#""inline""#).unwrap(),
+        ClickStackAlertResponseSource::Inline
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackCreateAlertRequestSource>(r#""inline""#).unwrap(),
+        ClickStackCreateAlertRequestSource::Inline
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackUpdateAlertRequestSource>(r#""inline""#).unwrap(),
+        ClickStackUpdateAlertRequestSource::Inline
+    );
+    assert_eq!(ClickStackAlertResponseSource::Inline.to_string(), "inline");
+    assert_eq!(
+        ClickStackCreateAlertRequestSource::Inline.to_string(),
+        "inline"
+    );
+    assert_eq!(
+        ClickStackUpdateAlertRequestSource::Inline.to_string(),
+        "inline"
+    );
+}
+
+#[test]
+fn clickstack_alert_requests_send_inline_chart_configs_display_names_and_tags() {
+    let [(_, builder, _), ..] = clickstack_alert_chart_config_payloads();
+    let wire = serde_json::json!({
+        "source": "inline", "chartConfig": builder, "threshold": 10.0, "interval": "5m",
+        "thresholdType": "above", "displayName": "Checkout error spike",
+        "tags": ["checkout", "p1"]
+    });
+
+    let create: ClickStackCreateAlertRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        create.source,
+        Some(ClickStackCreateAlertRequestSource::Inline)
+    );
+    assert!(matches!(
+        create.chart_config,
+        Some(ClickStackAlertChartConfig::ClickStackAlertLineChartConfig(
+            ClickStackAlertLineChartConfig::ClickStackAlertLineBuilderChartConfig(_)
+        ))
+    ));
+    assert_eq!(create.display_name.as_deref(), Some("Checkout error spike"));
+    assert_eq!(
+        create.tags.as_deref(),
+        Some(&["checkout".into(), "p1".into()][..])
+    );
+    assert_eq!(
+        (create.channel.as_ref(), create.channels.as_ref()),
+        (None, None)
+    );
+    assert_eq!(serde_json::to_value(&create).unwrap(), wire);
+
+    let update: ClickStackUpdateAlertRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        update.source,
+        Some(ClickStackUpdateAlertRequestSource::Inline)
+    );
+    assert_eq!(update.display_name.as_deref(), Some("Checkout error spike"));
+    assert_eq!(serde_json::to_value(&update).unwrap(), wire);
+}
+
+#[test]
+fn clickstack_alert_requests_omit_unset_source_and_channels_but_stay_strict() {
+    // `source`, `channel` and `channels` are no longer required, so an unset
+    // value is omitted from the wire rather than defaulted.
+    let create = serde_json::to_value(ClickStackCreateAlertRequest::default()).unwrap();
+    let update = serde_json::to_value(ClickStackUpdateAlertRequest::default()).unwrap();
+    for wire in [&create, &update] {
+        for key in [
+            "source",
+            "channel",
+            "channels",
+            "chartConfig",
+            "displayName",
+            "tags",
+        ] {
+            assert!(wire.get(key).is_none(), "{key} was sent unset: {wire}");
+        }
+    }
+
+    // `threshold`, `interval` and `thresholdType` stay required.
+    let minimal = serde_json::json!({"threshold": 1.0, "interval": "1m", "thresholdType": "above"});
+    let parsed: ClickStackCreateAlertRequest = serde_json::from_value(minimal.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), minimal);
+    let parsed: ClickStackUpdateAlertRequest = serde_json::from_value(minimal.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), minimal);
+    for key in ["threshold", "interval", "thresholdType"] {
+        let mut missing = minimal.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert!(serde_json::from_value::<ClickStackCreateAlertRequest>(missing.clone()).is_err());
+        assert!(serde_json::from_value::<ClickStackUpdateAlertRequest>(missing).is_err());
+    }
+}
+
+#[test]
+fn clickstack_alert_response_carries_inline_chart_config_display_name_and_tags() {
+    let [_, (_, _, bar_raw), ..] = clickstack_alert_chart_config_payloads();
+    let alert: ClickStackAlertResponse = serde_json::from_value(serde_json::json!({
+        "id": "alert-1", "source": "inline", "chartConfig": bar_raw,
+        "displayName": "Errors by service", "tags": [], "state": "OK"
+    }))
+    .unwrap();
+    assert_eq!(alert.source, Some(ClickStackAlertResponseSource::Inline));
+    assert_eq!(alert.display_name.as_deref(), Some("Errors by service"));
+    assert_eq!(alert.tags, Some(vec![]));
+    assert!(matches!(
+        alert.chart_config,
+        Some(
+            ClickStackAlertChartConfigResponse::ClickStackAlertBarChartConfig(
+                ClickStackAlertBarChartConfigResponse::ClickStackAlertBarRawSqlChartConfig(_)
+            )
+        )
+    ));
+
+    // The spec requires displayName and tags on the response, but a response
+    // that drops them or sends `null` still deserializes, to `None`.
+    let alert: ClickStackAlertResponse = serde_json::from_str(
+        r#"{"id":"alert-1","chartConfig":null,"displayName":null,"tags":null}"#,
+    )
+    .unwrap();
+    assert_eq!(alert.chart_config, None);
+    assert_eq!(alert.display_name, None);
+    assert_eq!(alert.tags, None);
+    assert_eq!(
+        serde_json::to_value(&alert).unwrap(),
+        serde_json::json!({"id": "alert-1"})
     );
 }

@@ -88,6 +88,27 @@ gains `Stacked_line`. The line builder and raw-SQL charts gain `line_interpolati
 type has an all-`Option` `*Response` variant; struct-literal callers need the new fields
 as `None` or `..Default::default()`.
 
+ClickStack alerts gain inline chart configs, a breaking change for Rust callers. The spec
+no longer requires `source`, `channel` or `channels` on `ClickStackCreateAlertRequest` and
+`ClickStackUpdateAlertRequest`, so those fields are now `Option<ClickStackCreateAlertRequestSource>`
+(or `...UpdateAlertRequestSource`), `Option<ClickStackAlertChannel>` and
+`Option<ClickStackAlertChannels>`, and an unset value is omitted from the request instead
+of being sent with its default. Wrap existing values in `Some(..)`. The three alert source
+enums gain `Inline` (`inline`), for an alert that queries its own `chart_config` instead of
+a saved search or dashboard tile. Requests gain `chart_config`
+(`Option<ClickStackAlertChartConfig>`), `display_name` and `tags`; `ClickStackAlertResponse`
+gains the same fields, with `chart_config` as `ClickStackAlertChartConfigResponse`.
+`ClickStackAlertChartConfig` is an enum dispatched on `displayType` (`line`, `stacked_bar`,
+`stacked_line` or `number`) whose arms, `ClickStackAlertLineChartConfig`,
+`ClickStackAlertBarChartConfig`, `ClickStackAlertStackedLineChartConfig` and
+`ClickStackAlertNumberChartConfig`, are builder/raw-SQL unions dispatched on `configType`
+like the tile chart configs. Each `ClickStackAlert{Line,Bar,StackedLine,Number}{Builder,RawSql}ChartConfig`
+struct carries every field of the matching tile chart config plus the alert overlay's
+optional `name`, `where` and `where_language` (`ClickStackAlertChartConfigOverlayWherelanguage`,
+`sql` or `lucene`); `ClickStackAlertChartConfigOverlay` models the overlay on its own. Any
+other `displayType`, or a payload that does not fit the arm it selects, lands in `Unknown`
+verbatim. Each new type has an all-`Option` `*Response` variant.
+
 Postgres services gain IPv4 access lists. `PostgresServicePostRequest.ip_access_list`
 takes `Option<Vec<PostgresIpAccessListEntry>>`: `None` omits the field and allows
 all addresses on Postgres (5432) and PgBouncer (6432), while `Some(vec![])` sends
