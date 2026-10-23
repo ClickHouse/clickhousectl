@@ -33,6 +33,28 @@ pub fn created_by_value() -> String {
     format!("clickhousectl_{}", env!("CARGO_PKG_VERSION"))
 }
 
+/// Image repository for local Postgres: the official Postgres image with the
+/// `pg_clickhouse` and `re2` extensions installed. Its `<major>` tags track
+/// the latest extension release.
+pub const PG_IMAGE_REPO: &str = "ghcr.io/clickhouse/pg_clickhouse";
+
+/// Full image reference for a validated Postgres tag (`17` or `18`).
+pub fn pg_image(tag: &str) -> String {
+    format!("{PG_IMAGE_REPO}:{tag}")
+}
+
+/// Init script the image's entrypoint runs once, when it initializes an empty
+/// data directory. Enabling the extensions in `template1` as well makes them
+/// available in databases created later.
+const PG_INIT_SCRIPT_NAME: &str = "10-clickhousectl-extensions.sql";
+const PG_INIT_SCRIPT: &str = "\
+CREATE EXTENSION IF NOT EXISTS pg_clickhouse;
+CREATE EXTENSION IF NOT EXISTS re2;
+\\connect template1
+CREATE EXTENSION IF NOT EXISTS pg_clickhouse;
+CREATE EXTENSION IF NOT EXISTS re2;
+";
+
 /// Container name for a Postgres instance: `clickhousectl-pg-<name>-<major>`.
 /// Distinct (name, major) pairs always get distinct container names.
 pub fn pg_container_name(user_name: &str, major: &str) -> String {
@@ -296,11 +318,11 @@ impl PullReporter {
     }
 }
 
-/// Pull `postgres:<tag>`, keeping full progress for interactive terminals and
+/// Pull the Postgres image for `tag`, keeping full progress for interactive terminals and
 /// collapsing it to one bounded summary line for redirected or structured output.
 pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> Result<()> {
     use bollard::query_parameters::CreateImageOptionsBuilder;
-    let from = format!("postgres:{}", tag);
+    let from = pg_image(tag);
     let mode = pull_progress_mode(
         io::stdout().is_terminal(),
         io::stderr().is_terminal(),
@@ -328,10 +350,10 @@ pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> 
     Ok(())
 }
 
-/// Check whether `postgres:<tag>` is already present locally (no pull).
+/// Check whether the Postgres image for `tag` is already present locally (no pull).
 pub async fn image_exists(docker: &Docker, tag: &str) -> Result<bool> {
     use bollard::errors::Error as BErr;
-    let name = format!("postgres:{}", tag);
+    let name = pg_image(tag);
     match docker.inspect_image(&name).await {
         Ok(_) => Ok(true),
         Err(BErr::DockerResponseServerError {
@@ -407,7 +429,7 @@ pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Resu
     labels.insert(LABEL_CREATED_BY.into(), created_by_value());
 
     let container_config = ContainerCreateBody {
-        image: Some(format!("postgres:{}", opts.tag)),
+        image: Some(pg_image(opts.tag)),
         env: Some(env),
         host_config: Some(host_config),
         labels: Some(labels),
@@ -423,6 +445,33 @@ pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Resu
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
     Ok(created.id)
+}
+
+/// Copy the extension init script into a created, not-yet-started container.
+/// The entrypoint runs it only when it initializes an empty data directory.
+pub async fn install_pg_init_script(docker: &Docker, id: &str) -> Result<()> {
+    use bollard::query_parameters::UploadToContainerOptionsBuilder;
+    let options = UploadToContainerOptionsBuilder::default()
+        .path("/docker-entrypoint-initdb.d")
+        .build();
+    docker
+        .upload_to_container(
+            id,
+            Some(options),
+            bollard::body_full(pg_init_archive()?.into()),
+        )
+        .await
+        .map_err(|e| Error::DockerError(format!("could not add extension init script: {e}")))
+}
+
+fn pg_init_archive() -> Result<Vec<u8>> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(PG_INIT_SCRIPT.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    let mut builder = tar::Builder::new(Vec::new());
+    builder.append_data(&mut header, PG_INIT_SCRIPT_NAME, PG_INIT_SCRIPT.as_bytes())?;
+    Ok(builder.into_inner()?)
 }
 
 /// If a container with our managed name (`clickhousectl-pg-<name>-<major>`)
@@ -1227,6 +1276,22 @@ pub fn recover_project_postgres_blocking(
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[test]
+    fn pg_init_archive_holds_one_readable_sql_script() {
+        let archive = pg_init_archive().expect("build init archive");
+        let mut archive = tar::Archive::new(archive.as_slice());
+        let mut entries = archive.entries().expect("read init archive");
+        let mut entry = entries.next().expect("one entry").expect("valid entry");
+        assert_eq!(entry.path().unwrap().to_str(), Some(PG_INIT_SCRIPT_NAME));
+        assert!(PG_INIT_SCRIPT_NAME.ends_with(".sql"));
+        assert_eq!(entry.header().mode().unwrap(), 0o644);
+        let mut script = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut script).expect("read script");
+        assert_eq!(script, PG_INIT_SCRIPT);
+        drop(entry);
+        assert!(entries.next().is_none());
+    }
 
     #[cfg(unix)]
     #[tokio::test]

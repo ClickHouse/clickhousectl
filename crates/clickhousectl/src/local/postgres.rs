@@ -20,50 +20,34 @@ use std::time::Duration;
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
 const DEFAULT_DATABASE: &str = "postgres";
-/// Default image tag when `--version` is not given. Within the supported
-/// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
+/// Default image tag when `--version` is not given.
 pub const DEFAULT_PG_TAG: &str = "18";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const READINESS_LOG_LINES: usize = 50;
 const READINESS_LOG_BYTES: usize = 16 * 1024;
 const READINESS_LOG_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Extract the major-version digits from a Postgres image tag. `17-alpine` →
-/// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
-/// responsibility (`validate_pg_tag`) — this only parses.
+/// Extract the major-version digits from a Postgres image tag. Tags stored by
+/// older releases may carry a minor or variant (`17-alpine` → `"17"`).
+/// Validation is the caller's responsibility (`validate_pg_tag`).
 pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags in the form `17|18[.<minor>][-<variant>]`.
-/// The variant follows Docker's tag character grammar. Examples that pass:
-/// `17`, `17.0`, `17-alpine`, `18-bookworm`, `18.1-alpine3.20`.
-pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
-    let valid = tag.len() <= 128 && tag.is_ascii() && {
-        let (version, variant) = match tag.split_once('-') {
-            Some((version, variant)) => (version, Some(variant)),
-            None => (tag, None),
-        };
-        let variant_valid = variant.is_none_or(|variant| {
-            let mut chars = variant.chars();
-            chars
-                .next()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-        });
-        let (major, minor) = match version.split_once('.') {
-            Some((major, minor)) => (major, Some(minor)),
-            None => (version, None),
-        };
-        let minor_valid = minor
-            .is_none_or(|minor| !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit()));
-        matches!(major, "17" | "18") && minor_valid && variant_valid
-    };
+/// Image tag from a stored Postgres `ServerInfo::version`, which is the image
+/// reference (`ghcr.io/clickhouse/pg_clickhouse:18`, or `postgres:17` for
+/// instances created by older releases).
+pub(crate) fn pg_tag_from_stored_version(version: &str) -> &str {
+    version.rsplit_once(':').map_or(version, |(_, tag)| tag)
+}
 
-    if !valid {
+/// Accept the supported Postgres majors. Each maps to the rolling
+/// `<major>` tag of the pg_clickhouse image, which carries the latest
+/// extension release.
+pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
+    if !matches!(tag, "17" | "18") {
         return Err(Error::PostgresUsage(format!(
-            "invalid or unsupported postgres version '{}'. Use 17 or 18, optionally followed \
-             by .<minor> and -<variant> (for example: 17, 17-alpine, 18.1, 18-bookworm).",
+            "invalid or unsupported postgres version '{}'. Use 17 or 18.",
             tag
         )));
     }
@@ -399,7 +383,7 @@ async fn start(
         let info = ServerInfo {
             name: key.clone(),
             pid: 0,
-            version: format!("postgres:{tag}"),
+            version: docker::pg_image(&tag),
             http_port: 0,
             tcp_port: host_port,
             started_at: server::now_timestamp(),
@@ -408,6 +392,7 @@ async fn start(
             container_id: Some(container_id.clone()),
         };
         let startup_result = async {
+            docker::install_pg_init_script(&docker, &container_id).await?;
             docker::start_existing(&docker, &container_id).await?;
             server::save_server_info_locked(&info, &metadata_lock)
         }
@@ -445,7 +430,7 @@ async fn start(
         let out = output::PostgresStartOutput {
             name: user_name,
             container_id,
-            image: format!("postgres:{tag}"),
+            image: docker::pg_image(&tag),
             port: host_port,
             user,
             password,
@@ -600,10 +585,7 @@ fn resolve_pg_start_version_locked(
             pg_major_from_tag(DEFAULT_PG_TAG),
         )),
         [info] => {
-            let stored_tag = info
-                .version
-                .strip_prefix("postgres:")
-                .unwrap_or(&info.version);
+            let stored_tag = pg_tag_from_stored_version(&info.version);
             Ok((stored_tag.to_string(), pg_major_from_tag(stored_tag)))
         }
         _ => {
@@ -1046,10 +1028,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     let key = target.name.clone();
     if server::is_server_running_locked(&key, &metadata_lock)? {
-        let tag = target
-            .version
-            .strip_prefix("postgres:")
-            .unwrap_or(&target.version);
+        let tag = pg_tag_from_stored_version(&target.version);
         let major = pg_major_from_tag(tag);
         return Err(Error::ServerRunningCannotRemove {
             name: name.to_string(),
@@ -1649,16 +1628,7 @@ mod tests {
 
     #[test]
     fn validate_pg_tag_accepts_supported_majors() {
-        for tag in [
-            "17",
-            "18",
-            "17-alpine",
-            "17.0",
-            "18-bookworm",
-            "18-alpine3.20",
-            "18.1-alpine3.20",
-            "18.01-Custom_variant-1.0",
-        ] {
+        for tag in ["17", "18"] {
             assert!(
                 validate_pg_tag(tag).is_ok(),
                 "expected `{}` to be accepted",
@@ -1673,22 +1643,15 @@ mod tests {
             "latest",
             "15",
             "16",
-            "16-alpine",
             "19",
-            "14-alpine",
+            "17-alpine",
+            "17.0",
+            "18-bookworm",
+            "18-0.11.0",
             "alpine",
             "",
             "18garbage",
-            "18.1garbage",
-            "18.",
-            "18..1",
-            "18.1.2",
-            "18-",
-            "18-.alpine",
-            "18_alpine",
-            "18 alpine",
-            "18/alpine",
-            "18:alpine",
+            "18 ",
         ] {
             assert!(
                 validate_pg_tag(tag).is_err(),
@@ -1699,14 +1662,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_pg_tag_enforces_docker_tag_length() {
-        let max_length = format!("18-{}", "a".repeat(125));
-        let too_long = format!("18-{}", "a".repeat(126));
-
-        assert_eq!(max_length.len(), 128);
-        assert!(validate_pg_tag(&max_length).is_ok());
-        assert_eq!(too_long.len(), 129);
-        assert!(validate_pg_tag(&too_long).is_err());
+    fn stored_version_tag_handles_current_and_legacy_images() {
+        assert_eq!(
+            pg_tag_from_stored_version("ghcr.io/clickhouse/pg_clickhouse:18"),
+            "18"
+        );
+        assert_eq!(
+            pg_tag_from_stored_version("postgres:17-alpine"),
+            "17-alpine"
+        );
+        assert_eq!(pg_tag_from_stored_version("18"), "18");
     }
 
     #[test]
@@ -1720,7 +1685,7 @@ mod tests {
     fn start_env_accepts_unique_assignments_and_equals_in_values() {
         let preflight = validate_start_options(
             Some("dev"),
-            Some("18.1-alpine3.20"),
+            Some("18"),
             None,
             None,
             vec![
