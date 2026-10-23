@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1310973",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1312017",
       "email": "support@clickhouse.com"
     }
   },
@@ -29815,6 +29815,16 @@
           "enabled"
         ]
       },
+      "ClickPipeMongoDBTableConfig": {
+        "properties": {
+          "persistDeletedDocuments": {
+            "description": "Persist the full document as it was right before it was deleted, instead of only its _id. Requires changeStreamPreAndPostImages to be enabled on the source collection.",
+            "type": "boolean",
+            "example": false,
+            "default": false
+          }
+        }
+      },
       "ClickPipeMongoDBPipeTableMapping": {
         "properties": {
           "sourceDatabaseName": {
@@ -29844,6 +29854,9 @@
           },
           "structuredIngestion": {
             "$ref": "#/components/schemas/ClickPipeMongoDBStructuredIngestion"
+          },
+          "mongoConfig": {
+            "$ref": "#/components/schemas/ClickPipeMongoDBTableConfig"
           }
         },
         "required": [
@@ -36810,6 +36823,14 @@
             ],
             "example": "SeverityText"
           },
+          "severityNumberExpression": {
+            "description": "Expression for the numeric OpenTelemetry SeverityNumber (1-24).",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "SeverityNumber"
+          },
           "bodyExpression": {
             "description": "Expression to extract the log message body.",
             "type": [
@@ -36817,6 +36838,14 @@
               "null"
             ],
             "example": "Body"
+          },
+          "eventNameExpression": {
+            "description": "Expression for the OpenTelemetry log EventName.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "EventName"
           },
           "eventAttributesExpression": {
             "description": "Expression to extract event-level attributes.",

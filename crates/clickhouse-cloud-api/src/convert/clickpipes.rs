@@ -2,6 +2,7 @@ use super::MissingRequiredFields;
 use crate::models::{
     ClickPipeKafkaGlueSchemaRegistry, ClickPipeKafkaGlueSchemaRegistryResponse,
     ClickPipeKinesisSchemaRegistry, ClickPipeKinesisSchemaRegistryResponse,
+    ClickPipeMongoDBTableConfig, ClickPipeMongoDBTableConfigResponse,
 };
 
 impl TryFrom<ClickPipeKafkaGlueSchemaRegistryResponse> for ClickPipeKafkaGlueSchemaRegistry {
@@ -54,6 +55,18 @@ impl TryFrom<ClickPipeKinesisSchemaRegistryResponse> for ClickPipeKinesisSchemaR
             glue_region: value.glue_region.expect("checked above"),
             glue_registry_name: value.glue_registry_name.expect("checked above"),
             glue_role_arn: value.glue_role_arn,
+        })
+    }
+}
+
+impl TryFrom<ClickPipeMongoDBTableConfigResponse> for ClickPipeMongoDBTableConfig {
+    type Error = MissingRequiredFields;
+
+    fn try_from(value: ClickPipeMongoDBTableConfigResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            persist_deleted_documents: value
+                .persist_deleted_documents
+                .ok_or_else(|| MissingRequiredFields::new(vec!["persistDeletedDocuments"]))?,
         })
     }
 }

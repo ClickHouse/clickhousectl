@@ -253,6 +253,14 @@ fn extracted_models_keep_root_and_models_paths() {
     );
     assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
+        api::ClickPipeMongoDBTableConfig::default(),
+        api::models::ClickPipeMongoDBTableConfig::default(),
+    );
+    assert_same_type(
+        api::ClickPipeMongoDBTableConfigResponse::default(),
+        api::models::ClickPipeMongoDBTableConfigResponse::default(),
+    );
+    assert_same_type(
         api::ReversePrivateEndpoint::default(),
         api::models::ReversePrivateEndpoint::default(),
     );

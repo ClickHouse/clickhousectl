@@ -9807,6 +9807,76 @@ fn mongodb_structured_ingestion_response_tolerates_absent_and_null_fields() {
 }
 
 #[test]
+fn mongodb_table_config_request_is_strict_and_omitted_when_unset() {
+    let mapping = ClickPipeMongoDBPipeTableMapping {
+        source_database_name: "mydb".to_string(),
+        source_collection: "users".to_string(),
+        target_table: "mydb_users".to_string(),
+        mongo_config: Some(ClickPipeMongoDBTableConfig {
+            persist_deleted_documents: true,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        serde_json::json!({
+            "sourceDatabaseName": "mydb",
+            "sourceCollection": "users",
+            "targetTable": "mydb_users",
+            "mongoConfig": { "persistDeletedDocuments": true }
+        })
+    );
+
+    let unset = ClickPipeMongoDBPipeTableMapping {
+        mongo_config: None,
+        ..mapping
+    };
+    assert!(
+        serde_json::to_value(&unset)
+            .unwrap()
+            .get("mongoConfig")
+            .is_none()
+    );
+
+    // `persistDeletedDocuments` resolves as required in request position.
+    assert!(serde_json::from_str::<ClickPipeMongoDBTableConfig>("{}").is_err());
+}
+
+#[test]
+fn mongodb_table_config_response_tolerates_absent_and_null_fields_and_writes_back() {
+    let mapping: ClickPipeMongoDBPipeTableMappingResponse =
+        serde_json::from_str(r#"{"mongoConfig":{"persistDeletedDocuments":true}}"#).unwrap();
+    let config = mapping.mongo_config.unwrap();
+    assert_eq!(config.persist_deleted_documents, Some(true));
+    assert_eq!(
+        ClickPipeMongoDBTableConfig::try_from(config).unwrap(),
+        ClickPipeMongoDBTableConfig {
+            persist_deleted_documents: true,
+        }
+    );
+
+    let absent: ClickPipeMongoDBTableConfigResponse = serde_json::from_str("{}").unwrap();
+    let null: ClickPipeMongoDBTableConfigResponse =
+        serde_json::from_str(r#"{"persistDeletedDocuments":null}"#).unwrap();
+    assert_eq!(absent, ClickPipeMongoDBTableConfigResponse::default());
+    assert_eq!(null, ClickPipeMongoDBTableConfigResponse::default());
+    assert_eq!(
+        serde_json::to_value(&absent).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        ClickPipeMongoDBTableConfig::try_from(absent)
+            .unwrap_err()
+            .fields(),
+        ["persistDeletedDocuments"]
+    );
+
+    let without_config: ClickPipeMongoDBPipeTableMappingResponse =
+        serde_json::from_str(r#"{"mongoConfig":null}"#).unwrap();
+    assert_eq!(without_config.mongo_config, None);
+}
+
+#[test]
 fn bigquery_cdc_fields_round_trip_and_write_back() {
     let settings = serde_json::json!({
         "replicationMode": "cdc", "replicationMethod": "query_based",
