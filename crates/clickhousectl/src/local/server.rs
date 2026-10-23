@@ -329,9 +329,45 @@ fn is_alive(info: &ServerInfo) -> Result<bool> {
         Engine::Clickhouse => Ok(is_process_alive(info.pid)),
         Engine::Postgres => match info.container_id.as_deref() {
             Some(id) => docker::is_container_running_blocking(id),
-            None => Ok(false),
+            // Native (bundle-backed) Postgres: the pid is the postmaster.
+            None => Ok(is_native_postmaster_alive(&info.name, info.pid)),
         },
     }
+}
+
+/// A native postmaster is alive when its pid is live and still owns the data
+/// directory (`postmaster.pid` names it), which guards against pid reuse.
+fn is_native_postmaster_alive(key: &str, pid: u32) -> bool {
+    if !is_process_alive(pid) {
+        return false;
+    }
+    let pid_file = servers_dir().join(key).join("data").join("postmaster.pid");
+    std::fs::read_to_string(pid_file).is_ok_and(|content| {
+        content
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim() == pid.to_string())
+    })
+}
+
+/// How long a native postmaster gets after SIGINT ("fast" shutdown) before
+/// it is sent SIGQUIT ("immediate" shutdown).
+const PG_FAST_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const PG_IMMEDIATE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Stop a native postmaster: SIGINT (fast shutdown), then SIGQUIT if needed.
+pub(crate) fn stop_native_postmaster(pid: u32) -> Result<()> {
+    send_signal(pid, libc::SIGINT)?;
+    if wait_for_exit(pid, PG_FAST_SHUTDOWN_TIMEOUT) {
+        return Ok(());
+    }
+    send_signal(pid, libc::SIGQUIT)?;
+    if wait_for_exit(pid, PG_IMMEDIATE_SHUTDOWN_TIMEOUT) {
+        return Ok(());
+    }
+    Err(Error::Exec(format!(
+        "Postgres postmaster (PID {pid}) did not exit after SIGINT and SIGQUIT"
+    )))
 }
 
 fn load_info_at(path: &Path) -> Result<Option<ServerInfo>> {
@@ -715,16 +751,19 @@ pub(crate) fn kill_server_locked(name: &str, lock: &MetadataLock) -> Result<()> 
             kill_process(info.pid)?;
             mark_server_stopped_locked(name, info.pid, lock)?;
         }
-        Engine::Postgres => {
-            let id = info.container_id.as_deref().ok_or_else(|| {
-                Error::DockerError(format!(
-                    "Postgres server '{}' has no container_id in metadata",
-                    name
-                ))
-            })?;
-            docker::stop_blocking(id)?;
-            // Metadata + container preserved so `start` can resume.
-        }
+        Engine::Postgres => match info.container_id.as_deref() {
+            Some(id) => {
+                docker::stop_blocking(id)?;
+                // Metadata + container preserved so `start` can resume.
+            }
+            None => {
+                // Native postmaster: metadata kept (pid cleared) so `start`
+                // resumes against the same data directory.
+                stop_native_postmaster(info.pid)?;
+                let stopped = ServerInfo { pid: 0, ..info };
+                save_server_info_locked(&stopped, lock)?;
+            }
+        },
     }
     Ok(())
 }
