@@ -1812,7 +1812,8 @@ pub struct MongoDbCreateArgs {
 
     /// Full table mapping as a JSON object (repeatable)
     ///
-    /// Supports tableEngine and structuredIngestion (typed columns).
+    /// Supports tableEngine, structuredIngestion (typed columns) and
+    /// mongoConfig (persistDeletedDocuments keeps deleted documents in full).
     /// Combinable with --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
@@ -5054,6 +5055,7 @@ const MONGODB_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
     "targetTable",
     "tableEngine",
     "structuredIngestion",
+    "mongoConfig",
 ];
 
 fn parse_mongodb_table_mapping_json(
@@ -12200,7 +12202,8 @@ mod tests {
         "sourceDatabaseName":"sales",
         "sourceCollection":"orders",
         "targetTable":"orders_raw",
-        "tableEngine":"Null"
+        "tableEngine":"Null",
+        "mongoConfig":{"persistDeletedDocuments":true}
     }"#;
 
     const MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON: &str = r#"{
@@ -12243,6 +12246,12 @@ mod tests {
         assert_eq!(
             mongodb.table_engine,
             Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
+        assert_eq!(
+            mongodb
+                .mongo_config
+                .map(|config| config.persist_deleted_documents),
+            Some(true)
         );
 
         let bigquery =
@@ -12332,6 +12341,53 @@ mod tests {
                 partition_by_expr: Some("toYYYYMM(created_at)".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn mongodb_table_mapping_json_accepts_mongo_config() {
+        use clickhouse_cloud_api::models::ClickPipeMongoDBTableConfig;
+
+        let unset = parse_mongodb_table_mapping_json(
+            0,
+            r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(unset.mongo_config, None);
+
+        for persist in [true, false] {
+            let mapping = parse_mongodb_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","mongoConfig":{{"persistDeletedDocuments":{persist}}}}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                mapping.mongo_config,
+                Some(ClickPipeMongoDBTableConfig {
+                    persist_deleted_documents: persist,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn mongodb_table_mapping_json_rejects_invalid_mongo_config() {
+        let base = r#""sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t""#;
+        let cases = [
+            (r#"{}"#, "missing field `persistDeletedDocuments`"),
+            (r#"{"persistDeletedDocuments":"yes"}"#, "invalid type"),
+            (
+                r#"{"persistDeletedDocuments":true,"persistDeleted":true}"#,
+                "unknown field",
+            ),
+        ];
+        for (config, diagnostic) in cases {
+            let raw = format!(r#"{{{base},"mongoConfig":{config}}}"#);
+            let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
+            assert!(error.message.starts_with("--table-mapping-json #1: "));
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
     }
 
     #[test]
@@ -13018,6 +13074,14 @@ mod tests {
         assert_eq!(
             source.table_mappings[1].table_engine,
             Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
+        assert_eq!(source.table_mappings[0].mongo_config, None);
+        assert_eq!(
+            source.table_mappings[1]
+                .mongo_config
+                .as_ref()
+                .map(|config| config.persist_deleted_documents),
+            Some(true)
         );
     }
 

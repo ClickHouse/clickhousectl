@@ -48,7 +48,7 @@ Database creates require at least one mapping. Repeat or combine the simple and 
 }
 ```
 
-Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names, engine, and `structuredIngestion`, which replicates a collection into typed columns instead of one JSON document column. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
+Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names, engine, `structuredIngestion`, which replicates a collection into typed columns instead of one JSON document column, and `mongoConfig`. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
 
 For MongoDB structured ingestion, `enabled` is required. Omit `columns` to infer them from sampled documents; `_id` is always replicated as `String`. `excludedColumns` and `sortingKeys` entries must be unique, and the sorting key defaults to `_id`:
 
@@ -65,6 +65,8 @@ For MongoDB structured ingestion, `enabled` is required. Omit `columns` to infer
   }
 }
 ```
+
+By default a deleted MongoDB document arrives as its `_id` only. Set `"mongoConfig": {"persistDeletedDocuments": true}` on a mapping to keep the full document as it was just before the delete. Enable `changeStreamPreAndPostImages` on that source collection first. `persistDeletedDocuments` is required inside `mongoConfig`. The same object is accepted in `source.mongodb.tableMappingsToAdd[]` for `clickpipe update`.
 
 `partitionByExpr` defines destination `PARTITION BY`; `partitionKey` selects a source column for parallel snapshotting. They serve different purposes; Postgres/MySQL support both. Choices shaping a destination table are made at creation, not changed later on an existing mapping.
 
