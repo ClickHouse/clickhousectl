@@ -2,6 +2,7 @@
 set -eu
 
 REPO="ClickHouse/clickhousectl"
+BUILDS_URL="https://builds.clickhouse.com/clickhousectl"
 INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="clickhousectl"
 
@@ -30,11 +31,18 @@ esac
 TARGET="${ARCH_TARGET}-${OS_TARGET}"
 echo "Detected platform: $TARGET"
 
-# Get latest release tag
+# Get the latest release tag from latest.txt, which the release workflow
+# publishes. builds.clickhouse.com caches every path for days, so a unique
+# query string fetches it fresh. If it is unavailable, fall back to GitHub's
+# release redirect, which avoids the rate-limited REST API.
+is_tag() { printf '%s\n' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; }
 echo "Fetching latest release..."
-LATEST="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+LATEST="$(curl -fsSL "${BUILDS_URL}/latest.txt?t=$(date +%s)" 2>/dev/null | tr -d '[:space:]' || true)"
+if ! is_tag "$LATEST"; then
+  LATEST="$(curl -fsSI "https://github.com/${REPO}/releases/latest" 2>/dev/null | tr -d '\r' | sed -n 's#^[Ll]ocation:.*/releases/tag/##p' || true)"
+fi
 
-if [ -z "$LATEST" ]; then
+if ! is_tag "$LATEST"; then
   echo "Error: could not determine latest release" >&2
   exit 1
 fi
@@ -42,7 +50,7 @@ echo "Latest release: $LATEST"
 
 # Download archive
 ARCHIVE_NAME="clickhousectl-${TARGET}-${LATEST}.tar.gz"
-DOWNLOAD_URL="https://builds.clickhouse.com/clickhousectl/${ARCHIVE_NAME}"
+DOWNLOAD_URL="${BUILDS_URL}/${ARCHIVE_NAME}"
 echo "Downloading ${DOWNLOAD_URL}..."
 
 mkdir -p "$INSTALL_DIR"
