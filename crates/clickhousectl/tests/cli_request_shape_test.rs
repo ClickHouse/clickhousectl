@@ -22027,6 +22027,80 @@ async fn clickstack_source_create_accepts_all_variants_and_nested_log_fields() {
 }
 
 #[tokio::test]
+async fn clickstack_log_source_event_name_and_severity_number_survive_get_then_update() {
+    let source = serde_json::json!({
+        "id": "src-logs",
+        "kind": "log",
+        "name": "logs",
+        "connection": "c",
+        "from": {"databaseName": "d", "tableName": "otel_logs"},
+        "defaultTableSelectExpression": "*",
+        "timestampValueExpression": "Timestamp",
+        "severityTextExpression": "SeverityText",
+        "eventNameExpression": "EventName",
+        "severityNumberExpression": "SeverityNumber"
+    });
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/src-logs",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": source})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/src-logs",
+        ))
+        .and(body_json(source.clone()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": source})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let get = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "source",
+            "get",
+            "svc-1",
+            "src-logs",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        true,
+    );
+    assert_success(&get);
+    let fetched = serde_json::from_slice::<Value>(&get.stdout).unwrap();
+    assert_eq!(fetched, source);
+
+    let update = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "source",
+            "update",
+            "svc-1",
+            "src-logs",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(&fetched.to_string()),
+        true,
+    );
+    assert_success(&update);
+}
+
+#[tokio::test]
 async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_request() {
     let invalid = [
         (

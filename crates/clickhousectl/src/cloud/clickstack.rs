@@ -5504,7 +5504,7 @@ mod tests {
             ClickStackSource::ClickStackPromqlSource(_)
         ));
 
-        let maximal = serde_json::json!({
+        let mut maximal = serde_json::json!({
             "kind": "log", "id": "src", "name": "logs", "section": "prod", "disabled": false,
             "connection": "conn", "from": {"databaseName": "db", "tableName": "logs"},
             "querySettings": [{"setting": "max_threads", "value": "4"}],
@@ -5526,6 +5526,8 @@ mod tests {
                 "aggregatedColumns": [{"sourceColumn": "Body", "aggFn": "count", "mvColumn": "count"}]}],
             "metadataMaterializedViews": {"keyRollupTable": "keys", "kvRollupTable": "kv", "granularity": "1m"}
         });
+        maximal["eventNameExpression"] = "EventName".into();
+        maximal["severityNumberExpression"] = "SeverityNumber".into();
         std::fs::write(&config_file, maximal.to_string()).unwrap();
         let source = build_source_request(config_file.to_str().unwrap()).unwrap();
         let ClickStackSource::ClickStackLogSource(source) = source else {
@@ -5535,6 +5537,11 @@ mod tests {
             source.service_version_expression.as_deref(),
             Some("ServiceVersion")
         );
+        assert_eq!(
+            source.severity_number_expression.as_deref(),
+            Some("SeverityNumber")
+        );
+        assert_eq!(source.event_name_expression.as_deref(), Some("EventName"));
         let column = &source.filter_settings.unwrap().columns[0];
         assert_eq!(column.allow_all, Some(true));
         assert_eq!(column.value_expression.as_deref(), Some("ServiceName"));
