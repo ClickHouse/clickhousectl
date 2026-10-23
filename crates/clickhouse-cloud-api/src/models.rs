@@ -223,9 +223,10 @@ pub use query_api_endpoints::{
 };
 pub use quotas::{OrganizationQuota, OrganizationQuotaQuotacode, OrganizationQuotaScope};
 pub use rbac::{
-    RBACPolicy, RBACPolicyAllowdeny, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny,
-    RBACPolicyTags, RBACPolicyTagsResponse, RBACPolicyTagsRolev2, RBACRole, RBACRoleType,
-    RoleCreateRequest, RoleUpdateRequest,
+    AssignableRole, AssignableRolePolicy, AssignableRolePolicyTags, RBACPolicy,
+    RBACPolicyAllowdeny, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny, RBACPolicyTags,
+    RBACPolicyTagsResponse, RBACPolicyTagsRolev2, RBACRole, RBACRoleType, RoleCreateRequest,
+    RoleUpdateRequest,
 };
 pub use saved_queries::{PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQueryRequest};
 pub use scim::{

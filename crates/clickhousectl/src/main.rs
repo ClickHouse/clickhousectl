@@ -70,18 +70,26 @@ async fn main() {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
             let read_only_telemetry_status = is_read_only_telemetry_status(&cli.command);
-            let run_result = match validate_post_parse(&cli, &mut cmd) {
-                Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
-                Err(e) => {
-                    stdout::record(e.print());
-                    RunOutcome {
-                        exit_code: e.exit_code(),
-                        is_child_exit: false,
-                        defer_telemetry_notice: false,
-                        local_failure: None,
-                    }
-                }
+            #[cfg(feature = "experimental-access-negotiation")]
+            let access_validation = match &cli.command {
+                Commands::Cloud(args) => args.validate_access_selectors(&argv),
+                _ => Ok(()),
             };
+            #[cfg(not(feature = "experimental-access-negotiation"))]
+            let access_validation = Ok::<(), clap::Error>(());
+            let run_result =
+                match access_validation.and_then(|()| validate_post_parse(&cli, &mut cmd)) {
+                    Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
+                    Err(e) => {
+                        stdout::record(e.print());
+                        RunOutcome {
+                            exit_code: e.exit_code(),
+                            is_child_exit: false,
+                            defer_telemetry_notice: false,
+                            local_failure: None,
+                        }
+                    }
+                };
             let RunOutcome {
                 exit_code,
                 is_child_exit,
@@ -203,6 +211,21 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
             ErrorKind::ArgumentConflict,
             "--org-id cannot be used with --org-name",
         ));
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    if let cloud::cli::CloudCommands::Access {
+        command: cloud::cli::AccessCommands::Request(request),
+        ..
+    } = &args.command
+        && let Err(message) = request.requested_role_ids()
+    {
+        let command = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("access"))
+            .and_then(|access| access.find_subcommand_mut("request"))
+            .expect("cloud access request command must exist");
+        return Err(command.error(ErrorKind::ValueValidation, message));
     }
 
     // Login's credentials are global arguments. Validate after propagation so

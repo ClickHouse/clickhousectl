@@ -132,6 +132,48 @@ clickhousectl cloud postgres certs get <postgres-id> --output ca.pem
 
 Save any initial password and connection string, wait for `state=running`, then connect with `psql` using verified TLS. The [ClickHouse Managed Postgres guide](docs/guides/managed-postgres.md) covers that flow, configuration changes, read-only OAuth queries, and recovery. ClickHouse Managed Postgres commands are beta.
 
+### Discover assignable roles
+
+```bash
+clickhousectl cloud access roles
+clickhousectl cloud access roles --org <organization-id> --json
+```
+
+Discovery uses your refreshed OAuth user identity even when an API key is saved, with the same organization selectors and endpoint precedence as `cloud access request`. Human output identifies the selected organization and lists role IDs/names with policy effects and resource scopes. `--json` returns exactly the complete role array, including all ALLOW/DENY policies and optional SQL tags; an eligible empty menu is `[]`. SQL grant/revoke strings and unknown values remain opaque. Incomplete required discovery data fails before any menu is printed, rather than implying empty permissions or falling back to the administrative catalog. Discovery describes current authority, not a guarantee of later approval or a role recommendation.
+
+### Request a scoped API key (access request)
+
+`cloud access request` obtains a scoped API key through the control plane's PKCE approval handshake, so an agent can get a narrowly-scoped key that a human approves in a browser rather than reusing a long-lived one.
+
+```bash
+clickhousectl cloud access request
+clickhousectl cloud access request --key-name agent-key --purpose "CI deploy" --tool claude
+clickhousectl cloud access request --org <organization-id> --perms role:<role-uuid>,role:<another-role-uuid>
+clickhousectl cloud access request --no-browser --json
+```
+
+Use IDs from `cloud access roles` to propose roles with `--perms role:<UUID>` (repeat the flag or separate tokens with commas). UUIDs are normalized to lowercase and deduplicated by identity in first-seen order; at most 100 distinct roles are allowed. Empty tokens, whitespace, wrong prefixes and malformed UUIDs fail before authentication or network access. Role names, raw permissions and resource overrides are not supported. Omit `--perms` for manual browser selection; an explicitly empty value is invalid. A proposal is not a grant: the server validates the whole proposal atomically, and the human's eventual selection may differ. The CLI neither filters rejected proposals nor retries a subset.
+
+The command requires your OAuth user identity from `cloud auth login` and refreshes it when needed; API keys from flags, saved credentials, or environment variables are never used for negotiation. Missing or expired identity that cannot be refreshed fails with authentication exit code 4 and login guidance. It generates a PKCE verifier/challenge and a CSRF `state`, starts a loopback redirect server on `127.0.0.1`, and opens the approval URL (printed as a fallback). After you approve it, the CLI claims the issued key with the PKCE verifier and stores the key id and secret in `.clickhouse/credentials.json`. The secret is never printed or placed in a URL. If the browser cannot reach the loopback server, the CLI falls back to polling the request's status until it is approved. Pending approval waits until the server pending deadline or 15 minutes, whichever comes first. One final status check can still discover an already-approved request.
+
+Use `--no-browser` when another person or device will open the approval link: it suppresses only automatic browser launch, not approval, the loopback listener or polling. The approval URL and progress always go to stderr, including with `--json`; JSON stdout contains only the final success object. Denied, expired and authentication failures stop the wait promptly without replacing saved credentials. Polling retries HTTP 429/5xx within the existing wait; other HTTP failures and malformed status responses terminate. An approved request uses its separate server claim deadline, even after pending expiry; servers missing deadline metadata are unsupported. Each access HTTP operation is bounded to 30 seconds, shortened by its phase deadline. Filing and claiming are not retried: a timeout may leave a filed request or a completed server claim without local credentials. Neither pending nor claim expiry is key expiry.
+
+Successful requests report the organization and request IDs, the server-saved proposal, and the actual roles returned by the claim. JSON retains `status`, `keyId`, `key`, and `credentialsPath`, and adds `requestId`, `organizationId`, `requestedRoleIds`, and `grantedRoleIds`. With no proposal, `requestedRoleIds` is `[]` (manual selection); the human may trim or add roles, so actual grants need not match the proposal. Missing or invalid server role arrays fail before local credential installation; older servers without this reporting contract are unsupported.
+
+The API URL comes from `--url` when provided, otherwise the saved OAuth login environment, or the normal Cloud default (`https://api.clickhouse.cloud/v1`) for older tokens without a saved URL. Local development requires an explicit local URL at login or through `--url`; there is no implicit localhost default. Other Cloud commands retain their normal credential precedence, so a saved negotiated key remains available for subsequent operations. Optional `--purpose`, `--tool`, `--version`, and `--session-id` flags record agent context with the request.
+
+Access organization selection uses your OAuth user's complete, paginated membership list, not the saved API key's organization. A single membership is selected automatically; zero or multiple memberships require action (no remembered default or prompt). Find IDs with `cloud org list --json` and select `cloud access request --org <ID>` (`--org-id` remains supported), or use exact `--org-name`. Conflicting selectors, including across command depths, are usage errors.
+
+### Debugging which credential source was used
+
+Pass `--debug` to a Cloud resource command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
+
+Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
+
+When environment credentials are configured but a credentials file or explicit CLI flags take precedence, clickhousectl prints a one-line note to stderr. `cloud auth status` also marks the environment credentials as configured but inactive and identifies the source that outranked them.
+
+`--url` is an advanced debugging override for targeting a non-production Cloud control plane. Release builds accept the option but omit it from `--help`; development builds show it. For `cloud service query`, set `CLICKHOUSE_CLOUD_QUERY_HOST` separately to override the Query API host.
+
 ### Ingest with ClickPipes
 
 Use ClickPipes to replicate database changes or load files into ClickHouse Cloud. Both examples require API-key authentication and a running ClickHouse destination.
