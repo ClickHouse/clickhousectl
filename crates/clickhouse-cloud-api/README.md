@@ -6,6 +6,12 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`ClickStackLogSource` and `ClickStackLogSourceResponse` gain the optional
+`event_name_expression` (the OpenTelemetry log `EventName`) and
+`severity_number_expression` (the numeric `SeverityNumber`, 1–24), and
+`TryFrom` carries both back to the request type. Struct-literal callers need
+the new fields as `None` or `..Default::default()`.
+
 `ClickPipeMongoDBPipeTableMapping` gains an optional `mongo_config`
 (`ClickPipeMongoDBTableConfig`) with a required `persist_deleted_documents`.
 When it is `true`, a deleted MongoDB document is kept as it was just before the

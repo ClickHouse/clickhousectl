@@ -4035,6 +4035,8 @@ fn clickstack_source_try_from_response_converts_every_kind() {
             },
             "orderByExpression": "Timestamp DESC",
             "querySettings": [{"setting": "max_threads", "value": "4"}],
+            "eventNameExpression": "EventName",
+            "severityNumberExpression": "SeverityNumber",
         }),
         serde_json::json!({
             "kind": "trace",
@@ -6919,9 +6921,10 @@ fn deserialize_clickstack_webhook_unknown_service_round_trips() {
 
 #[test]
 fn clickstack_source_expression_fields_missing_or_null_are_none() {
-    // `orderByExpression` (log, trace), `resourceAttributesExpression`
-    // (session), and the trace-only display, sampling and span-link
-    // expressions are optional in the spec: absent or `null` lands as `None`
+    // `orderByExpression` (log, trace), the log-only event name and severity
+    // number expressions, `resourceAttributesExpression` (session), and the
+    // trace-only display, sampling and span-link expressions are optional in
+    // the spec: absent or `null` lands as `None`
     // on the response variants and is omitted from the request variants.
     let log = serde_json::json!({
         "kind": "log",
@@ -6967,9 +6970,16 @@ fn clickstack_source_expression_fields_missing_or_null_are_none() {
         "spanLinksValueExpression",
     ];
 
-    for payload in [log.clone(), with_nulls(&log, &["orderByExpression"])] {
+    let log_keys = [
+        "eventNameExpression",
+        "orderByExpression",
+        "severityNumberExpression",
+    ];
+    for payload in [log.clone(), with_nulls(&log, &log_keys)] {
         let response: ClickStackLogSourceResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(response.event_name_expression, None);
         assert_eq!(response.order_by_expression, None);
+        assert_eq!(response.severity_number_expression, None);
         let request = ClickStackLogSource::try_from(response).unwrap();
         assert_eq!(serde_json::to_value(&request).unwrap(), log);
     }
@@ -6996,11 +7006,15 @@ fn clickstack_source_expression_fields_missing_or_null_are_none() {
 #[test]
 fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
     let log = ClickStackLogSource {
+        event_name_expression: Some("EventName".to_string()),
         order_by_expression: Some("Timestamp DESC".to_string()),
+        severity_number_expression: Some("SeverityNumber".to_string()),
         ..Default::default()
     };
     let v = serde_json::to_value(&log).unwrap();
+    assert_eq!(v["eventNameExpression"], "EventName");
     assert_eq!(v["orderByExpression"], "Timestamp DESC");
+    assert_eq!(v["severityNumberExpression"], "SeverityNumber");
 
     let session = ClickStackSessionSource {
         resource_attributes_expression: Some("ResourceAttributes".to_string()),
