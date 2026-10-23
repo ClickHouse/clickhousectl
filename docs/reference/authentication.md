@@ -21,6 +21,8 @@ clickhousectl cloud auth status
 
 `auth status` shows configured sources, the active source, and identity verification. It can exit 0 with no active credentials, rejected credentials, or an unavailable identity check; use `whoami` or the intended command to test access. Its remote check times out after five seconds.
 
+If a saved OAuth login cannot be read or uses an older format without complete authorization configuration, `auth status` shows OAuth as `Login required`, not `Not configured`, and explains the problem below the table with the command to log in again. JSON output includes this explanation in `oauth_warning`, separate from any identity-verification `warning`; it is shown even when an API key is active. Run `clickhousectl cloud auth login` to log in again. Without a higher-priority API key source, Cloud commands exit 4 (`auth_required` in JSON) with an explicit re-login message. The unusable file is left unchanged; the CLI does not reconstruct its authorization configuration from built-in defaults or environment variables.
+
 For automation, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through a secret manager. The CLI does not save environment credentials. For development it also reads `.env` from the exact current directory; keep that file out of version control and restrict access. Flags are available, but command-line secrets can appear in shell history and process listings.
 
 ## Credential precedence
@@ -33,7 +35,7 @@ The first applicable source wins:
 4. Variables loaded from the current directory's `.env`.
 5. Global OAuth tokens.
 
-Supplying only one credential flag blocks fallback. `auth status` identifies inactive sources; `--debug` on a Cloud command prints the selected credential source and API URL to stderr.
+Supplying only one credential flag blocks fallback. Cloud commands skip OAuth token refresh when a higher-priority API key source wins, leaving saved OAuth tokens unchanged. When OAuth is selected, expired or near-expiry tokens are refreshed before the API request. `auth status` identifies inactive sources; `--debug` on a Cloud command prints the selected credential source and API URL to stderr.
 
 `cloud postgres query` accepts **OAuth only**, unlike `cloud service query`. Remove higher-priority API key sources before using that route. Clearing a saved key file alone is insufficient if exported variables or `.env` still supply a key.
 

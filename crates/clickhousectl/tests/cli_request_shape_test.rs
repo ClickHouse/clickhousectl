@@ -11674,6 +11674,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
         "refresh_token": "unused",
         "expires_at": 4102444800u64, // 2100-01-01: never expires in tests
         "api_url": format!("{}/v1", control.uri()),
+        "auth_config": {"auth_url": control.uri(), "client_id": "test-client"},
     });
     std::fs::write(
         ch_dir.join("tokens.json"),
@@ -15398,6 +15399,7 @@ fn write_oauth_tokens(ch_dir: &std::path::Path, control_uri: &str) {
         "refresh_token": "unused",
         "expires_at": 4102444800u64, // 2100-01-01: never expires in tests
         "api_url": format!("{control_uri}/v1"),
+        "auth_config": {"auth_url": control_uri, "client_id": "test-client"},
     });
     std::fs::write(
         ch_dir.join("tokens.json"),
@@ -29623,7 +29625,8 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
         let token_dir = dir.path().join("home/.clickhouse");
         std::fs::create_dir_all(&token_dir).unwrap();
-        // An unknown auth host fails refresh locally, then clears stale tokens.
+        // Old records without configuration are not usable credentials.
+        // Require a new login rather than guessing from the environment.
         std::fs::write(
             token_dir.join("tokens.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -29636,14 +29639,727 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         let output = command
             .env_remove("CLICKHOUSE_CLOUD_API_KEY")
             .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+            // Even configured env values must not repair an unknown legacy issuer.
+            .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
+            .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used")
             .args(["service", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(4));
         assert!(output.stdout.is_empty());
         assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
-        assert!(!token_dir.join("tokens.json").exists());
+        // Loading rejects the old file without modifying it; login replaces it.
+        assert!(token_dir.join("tokens.json").exists());
     }
+}
+
+// Old OAuth records must not block higher-precedence API keys.
+#[tokio::test]
+async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "result": [] })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    // API keys supplied via env (EnvVars source) outrank OAuth tokens.
+    let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit");
+    let token_dir = dir.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&token_dir).unwrap();
+    std::fs::write(
+        token_dir.join("tokens.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "expired", "refresh_token": "refresh", "expires_at": 1,
+            "api_url": mock.uri()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = command
+        .args(["service", "list", "--org-id", "org-1"])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The command reached the API using the API keys instead of failing fast.
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+    // Old files are ignored, not refreshed or modified; API-key auth succeeds.
+    assert!(token_dir.join("tokens.json").exists());
+}
+
+#[tokio::test]
+async fn api_key_precedence_skips_oauth_refresh_and_preserves_tokens() {
+    for format in ["current", "old", "malformed"] {
+        for source in ["flags", "file", "env", "dotenv", "mixed", "partial-flags"] {
+            let api = MockServer::start().await;
+            let issuer = MockServer::start().await;
+            // If refresh is accidentally attempted it would reject and clear tokens.
+            Mock::given(method("POST"))
+                .and(path("/oauth/token"))
+                .respond_with(ResponseTemplate::new(401))
+                .expect(0)
+                .mount(&issuer)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org-1/services"))
+                .and(wiremock::matchers::basic_auth(
+                    "winning-key",
+                    "winning-secret",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+                )
+                .expect(if source == "partial-flags" { 0 } else { 1 })
+                .mount(&api)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            let mut command = custom_oauth_command(dir.path(), &api.uri());
+            let token_path = dir.path().join("home/.clickhouse/tokens.json");
+            std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+            let mut record = serde_json::json!({
+                "access_token": "expired", "refresh_token": "preserve-refresh", "expires_at": 1,
+                "api_url": api.uri(),
+                "auth_config": {"auth_url": issuer.uri(), "client_id": "saved-client"}
+            });
+            if format == "old" {
+                record.as_object_mut().unwrap().remove("auth_config");
+            }
+            let original = if format == "malformed" {
+                b"not json".to_vec()
+            } else {
+                serde_json::to_vec(&record).unwrap()
+            };
+            std::fs::write(&token_path, &original).unwrap();
+            match source {
+                "flags" => {
+                    // Populate lower tiers too, proving the same precedence as the client.
+                    write_project_api_credentials(dir.path(), "ignored-file", "ignored-secret");
+                    command
+                        .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
+                        .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret")
+                        .args(["--api-key", "winning-key", "--api-secret", "winning-secret"]);
+                }
+                "file" => {
+                    write_project_api_credentials(dir.path(), "winning-key", "winning-secret");
+                    command
+                        .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
+                        .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret");
+                }
+                "env" => {
+                    command
+                        .env("CLICKHOUSE_CLOUD_API_KEY", "winning-key")
+                        .env("CLICKHOUSE_CLOUD_API_SECRET", "winning-secret");
+                }
+                "dotenv" => {
+                    std::fs::write(dir.path().join(".env"), "CLICKHOUSE_CLOUD_API_KEY=winning-key\nCLICKHOUSE_CLOUD_API_SECRET=winning-secret\n").unwrap();
+                }
+                "mixed" => {
+                    command.env("CLICKHOUSE_CLOUD_API_KEY", "winning-key");
+                    std::fs::write(
+                        dir.path().join(".env"),
+                        "CLICKHOUSE_CLOUD_API_SECRET=winning-secret\n",
+                    )
+                    .unwrap();
+                }
+                "partial-flags" => {
+                    command.arg("--api-key").arg("winning-key");
+                }
+                _ => unreachable!(),
+            }
+            let output = command
+                .args(["service", "list", "--org-id", "org-1"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if source == "partial-flags" { 4 } else { 0 }),
+                "{source}: {output:?}"
+            );
+            assert_eq!(std::fs::read(&token_path).unwrap(), original, "{source}");
+            assert!(
+                issuer.received_requests().await.unwrap().is_empty(),
+                "{source}"
+            );
+            // Replenish Tokio's cooperative budget before wiremock's synchronous
+            // drop verification acquires its async lock on the next iteration.
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn incomplete_lower_priority_keys_do_not_prevent_oauth_refresh() {
+    for source in ["none", "partial-env", "empty-file"] {
+        let api = MockServer::start().await;
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed", "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&issuer)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer refreshed",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+            )
+            .expect(1)
+            .mount(&api)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = custom_oauth_command(dir.path(), &api.uri());
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &token_path,
+            serde_json::to_vec(&serde_json::json!({
+                "access_token": "expired", "refresh_token": "refresh", "expires_at": 1,
+                "api_url": api.uri(),
+                "auth_config": {"auth_url": issuer.uri(), "client_id": "saved-client"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        match source {
+            "partial-env" => {
+                command.env("CLICKHOUSE_CLOUD_API_KEY", "incomplete-key");
+            }
+            "empty-file" => write_project_api_credentials(dir.path(), "", ""),
+            "none" => {}
+            _ => unreachable!(),
+        }
+        let output = command
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        let saved: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+        assert_eq!(saved["access_token"], "refreshed", "{source}");
+    }
+}
+
+fn custom_oauth_command(root: &Path, api_url: &str) -> Command {
+    let mut command = cloud_runtime_error_command(root, api_url, "explicit");
+    command
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET");
+    command
+}
+
+#[tokio::test]
+async fn old_oauth_records_require_login_even_for_known_hosts_and_fresh_tokens() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_dir = dir.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&token_dir).unwrap();
+    for api_url in ["https://api.clickhouse.cloud/v1".to_string(), mock.uri()] {
+        for expires_at in [1_i64, 4102444800_i64] {
+            let old = serde_json::json!({
+                "access_token": "old-access", "refresh_token": "old-refresh",
+                "expires_at": expires_at, "api_url": api_url
+            });
+            std::fs::write(
+                token_dir.join("tokens.json"),
+                serde_json::to_vec(&old).unwrap(),
+            )
+            .unwrap();
+            let output = custom_oauth_command(dir.path(), &mock.uri())
+                .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
+                .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used")
+                .args(["auth", "whoami"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+// Legacy production records cannot be refreshed: issuer configuration must be
+// saved by a new login, not reconstructed from the built-in table or current env.
+#[tokio::test]
+async fn expired_legacy_production_tokens_require_login_instead_of_refresh() {
+    let mock = MockServer::start().await;
+    for mode in ["human", "explicit", "agent"] {
+        // The oldest production format also omitted api_url.
+        for includes_api_url in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
+            let token_path = dir.path().join("home/.clickhouse/tokens.json");
+            std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+            let mut legacy = serde_json::json!({
+                "access_token": "expired-production-access",
+                "refresh_token": "legacy-production-refresh",
+                "expires_at": 1
+            });
+            if includes_api_url {
+                legacy["api_url"] = serde_json::json!("https://api.clickhouse.cloud/v1");
+            }
+            let original = serde_json::to_vec(&legacy).unwrap();
+            std::fs::write(&token_path, &original).unwrap();
+            let output = command
+                .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+                .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+                // No environment or built-in configuration may repair the record.
+                .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
+                .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used")
+                .args(["auth", "whoami"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(4), "{mode}: {output:?}");
+            assert!(output.stdout.is_empty());
+            let message = if mode == "human" {
+                String::from_utf8_lossy(&output.stderr).into_owned()
+            } else {
+                let error = cloud_runtime_error(&output);
+                assert_eq!(error["code"], "auth_required");
+                error["message"].as_str().unwrap().to_owned()
+            };
+            assert!(
+                message.contains("Saved OAuth login can't be used"),
+                "{message}"
+            );
+            assert!(
+                message.contains("`clickhousectl cloud auth login` to log in again"),
+                "{message}"
+            );
+            assert!(!message.contains("No credentials found"), "{message}");
+            assert!(!message.contains("--api-key"), "{message}");
+            assert_eq!(std::fs::read(&token_path).unwrap(), original);
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
+    let mock = MockServer::start().await;
+    for mode in ["human", "explicit", "agent"] {
+        for format in ["absent", "old", "incomplete", "malformed"] {
+            for location in ["global", "legacy"] {
+                let dir = tempfile::tempdir().unwrap();
+                let token_path = dir.path().join(if location == "global" {
+                    "home/.clickhouse/tokens.json"
+                } else {
+                    ".clickhouse/tokens.json"
+                });
+                let original = match format {
+                    "absent" => None,
+                    "old" => Some(
+                        serde_json::to_vec(&serde_json::json!({
+                            "access_token": "private-access", "refresh_token": "private-refresh",
+                            "expires_at": 4102444800_i64, "api_url": mock.uri()
+                        }))
+                        .unwrap(),
+                    ),
+                    "incomplete" => Some(
+                        serde_json::to_vec(&serde_json::json!({
+                            "access_token": "private-access", "refresh_token": "private-refresh",
+                            "expires_at": 4102444800_i64, "api_url": mock.uri(),
+                            "auth_config": {"auth_url": mock.uri()}
+                        }))
+                        .unwrap(),
+                    ),
+                    "malformed" => Some(b"not json: private-access".to_vec()),
+                    _ => unreachable!(),
+                };
+                if let Some(data) = &original {
+                    std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+                    std::fs::write(&token_path, data).unwrap();
+                }
+                let command = || {
+                    let mut cmd = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
+                    cmd.env_remove("CLICKHOUSE_CLOUD_API_KEY")
+                        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+                        .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
+                        .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used");
+                    cmd
+                };
+                let output = command().args(["auth", "status"]).output().unwrap();
+                assert_success(&output);
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let expected = if format == "absent" {
+                    "Not configured"
+                } else {
+                    "Login required"
+                };
+                if mode == "human" {
+                    let row = stdout
+                        .lines()
+                        .find(|line| line.contains("| OAuth"))
+                        .unwrap();
+                    let cells: Vec<_> = row.trim_matches('|').split('|').map(str::trim).collect();
+                    assert_eq!(cells, ["OAuth", expected, "-", "-"]);
+                } else {
+                    let status: Value = serde_json::from_str(&stdout).unwrap();
+                    let row = status["sources"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|row| row["type"] == "OAuth")
+                        .unwrap();
+                    assert_eq!(row["status"], expected);
+                    assert_eq!(row["scope"], "-");
+                    assert_eq!(row["active"], "-");
+                    assert_eq!(status["verification"], "skipped");
+                    assert!(status.get("warning").is_none());
+                    if format == "absent" {
+                        assert!(status.get("oauth_warning").is_none());
+                    } else {
+                        let warning = status["oauth_warning"].as_str().unwrap();
+                        assert!(warning.contains("Saved OAuth login can't be used"));
+                        assert!(
+                            warning.contains("`clickhousectl cloud auth login` to log in again")
+                        );
+                    }
+                }
+                if format == "absent" {
+                    assert!(!stdout.contains("log in again"));
+                } else {
+                    assert!(stdout.contains("Saved OAuth login can't be used"));
+                    assert!(stdout.contains("`clickhousectl cloud auth login` to log in again"));
+                }
+                let output = command()
+                    .args(["service", "list", "--org-id", "org-1"])
+                    .output()
+                    .unwrap();
+                assert_eq!(output.status.code(), Some(4), "{output:?}");
+                assert!(output.stdout.is_empty());
+                let message = if mode == "human" {
+                    String::from_utf8_lossy(&output.stderr).into_owned()
+                } else {
+                    let error = cloud_runtime_error(&output);
+                    assert_eq!(error["code"], "auth_required");
+                    error["message"].as_str().unwrap().to_owned()
+                };
+                if format == "absent" {
+                    assert!(message.contains("No credentials found"), "{message}");
+                    assert!(!message.contains("log in again"), "{message}");
+                } else {
+                    assert!(
+                        message.contains("Saved OAuth login can't be used"),
+                        "{message}"
+                    );
+                    assert!(
+                        message.contains("`clickhousectl cloud auth login` to log in again"),
+                        "{message}"
+                    );
+                    assert!(!message.contains("No credentials found"), "{message}");
+                    assert!(!message.contains("--api-key"), "{message}");
+                }
+                for secret in ["private-access", "private-refresh"] {
+                    assert!(!stdout.contains(secret));
+                    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+                }
+                if let Some(data) = original {
+                    assert_eq!(std::fs::read(&token_path).unwrap(), data);
+                    if location == "legacy" {
+                        assert!(!dir.path().join("home/.clickhouse/tokens.json").exists());
+                    }
+                }
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn auth_status_reports_unusable_oauth_alongside_api_key_identity() {
+    for mode in ["human", "explicit", "agent"] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .and(wiremock::matchers::basic_auth("test-key", "test-secret"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "status": 401, "error": "key rejected"
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(&token_path, b"not json").unwrap();
+        let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
+            .args(["auth", "status", "--debug"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("Saved OAuth login can't be used"));
+        assert!(stdout.contains("`clickhousectl cloud auth login` to log in again"));
+        if mode == "human" {
+            assert!(stdout.contains("Identity: rejected"));
+        } else {
+            let status: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(status["verification"], "rejected");
+            assert!(status["warning"].as_str().unwrap().contains("key rejected"));
+            assert!(
+                status["oauth_warning"]
+                    .as_str()
+                    .unwrap()
+                    .contains("log in again")
+            );
+            let sources = status["sources"].as_array().unwrap();
+            let env = sources
+                .iter()
+                .find(|row| row["type"] == "Env vars")
+                .unwrap();
+            assert_eq!(env["active"], "yes");
+            let oauth = sources.iter().find(|row| row["type"] == "OAuth").unwrap();
+            assert_eq!(oauth["status"], "Login required");
+            assert_eq!(oauth["active"], "-");
+        }
+        assert_eq!(std::fs::read(&token_path).unwrap(), b"not json");
+    }
+}
+
+#[tokio::test]
+async fn oauth_login_and_refresh_never_follow_redirects() {
+    let api = MockServer::start().await;
+    let destination = MockServer::start().await;
+    for status in [301, 302, 303, 307, 308] {
+        for login in [true, false] {
+            let issuer = MockServer::start().await;
+            let endpoint = if login {
+                "/oauth/device/code"
+            } else {
+                "/oauth/token"
+            };
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/stolen", destination.uri())),
+                )
+                .expect(1)
+                .mount(&issuer)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            let mut command = custom_oauth_command(dir.path(), &api.uri());
+            if login {
+                command
+                    .env("CLICKHOUSECTL_AUTH_URL", issuer.uri())
+                    .env("CLICKHOUSECTL_CLIENT_ID", "client")
+                    .args(["auth", "login"]);
+            } else {
+                let token_path = dir.path().join("home/.clickhouse/tokens.json");
+                std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+                std::fs::write(&token_path, serde_json::to_vec(&serde_json::json!({
+                    "access_token": "expired", "refresh_token": "secret-refresh", "expires_at": 1,
+                    "api_url": api.uri(),
+                    "auth_config": {"auth_url": issuer.uri(), "client_id": "client"}
+                })).unwrap()).unwrap();
+                command.args(["auth", "whoami"]);
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if login { 1 } else { 4 }),
+                "{status}: {output:?}"
+            );
+            assert!(destination.received_requests().await.unwrap().is_empty());
+        }
+    }
+    assert!(api.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn oauth_rejects_insecure_authorization_config_before_requests() {
+    let api = MockServer::start().await;
+    for auth_url in [
+        "http://auth.example.invalid",
+        "ftp://localhost",
+        "not-a-url",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let output = custom_oauth_command(dir.path(), &api.uri())
+            .env("CLICKHOUSECTL_AUTH_URL", auth_url)
+            .env("CLICKHOUSECTL_CLIENT_ID", "client")
+            .args(["auth", "login"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            cloud_runtime_error(&output)["message"]
+                .as_str()
+                .unwrap()
+                .contains("HTTPS")
+        );
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        assert!(!token_path.exists());
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &token_path,
+            serde_json::to_vec(&serde_json::json!({
+                "access_token": "expired", "refresh_token": "secret-refresh", "expires_at": 1,
+                "api_url": api.uri(),
+                "auth_config": {"auth_url": auth_url, "client_id": "client"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = custom_oauth_command(dir.path(), &api.uri())
+            .args(["auth", "whoami"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+    }
+    assert!(api.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn custom_oauth_login_pins_config_through_refresh_and_relogin() {
+    let api = MockServer::start().await;
+    let issuer_a = MockServer::start().await;
+    let issuer_b = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_path = dir.path().join("home/.clickhouse/tokens.json");
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"actorType": "user", "email": "test@example.com", "organizations": []}
+        })))
+        .expect(4)
+        .mount(&api)
+        .await;
+
+    // An absent local path makes the best-effort opener fail without launching
+    // a real browser. This test drives the token response, not interactive login.
+    let verification_uri = dir.path().join("no-browser-target");
+    for (issuer, client_id, access, refresh) in [
+        (&issuer_a, "client-a", "access-a", "refresh-a"),
+        (&issuer_b, "client-b", "access-b", "refresh-b"),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/oauth/device/code"))
+            .and(wiremock::matchers::body_string_contains(format!(
+                "client_id={client_id}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "device_code": "test-device", "user_code": "TEST",
+                "verification_uri": verification_uri.to_string_lossy(),
+                "expires_in": 60, "interval": 0
+            })))
+            .expect(1)
+            .mount(issuer)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(wiremock::matchers::body_string_contains(
+                "device_code=test-device",
+            ))
+            .and(wiremock::matchers::body_string_contains(format!(
+                "client_id={client_id}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": access, "refresh_token": refresh,
+                "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(issuer)
+            .await;
+    }
+
+    let output = custom_oauth_command(dir.path(), &api.uri())
+        .env("CLICKHOUSECTL_AUTH_URL", format!("{}/", issuer_a.uri()))
+        .env("CLICKHOUSECTL_CLIENT_ID", "client-a")
+        .args(["auth", "login"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    let config_a = serde_json::json!({"auth_url": issuer_a.uri(), "client_id": "client-a"});
+    assert_eq!(saved["auth_config"], config_a);
+    assert_eq!(saved["api_url"], format!("{}/v1", api.uri()));
+    assert_eq!(saved["refresh_token"], "refresh-a");
+
+    // First refresh removes the variables and rotates the token. The second
+    // changes both variables to B and omits rotation: both must still use A.
+    for (changed_env, old_refresh, response) in [
+        (
+            false,
+            "refresh-a",
+            serde_json::json!({
+                "access_token": "refreshed-a", "refresh_token": "rotated-a",
+                "expires_in": 3600, "token_type": "Bearer"
+            }),
+        ),
+        (
+            true,
+            "rotated-a",
+            serde_json::json!({
+                "access_token": "refreshed-a-again", "expires_in": 3600, "token_type": "Bearer"
+            }),
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(wiremock::matchers::body_string_contains(
+                "grant_type=refresh_token",
+            ))
+            .and(wiremock::matchers::body_string_contains(
+                "client_id=client-a",
+            ))
+            .and(wiremock::matchers::body_string_contains(format!(
+                "refresh_token={old_refresh}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&issuer_a)
+            .await;
+        saved["expires_at"] = serde_json::json!(1);
+        std::fs::write(&token_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut command = custom_oauth_command(dir.path(), &api.uri());
+        if changed_env {
+            command
+                .env("CLICKHOUSECTL_AUTH_URL", issuer_b.uri())
+                .env("CLICKHOUSECTL_CLIENT_ID", "client-b");
+        }
+        let output = command.args(["auth", "whoami"]).output().unwrap();
+        assert_success(&output);
+        saved = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+        assert_eq!(saved["auth_config"], config_a);
+        assert_eq!(saved["refresh_token"], "rotated-a");
+        assert!(saved["expires_at"].as_i64().unwrap() > chrono::Utc::now().timestamp());
+        assert!(issuer_b.received_requests().await.unwrap().is_empty());
+    }
+
+    // Only a deliberate new login changes the saved issuer/token pairing.
+    let output = custom_oauth_command(dir.path(), &api.uri())
+        .env("CLICKHOUSECTL_AUTH_URL", issuer_b.uri())
+        .env("CLICKHOUSECTL_CLIENT_ID", "client-b")
+        .args(["auth", "login"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    saved = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
+    assert_eq!(
+        saved["auth_config"],
+        serde_json::json!({
+            "auth_url": issuer_b.uri(), "client_id": "client-b"
+        })
+    );
+    assert_eq!(saved["access_token"], "access-b");
+    assert_eq!(saved["refresh_token"], "refresh-b");
+    assert_eq!(issuer_a.received_requests().await.unwrap().len(), 4);
+    assert_eq!(issuer_b.received_requests().await.unwrap().len(), 2);
 }
 
 // A pipe with no reader before spawn makes failure deterministic, even if the
