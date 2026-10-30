@@ -9,15 +9,16 @@ use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags
 use clickhouse_cloud_api::models::{
     AutoscalingMode, BackupEncryptionConfig, InstancePrivateEndpointsPatch, InstanceTagsPatch,
     IpAccessListEntry, IpAccessListPatch, Service, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
-    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
-    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
-    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
+    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
+    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServicePostResponse,
+    ServiceReplicaScalingPatchRequest, ServiceState, ServiceStatePatchRequest,
+    ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
-use std::{collections::HashSet, io::IsTerminal, time::Duration};
+use std::{collections::HashSet, io::IsTerminal, path::Path, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
 /// Gap between `GET service` calls while `service delete --force` waits for a
@@ -176,6 +177,98 @@ pub(super) async fn service_get(
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         print_human(&service)?;
+    }
+    Ok(())
+}
+
+/// The `.env` connection settings for a service, with the same meanings as
+/// `local clickhouse dotenv`: `CLICKHOUSE_PORT` is the native (TLS) port. Keys the
+/// API response can't supply are left out rather than guessed.
+fn service_dotenv_vars(
+    service: Option<&Service>,
+    password: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let endpoint = |protocol: ServiceEndpointProtocol| {
+        service
+            .and_then(|service| service.endpoints.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .find(|endpoint| endpoint.protocol.as_ref() == Some(&protocol))
+    };
+    let native = endpoint(ServiceEndpointProtocol::Nativesecure);
+    let https = endpoint(ServiceEndpointProtocol::Https);
+
+    let mut vars = Vec::new();
+    if let Some(host) = native
+        .and_then(|endpoint| endpoint.host.clone())
+        .or_else(|| https.and_then(|endpoint| endpoint.host.clone()))
+    {
+        vars.push(("CLICKHOUSE_HOST", host));
+    }
+    if let Some(port) = native.and_then(|endpoint| endpoint.port) {
+        vars.push(("CLICKHOUSE_PORT", port.to_string()));
+    }
+    if let Some(port) = https.and_then(|endpoint| endpoint.port) {
+        vars.push(("CLICKHOUSE_HTTP_PORT", port.to_string()));
+    }
+    vars.push(("CLICKHOUSE_USER", "default".to_string()));
+    vars.push(("CLICKHOUSE_SECURE", "true".to_string()));
+    if let Some(password) = password {
+        vars.push(("CLICKHOUSE_PASSWORD", password.to_string()));
+    }
+    vars
+}
+
+#[derive(serde::Serialize)]
+struct ServiceDotenvOutput {
+    file: &'static str,
+    service: String,
+    vars: Vec<ServiceDotenvVar>,
+}
+
+#[derive(serde::Serialize)]
+struct ServiceDotenvVar {
+    key: &'static str,
+    value: String,
+}
+
+pub(super) async fn service_dotenv(
+    client: &CloudClient,
+    service_id: &str,
+    use_local: bool,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let service = client.get_service(&org_id, service_id).await?;
+    let vars = service_dotenv_vars(Some(&service), None);
+    if !vars.iter().any(|(key, _)| *key == "CLICKHOUSE_HOST") {
+        return Err(CloudError::new(format!(
+            "the API returned no endpoints for service {service_id}, so there is no host to \
+             write; check `clickhousectl cloud service get {service_id}`"
+        )));
+    }
+
+    let file = if use_local { ".env.local" } else { ".env" };
+    crate::dotenv::write_vars(Path::new(file), "CLICKHOUSE_", &vars)?;
+
+    let output = ServiceDotenvOutput {
+        file,
+        service: service
+            .name
+            .clone()
+            .unwrap_or_else(|| service_id.to_string()),
+        vars: vars
+            .into_iter()
+            .map(|(key, value)| ServiceDotenvVar { key, value })
+            .collect(),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("Wrote to {} (service '{}')", output.file, output.service);
+        for var in &output.vars {
+            println!("  {}={}", var.key, var.value);
+        }
     }
     Ok(())
 }
@@ -611,17 +704,98 @@ fn service_credentials_block(password: Option<&str>, service_id: Option<uuid::Uu
 pub(super) async fn service_create(
     client: &CloudClient,
     options: CreateServiceOptions,
+    dotenv: Option<&Path>,
     json: bool,
 ) -> CloudResult<()> {
+    // The password is returned only once, so find an unwritable file before
+    // the service exists rather than after.
+    if let Some(path) = dotenv {
+        check_dotenv_target(path)?;
+    }
     let request = build_create_service_request(&options)?;
     let org_id = resolve_org_id(client).await?;
     validate_dynamic_byoc_profile(client, &org_id, &request).await?;
     let response = client.create_service(&org_id, &request).await?;
+    let service_id = response.service.as_ref().and_then(|service| service.id);
 
+    let written = match dotenv {
+        None => None,
+        Some(path) => {
+            let vars = service_dotenv_vars(response.service.as_ref(), response.password.as_deref());
+            if let Err(error) = crate::dotenv::write_vars(path, "CLICKHOUSE_", &vars) {
+                // Print the password as if --dotenv were absent, so the
+                // credential is never lost, then fail the command.
+                print_created_service(&response, service_id, json)?;
+                let message = format!(
+                    "the service was created, but writing {} failed: {error}. The one-time \
+                     password is in the output above.",
+                    path.display()
+                );
+                return Err(CloudError {
+                    message,
+                    ..CloudError::from(error)
+                });
+            }
+            if !vars.iter().any(|(key, _)| *key == "CLICKHOUSE_HOST") {
+                eprint_line(format!(
+                    "Warning: the API response had no endpoints, so {} has no host or ports. \
+                     Add them later with `clickhousectl cloud service dotenv {}`.",
+                    path.display(),
+                    service_id.map_or_else(|| "<service-id>".to_string(), |id| id.to_string())
+                ));
+            }
+            Some(DotenvWritten {
+                file: path.display().to_string(),
+                keys: vars.into_iter().map(|(key, _)| key).collect(),
+            })
+        }
+    };
+
+    match written {
+        None => print_created_service(&response, service_id, json)?,
+        Some(written) if json => {
+            let mut value = serde_json::to_value(&response)?;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("password");
+                object.insert("dotenv".to_string(), serde_json::to_value(&written)?);
+            }
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Some(written) => {
+            println!("Service created successfully!");
+            println!();
+            if let Some(service) = &response.service {
+                print_human(service)?;
+            }
+            println!();
+            if response.password.is_some() {
+                println!(
+                    "Credentials: username default; the one-time password was written to {} as \
+                     CLICKHOUSE_PASSWORD (not shown).",
+                    written.file
+                );
+            } else {
+                println!("{}", service_credentials_block(None, service_id));
+            }
+            println!("Wrote {} to {}", written.keys.join(", "), written.file);
+            if let Some(hint) = service_query_hint(service_id) {
+                println!();
+                println!("{}", hint);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The create output without `--dotenv`, which shows the one-time password.
+fn print_created_service(
+    response: &ServicePostResponse,
+    service_id: Option<uuid::Uuid>,
+    json: bool,
+) -> CloudResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        println!("{}", serde_json::to_string_pretty(response)?);
     } else {
-        let service_id = response.service.as_ref().and_then(|service| service.id);
         println!("Service created successfully!");
         println!();
         if let Some(service) = &response.service {
@@ -636,6 +810,48 @@ pub(super) async fn service_create(
             println!();
             println!("{}", hint);
         }
+    }
+    Ok(())
+}
+
+/// What `create --dotenv` wrote, reported in place of the password.
+#[derive(serde::Serialize)]
+struct DotenvWritten {
+    file: String,
+    keys: Vec<&'static str>,
+}
+
+/// Reject a `--dotenv` target that cannot be written, before the service is
+/// created. Opening for append checks write access without changing the file.
+fn check_dotenv_target(path: &Path) -> CloudResult<()> {
+    if path.exists() {
+        if !path.is_file() {
+            return Err(CloudError::usage(format!(
+                "--dotenv {} is not a regular file",
+                path.display()
+            )));
+        }
+        let with_path = |error: std::io::Error| CloudError {
+            message: format!("--dotenv {}: {error}", path.display()),
+            ..CloudError::from(error)
+        };
+        std::fs::read_to_string(path).map_err(with_path)?;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(with_path)?;
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if !parent.is_dir() {
+        return Err(CloudError::usage(format!(
+            "--dotenv {}: directory {} does not exist",
+            path.display(),
+            parent.display()
+        )));
     }
     Ok(())
 }
@@ -2006,5 +2222,84 @@ mod tests {
         assert_eq!(start.command, Some(ServiceStatePatchRequestCommand::Start));
         assert_eq!(stop.command, Some(ServiceStatePatchRequestCommand::Stop));
         assert_eq!(awake.command, Some(ServiceStatePatchRequestCommand::Awake));
+    }
+
+    fn dotenv_test_service(endpoints: serde_json::Value) -> Service {
+        serde_json::from_value(serde_json::json!({ "endpoints": endpoints })).unwrap()
+    }
+
+    #[test]
+    fn service_dotenv_vars_reads_native_and_https_endpoints() {
+        let service = dotenv_test_service(serde_json::json!([
+            {"protocol": "https", "host": "abc.example.clickhouse.cloud", "port": 8443},
+            {"protocol": "mysql", "host": "mysql.example", "port": 3306},
+            {"protocol": "nativesecure", "host": "abc.example.clickhouse.cloud", "port": 9440}
+        ]));
+        assert_eq!(
+            service_dotenv_vars(Some(&service), Some("secret")),
+            vec![
+                (
+                    "CLICKHOUSE_HOST",
+                    "abc.example.clickhouse.cloud".to_string()
+                ),
+                ("CLICKHOUSE_PORT", "9440".to_string()),
+                ("CLICKHOUSE_HTTP_PORT", "8443".to_string()),
+                ("CLICKHOUSE_USER", "default".to_string()),
+                ("CLICKHOUSE_SECURE", "true".to_string()),
+                ("CLICKHOUSE_PASSWORD", "secret".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn service_dotenv_vars_leaves_out_what_the_response_lacks() {
+        let https_only = dotenv_test_service(serde_json::json!([
+            {"protocol": "https", "host": "abc.example", "port": 8443},
+            {"protocol": "nativesecure", "host": "abc.example"}
+        ]));
+        assert_eq!(
+            service_dotenv_vars(Some(&https_only), None),
+            vec![
+                ("CLICKHOUSE_HOST", "abc.example".to_string()),
+                ("CLICKHOUSE_HTTP_PORT", "8443".to_string()),
+                ("CLICKHOUSE_USER", "default".to_string()),
+                ("CLICKHOUSE_SECURE", "true".to_string()),
+            ]
+        );
+
+        let expected_bare = vec![
+            ("CLICKHOUSE_USER", "default".to_string()),
+            ("CLICKHOUSE_SECURE", "true".to_string()),
+        ];
+        assert_eq!(service_dotenv_vars(None, None), expected_bare);
+        let no_endpoints: Service = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(
+            service_dotenv_vars(Some(&no_endpoints), None),
+            expected_bare
+        );
+    }
+
+    #[test]
+    fn check_dotenv_target_accepts_writable_files_and_rejects_bad_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join(".env");
+        std::fs::write(&existing, "KEEP=1\n").unwrap();
+
+        check_dotenv_target(&existing).expect("existing file");
+        check_dotenv_target(&dir.path().join("new.env")).expect("new file in existing directory");
+        check_dotenv_target(Path::new(".env")).expect("bare file name in the current directory");
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "KEEP=1\n");
+        assert!(!dir.path().join("new.env").exists());
+
+        for path in [
+            dir.path().to_path_buf(),
+            dir.path().join("missing").join(".env"),
+        ] {
+            let error = check_dotenv_target(&path).expect_err("must be rejected");
+            assert!(
+                matches!(error.kind, crate::cloud::client::CloudErrorKind::Usage),
+                "{path:?}"
+            );
+        }
     }
 }

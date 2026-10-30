@@ -1303,18 +1303,7 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
     let filename = if use_local { ".env.local" } else { ".env" };
     let path = std::path::Path::new(filename);
 
-    let content = if path.exists() {
-        let existing = std::fs::read_to_string(path)?;
-        crate::local::update_dotenv(&existing, "POSTGRES_", &vars)
-    } else {
-        vars.iter()
-            .map(|(k, v)| crate::local::format_dotenv_line("", k, v))
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n"
-    };
-
-    std::fs::write(path, &content)?;
+    crate::dotenv::write_vars(path, "POSTGRES_", &vars)?;
 
     let out = output::PostgresDotenvOutput {
         file: filename.to_string(),

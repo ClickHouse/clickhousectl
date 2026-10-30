@@ -21,6 +21,24 @@ pub enum ServiceCommands {
         service_id: NameSelector,
     },
 
+    /// Write the service's connection settings to a .env file
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT (native TLS), CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER and
+  CLICKHOUSE_SECURE to .env in the current directory (.env.local with --local).
+  No password: the API returns it only once, and `cloud service create --dotenv` writes it.
+  An existing file is edited in place: only these keys are replaced, so a CLICKHOUSE_PASSWORD
+  already in it is kept.")]
+    Dotenv {
+        /// Service ID
+        #[command(flatten)]
+        service_id: NameSelector,
+
+        /// Write to .env.local instead of .env
+        #[arg(long)]
+        local: bool,
+    },
+
     /// Discover available service profiles
     Profile {
         #[command(subcommand)]
@@ -45,6 +63,7 @@ pub enum ServiceCommands {
 CONTEXT FOR AGENTS:
   Omitting --ip-allow opens the service to 0.0.0.0/0 (\"Allow all\").
   The initial password is printed once — save it; `cloud service reset-password <id>` issues a new one.
+  --dotenv writes it and the connection settings to the file instead, keeping it out of the output.
   Returns before the service is up: poll `cloud service get <id>` until state is `running` (minutes).")]
     Create {
         /// Service name
@@ -180,6 +199,17 @@ CONTEXT FOR AGENTS:
         /// Enable or disable service core dump collection
         #[arg(long)]
         enable_core_dumps: Option<bool>,
+
+        /// Write connection settings and the password to FILE (.env if no FILE)
+        ///
+        /// An existing file is edited in place: only the CLICKHOUSE_* keys written are replaced.
+        #[arg(
+            long,
+            value_name = "FILE",
+            num_args = 0..=1,
+            default_missing_value = ".env"
+        )]
+        dotenv: Option<std::path::PathBuf>,
     },
 
     /// Delete a service
@@ -850,6 +880,7 @@ impl ServiceCommands {
         match self {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
+            ServiceCommands::Dotenv { .. } => false,
             ServiceCommands::Profile { command } => command.is_write(),
             ServiceCommands::Settings { command } => command.is_write(),
             ServiceCommands::ScalingSchedule { command } => command.is_write(),
@@ -1076,11 +1107,13 @@ mod tests {
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
+            dotenv,
         } = command
         else {
             panic!("expected service create");
         };
 
+        assert!(dotenv.is_none());
         assert_eq!(name, "default-service");
         assert_eq!(provider, "aws");
         assert_eq!(region, "us-east-1");
@@ -1326,6 +1359,82 @@ mod tests {
             .expect("malformed filter must fail");
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
         }
+    }
+
+    #[test]
+    fn parses_service_dotenv_selector_and_local_flag() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "dotenv",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!command.is_write());
+        let ServiceCommands::Dotenv { service_id, local } = command else {
+            panic!("expected service dotenv");
+        };
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
+        assert!(!local);
+
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "dotenv",
+            "--name",
+            "analytics",
+            "--local",
+        ]);
+        let ServiceCommands::Dotenv { service_id, local } = command else {
+            panic!("expected service dotenv");
+        };
+        assert_eq!(service_id.name.as_deref(), Some("analytics"));
+        assert!(service_id.id.is_none());
+        assert!(local);
+    }
+
+    #[test]
+    fn parses_service_create_dotenv_with_and_without_a_file() {
+        for (flags, expected) in [
+            (vec!["--dotenv"], ".env"),
+            (vec!["--dotenv", ".env.local"], ".env.local"),
+            (vec!["--dotenv=config/app.env"], "config/app.env"),
+            // A following flag is not taken as the file.
+            (vec!["--dotenv", "--org-id", "org-1"], ".env"),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "create",
+                "--name",
+                "svc",
+            ];
+            args.extend(flags);
+            let ServiceCommands::Create { dotenv, .. } = parse_service(&args) else {
+                panic!("expected service create");
+            };
+            assert_eq!(dotenv.as_deref(), Some(std::path::Path::new(expected)));
+        }
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "svc",
+            "--dotenv",
+            "a.env",
+            "--dotenv",
+            "b.env",
+        ])
+        .err()
+        .expect("--dotenv is not repeatable");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

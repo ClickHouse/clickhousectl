@@ -17,6 +17,8 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | Command | Successful output |
 | --- | --- |
 | `cloud service list --json` | Bare array |
+| `cloud service create --json` | The API's `service` and one-time `password`; with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
+| `cloud service dotenv --json` | Object with `file`, `service` (name), and `vars` of `key` and `value`; never a password |
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |

@@ -23,6 +23,23 @@ clickhousectl cloud service query <service-id> --org-id <org-id> \
 
 The HTTP Query API needs no local ClickHouse binary or service password. OAuth gives read-only SQL. API-key queries may automatically bind the caller's key to a Query API endpoint; new endpoints use `sql_console_admin`. Pass `--no-auto-enable` to require an existing binding. See [SQL and Query API behavior](../reference/query-api.md) before automating writes, using bulk input, or retrying a timed-out query.
 
+### Write connection settings to `.env`
+
+The password is returned only once, so write it to your application's `.env` at creation with `--dotenv`. The password then goes only to the file, not to the terminal or JSON output. Without a file name it writes `.env` in the current directory.
+
+```bash
+clickhousectl cloud service create --org-id <org-id> --name analytics \
+  --ip-allow 203.0.113.10/32 --dotenv .env.local
+```
+
+For an existing service, `service dotenv` writes the same settings without a password (`.env`, or `.env.local` with `--local`):
+
+```bash
+clickhousectl cloud service dotenv <service-id> --org-id <org-id> --local
+```
+
+Both write `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT` (the native TLS port, as in `local clickhouse dotenv`), `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_USER` (`default`) and `CLICKHOUSE_SECURE=true`; `create --dotenv` adds `CLICKHOUSE_PASSWORD`. An existing file is edited in place: only those keys are replaced, so a password written at creation survives a later `service dotenv`. If the file can't be written, `create` refuses before creating the service; if a write fails after creation, it prints the password as usual and exits 1. The file holds a credential: keep it out of version control.
+
 ## Change capacity and settings
 
 Inspect the service and its available profiles before choosing memory and replica counts:
