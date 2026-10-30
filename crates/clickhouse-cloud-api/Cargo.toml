@@ -52,6 +52,13 @@ uuid = "1"
 wiremock = "0.6"
 tempfile = "3.27.0"
 
+# The offline model tests are one binary split into per-domain modules under
+# tests/models/; the explicit target keeps the `models_test` name.
+
+[[test]]
+name = "models_test"
+path = "tests/models/main.rs"
+
 # ClickPipes E2E test binaries live under tests/clickpipes/. Cargo only
 # auto-discovers .rs files directly under tests/, so each one is declared here.
 
