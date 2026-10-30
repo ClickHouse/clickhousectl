@@ -1,4 +1,7 @@
-use super::clickstack_enums::*;
+mod enums;
+
+pub use enums::*;
+
 use serde::{Deserialize, Serialize};
 
 /// `ClickStackAlertChannel` - one of multiple variants.
