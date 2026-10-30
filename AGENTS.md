@@ -39,8 +39,9 @@ work on a branch, with an associated issue and a PR.
 - New Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not
   `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence,
   error conversion, and response unwrapping.
-- Exception, do not copy: `src/cloud/postgres.rs` handlers and the query paths in `src/cloud/services.rs` still
-  call `client.api()` directly (`postgres.rs` also uses a local `unwrap_api` instead of `unwrap_response`).
+- One deliberate exception to wrapper error conversion: `run_service_query{,_bearer}` in `src/cloud/services.rs`
+  return the raw library error and an unread `reqwest::Response`, because the query paths stream the body and
+  classify the error themselves before `convert_query_error`. Do not copy that shape for other endpoints.
 - Cloud handlers support `--json` unless there is good reason not to. JSON is emitted automatically when `--json`
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
 - `CloudError.kind` decides the top-level error: `Auth` (401/403, missing credentials) → exit 4; `Usage` (input
