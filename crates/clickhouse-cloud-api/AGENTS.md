@@ -154,8 +154,11 @@ from Rust.
   HTTP query helper). Used by every integration binary.
 - `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs` —
   cloud-service, Postgres-service, and organization lifecycle.
-- `tests/client_test.rs`, `tests/models/`, `tests/model_facade_test.rs`, `tests/run_query_test.rs`,
+- `tests/client/`, `tests/models/`, `tests/model_facade_test.rs`, `tests/run_query_test.rs`,
   `tests/service_query_key_cli_test.rs` — offline client, model, facade and query-path coverage.
+  `tests/client/` is the single `client_test` binary: `main.rs` holds the shared wiremock helpers and declares one
+  module per `src/client/` domain that has tests, plus `client.rs` for construction, auth and error handling; add a
+  client test to the module of the method it calls.
   `tests/models/` is the single `models_test` binary: `main.rs` declares one module per `src/models/` domain
   (small domains folded into their parent) plus `cross_domain.rs`; add a model test to its domain's module.
 - `tests/clickpipes/` — ClickPipes E2E, including external cloud services. Only Postgres CDC (ClickHouse and
