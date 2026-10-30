@@ -19,3 +19,6 @@ e7fcdb1a8f1e48c564717f1ccd0fa654d182aa73
 
 # Split client/organizations.rs into byoc, invitations, members and rbac (#1173)
 9e20dd888a937f5f0b610b22a71aef4ff70b9357
+
+# Split tests/models_test.rs into per-domain tests/models/ modules (#1173)
+bb5834b93b5c9d6640c7720991aaef9f750a61ef
