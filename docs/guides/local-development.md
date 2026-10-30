@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-Run project-local commands from the directory that owns your `.clickhouse/`. The CLI uses the exact current directory; it does not search parents. ClickHouse binaries are shared globally in `~/.clickhouse/`, while each project's server data is isolated.
+Run project-local commands from the directory that owns your `.clickhouse/`. The CLI uses the exact current directory; it does not search parents. Of the local commands, only `local init` and server starts create `.clickhouse/`; commands that list, stop, remove or connect to servers leave a directory without one unchanged. ClickHouse binaries are shared globally in `~/.clickhouse/`, while each project's server data is isolated.
 
 ## Start ClickHouse and run SQL
 

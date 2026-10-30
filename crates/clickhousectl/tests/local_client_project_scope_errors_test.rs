@@ -370,7 +370,7 @@ fn invalid_metadata_lock_path_keeps_managed_scope_in_json_and_human_errors() {
         stderr.starts_with("Error: Managed client mode: server 'default' could not be resolved")
     );
     assert!(stderr.contains(&project_path));
-    assert!(stderr.contains("create the server metadata lock directory"));
+    assert!(stderr.contains("open the server metadata lock file"));
     assert!(stderr.contains("`clickhousectl local server list`"));
     assert!(stderr.contains("`clickhousectl local client --host <host> --port <port>`"));
 }

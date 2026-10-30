@@ -491,7 +491,12 @@ async fn deploy(
     if let Some(info) = &target.running {
         drop(lock);
         was_loaded = check_name_is_free(info, server_name, name).await?;
-        lock = server::lock_metadata()?;
+        // The server existed a moment ago; if its state has gone since, write
+        // nothing rather than recreate it.
+        lock = match server::lock_existing_metadata()? {
+            Some(lock) => lock,
+            None => return Err(server_not_found(server_name)?),
+        };
     }
 
     let scripts_dir = target.data_dir.join(SCRIPTS_DIR).join(name);
@@ -1118,7 +1123,14 @@ struct ServerTarget {
 /// callers can hold it across their file writes and release it before any
 /// HTTP round trip.
 fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
-    let lock = server::lock_metadata()?;
+    // Without server state there is no server to target, and nothing is
+    // created to find that out.
+    let Some(lock) = server::lock_existing_metadata()? else {
+        if server::is_pg_instance_key(name) {
+            return Err(Error::UdfServerIsPostgres(name.to_owned()));
+        }
+        return Err(server_not_found(name)?);
+    };
     server::recover_current_project_servers_locked(&lock)?;
     let entry = server::server_entry_locked(name, &lock)?;
     let is_postgres = match entry.as_ref().and_then(|entry| entry.info.as_ref()) {
@@ -1133,14 +1145,18 @@ fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
         .and_then(|entry| entry.info);
     let data_dir = server::server_data_dir(name);
     if running.is_none() && !data_dir.is_dir() {
-        let project_dir = crate::init::canonical_project_dir()?;
-        return Err(Error::UdfServerNotFound {
-            name: name.to_owned(),
-            project_has_state: looks_like_project_root(&project_dir),
-            project_dir,
-        });
+        return Err(server_not_found(name)?);
     }
     Ok((ServerTarget { data_dir, running }, lock))
+}
+
+fn server_not_found(name: &str) -> Result<Error> {
+    let project_dir = crate::init::canonical_project_dir()?;
+    Ok(Error::UdfServerNotFound {
+        name: name.to_owned(),
+        project_has_state: looks_like_project_root(&project_dir),
+        project_dir,
+    })
 }
 
 /// Whether `dir` is plausibly where servers are started: it has the
@@ -1150,8 +1166,9 @@ fn looks_like_project_root(dir: &Path) -> bool {
     if dir.join("clickhouse").is_dir() {
         return true;
     }
-    // The metadata lock file is created by any `local udf` call, even in a
-    // subdirectory, so it does not count as server state.
+    // Dotfiles are metadata bookkeeping (the lock file, interrupted temporary
+    // writes), not a server's state. Read-only commands no longer create the
+    // lock file (#1077), but it outlives the last removed server.
     std::fs::read_dir(dir.join(".clickhouse").join("servers"))
         .map(|entries| {
             entries

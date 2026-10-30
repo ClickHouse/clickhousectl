@@ -160,6 +160,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_postgres_client_input_test.rs",
                     "crates/clickhousectl/tests/local_postgres_readiness_test.rs",
                     "crates/clickhousectl/tests/local_postgres_start_validation_test.rs",
+                    "crates/clickhousectl/tests/local_readonly_no_project_state_test.rs",
                     "crates/clickhousectl/tests/local_remove_default_test.rs",
                     "crates/clickhousectl/tests/local_remove_global_guard_test.rs",
                     "crates/clickhousectl/tests/local_server_managed_config_test.rs",

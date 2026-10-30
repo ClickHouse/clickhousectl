@@ -108,12 +108,18 @@ fn servers_dir() -> PathBuf {
 /// from their final state read through their state-determining write. No code
 /// holding it may acquire an install lock, and metadata helpers with a
 /// `_locked` suffix never acquire it again.
+///
+/// Only commands that create servers may create the lock directory
+/// ([`lock_metadata`]). Commands that read, stop or remove existing servers use
+/// [`lock_existing_metadata`], which returns `None` when the project has no
+/// server state, so they never leave `.clickhouse/` behind (issue #1077).
 pub(crate) struct MetadataLock {
     _file: File,
     dir: PathBuf,
 }
 
 impl MetadataLock {
+    /// Acquire the lock in `dir`, creating the directory first.
     pub(crate) fn acquire_at(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|source| {
             server_lock_error(
@@ -123,21 +129,47 @@ impl MetadataLock {
                 source,
             )
         })?;
+        Self::open_and_lock(dir)?.ok_or_else(|| {
+            server_lock_error(
+                "open the server metadata lock file",
+                &dir.join(METADATA_LOCK_FILE),
+                "Check that nothing removes the server metadata directory, then retry.",
+                std::io::ErrorKind::NotFound.into(),
+            )
+        })
+    }
+
+    /// Acquire the lock in `dir` only if the directory already exists.
+    ///
+    /// There is no separate existence check: opening the lock file is the
+    /// check, so a concurrent `start` that creates the directory is either
+    /// seen (and waited for, through the lock) or ordered after this caller,
+    /// which then correctly observes no servers.
+    pub(crate) fn acquire_existing_at(dir: &Path) -> Result<Option<Self>> {
+        Self::open_and_lock(dir)
+    }
+
+    /// Open and lock `dir/.metadata.lock`. `None` means `dir` does not exist.
+    fn open_and_lock(dir: &Path) -> Result<Option<Self>> {
         let path = dir.join(METADATA_LOCK_FILE);
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&path)
-            .map_err(|source| {
-                server_lock_error(
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(server_lock_error(
                     "open the server metadata lock file",
                     &path,
                     "Check read and write access to the lock file and its directory, then retry.",
                     source,
-                )
-            })?;
+                ));
+            }
+        };
         file.lock().map_err(|source| {
             server_lock_error(
                 "acquire the server metadata lock",
@@ -146,15 +178,23 @@ impl MetadataLock {
                 source,
             )
         })?;
-        Ok(Self {
+        Ok(Some(Self {
             _file: file,
             dir: dir.to_path_buf(),
-        })
+        }))
     }
 }
 
+/// Lock this project's server metadata, creating `.clickhouse/servers/`.
+/// Only for commands that create servers.
 pub(crate) fn lock_metadata() -> Result<MetadataLock> {
     MetadataLock::acquire_at(&servers_dir())
+}
+
+/// Lock this project's server metadata if it has any. `None` means the project
+/// has no server state: nothing to read, recover, stop or remove.
+pub(crate) fn lock_existing_metadata() -> Result<Option<MetadataLock>> {
+    MetadataLock::acquire_existing_at(&servers_dir())
 }
 
 /// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
@@ -305,7 +345,9 @@ pub(crate) fn try_remove_server_info_locked(name: &str, lock: &MetadataLock) -> 
 /// The PID match avoids overwriting metadata when a newer process was already
 /// recorded before this transition began.
 pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
-    let lock = lock_metadata()?;
+    let Some(lock) = lock_existing_metadata()? else {
+        return Ok(());
+    };
     mark_server_stopped_locked(name, pid, &lock)
 }
 
@@ -427,7 +469,9 @@ fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<Se
 /// it's `<name>-pg<major>`. Also runs process/container discovery so
 /// orphaned instances reappear.
 pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
-    let lock = lock_metadata()?;
+    let Some(lock) = lock_existing_metadata()? else {
+        return Ok(Vec::new());
+    };
     recover_current_project_servers_locked(&lock)?;
     list_all_servers_locked(&lock)
 }
@@ -579,7 +623,10 @@ pub(crate) fn advisory_running_server_count_locked(lock: &MetadataLock) -> usize
 
 /// Check if a named server is currently running.
 pub fn is_server_running(name: &str) -> Result<bool> {
-    let lock = lock_metadata()?;
+    let Some(lock) = lock_existing_metadata()? else {
+        validate_server_name(name)?;
+        return Ok(false);
+    };
     is_server_running_locked(name, &lock)
 }
 
@@ -702,7 +749,10 @@ fn kill_process(pid: u32) -> Result<()> {
 ///   the metadata file so a subsequent `start` resumes the same container
 ///   (preserving the password and any other PGDATA-encoded settings).
 pub fn kill_server(name: &str) -> Result<()> {
-    let lock = lock_metadata()?;
+    let Some(lock) = lock_existing_metadata()? else {
+        validate_server_name(name)?;
+        return Err(Error::ServerNotRunning(name.to_string()));
+    };
     kill_server_locked(name, &lock)
 }
 
@@ -733,19 +783,34 @@ pub(crate) fn kill_server_locked(name: &str, lock: &MetadataLock) -> Result<()> 
 /// or generate a random name if "default" is already running.
 /// Returns an error if the provided name contains path traversal characters.
 pub fn resolve_name(name: Option<&str>) -> Result<String> {
-    let lock = lock_metadata()?;
-    resolve_name_locked(name, &lock)
+    match lock_existing_metadata()? {
+        Some(lock) => resolve_name_locked(name, &lock),
+        // No metadata, so no running "default" to avoid.
+        None => resolve_name_with(name, || Ok(false), || unreachable!()),
+    }
 }
 
 pub(crate) fn resolve_name_locked(name: Option<&str>, lock: &MetadataLock) -> Result<String> {
+    resolve_name_with(
+        name,
+        || is_server_running_locked("default", lock),
+        || generate_random_name_locked(lock),
+    )
+}
+
+fn resolve_name_with(
+    name: Option<&str>,
+    default_running: impl FnOnce() -> Result<bool>,
+    generate: impl FnOnce() -> Result<String>,
+) -> Result<String> {
     match name {
         Some(n) => {
             validate_server_name(n)?;
             Ok(n.to_string())
         }
         None => {
-            if is_server_running_locked("default", lock)? {
-                generate_random_name_locked(lock)
+            if default_running()? {
+                generate()
             } else {
                 Ok("default".to_string())
             }
@@ -1011,7 +1076,9 @@ pub fn now_timestamp() -> String {
 /// reports, so it is the process `stop` has to signal — the watchdog when the
 /// server has one — exactly as if `server start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
-    let lock = lock_metadata()?;
+    let Some(lock) = lock_existing_metadata()? else {
+        return Ok(());
+    };
     recover_current_project_servers_locked(&lock)
 }
 
@@ -1130,12 +1197,14 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
     // One process scan feeds both sources: discovery shells out to
     // `pgrep`/`lsof`/`ps`, so scanning twice would double the cost of the guard.
     let processes = discovery::discover_clickhouse_processes();
-    let project_servers = {
-        let lock = lock_metadata()?;
-        // Recover orphans first so a server whose metadata file is missing is
-        // still counted.
-        recover_from_discovered_locked(&processes, &lock)?;
-        list_running_servers_locked(&lock)?
+    let project_servers = match lock_existing_metadata()? {
+        Some(lock) => {
+            // Recover orphans first so a server whose metadata file is missing
+            // is still counted.
+            recover_from_discovered_locked(&processes, &lock)?;
+            list_running_servers_locked(&lock)?
+        }
+        None => Vec::new(),
     };
     Ok(select_version_users(
         &project_servers,
@@ -1390,6 +1459,97 @@ mod tests {
             } if path == lock_directory
                 && source.kind() == std::io::ErrorKind::AlreadyExists
         ));
+    }
+
+    #[test]
+    fn existing_metadata_lock_is_none_without_creating_the_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join(".clickhouse").join("servers");
+
+        assert!(
+            MetadataLock::acquire_existing_at(&lock_directory)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!directory.path().join(".clickhouse").exists());
+    }
+
+    #[test]
+    fn existing_metadata_lock_reads_an_existing_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let writer = MetadataLock::acquire_at(directory.path()).unwrap();
+        save_server_info_locked(&test_info(0, ""), &writer).unwrap();
+        drop(writer);
+
+        let lock = MetadataLock::acquire_existing_at(directory.path())
+            .unwrap()
+            .expect("existing directory yields a lock");
+        assert_eq!(lock.dir, directory.path());
+        let entries = list_all_servers_locked(&lock).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "default");
+    }
+
+    #[test]
+    fn existing_metadata_lock_creates_only_the_lock_file_in_an_existing_directory() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let lock = MetadataLock::acquire_existing_at(directory.path()).unwrap();
+
+        assert!(lock.is_some());
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [METADATA_LOCK_FILE]);
+    }
+
+    #[test]
+    fn existing_metadata_lock_reports_a_non_directory_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join("servers");
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+
+        let error = match MetadataLock::acquire_existing_at(&lock_directory) {
+            Ok(_) => panic!("metadata lock acquisition unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "open the server metadata lock file",
+                path,
+                ..
+            } if path == lock_directory.join(METADATA_LOCK_FILE)
+        ));
+    }
+
+    #[test]
+    fn existing_metadata_lock_waits_for_a_creating_holder() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join("servers");
+        let holder = MetadataLock::acquire_at(&lock_directory).unwrap();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let reader_dir = lock_directory.clone();
+
+        let reader = std::thread::spawn(move || {
+            let lock = MetadataLock::acquire_existing_at(&reader_dir).unwrap();
+            acquired_tx.send(()).unwrap();
+            let lock = lock.expect("directory created by the holder");
+            list_all_servers_locked(&lock).unwrap().len()
+        });
+        assert!(
+            acquired_rx
+                .recv_timeout(Duration::from_millis(200))
+                .is_err(),
+            "reader acquired the lock while the creator held it"
+        );
+        save_server_info_locked(&test_info(0, ""), &holder).unwrap();
+        drop(holder);
+
+        acquired_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(reader.join().unwrap(), 1);
     }
 
     #[test]
