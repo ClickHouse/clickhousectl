@@ -30,7 +30,7 @@ pub struct DiscoveredProcess {
     ///
     /// The watchdog owns the lifetime of the pair: it forwards SIGTERM to the
     /// server it supervises and exits with it, so signalling the watchdog stops
-    /// both together. `server start` records that same supervising PID in the
+    /// both together. `clickhouse start` records that same supervising PID in the
     /// server's metadata, so both views of a server agree (issue #664).
     pub pid: u32,
     pub project_root: String,

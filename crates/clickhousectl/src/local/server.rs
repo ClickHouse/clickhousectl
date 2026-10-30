@@ -478,11 +478,37 @@ pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
 }
 
 pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerEntry>> {
-    list_all_servers_locked_inner(lock, false)
+    list_all_servers_locked_inner(lock, None, false)
+}
+
+/// List this project's servers of one engine (`Some`) or of both (`None`).
+///
+/// Recovery and liveness checks run only for the selected engine, so a
+/// ClickHouse-only list never contacts Docker and a Postgres-only list never
+/// scans processes.
+pub fn list_project_servers(engine: Option<Engine>) -> Result<Vec<ServerEntry>> {
+    let Some(lock) = lock_recovered_engine_metadata(engine)? else {
+        return Ok(Vec::new());
+    };
+    list_all_servers_locked_inner(&lock, engine, false)
+}
+
+/// Running servers of one engine in this project. Take `lock` with
+/// [`lock_recovered_engine_metadata`] so that engine's orphans are included.
+pub(crate) fn list_running_engine_servers_locked(
+    lock: &MetadataLock,
+    engine: Engine,
+) -> Result<Vec<ServerInfo>> {
+    Ok(list_all_servers_locked_inner(lock, Some(engine), false)?
+        .into_iter()
+        .filter(|entry| entry.running)
+        .filter_map(|entry| entry.info)
+        .collect())
 }
 
 fn list_all_servers_locked_inner(
     lock: &MetadataLock,
+    engine: Option<Engine>,
     skip_entry_errors: bool,
 ) -> Result<Vec<ServerEntry>> {
     let dir = &lock.dir;
@@ -507,6 +533,16 @@ fn list_all_servers_locked_inner(
             Some(s) => s,
             None => continue,
         };
+        if let Some(engine) = engine {
+            // Skip other engines before the liveness check, which for
+            // Postgres would contact Docker.
+            match load_info_locked(stem, lock) {
+                Ok(Some(info)) if info.engine == engine => {}
+                Ok(_) => continue,
+                Err(_) if skip_entry_errors => continue,
+                Err(error) => return Err(error),
+            }
+        }
         let entry = match server_entry_locked(stem, lock) {
             Ok(entry) => entry,
             Err(_) if skip_entry_errors => continue,
@@ -617,7 +653,7 @@ pub(crate) fn list_running_servers_locked(lock: &MetadataLock) -> Result<Vec<Ser
 
 /// Best-effort count used only for the informational notice during start.
 pub(crate) fn advisory_running_server_count_locked(lock: &MetadataLock) -> usize {
-    list_all_servers_locked_inner(lock, true)
+    list_all_servers_locked_inner(lock, None, true)
         .map(|entries| entries.iter().filter(|entry| entry.running).count())
         .unwrap_or_default()
 }
@@ -1072,16 +1108,48 @@ pub fn now_timestamp() -> String {
 ///
 /// Scans for running ClickHouse processes whose cwd matches this project's
 /// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
-/// metadata file, a new `ServerInfo` is saved so it appears in `server list`
+/// metadata file, a new `ServerInfo` is saved so it appears in `clickhouse list`
 /// and can be managed normally. The recovered `pid` is the one discovery
 /// reports, so it is the process `stop` has to signal — the watchdog when the
-/// server has one — exactly as if `server start` had written it.
+/// server has one — exactly as if `clickhouse start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
     lock_recovered_metadata().map(drop)
 }
 
 pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Result<()> {
-    recover_from_discovered_locked(&discovery::discover_clickhouse_processes(), lock)
+    recover_current_project_engine_locked(lock, None)
+}
+
+/// Recover orphans of one engine (`Some`) or of both (`None`).
+fn recover_current_project_engine_locked(
+    lock: &MetadataLock,
+    engine: Option<Engine>,
+) -> Result<()> {
+    recover_engine_from_discovered_locked(&engine_processes(engine), lock, engine)
+}
+
+/// The ClickHouse process scan an engine's discovery needs: none for Postgres,
+/// whose instances are found through Docker.
+fn engine_processes(engine: Option<Engine>) -> Vec<discovery::DiscoveredProcess> {
+    match engine {
+        Some(Engine::Postgres) => Vec::new(),
+        _ => discovery::discover_clickhouse_processes(),
+    }
+}
+
+/// [`recover_current_project_engine_locked`] over an already-completed process scan.
+fn recover_engine_from_discovered_locked(
+    processes: &[discovery::DiscoveredProcess],
+    lock: &MetadataLock,
+    engine: Option<Engine>,
+) -> Result<()> {
+    match engine {
+        None => recover_from_discovered_locked(processes, lock),
+        Some(Engine::Clickhouse) => recover_clickhouse_from_discovered_locked(processes, lock),
+        Some(Engine::Postgres) => {
+            docker::recover_project_postgres_blocking(&current_project_dir()?, lock)
+        }
+    }
 }
 
 /// Lock this project's server metadata and recover orphaned servers into it.
@@ -1092,26 +1160,41 @@ pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Res
 /// as if the state had been there. `None` means there is no server state and
 /// nothing to recover, and then nothing is created (issue #1077).
 pub(crate) fn lock_recovered_metadata() -> Result<Option<MetadataLock>> {
-    lock_recovered_metadata_from(&discovery::discover_clickhouse_processes())
+    lock_recovered_engine_metadata(None)
 }
 
-/// [`lock_recovered_metadata`] over an already-completed process scan.
+/// [`lock_recovered_metadata`] for one engine (`Some`) or both (`None`).
+///
+/// Discovery and recovery run only for the selected engine, so a
+/// ClickHouse-only lookup never contacts Docker and a Postgres-only one never
+/// scans processes.
+pub(crate) fn lock_recovered_engine_metadata(
+    engine: Option<Engine>,
+) -> Result<Option<MetadataLock>> {
+    lock_recovered_metadata_from(&engine_processes(engine), engine)
+}
+
+/// [`lock_recovered_engine_metadata`] over an already-completed process scan.
 fn lock_recovered_metadata_from(
     processes: &[discovery::DiscoveredProcess],
+    engine: Option<Engine>,
 ) -> Result<Option<MetadataLock>> {
     let lock = lock_metadata_if_recoverable_at(&servers_dir(), || {
         let current_dir = current_project_dir()?;
-        Ok(current_project_processes(processes, &current_dir)
-            .next()
-            .is_some()
-            || !docker::discover_project_postgres_blocking(&current_dir).is_empty())
+        let clickhouse = engine != Some(Engine::Postgres)
+            && current_project_processes(processes, &current_dir)
+                .next()
+                .is_some();
+        Ok(clickhouse
+            || (engine != Some(Engine::Clickhouse)
+                && !docker::discover_project_postgres_blocking(&current_dir).is_empty()))
     })?;
     let Some(lock) = lock else {
         return Ok(None);
     };
     // Recovery re-checks under the lock: it skips any instance a concurrent
     // command recorded after discovery and lists the containers again.
-    recover_from_discovered_locked(processes, &lock)?;
+    recover_engine_from_discovered_locked(processes, &lock, engine)?;
     Ok(Some(lock))
 }
 
@@ -1160,6 +1243,15 @@ fn recover_from_discovered_locked(
     processes: &[discovery::DiscoveredProcess],
     lock: &MetadataLock,
 ) -> Result<()> {
+    recover_clickhouse_from_discovered_locked(processes, lock)?;
+    // Also recover orphaned Postgres containers belonging to this project.
+    docker::recover_project_postgres_blocking(&current_project_dir()?, lock)
+}
+
+fn recover_clickhouse_from_discovered_locked(
+    processes: &[discovery::DiscoveredProcess],
+    lock: &MetadataLock,
+) -> Result<()> {
     let current_dir = current_project_dir()?;
 
     for proc in current_project_processes(processes, &current_dir) {
@@ -1180,9 +1272,7 @@ fn recover_from_discovered_locked(
         };
         recover_clickhouse_info_locked(&info, lock)?;
     }
-
-    // Also recover orphaned Postgres containers belonging to this project.
-    docker::recover_project_postgres_blocking(&current_dir, lock)
+    Ok(())
 }
 
 fn recover_clickhouse_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
@@ -1239,7 +1329,7 @@ pub struct VersionUser {
     pub pid: u32,
     /// True when the server belongs to the current project, so its metadata is
     /// reachable and [`kill_server`] can keep it consistent. Servers in other
-    /// projects can only be stopped by PID, like `server stop --global`.
+    /// projects can only be stopped by PID, like `clickhouse stop --global`.
     pub current_project: bool,
 }
 
@@ -1254,7 +1344,7 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
     let processes = discovery::discover_clickhouse_processes();
     // Recover orphans first so a server whose metadata file is missing is
     // still counted as this project's.
-    let project_servers = match lock_recovered_metadata_from(&processes)? {
+    let project_servers = match lock_recovered_metadata_from(&processes, None)? {
         Some(lock) => list_running_servers_locked(&lock)?,
         None => Vec::new(),
     };
@@ -1274,7 +1364,7 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
 /// both, so entries are de-duplicated by PID: when the watchdog is resolved,
 /// metadata for a running server carries the live PID of the discovered
 /// process, because discovery reports the supervising watchdog that
-/// `server start` recorded (issue #664). Identity is the fallback, so a server
+/// `clickhouse start` recorded (issue #664). Identity is the fallback, so a server
 /// whose watchdog only one of the two sources resolved is still listed once.
 pub(crate) fn select_version_users(
     project_servers: &[ServerInfo],
@@ -1344,7 +1434,7 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
 /// Unlike [`kill_server_by_pid`], a process that has already exited is not an
 /// error: the discovery scan and this call are separated by other blockers
 /// being stopped, and a server that went away on its own is exactly the state
-/// the removal is after. `server stop --global` keeps the strict variant, where
+/// the removal is after. `clickhouse stop --global` keeps the strict variant, where
 /// a PID that vanished since the listing is worth telling the user about.
 pub fn ensure_stopped_by_pid(pid: u32) -> Result<()> {
     match kill_server_by_pid(pid) {
@@ -1919,7 +2009,7 @@ mod tests {
 
         assert!(
             matches!(kill_server_by_pid(pid), Err(Error::ServerNotRunning(_))),
-            "`server stop --global` keeps reporting a vanished PID"
+            "`clickhouse stop --global` keeps reporting a vanished PID"
         );
         ensure_stopped_by_pid(pid).expect("an already-exited blocker must not abort the removal");
     }

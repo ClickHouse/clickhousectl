@@ -21,7 +21,7 @@ body:
       label: Steps to reproduce
       description: The exact commands you ran, in order. Include relevant flags and config.
       placeholder: |
-        1. `clickhousectl local server start ...`
+        1. `clickhousectl local clickhouse start ...`
         2. `clickhousectl ...`
         3. ...
       render: shell

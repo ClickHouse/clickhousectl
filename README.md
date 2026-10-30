@@ -61,9 +61,9 @@ clickhousectl update
 Use the `latest` channel for the rolling master build of ClickHouse. A bare server start installs `latest` if no version or default is available.
 
 ```bash
-clickhousectl local server start dev --version latest
+clickhousectl local clickhouse start dev --version latest
 clickhousectl local client dev --query "SELECT version()"
-clickhousectl local server stop dev
+clickhousectl local clickhouse stop dev
 ```
 
 Run these from the same project directory. Each named server has isolated data under `.clickhouse/`; stopping preserves it for the next start.

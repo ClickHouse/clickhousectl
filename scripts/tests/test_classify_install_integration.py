@@ -156,6 +156,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
                     "crates/clickhousectl/tests/local_docker_status_test.rs",
                     "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
+                    "crates/clickhousectl/tests/local_engine_lists_test.rs",
                     "crates/clickhousectl/tests/local_init_json_test.rs",
                     "crates/clickhousectl/tests/local_postgres_client_input_test.rs",
                     "crates/clickhousectl/tests/local_postgres_readiness_test.rs",

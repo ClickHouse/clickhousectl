@@ -154,7 +154,7 @@ fn stop_all_reports_no_servers_without_creating_project_state() {
     assert_exit(&output, 0, &args);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "No running servers\n"
+        "No running ClickHouse servers\n"
     );
 
     let args = ["local", "postgres", "stop-all"];
@@ -408,18 +408,26 @@ async fn running_postgres_container_is_recovered_when_project_state_is_missing()
         );
     }
 
-    let project = tempfile::tempdir().expect("create project");
-    let home = tempfile::tempdir().expect("create home");
-    let docker = docker_with_orphan_postgres(project.path()).await;
-    let host = docker.uri().replace("http://", "tcp://");
-    let args = ["local", "--json", "server", "list"];
-    let output = run_with_docker(project.path(), home.path(), &host, &args);
-    assert_exit(&output, 0, &args);
-    let servers = stdout_json(&output)["servers"].clone();
-    assert_eq!(servers.as_array().map(Vec::len), Some(1), "{servers}");
-    assert_eq!(servers[0]["name"], "default", "{servers}");
-    assert_eq!(servers[0]["engine"], "postgres", "{servers}");
-    assert_eq!(servers[0]["running"], true, "{servers}");
+    for args in [
+        &["local", "--json", "status"][..],
+        &["local", "--json", "postgres", "list"][..],
+    ] {
+        let project = tempfile::tempdir().expect("create project");
+        let home = tempfile::tempdir().expect("create home");
+        let docker = docker_with_orphan_postgres(project.path()).await;
+        let host = docker.uri().replace("http://", "tcp://");
+        let output = run_with_docker(project.path(), home.path(), &host, args);
+        assert_exit(&output, 0, args);
+        let servers = stdout_json(&output)["servers"].clone();
+        assert_eq!(
+            servers.as_array().map(Vec::len),
+            Some(1),
+            "{args:?}: {servers}"
+        );
+        assert_eq!(servers[0]["name"], "default", "{args:?}: {servers}");
+        assert_eq!(servers[0]["engine"], "postgres", "{args:?}: {servers}");
+        assert_eq!(servers[0]["running"], true, "{args:?}: {servers}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -428,7 +436,8 @@ async fn other_projects_postgres_containers_create_no_project_state() {
     let docker = docker_with_orphan_postgres(other.path()).await;
     let host = docker.uri().replace("http://", "tcp://");
     for (args, code) in [
-        (&["local", "--json", "server", "list"][..], 0),
+        (&["local", "--json", "status"][..], 0),
+        (&["local", "--json", "postgres", "list"][..], 0),
         (&["local", "--json", "postgres", "stop-all"][..], 0),
         (&["local", "--json", "postgres", "stop", "default"][..], 1),
     ] {

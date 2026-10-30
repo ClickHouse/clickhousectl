@@ -78,7 +78,7 @@ fn postgres_install_selector_is_rejected_by_clickhouse_only_commands() {
     );
     assert_rejected_before_side_effects(
         &["local", "server", "start", "--version", "postgres@18"],
-        "only supported by `local install`; `local server start --version` requires a ClickHouse version",
+        "only supported by `local install`; `local clickhouse start --version` requires a ClickHouse version",
     );
     assert_rejected_before_side_effects(
         &[

@@ -601,19 +601,19 @@ fn scope_guidance(include_global_stop: bool) -> Value {
         json!({
             "action": "list_project_servers",
             "message": "List servers after returning to that exact project",
-            "command": "clickhousectl local server list"
+            "command": "clickhousectl local clickhouse list"
         }),
         json!({
             "action": "list_global_servers",
             "message": "Locate running ClickHouse servers across projects",
-            "command": "clickhousectl local server list --global"
+            "command": "clickhousectl local clickhouse list --global"
         }),
     ];
     if include_global_stop {
         guidance.push(json!({
             "action": "stop_global_project_server",
             "message": "After confirming the project, stop the server with explicit global project selection",
-            "command": "clickhousectl local server stop <name> --global --project <project-root>"
+            "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
         }));
     }
     Value::Array(guidance)
@@ -637,14 +637,14 @@ fn project_not_found(project: &Path, name: &str, stop: bool) -> Value {
 
 fn human_project_not_found(project: &Path, name: &str, command: &str) -> String {
     let global_stop = if command == "stop" {
-        "; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`"
+        "; after confirming the project, use `clickhousectl local clickhouse stop <name> --global --project <project-root>`"
     } else {
         ""
     };
     format!(
         "Error: Server '{name}' was not found in project '{}'.\n\
-         Project-local server {command} uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-         Return to the local project root where the server was started and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects{global_stop}.\n",
+         Project-local clickhouse {command} uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+         Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects{global_stop}.\n",
         canonical(project)
     )
 }
@@ -735,8 +735,8 @@ fn fresh_project(fixture: &Fixture) {
             expected: ExpectedOutput::HumanSuccess(format!(
                 "No ClickHouse servers found; nothing to stop\n\
                  No `.clickhouse` directory existed under project '{}' when the command started.\n\
-                 Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-                 The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects.\n",
+                 Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+                 The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects.\n",
                 canonical(&fixture.project)
             )),
         },
@@ -827,7 +827,7 @@ fn default_lifecycle(fixture: &Fixture) {
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
                 "Server 'default' is already running",
-                Some("clickhousectl local server list"),
+                Some("clickhousectl local status"),
             )),
         },
         CommandCase {
@@ -844,7 +844,7 @@ fn default_lifecycle(fixture: &Fixture) {
             cwd: TestCwd::Root,
             args: strings(&["local", "server", "remove"]),
             expected: ExpectedOutput::HumanFailure(
-                "Error: Server 'default' is running; stop it first with `clickhousectl local server stop default`\n"
+                "Error: Server 'default' is running; stop it first with `clickhousectl local clickhouse stop default`\n"
                     .into(),
             ),
         },
@@ -937,9 +937,9 @@ fn custom_name_lifecycle(fixture: &Fixture) {
                 "server_selection_required",
                 "No server name was provided and the default ClickHouse server does not exist \
                  (custom ClickHouse servers available: 1); no server was removed. Inspect them with \
-                 `clickhousectl local server list`; to remove one, pass its name with \
-                 `clickhousectl local server remove <name>`.",
-                Some("clickhousectl local server list"),
+                 `clickhousectl local clickhouse list`; to remove one, pass its name with \
+                 `clickhousectl local clickhouse remove <name>`.",
+                Some("clickhousectl local clickhouse list"),
             )),
         },
         CommandCase {
@@ -948,8 +948,8 @@ fn custom_name_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove", "dev"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
-                "Server 'dev' is running; stop it first with `clickhousectl local server stop dev`",
-                Some("clickhousectl local server stop dev"),
+                "Server 'dev' is running; stop it first with `clickhousectl local clickhouse stop dev`",
+                Some("clickhousectl local clickhouse stop dev"),
             )),
         },
         CommandCase {
@@ -1047,9 +1047,9 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
     let ambiguous_stop = error(
         "server_selection_required",
         "No server name was provided and multiple non-default ClickHouse servers exist \
-         (available: 2). Pass a name with `clickhousectl local server stop <name>`, or stop every \
-         server with `clickhousectl local server stop-all`.",
-        Some("clickhousectl local server list"),
+         (available: 2). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every \
+         server with `clickhousectl local clickhouse stop-all`.",
+        Some("clickhousectl local clickhouse list"),
     );
     fixture.run_cases(&[
         CommandCase {
@@ -1066,9 +1066,9 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
                 "server_selection_required",
                 "No server name was provided and the default ClickHouse server does not exist \
                  (custom ClickHouse servers available: 2); no server was removed. Inspect them with \
-                 `clickhousectl local server list`; to remove one, pass its name with \
-                 `clickhousectl local server remove <name>`.",
-                Some("clickhousectl local server list"),
+                 `clickhousectl local clickhouse list`; to remove one, pass its name with \
+                 `clickhousectl local clickhouse remove <name>`.",
+                Some("clickhousectl local clickhouse list"),
             )),
         },
         CommandCase {
