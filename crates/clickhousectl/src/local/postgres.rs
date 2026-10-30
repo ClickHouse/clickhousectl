@@ -617,6 +617,33 @@ fn resolve_pg_start_version_locked(
     }
 }
 
+/// Lock project metadata, recover orphans, and resolve the target under that
+/// lock. A project with neither server state nor an orphan has no target, so
+/// this then creates no `.clickhouse/servers/`.
+fn lock_and_resolve_pg_target(
+    user_name: &str,
+    version: Option<&str>,
+) -> Result<(server::ServerInfo, server::MetadataLock)> {
+    let Some(metadata_lock) = server::lock_recovered_metadata()? else {
+        return Err(missing_pg_target(user_name, version));
+    };
+    let target = resolve_pg_target_locked(user_name, version, &metadata_lock)?;
+    Ok((target, metadata_lock))
+}
+
+/// The error for a `[NAME] [--version <V>]` selection that matches nothing.
+fn missing_pg_target(user_name: &str, version: Option<&str>) -> Error {
+    match version {
+        Some(v) => match validate_pg_tag(v) {
+            Ok(()) => {
+                Error::ServerNotFound(format!("{user_name} (postgres:{})", pg_major_from_tag(v)))
+            }
+            Err(error) => error,
+        },
+        None => Error::ServerNotFound(user_name.to_string()),
+    }
+}
+
 /// Resolve `[NAME] [--version <V>]` to a single Postgres instance on disk.
 /// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
 /// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
@@ -631,11 +658,11 @@ fn resolve_pg_target_locked(
         let key = server::pg_instance_key(user_name, &major);
         return server::load_info_locked(&key, metadata_lock)?
             .filter(|i| i.engine == Engine::Postgres)
-            .ok_or_else(|| Error::ServerNotFound(format!("{user_name} (postgres:{major})")));
+            .ok_or_else(|| missing_pg_target(user_name, version));
     }
     let instances = server::find_pg_instances_locked(user_name, metadata_lock)?;
     match instances.len() {
-        0 => Err(Error::ServerNotFound(user_name.to_string())),
+        0 => Err(missing_pg_target(user_name, None)),
         1 => Ok(instances.into_iter().next().unwrap()),
         _ => {
             let versions: Vec<String> = instances.iter().map(|i| i.version.clone()).collect();
@@ -998,9 +1025,7 @@ fn generate_password() -> String {
 
 async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
-    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
+    let (target, metadata_lock) = lock_and_resolve_pg_target(name, version)?;
     if !json {
         let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
         println!("Stopping Postgres {}...", display);
@@ -1016,19 +1041,22 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
 }
 
 async fn stop_all(json: bool) -> Result<()> {
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
-    let servers: Vec<_> = server::list_running_servers_locked(&metadata_lock)?
-        .into_iter()
-        .filter(|s| s.engine == Engine::Postgres)
-        .collect();
+    let metadata_lock = server::lock_recovered_metadata()?;
+    let servers: Vec<_> = match &metadata_lock {
+        Some(lock) => server::list_running_servers_locked(lock)?,
+        None => Vec::new(),
+    }
+    .into_iter()
+    .filter(|s| s.engine == Engine::Postgres)
+    .collect();
     if !json && servers.is_empty() {
         println!("No running Postgres servers");
         return Ok(());
     }
 
-    let out = super::stop_servers(&servers, json, |name| {
-        server::kill_server_locked(name, &metadata_lock)
+    let out = super::stop_servers(&servers, json, |name| match &metadata_lock {
+        Some(lock) => server::kill_server_locked(name, lock),
+        None => Err(Error::ServerNotRunning(name.to_string())),
     });
     if json {
         output::print_output(&out, json);
@@ -1040,10 +1068,7 @@ async fn stop_all(json: bool) -> Result<()> {
 
 fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
-
-    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
+    let (target, metadata_lock) = lock_and_resolve_pg_target(name, version)?;
     let key = target.name.clone();
     if server::is_server_running_locked(&key, &metadata_lock)? {
         let tag = target
@@ -1114,10 +1139,8 @@ async fn client(
         );
     }
 
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.as_deref().unwrap_or("default");
-    let info = resolve_pg_target_locked(server_name, version.as_deref(), &metadata_lock)?;
+    let (info, metadata_lock) = lock_and_resolve_pg_target(server_name, version.as_deref())?;
     if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
@@ -1259,10 +1282,8 @@ fn exec_host_psql(
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.unwrap_or("default");
-    let info = resolve_pg_target_locked(server_name, version, &metadata_lock)?;
+    let (info, metadata_lock) = lock_and_resolve_pg_target(server_name, version)?;
     if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }

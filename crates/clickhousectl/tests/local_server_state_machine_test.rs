@@ -714,32 +714,48 @@ fn fresh_project(fixture: &Fixture) {
             label: "fresh omitted stop".into(),
             cwd: TestCwd::Root,
             args: strings(&["local", "--json", "server", "stop"]),
+            // The fresh list above created no `.clickhouse/` (#1077), so the
+            // project still has no state and the no-op explains its scope.
             expected: ExpectedOutput::JsonSuccess(json!({
                 "stopped": false,
                 "selection": "implicit",
-                "reason": "no_clickhouse_servers"
+                "reason": "no_clickhouse_servers",
+                "project_scope": {
+                    "kind": "exact_current_project",
+                    "path": canonical(&fixture.project),
+                    "parent_projects_searched": false
+                },
+                "guidance": scope_guidance(true)
             })),
         },
         CommandCase {
             label: "fresh omitted stop human output".into(),
             cwd: TestCwd::Root,
             args: strings(&["local", "server", "stop"]),
-            expected: ExpectedOutput::HumanSuccess(
-                "No ClickHouse servers found; nothing to stop\n".into(),
-            ),
+            expected: ExpectedOutput::HumanSuccess(format!(
+                "No ClickHouse servers found; nothing to stop\n\
+                 No `.clickhouse` directory existed under project '{}' when the command started.\n\
+                 Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+                 The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects.\n",
+                canonical(&fixture.project)
+            )),
         },
         CommandCase {
             label: "fresh omitted remove".into(),
             cwd: TestCwd::Root,
             args: strings(&["local", "--json", "server", "remove"]),
-            expected: ExpectedOutput::JsonFailure(error(
-                "server_selection_required",
-                "No server name was provided and the default ClickHouse server does not exist \
-                 (custom ClickHouse servers available: 0); no server was removed. Inspect them with \
-                 `clickhousectl local server list`; to remove one, pass its name with \
-                 `clickhousectl local server remove <name>`.",
-                Some("clickhousectl local server list"),
-            )),
+            expected: ExpectedOutput::JsonFailure(json!({
+                "error": {
+                    "code": "server_selection_required",
+                    "message": "No project-local server state was found in the current directory; no server was removed",
+                    "project_scope": {
+                        "kind": "exact_current_project",
+                        "path": canonical(&fixture.project),
+                        "parent_projects_searched": false
+                    },
+                    "guidance": scope_guidance(false)
+                }
+            })),
         },
         CommandCase {
             label: "fresh explicit unknown stop".into(),

@@ -154,12 +154,13 @@ fn init_after_server_list_creates_runtime_gitignore() {
         "stderr: {}",
         String::from_utf8_lossy(&list.stderr)
     );
-    assert!(
-        project
-            .path()
-            .join(".clickhouse/servers/.metadata.lock")
-            .is_file()
-    );
+    // Listing no longer creates project state (#1077), but releases before it
+    // left the metadata lock behind without an ignore file. Init must repair
+    // that partially initialized directory.
+    assert!(!project.path().join(".clickhouse").exists());
+    let servers = project.path().join(".clickhouse/servers");
+    std::fs::create_dir_all(&servers).expect("create legacy servers directory");
+    std::fs::write(servers.join(".metadata.lock"), "").expect("create legacy metadata lock");
 
     let init = run(project.path(), home.path(), &["local", "init"]);
     assert!(
