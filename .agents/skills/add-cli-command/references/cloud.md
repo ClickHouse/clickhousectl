@@ -7,7 +7,7 @@ Everything for a command lives in its domain module, `src/cloud/<domain>.rs`: th
 dispatch, the `CloudClient` wrapper, the request builder, the handler and the tests. A large domain is a
 directory, `src/cloud/<domain>/`: `PERMISSIONS`, `run()` and re-exports in `mod.rs`, clap definitions in
 `cli.rs`, `CloudClient` wrappers in `client.rs`, and one file per command family, with tests beside the code
-they test. Copy the pattern from `src/cloud/services/` or `src/cloud/postgres.rs`. Handlers never call
+they test. Copy the pattern from `src/cloud/services/` or `src/cloud/postgres/`. Handlers never call
 `client.api()`. The one wrapper that returns the raw library error is `run_service_query{,_bearer}` in
 `services/client.rs`: query paths stream the response and classify the error themselves. Don't copy that for
 other endpoints.
@@ -50,7 +50,7 @@ other endpoints.
      when the path names the resource itself and the request has no other input, such as a get or delete.
    - For a subresource, or a request with a body, a 404 can mean the subresource is absent and a 400 can be a
      validation error. Confirm the parent with its own GET first, as `convert_postgres_by_id_result` in
-     `postgres.rs` does, and declare that GET as a `Conditional` permission.
+     `postgres/client.rs` does, and declare that GET as a `Conditional` permission.
 6. **Request builder.** If the command sends a body, write `build_<name>_request(...)` returning the library's
    request struct. Unit-test it with minimal and maximal input, asserting on the struct's fields.
 7. **Handler.** Call the builder, then the wrapper, then print:
