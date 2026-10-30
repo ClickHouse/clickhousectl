@@ -206,14 +206,14 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
                     },
                     {
                         "message": "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
-                        "command": "clickhousectl local server list --global"
+                        "command": "clickhousectl local clickhouse list --global"
                     },
                     {
                         "message": "For Postgres, verify the container state separately before moving the metadata file aside"
                     },
                     {
                         "message": "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
-                        "command": "clickhousectl local server list"
+                        "command": "clickhousectl local clickhouse list"
                     }
                 ]
             }

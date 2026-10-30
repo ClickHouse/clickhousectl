@@ -75,7 +75,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             queries_file,
             args,
         ),
-        LocalCommands::Server { command } => run_server_commands(command, json).await,
+        LocalCommands::Clickhouse { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
         LocalCommands::Udf { command } => udf::run(command, json).await,
     }
@@ -248,7 +248,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         for user in &in_use {
             // Servers in this project are stopped through their metadata so it
             // stays consistent; servers elsewhere can only be stopped by PID,
-            // like `server stop --global`, except that a blocker which exited
+            // like `clickhouse stop --global`, except that a blocker which exited
             // on its own since discovery is already what --force wants.
             if user.current_project {
                 server::kill_server(&user.name)?;
@@ -613,7 +613,7 @@ async fn start_server(
     let running = server::advisory_running_server_count_locked(&metadata_lock);
     if !json && running > 0 {
         eprintln!(
-            "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
+            "Note: {} server{} already running (use `clickhousectl local clickhouse list` to see them)",
             running,
             if running == 1 { "" } else { "s" }
         );
@@ -640,7 +640,7 @@ async fn start_server(
         return Err(Error::UnsupportedArgument(
             "--config / --config-file / -C cannot be passed through in trailing args. \
              Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
-             (see `clickhousectl local server configs`). \
+             (see `clickhousectl local clickhouse configs`). \
              Individual --setting=value flags are supported."
                 .into(),
         ));
@@ -1188,7 +1188,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     };
     if server::is_server_running_locked(&name, &metadata_lock)? {
         return Err(Error::ServerRunningCannotRemove {
-            command: format!("clickhousectl local server stop {name}"),
+            command: format!("clickhousectl local clickhouse stop {name}"),
             name,
         });
     }
@@ -1208,7 +1208,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// What a project-scoped `server stop <name>` should do, given whether the
+/// What a project-scoped `clickhouse stop <name>` should do, given whether the
 /// server is currently running and whether its data directory exists on disk.
 #[derive(Debug, PartialEq, Eq)]
 enum StopOutcome {

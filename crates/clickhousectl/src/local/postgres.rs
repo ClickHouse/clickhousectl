@@ -2,7 +2,7 @@
 //!
 //! All Docker work goes through `local::docker`. State is reused from
 //! `local::server` — Postgres entries land in the same metadata directory and
-//! show up alongside ClickHouse in `local server list`.
+//! show up alongside ClickHouse in `local clickhouse list`.
 
 use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;

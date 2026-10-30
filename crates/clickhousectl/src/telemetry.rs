@@ -16,7 +16,7 @@
 //! `ArgMatches` ids and `Arg` metadata, never touching `get_one`/`get_raw`), so
 //! leaking a value is structurally impossible. Positional *presence* is
 //! recorded as the definition-owned id (#480), which is what makes
-//! `local server stop` and `local server stop <name>` distinguishable; see
+//! `local clickhouse stop` and `local clickhouse stop <name>` distinguishable; see
 //! [`Payload::positionals`] for the exclusions.
 //!
 //! Every invocation of the binary goes through the same consent state machine
@@ -209,7 +209,7 @@ struct Payload {
     command: String,
     flags: Vec<String>,
     /// Definition-owned ids of the positional slots the user filled on the
-    /// command line (e.g. `["name"]` for `local server stop dev`) — presence
+    /// command line (e.g. `["name"]` for `local clickhouse stop dev`) — presence
     /// only, never the value (#480). The privacy boundary:
     ///
     /// * every entry is cloned from an `Arg` definition compiled into the
@@ -480,7 +480,7 @@ fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> 
 
 /// Whether a positional slot exists to forward raw argv to another program
 /// rather than to describe this CLI's own shape (`local client [ARGS]…`,
-/// `local postgres client [ARGS]…`, `local server start -- [CLICKHOUSE_ARG]…`).
+/// `local postgres client [ARGS]…`, `local clickhouse start -- [CLICKHOUSE_ARG]…`).
 ///
 /// The test is structural, not a hand-maintained list of ids: these slots are
 /// exactly the ones marked `last`, `trailing_var_arg`, or
@@ -1851,7 +1851,7 @@ mod tests {
     #[test]
     fn capture_distinguishes_bare_named_and_flag_named_stop() {
         let bare = capture_from(&["clickhousectl", "local", "server", "stop"]);
-        assert_eq!(bare.command, "local server stop");
+        assert_eq!(bare.command, "local clickhouse stop");
         assert!(bare.flags.is_empty());
         assert!(
             bare.positionals.is_empty(),
@@ -1860,7 +1860,7 @@ mod tests {
         );
 
         let named = capture_from(&["clickhousectl", "local", "server", "stop", "SECRET-NAME"]);
-        assert_eq!(named.command, "local server stop");
+        assert_eq!(named.command, "local clickhouse stop");
         assert!(named.flags.is_empty());
         assert_eq!(named.positionals, ["name"]);
 
@@ -1874,7 +1874,7 @@ mod tests {
             "--name",
             "SECRET-NAME",
         ]);
-        assert_eq!(flagged.command, "local server stop");
+        assert_eq!(flagged.command, "local clickhouse stop");
         assert_eq!(flagged.flags, ["name"]);
         assert!(flagged.positionals.is_empty());
 
@@ -1919,7 +1919,7 @@ mod tests {
             inv.positionals
         );
 
-        // `server start` puts its passthrough behind `last = true`: the named
+        // `clickhouse start` puts its passthrough behind `last = true`: the named
         // server is still recorded, the forwarded arguments are not.
         let inv = capture_from(&[
             "clickhousectl",
@@ -1930,7 +1930,7 @@ mod tests {
             "--",
             "--logger.level=SECRET-LEVEL",
         ]);
-        assert_eq!(inv.command, "local server start");
+        assert_eq!(inv.command, "local clickhouse start");
         assert_eq!(inv.positionals, ["name"]);
 
         let inv = capture_from(&[
@@ -2379,6 +2379,38 @@ mod tests {
         assert!(!json.contains("SECRET"), "inline value leaked: {json}");
     }
 
+    /// `local clickhouse` has a shown alias (`ch`) and a hidden one (`server`),
+    /// and `local postgres` has `pg`; every spelling records the canonical
+    /// command path, on a successful parse and on a failed one (#1159).
+    #[test]
+    fn command_aliases_record_the_canonical_command_path() {
+        for (spellings, rest, canonical) in [
+            (
+                &["clickhouse", "ch", "server"][..],
+                &["stop", "dev"][..],
+                "local clickhouse stop",
+            ),
+            (
+                &["postgres", "pg"][..],
+                &["stop", "dev"][..],
+                "local postgres stop",
+            ),
+        ] {
+            for spelling in spellings {
+                let argv: Vec<&str> = ["clickhousectl", "local", spelling]
+                    .into_iter()
+                    .chain(rest.iter().copied())
+                    .collect();
+                assert_eq!(capture_from(&argv).command, canonical, "{argv:?}");
+
+                let mut failing = argv.clone();
+                failing.push("--no-such-flag");
+                let lossy = capture_lossy_from(&failing);
+                assert_eq!(lossy.command, canonical, "{failing:?}");
+            }
+        }
+    }
+
     #[test]
     fn lossy_long_aliases_record_the_canonical_names() {
         // `--fg` and `--config-file` are hidden aliases (local/cli.rs); the
@@ -2395,7 +2427,7 @@ mod tests {
             "--http-port",
             "SECRET-PORT",
         ]);
-        assert_eq!(inv.command, "local server start");
+        assert_eq!(inv.command, "local clickhouse start");
         assert_eq!(inv.flags, ["config", "foreground", "http-port"]);
         assert_eq!(inv.outcome, "invalid_value");
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();

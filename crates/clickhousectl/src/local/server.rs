@@ -1072,10 +1072,10 @@ pub fn now_timestamp() -> String {
 ///
 /// Scans for running ClickHouse processes whose cwd matches this project's
 /// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
-/// metadata file, a new `ServerInfo` is saved so it appears in `server list`
+/// metadata file, a new `ServerInfo` is saved so it appears in `clickhouse list`
 /// and can be managed normally. The recovered `pid` is the one discovery
 /// reports, so it is the process `stop` has to signal — the watchdog when the
-/// server has one — exactly as if `server start` had written it.
+/// server has one — exactly as if `clickhouse start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
     lock_recovered_metadata().map(drop)
 }
@@ -1239,7 +1239,7 @@ pub struct VersionUser {
     pub pid: u32,
     /// True when the server belongs to the current project, so its metadata is
     /// reachable and [`kill_server`] can keep it consistent. Servers in other
-    /// projects can only be stopped by PID, like `server stop --global`.
+    /// projects can only be stopped by PID, like `clickhouse stop --global`.
     pub current_project: bool,
 }
 
@@ -1274,7 +1274,7 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
 /// both, so entries are de-duplicated by PID: when the watchdog is resolved,
 /// metadata for a running server carries the live PID of the discovered
 /// process, because discovery reports the supervising watchdog that
-/// `server start` recorded (issue #664). Identity is the fallback, so a server
+/// `clickhouse start` recorded (issue #664). Identity is the fallback, so a server
 /// whose watchdog only one of the two sources resolved is still listed once.
 pub(crate) fn select_version_users(
     project_servers: &[ServerInfo],
@@ -1344,7 +1344,7 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
 /// Unlike [`kill_server_by_pid`], a process that has already exited is not an
 /// error: the discovery scan and this call are separated by other blockers
 /// being stopped, and a server that went away on its own is exactly the state
-/// the removal is after. `server stop --global` keeps the strict variant, where
+/// the removal is after. `clickhouse stop --global` keeps the strict variant, where
 /// a PID that vanished since the listing is worth telling the user about.
 pub fn ensure_stopped_by_pid(pid: u32) -> Result<()> {
     match kill_server_by_pid(pid) {
@@ -1919,7 +1919,7 @@ mod tests {
 
         assert!(
             matches!(kill_server_by_pid(pid), Err(Error::ServerNotRunning(_))),
-            "`server stop --global` keeps reporting a vanished PID"
+            "`clickhouse stop --global` keeps reporting a vanished PID"
         );
         ensure_stopped_by_pid(pid).expect("an already-exited blocker must not abort the removal");
     }

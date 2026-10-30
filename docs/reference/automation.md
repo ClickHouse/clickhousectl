@@ -9,7 +9,7 @@ Use `--json` for commands that return structured data. Detected coding agents se
 ```bash
 clickhousectl cloud service list --json
 clickhousectl cloud key list --all --json
-clickhousectl local server list --json
+clickhousectl local clickhouse list --json
 ```
 
 Cloud structured output follows each command's API-shaped contract, usually camelCase but sometimes snake_case. Missing/null optional response fields are generally omitted. Do not assume all lists are arrays, all fields have the same casing, or every timestamp has the same type.
@@ -20,7 +20,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
-| `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
+| `local clickhouse list --json` | Object with `servers`, `total_servers`, and `project_scope` |
 | `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11, or another deployed UDF that is broken), `function_config`, and `scripts_dir` |
 | `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud udf deploy --json` | Object with `action` (`created` or `version_created`), `udf`, and `attachment` |
@@ -113,12 +113,12 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
 | `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
-| `server_selection_required` | A server name (or, for `server stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
+| `server_selection_required` | A server name (or, for `clickhouse stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
 | `invalid_server_name` | The server name contains path separators or `..` |
 | `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (a pass-through `--config`, or `--http-port`/`--tcp-port` `0`) |
-| `config_not_found` | The named `server start --config` file does not exist, or the name is ambiguous |
+| `config_not_found` | The named `clickhouse start --config` file does not exist, or the name is ambiguous |
 | `invalid_config_name` | The config name is a path rather than a file in the configs dir |
 | `invalid_version` | The version selector is invalid |
 | `version_not_installed` | The requested or configured version is not installed locally |

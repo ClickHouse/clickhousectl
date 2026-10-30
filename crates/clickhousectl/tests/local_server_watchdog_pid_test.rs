@@ -3,7 +3,7 @@
 //! server it supervises with it (issue #664).
 //!
 //! ClickHouse spawns a watchdog that owns the lifetime of the server process,
-//! so the process `server start` records is the watchdog while
+//! so the process `clickhouse start` records is the watchdog while
 //! `pgrep -x clickhouse` only ever matches the server it supervises. Both views
 //! must report the PID that stops the server for good, and `stop` must leave
 //! neither process behind: the watchdog forwards SIGTERM, but a SIGKILL it

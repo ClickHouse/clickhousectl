@@ -1177,7 +1177,7 @@ pub async fn start_existing(docker: &Docker, id: &str) -> Result<()> {
 
 /// Discover Postgres containers belonging to this project that don't yet have
 /// a metadata file under `.clickhouse/servers/`, and write a `ServerInfo` for
-/// each so they show up in `local server list` and can be managed.
+/// each so they show up in `local clickhouse list` and can be managed.
 ///
 /// Safe to call multiple times in one CLI invocation. Docker being unreachable
 /// is not an error: see [`discover_project_postgres_blocking`].

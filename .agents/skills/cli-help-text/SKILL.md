@@ -76,7 +76,7 @@ NEVER include implementation details, crate or file names, HTTP and API mechanic
 compatibility notes, reassurance, or anything already in the `about` line, the flag list or `[default:]`.
 
 Put shared context (auth model, typical flow) on the parent command, such as `cloud service` or
-`local server`. A leaf gets a block only for its own gotcha. A plain `get` or `list` usually needs none.
+`local clickhouse`. A leaf gets a block only for its own gotcha. A plain `get` or `list` usually needs none.
 
 Write it plainly. State the fact and, where it isn't obvious, the reason. Don't use capitals or "MUST" for
 emphasis: current models follow plain instructions closely, and emphasis makes them over-apply a rule.

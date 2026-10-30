@@ -7,10 +7,12 @@ Run project-local commands from the directory that owns your `.clickhouse/`. The
 ## Start ClickHouse and run SQL
 
 ```bash
-clickhousectl local server start dev --version stable
+clickhousectl local clickhouse start dev --version stable
 clickhousectl local client dev --query "SELECT version()"
-clickhousectl local server list
+clickhousectl local clickhouse list
 ```
+
+`local ch` is short for `local clickhouse`, and `local pg` for `local postgres`. The earlier name `local server` still works as an alias for `local clickhouse`.
 
 `local init` optionally scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, and [UDF sources](user-defined-functions.md#scaffold-a-function); it is not required to start a server.
 
@@ -35,7 +37,7 @@ clickhousectl local list
 clickhousectl local list --remote
 ```
 
-`local use` installs if needed and sets the default for future server starts. `server start --version` chooses a version for that start without changing the default.
+`local use` installs if needed and sets the default for future server starts. `clickhouse start --version` chooses a version for that start without changing the default.
 
 A bare start installs `latest` if no version or default is available, without setting a default. Pin a version or use `local use stable` to avoid tracking master. Reusing `latest` requires a successful remote freshness check; an unavailable server is an error, not a fallback to an unverified build.
 
@@ -80,15 +82,15 @@ clickhouse client --version
 You can also run the native client against servers managed by `clickhousectl`. Choose a free TCP port, such as `9001`:
 
 ```bash
-clickhousectl local server start native-demo --tcp-port 9001
+clickhousectl local clickhouse start native-demo --tcp-port 9001
 clickhouse client --host localhost --port 9001 \
   --query "SELECT version()" --format CSV
-clickhousectl local server stop native-demo
+clickhousectl local clickhouse stop native-demo
 ```
 
-For an existing server, find its TCP port with `clickhousectl local server list` and pass that port to `clickhouse client`. The native client connects by host and port; `clickhousectl` manages the server's process, configuration, and data. All native client options are available directly.
+For an existing server, find its TCP port with `clickhousectl local clickhouse list` and pass that port to `clickhouse client`. The native client connects by host and port; `clickhousectl` manages the server's process, configuration, and data. All native client options are available directly.
 
-Run `local use latest` again to check for a newer master build, or select `stable`, `lts`, or an exact version to switch the binary. Switching changes the binary used by subsequent `clickhouse` commands and the default for future server starts; running servers keep their existing version. To match a running server, select its version from `local server list` with `local use <version>`.
+Run `local use latest` again to check for a newer master build, or select `stable`, `lts`, or an exact version to switch the binary. Switching changes the binary used by subsequent `clickhouse` commands and the default for future server starts; running servers keep their existing version. To match a running server, select its version from `local clickhouse list` with `local use <version>`.
 
 ## Apply a custom ClickHouse configuration
 
@@ -103,9 +105,9 @@ cat > ~/.clickhouse/configs/analytics.xml <<'XML'
     </profiles>
 </clickhouse>
 XML
-clickhousectl local server configs
-clickhousectl local server stop dev
-clickhousectl local server start dev --config analytics
+clickhousectl local clickhouse configs
+clickhousectl local clickhouse stop dev
+clickhousectl local clickhouse start dev --config analytics
 ```
 
 The file must be directly inside the configs directory, not an arbitrary path. Use a `<clickhouse>` root in XML; user profiles and query settings can be included there. The server does not automatically load `/etc/clickhouse-server/config.xml` or a separate `users.xml`.
@@ -125,7 +127,7 @@ clickhousectl local postgres start app --version 18
 clickhousectl local postgres client app --query "SELECT version()"
 clickhousectl local postgres client app --queries-file pg-schema.sql
 clickhousectl local postgres dotenv app --local
-clickhousectl local server list
+clickhousectl local clickhouse list
 ```
 
 Create `pg-schema.sql` with your Postgres SQL before running the file example. Put `\set ON_ERROR_STOP on` at the top of the file to stop on SQL errors.
@@ -139,21 +141,21 @@ The generated `.env.local` includes the password. Keep it out of version control
 ## Stop or remove data
 
 ```bash
-clickhousectl local server stop dev
+clickhousectl local clickhouse stop dev
 clickhousectl local postgres stop app --version 18
 ```
 
 Stop preserves data. **The following removals permanently delete the selected server's data**, including Postgres container volumes:
 
 ```bash
-clickhousectl local server remove dev
+clickhousectl local clickhouse remove dev
 clickhousectl local postgres remove app --version 18
 ```
 
-Both require stopped servers. `local server stop-all` stops both engines in the current project. Global ClickHouse operations (`server list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
+Both require stopped servers. `local clickhouse stop-all` stops both engines in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
 
 `local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project. Its `--force` stops those servers across projects and removes the version even if it is the default.
 
 Without a name, ClickHouse `stop` selects `default`, then the sole server, and is a no-op if none exists. Bare `remove` only selects `default`; use explicit names for cleanup.
 
-If metadata is corrupt, follow the reported recovery guidance. Confirm the running process with `server list --global`, or the Postgres container with Docker, before moving metadata aside. Do not delete state or force-remove an unverified server. A Docker inspection failure is an error, not evidence that Postgres is stopped.
+If metadata is corrupt, follow the reported recovery guidance. Confirm the running process with `clickhouse list --global`, or the Postgres container with Docker, before moving metadata aside. Do not delete state or force-remove an unverified server. A Docker inspection failure is an error, not evidence that Postgres is stopped.

@@ -956,7 +956,10 @@ fn an_unreachable_server_is_not_reported_as_a_rejection() {
         error["error"]["message"],
         format!("Could not reach server 'default' on port {}", env.http_port)
     );
-    assert_eq!(error["error"]["command"], "clickhousectl local server list");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local clickhouse list"
+    );
     let details = error["error"]["details"].as_str().unwrap();
     assert!(!details.is_empty());
 

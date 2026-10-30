@@ -123,17 +123,17 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
                 {
                     "action": "list_project_servers",
                     "message": "List servers after returning to that exact project",
-                    "command": "clickhousectl local server list"
+                    "command": "clickhousectl local clickhouse list"
                 },
                 {
                     "action": "list_global_servers",
                     "message": "Locate running ClickHouse servers across projects",
-                    "command": "clickhousectl local server list --global"
+                    "command": "clickhousectl local clickhouse list --global"
                 },
                 {
                     "action": "stop_global_project_server",
                     "message": "After confirming the project, stop the server with explicit global project selection",
-                    "command": "clickhousectl local server stop <name> --global --project <project-root>"
+                    "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
                 }
             ]
         })
@@ -151,8 +151,8 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
         format!(
             "No ClickHouse servers found; nothing to stop\n\
              No `.clickhouse` directory existed under project '{}' when the command started.\n\
-             Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-             The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects.\n",
+             Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+             The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects.\n",
             human_project.path().canonicalize().unwrap().display()
         )
     );
@@ -330,8 +330,8 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
         json!({
             "error": {
                 "code": "server_selection_required",
-                "message": "No server name was provided and multiple non-default ClickHouse servers exist (available: 2). Pass a name with `clickhousectl local server stop <name>`, or stop every server with `clickhousectl local server stop-all`.",
-                "command": "clickhousectl local server list"
+                "message": "No server name was provided and multiple non-default ClickHouse servers exist (available: 2). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every server with `clickhousectl local clickhouse stop-all`.",
+                "command": "clickhousectl local clickhouse list"
             }
         })
     );
@@ -340,8 +340,8 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(stderr.contains("multiple non-default ClickHouse servers exist (available: 2)"));
-    assert!(stderr.contains("clickhousectl local server stop <name>"));
-    assert!(stderr.contains("clickhousectl local server stop-all"));
+    assert!(stderr.contains("clickhousectl local clickhouse stop <name>"));
+    assert!(stderr.contains("clickhousectl local clickhouse stop-all"));
     assert!(alpha.exists());
     assert!(beta.exists());
 
@@ -386,12 +386,15 @@ fn omitted_remove_never_selects_custom_servers() {
             format!(
                 "No server name was provided and the default ClickHouse server does not exist \
                  (custom ClickHouse servers available: {}); no server was removed. Inspect them \
-                 with `clickhousectl local server list`; to remove one, pass its name with \
-                 `clickhousectl local server remove <name>`.",
+                 with `clickhousectl local clickhouse list`; to remove one, pass its name with \
+                 `clickhousectl local clickhouse remove <name>`.",
                 names.len()
             )
         );
-        assert_eq!(error["error"]["command"], "clickhousectl local server list");
+        assert_eq!(
+            error["error"]["command"],
+            "clickhousectl local clickhouse list"
+        );
         for name in names {
             assert!(
                 project
@@ -410,8 +413,8 @@ fn omitted_remove_never_selects_custom_servers() {
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(stderr.contains("custom ClickHouse servers available: 1"));
-    assert!(stderr.contains("clickhousectl local server list"));
-    assert!(stderr.contains("clickhousectl local server remove <name>"));
+    assert!(stderr.contains("clickhousectl local clickhouse list"));
+    assert!(stderr.contains("clickhousectl local clickhouse remove <name>"));
     assert!(custom.exists());
 
     let explicit = run(
