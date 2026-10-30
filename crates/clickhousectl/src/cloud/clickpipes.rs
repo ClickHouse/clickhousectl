@@ -1812,7 +1812,7 @@ pub struct MongoDbCreateArgs {
 
     /// Full table mapping as a JSON object (repeatable)
     ///
-    /// Supports tableEngine and structuredIngestion (typed columns).
+    /// Supports tableEngine, structuredIngestion (typed columns) and mongoConfig.
     /// Combinable with --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
@@ -5054,6 +5054,7 @@ const MONGODB_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
     "targetTable",
     "tableEngine",
     "structuredIngestion",
+    "mongoConfig",
 ];
 
 fn parse_mongodb_table_mapping_json(
@@ -12363,6 +12364,41 @@ mod tests {
         ];
         for (ingestion, diagnostic) in cases {
             let raw = format!(r#"{{{base},"structuredIngestion":{ingestion}}}"#);
+            let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
+            assert!(error.message.starts_with("--table-mapping-json #1: "));
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn mongodb_table_mapping_json_accepts_mongo_config() {
+        use clickhouse_cloud_api::models::ClickPipeMongoDBTableConfig;
+
+        let base = r#""sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t""#;
+        let unset = parse_mongodb_table_mapping_json(0, &format!("{{{base}}}")).unwrap();
+        assert_eq!(unset.mongo_config, None);
+
+        for persist in [true, false] {
+            let raw =
+                format!(r#"{{{base},"mongoConfig":{{"persistDeletedDocuments":{persist}}}}}"#);
+            let mapping = parse_mongodb_table_mapping_json(0, &raw).unwrap();
+            assert_eq!(
+                mapping.mongo_config,
+                Some(ClickPipeMongoDBTableConfig {
+                    persist_deleted_documents: persist,
+                })
+            );
+        }
+
+        for (config, diagnostic) in [
+            (r#"{}"#, "missing field `persistDeletedDocuments`"),
+            (
+                r#"{"persistDeletedDocuments":true,"preImages":true}"#,
+                "unknown field",
+            ),
+            (r#"{"persistDeletedDocuments":"yes"}"#, "invalid type"),
+        ] {
+            let raw = format!(r#"{{{base},"mongoConfig":{config}}}"#);
             let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
             assert!(error.message.starts_with("--table-mapping-json #1: "));
             assert!(error.message.contains(diagnostic), "{}", error.message);

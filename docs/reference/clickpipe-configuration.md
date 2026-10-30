@@ -48,7 +48,7 @@ Database creates require at least one mapping. Repeat or combine the simple and 
 }
 ```
 
-Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names, engine, and `structuredIngestion`, which replicates a collection into typed columns instead of one JSON document column. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
+Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names, engine, `structuredIngestion`, which replicates a collection into typed columns instead of one JSON document column, and `mongoConfig`. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
 
 For MongoDB structured ingestion, `enabled` is required. Omit `columns` to infer them from sampled documents; `_id` is always replicated as `String`. `excludedColumns` and `sortingKeys` entries must be unique, and the sorting key defaults to `_id`:
 
@@ -63,6 +63,17 @@ For MongoDB structured ingestion, `enabled` is required. Omit `columns` to infer
     "sortingKeys": ["_id", "created_at"],
     "partitionByExpr": "toYYYYMM(created_at)"
   }
+}
+```
+
+MongoDB `mongoConfig.persistDeletedDocuments` keeps the full document as it was right before a delete instead of only its `_id`. It requires `changeStreamPreAndPostImages` on the source collection; the CLI does not check that setting. The field is required when `mongoConfig` is present, and omitting `mongoConfig` keeps the service default, `false`:
+
+```json
+{
+  "sourceDatabaseName": "shop",
+  "sourceCollection": "orders",
+  "targetTable": "orders",
+  "mongoConfig": {"persistDeletedDocuments": true}
 }
 ```
 
