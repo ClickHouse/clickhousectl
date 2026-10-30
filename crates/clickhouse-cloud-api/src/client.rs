@@ -1,6 +1,4 @@
 //! HTTP client for the ClickHouse Cloud API.
-//!
-//! Auto-generated from the OpenAPI specification.
 
 use crate::error::Error;
 
