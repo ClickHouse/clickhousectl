@@ -4,14 +4,18 @@
 its own PR (see `crates/clickhouse-cloud-api/AGENTS.md`).
 
 Everything for a command lives in its domain module, `src/cloud/<domain>.rs`: the clap definition, permissions,
-dispatch, the `CloudClient` wrapper, the request builder, the handler and the tests. Copy the pattern from
-`src/cloud/services.rs` or `src/cloud/postgres.rs`. Handlers never call `client.api()`. The one wrapper that
-returns the raw library error is `run_service_query{,_bearer}` in `services.rs`: query paths stream the
-response and classify the error themselves. Don't copy that for other endpoints.
+dispatch, the `CloudClient` wrapper, the request builder, the handler and the tests. A large domain is a
+directory, `src/cloud/<domain>/`: `PERMISSIONS`, `run()` and re-exports in `mod.rs`, clap definitions in
+`cli.rs`, `CloudClient` wrappers in `client.rs`, and one file per command family, with tests beside the code
+they test. Copy the pattern from `src/cloud/services/` or `src/cloud/postgres.rs`. Handlers never call
+`client.api()`. The one wrapper that returns the raw library error is `run_service_query{,_bearer}` in
+`services/client.rs`: query paths stream the response and classify the error themselves. Don't copy that for
+other endpoints.
 
 1. **Definition.** Add the variant and its argument struct to the domain's command enum. For a new command
    group:
-   - Create `src/cloud/<domain>.rs` and re-export its enum privately from `src/cloud/cli.rs`.
+   - Create `src/cloud/<domain>.rs` (or `src/cloud/<domain>/mod.rs`) and re-export its enum privately from
+     `src/cloud/cli.rs`.
    - Add an arm to `CloudCommands::is_write_command()` in `src/cloud/cli.rs`.
    - Add an arm to `dispatch()` in `src/cloud/mod.rs`.
    - Add the module's `PERMISSIONS` to the list in `src/cloud/permissions.rs`.
