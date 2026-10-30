@@ -293,6 +293,65 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Help lists subcommands in declaration order, so a new command must be placed
+    /// deliberately (see "Subcommand order" in the `cli-help-text` skill).
+    #[test]
+    fn top_level_subcommands_keep_their_help_order() {
+        fn visible_subcommands(command: &clap::Command) -> Vec<&str> {
+            command
+                .get_subcommands()
+                .filter(|child| !child.is_hide_set())
+                .map(clap::Command::get_name)
+                .collect()
+        }
+
+        let root = Cli::command();
+        let mut top = vec!["local", "cloud", "skills", "update"];
+        if cfg!(feature = "telemetry") {
+            top.push("telemetry");
+        }
+        assert_eq!(visible_subcommands(&root), top);
+
+        let cloud = root.find_subcommand("cloud").unwrap();
+        assert_eq!(
+            visible_subcommands(cloud),
+            [
+                "auth",
+                "org",
+                "service",
+                "postgres",
+                "query-api-endpoint",
+                "saved-query",
+                "backup",
+                "clickpipe",
+                "clickstack",
+                "udf",
+                "key",
+                "member",
+                "invitation",
+                "activity",
+            ]
+        );
+
+        let local = root.find_subcommand("local").unwrap();
+        assert_eq!(
+            visible_subcommands(local),
+            [
+                "init",
+                "clickhouse",
+                "postgres",
+                "status",
+                "client",
+                "install",
+                "list",
+                "use",
+                "which",
+                "remove",
+                "udf",
+            ]
+        );
+    }
+
     #[test]
     fn shared_flags_have_identical_help_at_every_declaration() {
         let shared = [
