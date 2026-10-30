@@ -10455,6 +10455,52 @@ async fn mongodb_table_mapping_json_sends_structured_ingestion() {
 }
 
 #[tokio::test]
+async fn mongodb_table_mapping_json_sends_mongo_config() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            "svc-id",
+            "--name",
+            "mongodb-persist-deletes",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "sales.customers:customers",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"sales","sourceCollection":"orders","targetTable":"orders","mongoConfig":{"persistDeletedDocuments":true}}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["mongodb"]["tableMappings"],
+        serde_json::json!([
+            {
+                "sourceDatabaseName": "sales",
+                "sourceCollection": "customers",
+                "targetTable": "customers",
+            },
+            {
+                "sourceDatabaseName": "sales",
+                "sourceCollection": "orders",
+                "targetTable": "orders",
+                "mongoConfig": {"persistDeletedDocuments": true},
+            },
+        ])
+    );
+}
+
+#[tokio::test]
 async fn bigquery_service_account_table_mapping_json_preserves_optional_shapes() {
     let mock = start_mock_clickpipes_api().await;
     let directory = tempfile::tempdir().unwrap();
