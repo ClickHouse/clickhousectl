@@ -52,8 +52,13 @@ uuid = "1"
 wiremock = "0.6"
 tempfile = "3.27.0"
 
-# The offline model tests are one binary split into per-domain modules under
-# tests/models/; the explicit target keeps the `models_test` name.
+# The offline client and model tests are each one binary split into
+# per-domain modules under tests/client/ and tests/models/; the explicit
+# targets keep the `client_test` and `models_test` names.
+
+[[test]]
+name = "client_test"
+path = "tests/client/main.rs"
 
 [[test]]
 name = "models_test"
