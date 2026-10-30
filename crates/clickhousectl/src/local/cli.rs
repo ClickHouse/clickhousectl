@@ -187,67 +187,6 @@ impl LocalArgs {
 
 #[derive(Subcommand)]
 pub enum LocalCommands {
-    /// Install a ClickHouse version or Postgres image
-    #[command(after_help = INSTALL_AFTER_HELP)]
-    Install {
-        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or image selector (postgres@18)
-        version: InstallVersionArg,
-
-        /// Re-install even if already installed
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// List installed or available ClickHouse versions
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Default output is exact installed version strings — the form `clickhousectl local remove` needs.
-  --remote lists minor versions (e.g. 26.3) probed from builds.clickhouse.com, not exact builds.")]
-    List {
-        /// List minor versions available for download
-        #[arg(long)]
-        remote: bool,
-    },
-
-    /// Set the default ClickHouse version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Auto-installs the version if it is not already present.
-  Symlinks `~/.local/bin/clickhouse` to it, putting `clickhouse client`, `clickhouse benchmark`
-  and `clickhouse format` on PATH; --no-global skips that.
-  Sets the version used by `clickhousectl local client` and `clickhousectl local clickhouse`.")]
-    Use {
-        /// Version to set as default ("latest", "stable", "lts", 25.12, or 25.12.5.44)
-        version: UseVersionArg,
-
-        /// Do not create or update the ~/.local/bin/clickhouse symlink
-        #[arg(long)]
-        no_global: bool,
-    },
-
-    /// Remove an installed ClickHouse version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Fails if any server is running on this version, in any project — versions are shared, so a server
-  started from another directory blocks removal too (`local clickhouse list --global` lists them).
-  Fails if the version is the current default; switch with `clickhousectl local use <other-version>` first.
-  --force overrides both guards. The exact build may not be re-downloadable.")]
-    Remove {
-        /// Exact installed version to remove (not "latest"/"stable"/"lts")
-        // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
-        version: String,
-
-        /// Stop any server using this version and remove it even if it is the default
-        ///
-        /// Servers in other projects are stopped too; clears ~/.clickhouse/default and
-        /// the ~/.local/bin/clickhouse symlink when the default is removed.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Show the current default ClickHouse version
-    Which,
-
     /// Initialize a project directory for ClickHouse and Postgres
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -256,6 +195,42 @@ CONTEXT FOR AGENTS:
   Idempotent — re-running only creates what is missing.
   Next: `clickhousectl local clickhouse start`")]
     Init,
+
+    /// Manage local ClickHouse servers
+    #[command(
+        visible_alias = "ch",
+        alias = "server",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Covers ClickHouse only; `local postgres` manages Postgres and `local status` lists both.
+  Data persists across stop/start; only `remove` deletes it.
+  Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
+  `local remove <version>` deletes an installed binary, not server data.
+  Custom configs inherit built-in defaults; find available names with `clickhouse configs`.
+  Typical flow: `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
+    )]
+    Clickhouse {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+
+    /// Manage local Postgres instances (Docker-backed)
+    #[command(
+        visible_alias = "pg",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Requires Docker installed and running.
+  Each instance is keyed on (name, major version); pass --version when one name has two majors.
+  Covers Postgres only; `local status` lists ClickHouse and Postgres together.
+  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`"
+    )]
+    Postgres {
+        #[command(subcommand)]
+        command: PostgresCommands,
+    },
+
+    /// List ClickHouse and Postgres instances in this project
+    Status,
 
     /// Connect to a running ClickHouse server with clickhouse-client
     #[command(
@@ -322,41 +297,66 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// Manage local ClickHouse servers
-    #[command(
-        visible_alias = "ch",
-        alias = "server",
-        after_help = "\
-CONTEXT FOR AGENTS:
-  Covers ClickHouse only; `local postgres` manages Postgres and `local status` lists both.
-  Data persists across stop/start; only `remove` deletes it.
-  Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
-  `local remove <version>` deletes an installed binary, not server data.
-  Custom configs inherit built-in defaults; find available names with `clickhouse configs`.
-  Typical flow: `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
-    )]
-    Clickhouse {
-        #[command(subcommand)]
-        command: ServerCommands,
+    /// Install a ClickHouse version or Postgres image
+    #[command(after_help = INSTALL_AFTER_HELP)]
+    Install {
+        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or image selector (postgres@18)
+        version: InstallVersionArg,
+
+        /// Re-install even if already installed
+        #[arg(long)]
+        force: bool,
     },
 
-    /// Manage local Postgres instances (Docker-backed)
-    #[command(
-        visible_alias = "pg",
-        after_help = "\
+    /// List installed or available ClickHouse versions
+    #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Requires Docker installed and running.
-  Each instance is keyed on (name, major version); pass --version when one name has two majors.
-  Covers Postgres only; `local status` lists ClickHouse and Postgres together.
-  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`"
-    )]
-    Postgres {
-        #[command(subcommand)]
-        command: PostgresCommands,
+  Default output is exact installed version strings — the form `clickhousectl local remove` needs.
+  --remote lists minor versions (e.g. 26.3) probed from builds.clickhouse.com, not exact builds.")]
+    List {
+        /// List minor versions available for download
+        #[arg(long)]
+        remote: bool,
     },
 
-    /// List ClickHouse and Postgres instances in this project
-    Status,
+    /// Set the default ClickHouse version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Auto-installs the version if it is not already present.
+  Symlinks `~/.local/bin/clickhouse` to it, putting `clickhouse client`, `clickhouse benchmark`
+  and `clickhouse format` on PATH; --no-global skips that.
+  Sets the version used by `clickhousectl local client` and `clickhousectl local clickhouse`.")]
+    Use {
+        /// Version to set as default ("latest", "stable", "lts", 25.12, or 25.12.5.44)
+        version: UseVersionArg,
+
+        /// Do not create or update the ~/.local/bin/clickhouse symlink
+        #[arg(long)]
+        no_global: bool,
+    },
+
+    /// Show the current default ClickHouse version
+    Which,
+
+    /// Remove an installed ClickHouse version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Fails if any server is running on this version, in any project — versions are shared, so a server
+  started from another directory blocks removal too (`local clickhouse list --global` lists them).
+  Fails if the version is the current default; switch with `clickhousectl local use <other-version>` first.
+  --force overrides both guards. The exact build may not be re-downloadable.")]
+    Remove {
+        /// Exact installed version to remove (not "latest"/"stable"/"lts")
+        // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
+        version: String,
+
+        /// Stop any server using this version and remove it even if it is the default
+        ///
+        /// Servers in other projects are stopped too; clears ~/.clickhouse/default and
+        /// the ~/.local/bin/clickhouse symlink when the default is removed.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Manage executable UDFs for local servers
     #[command(after_help = "\

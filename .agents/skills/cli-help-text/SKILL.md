@@ -57,6 +57,15 @@ No `long_about`, `before_help`, `after_long_help`, or any other `after_help` hea
 - Both local clients order common arguments as name, host, port, version, query, queries-file.
 - Keep release-only URL hiding as it is.
 
+## Subcommand order
+
+clap lists subcommands in enum declaration order, so order the variants, not `display_order`.
+
+- Entry points first (`local`, `cloud auth`, `local init`), then the main resources, then secondary resources,
+  then admin and rarely used commands.
+- Within a resource: list, get, create, update, delete, then lifecycle verbs, then sub-resources.
+- A test pins the order at the top level, `cloud` and `local`. Place a new command deliberately and update it.
+
 ## `CONTEXT FOR AGENTS:`
 
 At most 8 content lines, ideally 3 to 6. Write densely: the block is for agents, not people, so pack related
