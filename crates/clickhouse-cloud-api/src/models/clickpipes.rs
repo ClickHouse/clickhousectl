@@ -2667,6 +2667,8 @@ pub struct ClickPipeMongoDBPipeSettingsResponse {
 /// `ClickPipeMongoDBPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeTableMapping {
+    #[serde(rename = "mongoConfig", skip_serializing_if = "Option::is_none")]
+    pub mongo_config: Option<ClickPipeMongoDBTableConfig>,
     #[serde(rename = "sourceCollection")]
     pub source_collection: String,
     #[serde(rename = "sourceDatabaseName")]
@@ -2690,6 +2692,8 @@ pub struct ClickPipeMongoDBPipeTableMapping {
 /// `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeTableMappingResponse {
+    #[serde(rename = "mongoConfig", skip_serializing_if = "Option::is_none")]
+    pub mongo_config: Option<ClickPipeMongoDBTableConfigResponse>,
     #[serde(rename = "sourceCollection", skip_serializing_if = "Option::is_none")]
     pub source_collection: Option<String>,
     #[serde(rename = "sourceDatabaseName", skip_serializing_if = "Option::is_none")]
@@ -2703,6 +2707,32 @@ pub struct ClickPipeMongoDBPipeTableMappingResponse {
     pub table_engine: Option<ClickPipeMongoDBPipeTableMappingTableengine>,
     #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
     pub target_table: Option<String>,
+}
+
+/// `ClickPipeMongoDBTableConfig` from the ClickHouse Cloud API: per-collection
+/// MongoDB replication options.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBTableConfig {
+    /// Persist the full document as it was right before it was deleted,
+    /// instead of only its `_id`. Requires `changeStreamPreAndPostImages` on
+    /// the source collection.
+    #[serde(rename = "persistDeletedDocuments")]
+    pub persist_deleted_documents: bool,
+}
+
+/// `ClickPipeMongoDBTableConfig` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeMongoDBTableConfig`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBTableConfigResponse {
+    #[serde(
+        rename = "persistDeletedDocuments",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub persist_deleted_documents: Option<bool>,
 }
 
 /// `ClickPipeMongoDBStructuredIngestion` from the ClickHouse Cloud API.

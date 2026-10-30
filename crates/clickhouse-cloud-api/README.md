@@ -6,6 +6,15 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`ClickPipeMongoDBPipeTableMapping` gains optional `mongo_config`
+(`ClickPipeMongoDBTableConfig`), per-collection MongoDB options. Its one field,
+the required `persist_deleted_documents`, keeps the full document as it was
+right before a delete instead of only its `_id`; it requires
+`changeStreamPreAndPostImages` on the source collection. Omitting `mongo_config`
+leaves the API default (`false`). Responses use the all-`Option`
+`ClickPipeMongoDBTableConfigResponse`. Struct-literal callers of
+the table mapping need `mongo_config: None` or `..Default::default()`.
+
 The beta `click_stack_validate_webhook` method checks a `ClickStackWebhookInput`
 against the rules used when a webhook is created, without saving it; name
 uniqueness is not checked. It returns `ClickStackValidateWebhookResponse`, with
