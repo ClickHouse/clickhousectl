@@ -16,3 +16,6 @@ e7fcdb1a8f1e48c564717f1ccd0fa654d182aa73
 
 # Move the Query API out of client.rs into client/query.rs (#1173)
 8db8f19a0b69ff505c33188414efb85dc50dfd0e
+
+# Split client/organizations.rs into byoc, invitations, members and rbac (#1173)
+9e20dd888a937f5f0b610b22a71aef4ff70b9357

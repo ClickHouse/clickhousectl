@@ -27,10 +27,13 @@ SOURCE_PATH_SUITES = {
         {"service", "organization"}
     ),
     "crates/clickhouse-cloud-api/src/client/backups.rs": frozenset({"service"}),
+    "crates/clickhouse-cloud-api/src/client/byoc.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/clickpipes.rs": frozenset(
         {"clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/client/clickstack.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/client/invitations.rs": frozenset({"organization"}),
+    "crates/clickhouse-cloud-api/src/client/members.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/organizations.rs": frozenset(
         {"service", "organization"}
     ),
@@ -39,6 +42,7 @@ SOURCE_PATH_SUITES = {
     ),
     "crates/clickhouse-cloud-api/src/client/query.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs": frozenset({"service"}),
+    "crates/clickhouse-cloud-api/src/client/rbac.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/saved_queries.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
         {"service", "clickpipes"}
@@ -54,6 +58,9 @@ SOURCE_PATH_SUITES = {
         {"postgres", "clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/convert/service.rs": frozenset(
+        {"service", "clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/convert/services.rs": frozenset(
         {"service", "clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/convert/shared.rs": ALL_SUITES,
