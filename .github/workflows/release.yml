@@ -131,10 +131,9 @@ jobs:
             ${{ matrix.distro }} \
             sh -c 'clickhousectl --version && clickhousectl --help'
 
-  # `clickhousectl update`, install.sh and the npm postinstall read the latest
-  # version from the GitHub release, then download the archive from
-  # builds.clickhouse.com. Uploading before Create Release means the newest
-  # release is never visible without its archives.
+  # Uploading the archives before Create Release means the newest release is
+  # never visible without its archives. `publish-latest` points
+  # `clickhousectl update` and install.sh at it afterwards.
   upload-builds:
     name: Upload to builds.clickhouse.com
     needs: [build, smoke-test]
@@ -220,6 +219,75 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: gh release create "$TAG" --generate-notes release/*
+
+  # `clickhousectl update` and install.sh read the latest version from
+  # builds.clickhouse.com/clickhousectl/latest.txt rather than the
+  # rate-limited GitHub API. It moves only forwards, so re-running an older
+  # tag cannot downgrade users, and the run fails unless builds.clickhouse.com
+  # serves the expected version afterwards.
+  publish-latest:
+    name: Publish latest.txt
+    needs: [upload-builds, release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      S3_BUCKET: clickhouse-builds
+      KEY: clickhousectl/latest.txt
+      URL: https://builds.clickhouse.com/clickhousectl/latest.txt
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check tag
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::latest.txt takes only vX.Y.Z tags, got ${TAG}"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::542516086801:role/external-s3-upload
+          aws-region: us-east-1
+
+      - name: Upload latest.txt
+        run: |
+          if err=$(aws s3 cp "s3://${S3_BUCKET}/${KEY}" current.txt 2>&1 >/dev/null); then
+            current=$(tr -d '[:space:]' < current.txt)
+          elif echo "$err" | grep -qE "Not Found|NoSuchKey|404"; then
+            current=""
+          else
+            echo "::error::reading s3://${S3_BUCKET}/${KEY} failed: ${err}"
+            exit 1
+          fi
+          echo "Current latest.txt: ${current:-<none>}"
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "${current#v}" "${TAG#v}" | sort -V | tail -n1)" != "${TAG#v}" ]; then
+            echo "::notice::latest.txt already points at newer ${current}; leaving it"
+            echo "EXPECTED=${current}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          printf '%s\n' "$TAG" > latest.txt
+          aws s3 cp latest.txt "s3://${S3_BUCKET}/${KEY}" \
+            --content-type text/plain --cache-control no-cache
+          echo "EXPECTED=${TAG}" >> "$GITHUB_ENV"
+
+      # Clients add a unique query string because builds.clickhouse.com caches
+      # every path for days; verify through the same route they use.
+      - name: Verify builds.clickhouse.com serves it
+        run: |
+          for attempt in 1 2 3 4 5; do
+            served=$(curl -fsSL "${URL}?t=$(date +%s)-${attempt}" | tr -d '[:space:]' || true)
+            if [ "$served" = "$EXPECTED" ]; then
+              echo "builds.clickhouse.com serves ${served}"
+              exit 0
+            fi
+            echo "Attempt ${attempt}: served '${served}', expected '${EXPECTED}'"
+            sleep 10
+          done
+          echo "::error::${URL} does not serve ${EXPECTED}"
+          exit 1
 
   publish-crates:
     name: Publish to crates.io
