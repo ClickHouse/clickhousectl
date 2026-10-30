@@ -22,7 +22,7 @@ use std::fmt;
 mod clickpipes;
 mod clickstack;
 mod postgres;
-mod service;
+mod services;
 mod shared;
 
 /// The response omitted fields that the matching request model requires.
