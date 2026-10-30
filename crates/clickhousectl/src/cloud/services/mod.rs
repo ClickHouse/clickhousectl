@@ -1,3 +1,5 @@
+pub mod query_key;
+
 use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
@@ -168,7 +170,9 @@ use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
-use crate::cloud::service_query::{CallerKeyBinding, RepairVerification, existing_open_api_keys};
+use crate::cloud::services::query_key::{
+    CallerKeyBinding, RepairVerification, existing_open_api_keys,
+};
 use crate::cloud::shared::{NameSelector, NamedResource, PollProgress};
 use crate::cloud::shared::{
     parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
@@ -3340,7 +3344,8 @@ async fn service_query_key_repair(
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let result =
-        crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
+        crate::cloud::services::query_key::repair_service_query_key(client, &org_id, service_id)
+            .await?;
     // A retired key that could not be deleted is a warning, not a failure: the
     // replacement is active and its ID is stored for the retry (#527). The
     // warning goes to stderr in both modes; the JSON result carries the IDs.
@@ -3967,7 +3972,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             // the record; finish that here, quietly, before the query (#527).
             // The list is empty on every ordinary run, so this costs nothing
             // unless a retirement is actually outstanding.
-            crate::cloud::service_query::retry_pending_query_key_cleanup(
+            crate::cloud::services::query_key::retry_pending_query_key_cleanup(
                 client,
                 &key,
                 &service_id,
@@ -3993,7 +3998,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     // decides, and nothing is replaced automatically (#528).
                     Some(status) => {
                         return Err(
-                            crate::cloud::service_query::rejected_stored_query_key_error(
+                            crate::cloud::services::query_key::rejected_stored_query_key_error(
                                 client,
                                 &key,
                                 &service_id,
@@ -4042,7 +4047,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     // endpoint and the query re-runs with it (#1043). The bind
                     // records `BoundCallerKey` itself once it succeeds.
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
-                    let binding = crate::cloud::service_query::bind_caller_query_key(
+                    let binding = crate::cloud::services::query_key::bind_caller_query_key(
                         client,
                         &org_id,
                         &service_id,
@@ -4080,7 +4085,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                                 target,
                                 QUERY_ENDPOINT_READINESS,
                                 |waited| {
-                                    crate::cloud::service_query::bound_caller_key_rejected_error(
+                                    crate::cloud::services::query_key::bound_caller_key_rejected_error(
                                         &service_id,
                                         &org_id,
                                         &caller_uuid,
