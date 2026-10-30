@@ -147,6 +147,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                 disabled: value.disabled,
                 displayed_timestamp_value_expression: value.displayed_timestamp_value_expression,
                 event_attributes_expression: value.event_attributes_expression,
+                event_name_expression: value.event_name_expression,
                 filter_settings: value.filter_settings.map(TryInto::try_into).transpose()?,
                 from: from.try_into()?,
                 highlighted_row_attribute_expressions: value
@@ -200,6 +201,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                 section: value.section,
                 service_name_expression: value.service_name_expression,
                 service_version_expression: value.service_version_expression,
+                severity_number_expression: value.severity_number_expression,
                 severity_text_expression: value.severity_text_expression,
                 span_id_expression: value.span_id_expression,
                 timestamp_value_expression,
