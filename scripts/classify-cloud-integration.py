@@ -118,6 +118,15 @@ SOURCE_PATH_SUITES = {
         {"clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/models/clickstack.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/alerts.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/dashboards.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/enums.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/mod.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/roles.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/saved_searches.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/sources.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/tiles.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/clickstack/webhooks.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/invitations.rs": frozenset(
         {"organization"}
