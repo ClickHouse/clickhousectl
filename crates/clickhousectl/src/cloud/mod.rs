@@ -15,7 +15,6 @@ pub(crate) mod permissions;
 pub mod postgres;
 pub mod query_api_endpoints;
 pub mod saved_queries;
-pub mod service_query;
 pub mod services;
 mod shared;
 pub mod types;

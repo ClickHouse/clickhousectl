@@ -4,3 +4,6 @@
 
 # Format entire workspace with cargo fmt
 d78a6d2aa40a70d9e1093f09ae987ca1b26e3e41
+
+# Split cloud/services into per-command-family files (#1157)
+30bd640d06f010ddbcbcf59c0a403329748e72d2

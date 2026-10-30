@@ -9,6 +9,7 @@
 | `crates/clickhousectl/src/main.rs`, `cli.rs` | Entrypoint, common CLI options, output mode |
 | `crates/clickhousectl/src/local/` | Local command definitions, dispatch, servers, Docker/Postgres, output |
 | `crates/clickhousectl/src/cloud/<domain>.rs` | Cloud domain definitions, handlers, builders, wrappers, tests |
+| `crates/clickhousectl/src/cloud/<domain>/` | A large Cloud domain: `PERMISSIONS` and dispatch in `mod.rs`, clap definitions in `cli.rs`, `CloudClient` wrappers in `client.rs`, one file per command family, tests beside the code they test |
 | `crates/clickhousectl/src/cloud/client.rs` | Credential resolution and shared Cloud client/error handling |
 | `crates/clickhousectl/src/stdout.rs` | CLI-owned stdout and typed broken-pipe handling |
 | `crates/clickhouse-cloud-api/` | Published typed API client |

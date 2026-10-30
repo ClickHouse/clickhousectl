@@ -12,7 +12,8 @@ is noise that costs the reader time and tokens.
 ## Where help lives
 
 - `#[command(about = ..., after_help = ...)]` and arg doc comments in `src/cli.rs`, `src/local/cli.rs`,
-  `src/cloud/cli.rs` and `src/cloud/<domain>.rs` (all under `crates/clickhousectl/`).
+  `src/cloud/cli.rs` and `src/cloud/<domain>.rs`, or `src/cloud/<domain>/cli.rs` for a domain split into a
+  directory (all under `crates/clickhousectl/`).
 - `const INSTALL_AFTER_HELP` in `src/local/cli.rs`.
 - `src/cloud/permissions.rs` appends API-key permission lines to every executable Cloud command, built from each
   domain's declarations. Don't write those lines by hand.
