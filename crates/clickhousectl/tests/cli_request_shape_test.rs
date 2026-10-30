@@ -35044,3 +35044,247 @@ async fn org_notifications_accepts_an_empty_cursor_without_fetching_more_pages()
         })
     );
 }
+
+// ── Cloud service .env output (issue #1164) ────────────────────────────────
+
+const DOTENV_SERVICE_ID: &str = "22222222-3333-4444-5555-666666666666";
+
+fn dotenv_service_json() -> Value {
+    serde_json::json!({
+        "id": DOTENV_SERVICE_ID,
+        "name": "analytics",
+        "endpoints": [
+            {"protocol": "https", "host": "abc.us-east-1.aws.clickhouse.cloud", "port": 8443},
+            {"protocol": "nativesecure", "host": "abc.us-east-1.aws.clickhouse.cloud", "port": 9440}
+        ]
+    })
+}
+
+fn invoke_cli_in_dir(
+    mock: &MockServer,
+    dir: &Path,
+    json: bool,
+    cli_args: &[&str],
+) -> std::process::Output {
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url];
+    if json {
+        args.push("--json");
+    }
+    args.extend(cli_args);
+    Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+async fn mount_dotenv_service_get(mock: &MockServer, service: Value) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DOTENV_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service, "status": 200, "requestId": "stub-dotenv-get"
+        })))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn service_dotenv_edits_env_in_place_without_a_password() {
+    let mock = MockServer::start().await;
+    mount_dotenv_service_get(&mock, dotenv_service_json()).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        "APP=1\nCLICKHOUSE_PASSWORD=kept\nCLICKHOUSE_HOST=old\n",
+    )
+    .unwrap();
+
+    let output = invoke_cli_in_dir(
+        &mock,
+        dir.path(),
+        true,
+        &["service", "dotenv", DOTENV_SERVICE_ID, "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".env")).unwrap(),
+        "APP=1\nCLICKHOUSE_PASSWORD=kept\nCLICKHOUSE_HOST=abc.us-east-1.aws.clickhouse.cloud\n\
+         CLICKHOUSE_PORT=9440\nCLICKHOUSE_HTTP_PORT=8443\nCLICKHOUSE_USER=default\n\
+         CLICKHOUSE_SECURE=true\n"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["file"], ".env");
+    assert_eq!(result["service"], "analytics");
+    let keys: Vec<&str> = result["vars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|var| var["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "CLICKHOUSE_HOST",
+            "CLICKHOUSE_PORT",
+            "CLICKHOUSE_HTTP_PORT",
+            "CLICKHOUSE_USER",
+            "CLICKHOUSE_SECURE"
+        ]
+    );
+
+    let local = invoke_cli_in_dir(
+        &mock,
+        dir.path(),
+        false,
+        &[
+            "service",
+            "dotenv",
+            DOTENV_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--local",
+        ],
+    );
+    assert_success(&local);
+    let written = std::fs::read_to_string(dir.path().join(".env.local")).unwrap();
+    assert!(written.starts_with("CLICKHOUSE_HOST=abc.us-east-1.aws.clickhouse.cloud\n"));
+    assert!(!written.contains("CLICKHOUSE_PASSWORD"));
+}
+
+#[tokio::test]
+async fn service_dotenv_without_endpoints_fails_and_writes_nothing() {
+    let mock = MockServer::start().await;
+    mount_dotenv_service_get(
+        &mock,
+        serde_json::json!({"id": DOTENV_SERVICE_ID, "name": "analytics"}),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_cli_in_dir(
+        &mock,
+        dir.path(),
+        true,
+        &["service", "dotenv", DOTENV_SERVICE_ID, "--org-id", "org-1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(!dir.path().join(".env").exists());
+}
+
+async fn mount_dotenv_service_create(mock: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"service": dotenv_service_json(), "password": "one-time-secret"},
+            "status": 200,
+            "requestId": "stub-dotenv-create"
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn service_create_dotenv_writes_the_password_and_keeps_it_off_stdout() {
+    for json in [true, false] {
+        let mock = MockServer::start().await;
+        mount_dotenv_service_create(&mock).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("app")).unwrap();
+        let target = dir.path().join("app").join(".env");
+
+        let output = invoke_cli_in_dir(
+            &mock,
+            dir.path(),
+            json,
+            &[
+                "service",
+                "create",
+                "--name",
+                "analytics",
+                "--org-id",
+                "org-1",
+                "--dotenv",
+                target.to_str().unwrap(),
+            ],
+        );
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("one-time-secret"), "json={json}: {stdout}");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("one-time-secret"));
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "CLICKHOUSE_HOST=abc.us-east-1.aws.clickhouse.cloud\nCLICKHOUSE_PORT=9440\n\
+             CLICKHOUSE_HTTP_PORT=8443\nCLICKHOUSE_USER=default\nCLICKHOUSE_SECURE=true\n\
+             CLICKHOUSE_PASSWORD=one-time-secret\n"
+        );
+        if json {
+            let result: Value = serde_json::from_str(&stdout).unwrap();
+            assert!(result.get("password").is_none());
+            assert_eq!(result["service"]["id"], DOTENV_SERVICE_ID);
+            assert_eq!(result["dotenv"]["file"], target.to_str().unwrap());
+            assert_eq!(result["dotenv"]["keys"][5], "CLICKHOUSE_PASSWORD");
+        }
+    }
+}
+
+#[tokio::test]
+async fn service_create_without_dotenv_still_prints_the_password() {
+    let mock = MockServer::start().await;
+    mount_dotenv_service_create(&mock).await;
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_cli_in_dir(
+        &mock,
+        dir.path(),
+        true,
+        &[
+            "service",
+            "create",
+            "--name",
+            "analytics",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["password"], "one-time-secret");
+    assert!(result.get("dotenv").is_none());
+    assert!(!dir.path().join(".env").exists());
+}
+
+#[tokio::test]
+async fn service_create_dotenv_rejects_an_unwritable_target_before_creating() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let missing_dir = dir.path().join("missing").join(".env");
+    for target in [dir.path().to_str().unwrap(), missing_dir.to_str().unwrap()] {
+        let output = invoke_cli_in_dir(
+            &mock,
+            dir.path(),
+            true,
+            &[
+                "service",
+                "create",
+                "--name",
+                "analytics",
+                "--org-id",
+                "org-1",
+                "--dotenv",
+                target,
+            ],
+        );
+        assert_eq!(output.status.code(), Some(2), "{target}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
