@@ -1123,15 +1123,14 @@ struct ServerTarget {
 /// callers can hold it across their file writes and release it before any
 /// HTTP round trip.
 fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
-    // Without server state there is no server to target, and nothing is
-    // created to find that out.
-    let Some(lock) = server::lock_existing_metadata()? else {
+    // Without server state or an orphan there is no server to target, and
+    // nothing is created to find that out.
+    let Some(lock) = server::lock_recovered_metadata()? else {
         if server::is_pg_instance_key(name) {
             return Err(Error::UdfServerIsPostgres(name.to_owned()));
         }
         return Err(server_not_found(name)?);
     };
-    server::recover_current_project_servers_locked(&lock)?;
     let entry = server::server_entry_locked(name, &lock)?;
     let is_postgres = match entry.as_ref().and_then(|entry| entry.info.as_ref()) {
         Some(info) => info.engine != Engine::Clickhouse,

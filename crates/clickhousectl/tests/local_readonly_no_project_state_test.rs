@@ -2,23 +2,34 @@
 //!
 //! Each command runs in an empty directory, or one with only `local init`
 //! state, and must report its usual empty or not-found result without creating
-//! `.clickhouse/` or `.clickhouse/servers/`.
+//! `.clickhouse/` or `.clickhouse/servers/`. Deleting that state does not stop
+//! a running instance, though, so one this project still owns is recovered
+//! exactly as when the state is present.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use wiremock::matchers::{method, path_regex};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
+/// Run with Docker unreachable: discovery must tolerate it and find nothing.
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
+    let docker_host = format!("unix://{}/missing-docker.sock", home.display());
+    run_with_docker(project, home, &docker_host, args)
+}
+
+fn run_with_docker(project: &Path, home: &Path, docker_host: &str, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
+        .env("DOCKER_HOST", docker_host)
         .current_dir(project)
         .args(args)
         .stdin(Stdio::null())
@@ -298,4 +309,138 @@ fn initialized_project_without_servers_gains_no_servers_directory() {
         "server_selection_required"
     );
     assert!(!servers.exists());
+}
+
+/// A Docker daemon that still runs this project's labelled Postgres container,
+/// although the project's `.clickhouse/` state is gone.
+async fn docker_with_orphan_postgres(project: &Path) -> MockServer {
+    let project = project.canonicalize().expect("canonicalize project");
+    let docker = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/_ping$"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
+        .mount(&docker)
+        .await;
+    // Docker filters on the project label, so only that project's list
+    // carries the container; every other project lists nothing.
+    let project_label = format!("clickhousectl.project={}", project.display());
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .with_priority(10)
+        .mount(&docker)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .and(move |request: &wiremock::Request| {
+            request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "filters" && value.contains(&project_label))
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "Id": "orphan-container",
+            "Image": "postgres:18",
+            "Labels": {
+                "clickhousectl.engine": "postgres",
+                "clickhousectl.name": "default",
+                "clickhousectl.major": "18",
+                "clickhousectl.project": project.display().to_string(),
+            },
+            "Ports": [{ "PrivatePort": 5432, "PublicPort": 55432, "Type": "tcp" }],
+        }])))
+        .mount(&docker)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/orphan-container/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id": "orphan-container",
+            "State": { "Running": true, "Status": "running" },
+        })))
+        .mount(&docker)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/orphan-container/stop$"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&docker)
+        .await;
+    docker
+}
+
+async fn stop_requests(docker: &MockServer) -> usize {
+    docker
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method.as_str() == "POST")
+        .filter(|request| {
+            request
+                .url
+                .path()
+                .ends_with("/containers/orphan-container/stop")
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn running_postgres_container_is_recovered_when_project_state_is_missing() {
+    for args in [
+        &["local", "--json", "postgres", "stop-all"][..],
+        &["local", "--json", "postgres", "stop", "default"][..],
+    ] {
+        let project = tempfile::tempdir().expect("create project");
+        let home = tempfile::tempdir().expect("create home");
+        let docker = docker_with_orphan_postgres(project.path()).await;
+        let host = docker.uri().replace("http://", "tcp://");
+
+        let output = run_with_docker(project.path(), home.path(), &host, args);
+
+        assert_exit(&output, 0, args);
+        assert_eq!(stop_requests(&docker).await, 1, "{args:?}");
+        // Recovery records the instance, as it does when the state is present.
+        assert!(
+            project
+                .path()
+                .join(".clickhouse/servers/default-pg18.json")
+                .is_file(),
+            "{args:?}"
+        );
+    }
+
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let docker = docker_with_orphan_postgres(project.path()).await;
+    let host = docker.uri().replace("http://", "tcp://");
+    let args = ["local", "--json", "server", "list"];
+    let output = run_with_docker(project.path(), home.path(), &host, &args);
+    assert_exit(&output, 0, &args);
+    let servers = stdout_json(&output)["servers"].clone();
+    assert_eq!(servers.as_array().map(Vec::len), Some(1), "{servers}");
+    assert_eq!(servers[0]["name"], "default", "{servers}");
+    assert_eq!(servers[0]["engine"], "postgres", "{servers}");
+    assert_eq!(servers[0]["running"], true, "{servers}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn other_projects_postgres_containers_create_no_project_state() {
+    let other = tempfile::tempdir().expect("create other project");
+    let docker = docker_with_orphan_postgres(other.path()).await;
+    let host = docker.uri().replace("http://", "tcp://");
+    for (args, code) in [
+        (&["local", "--json", "server", "list"][..], 0),
+        (&["local", "--json", "postgres", "stop-all"][..], 0),
+        (&["local", "--json", "postgres", "stop", "default"][..], 1),
+    ] {
+        let project = tempfile::tempdir().expect("create project");
+        let home = tempfile::tempdir().expect("create home");
+        let output = run_with_docker(project.path(), home.path(), &host, args);
+        assert_exit(&output, code, args);
+        assert_eq!(
+            created_entries(project.path()),
+            Vec::<String>::new(),
+            "{args:?}"
+        );
+    }
+    assert_eq!(stop_requests(&docker).await, 0);
 }

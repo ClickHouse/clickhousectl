@@ -617,17 +617,16 @@ fn resolve_pg_start_version_locked(
     }
 }
 
-/// Lock existing project metadata, recover orphans, and resolve the target
-/// under that lock. A project without server state has no target, so this
-/// never creates `.clickhouse/servers/`.
+/// Lock project metadata, recover orphans, and resolve the target under that
+/// lock. A project with neither server state nor an orphan has no target, so
+/// this then creates no `.clickhouse/servers/`.
 fn lock_and_resolve_pg_target(
     user_name: &str,
     version: Option<&str>,
 ) -> Result<(server::ServerInfo, server::MetadataLock)> {
-    let Some(metadata_lock) = server::lock_existing_metadata()? else {
+    let Some(metadata_lock) = server::lock_recovered_metadata()? else {
         return Err(missing_pg_target(user_name, version));
     };
-    server::recover_current_project_servers_locked(&metadata_lock)?;
     let target = resolve_pg_target_locked(user_name, version, &metadata_lock)?;
     Ok((target, metadata_lock))
 }
@@ -1042,12 +1041,9 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
 }
 
 async fn stop_all(json: bool) -> Result<()> {
-    let metadata_lock = server::lock_existing_metadata()?;
+    let metadata_lock = server::lock_recovered_metadata()?;
     let servers: Vec<_> = match &metadata_lock {
-        Some(lock) => {
-            server::recover_current_project_servers_locked(lock)?;
-            server::list_running_servers_locked(lock)?
-        }
+        Some(lock) => server::list_running_servers_locked(lock)?,
         None => Vec::new(),
     }
     .into_iter()

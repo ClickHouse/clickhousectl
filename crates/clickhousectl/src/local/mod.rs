@@ -392,11 +392,9 @@ fn run_client(
             )
         };
         let server_not_found = || managed_error(ManagedClientErrorKind::ServerNotFound, None);
-        let metadata_lock = server::lock_existing_metadata()
+        let metadata_lock = server::lock_recovered_metadata()
             .map_err(project_state_error)?
             .ok_or_else(server_not_found)?;
-        server::recover_current_project_servers_locked(&metadata_lock)
-            .map_err(project_state_error)?;
         let entry = server::server_entry_locked(server_name, &metadata_lock)
             .map_err(project_state_error)?
             .ok_or_else(server_not_found)?;
@@ -797,8 +795,7 @@ fn dotenv_server(
 ) -> Result<()> {
     let server_name = name.unwrap_or("default");
     let server_not_found = || Error::ServerNotFound(server_name.to_string());
-    let metadata_lock = server::lock_existing_metadata()?.ok_or_else(server_not_found)?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let metadata_lock = server::lock_recovered_metadata()?.ok_or_else(server_not_found)?;
     let entry =
         server::server_entry_locked(server_name, &metadata_lock)?.ok_or_else(server_not_found)?;
     if !entry.running {
@@ -1043,11 +1040,9 @@ fn stop_server(
     let project_state_missing = !init::local_dir().is_dir();
 
     // Recover orphaned servers so we can stop processes that lost their
-    // metadata files. Without server state there is nothing to recover or stop.
-    let metadata_lock = server::lock_existing_metadata()?;
-    if let Some(lock) = &metadata_lock {
-        server::recover_current_project_servers_locked(lock)?;
-    }
+    // metadata files. Without server state or an orphan there is nothing to
+    // stop.
+    let metadata_lock = server::lock_recovered_metadata()?;
     let (name, selection, known) = match name_input {
         ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
             (name, output::ServerSelection::Explicit, false)
@@ -1150,12 +1145,9 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     let project_state_missing = !init::local_dir().is_dir();
 
     // Recover orphaned servers so we correctly detect a running process even
-    // when its metadata file is missing. Without server state there is nothing
-    // to recover or remove.
-    let metadata_lock = server::lock_existing_metadata()?;
-    if let Some(lock) = &metadata_lock {
-        server::recover_current_project_servers_locked(lock)?;
-    }
+    // when its metadata file is missing. Without server state or an orphan
+    // there is nothing to remove.
+    let metadata_lock = server::lock_recovered_metadata()?;
     let (name, selection) = match name_input {
         ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
             (name, output::ServerSelection::Explicit)
@@ -1404,12 +1396,9 @@ fn global_stop_target(name_input: ServerNameInput) -> Result<(String, output::Se
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    let metadata_lock = server::lock_existing_metadata()?;
+    let metadata_lock = server::lock_recovered_metadata()?;
     let servers = match &metadata_lock {
-        Some(lock) => {
-            server::recover_current_project_servers_locked(lock)?;
-            server::list_running_servers_locked(lock)?
-        }
+        Some(lock) => server::list_running_servers_locked(lock)?,
         None => Vec::new(),
     };
     let out = stop_servers(&servers, json, |name| match &metadata_lock {

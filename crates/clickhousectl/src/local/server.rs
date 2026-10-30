@@ -111,8 +111,10 @@ fn servers_dir() -> PathBuf {
 ///
 /// Only commands that create servers may create the lock directory
 /// ([`lock_metadata`]). Commands that read, stop or remove existing servers use
-/// [`lock_existing_metadata`], which returns `None` when the project has no
-/// server state, so they never leave `.clickhouse/` behind (issue #1077).
+/// [`lock_existing_metadata`], or [`lock_recovered_metadata`] when they also
+/// recover orphans. Both return `None` when the project has no server state
+/// (and, for recovery, nothing running to recover), so they never leave
+/// `.clickhouse/` behind (issue #1077).
 pub(crate) struct MetadataLock {
     _file: File,
     dir: PathBuf,
@@ -469,10 +471,9 @@ fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<Se
 /// it's `<name>-pg<major>`. Also runs process/container discovery so
 /// orphaned instances reappear.
 pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
-    let Some(lock) = lock_existing_metadata()? else {
+    let Some(lock) = lock_recovered_metadata()? else {
         return Ok(Vec::new());
     };
-    recover_current_project_servers_locked(&lock)?;
     list_all_servers_locked(&lock)
 }
 
@@ -1076,14 +1077,81 @@ pub fn now_timestamp() -> String {
 /// reports, so it is the process `stop` has to signal — the watchdog when the
 /// server has one — exactly as if `server start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
-    let Some(lock) = lock_existing_metadata()? else {
-        return Ok(());
-    };
-    recover_current_project_servers_locked(&lock)
+    lock_recovered_metadata().map(drop)
 }
 
 pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Result<()> {
     recover_from_discovered_locked(&discovery::discover_clickhouse_processes(), lock)
+}
+
+/// Lock this project's server metadata and recover orphaned servers into it.
+///
+/// Deleting `.clickhouse/` does not stop a server, so a project without server
+/// state still runs discovery. Only when that finds an instance this project
+/// owns are `.clickhouse/servers/` created, locked and recovered into, exactly
+/// as if the state had been there. `None` means there is no server state and
+/// nothing to recover, and then nothing is created (issue #1077).
+pub(crate) fn lock_recovered_metadata() -> Result<Option<MetadataLock>> {
+    lock_recovered_metadata_from(&discovery::discover_clickhouse_processes())
+}
+
+/// [`lock_recovered_metadata`] over an already-completed process scan.
+fn lock_recovered_metadata_from(
+    processes: &[discovery::DiscoveredProcess],
+) -> Result<Option<MetadataLock>> {
+    let lock = lock_metadata_if_recoverable_at(&servers_dir(), || {
+        let current_dir = current_project_dir()?;
+        Ok(current_project_processes(processes, &current_dir)
+            .next()
+            .is_some()
+            || !docker::discover_project_postgres_blocking(&current_dir).is_empty())
+    })?;
+    let Some(lock) = lock else {
+        return Ok(None);
+    };
+    // Recovery re-checks under the lock: it skips any instance a concurrent
+    // command recorded after discovery and lists the containers again.
+    recover_from_discovered_locked(processes, &lock)?;
+    Ok(Some(lock))
+}
+
+/// Lock the metadata in `dir`. When `dir` is absent, `recoverable` decides
+/// whether there is anything to recover; only then is `dir` created.
+fn lock_metadata_if_recoverable_at(
+    dir: &Path,
+    recoverable: impl FnOnce() -> Result<bool>,
+) -> Result<Option<MetadataLock>> {
+    if let Some(lock) = MetadataLock::acquire_existing_at(dir)? {
+        return Ok(Some(lock));
+    }
+    if !recoverable()? {
+        return Ok(None);
+    }
+    // A concurrent command may have created `dir` since; acquiring waits for it.
+    MetadataLock::acquire_at(dir).map(Some)
+}
+
+/// The canonical current directory, as recorded in recovered metadata and in
+/// the Postgres containers' project label.
+fn current_project_dir() -> Result<String> {
+    Ok(std::env::current_dir()?
+        .canonicalize()?
+        .display()
+        .to_string())
+}
+
+/// The discovered ClickHouse processes started from `current_dir`.
+fn current_project_processes<'a>(
+    processes: &'a [discovery::DiscoveredProcess],
+    current_dir: &'a str,
+) -> impl Iterator<Item = &'a discovery::DiscoveredProcess> {
+    processes.iter().filter(move |proc| {
+        // Canonicalize the discovered project root for comparison
+        match Path::new(&proc.project_root).canonicalize() {
+            Ok(root) => root.display().to_string() == current_dir,
+            Err(_) => proc.project_root == current_dir,
+        }
+    })
 }
 
 /// Recovery over an already-completed process scan, so a caller that also needs
@@ -1092,22 +1160,9 @@ fn recover_from_discovered_locked(
     processes: &[discovery::DiscoveredProcess],
     lock: &MetadataLock,
 ) -> Result<()> {
-    let current_dir = std::env::current_dir()?
-        .canonicalize()?
-        .display()
-        .to_string();
+    let current_dir = current_project_dir()?;
 
-    for proc in processes {
-        // Canonicalize the discovered project root for comparison
-        let discovered_root = match std::path::Path::new(&proc.project_root).canonicalize() {
-            Ok(p) => p.display().to_string(),
-            Err(_) => proc.project_root.clone(),
-        };
-
-        if discovered_root != current_dir {
-            continue;
-        }
-
+    for proc in current_project_processes(processes, &current_dir) {
         validate_server_name(&proc.server_name)?;
         let info = ServerInfo {
             name: proc.server_name.clone(),
@@ -1197,13 +1252,10 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
     // One process scan feeds both sources: discovery shells out to
     // `pgrep`/`lsof`/`ps`, so scanning twice would double the cost of the guard.
     let processes = discovery::discover_clickhouse_processes();
-    let project_servers = match lock_existing_metadata()? {
-        Some(lock) => {
-            // Recover orphans first so a server whose metadata file is missing
-            // is still counted.
-            recover_from_discovered_locked(&processes, &lock)?;
-            list_running_servers_locked(&lock)?
-        }
+    // Recover orphans first so a server whose metadata file is missing is
+    // still counted as this project's.
+    let project_servers = match lock_recovered_metadata_from(&processes)? {
+        Some(lock) => list_running_servers_locked(&lock)?,
         None => Vec::new(),
     };
     Ok(select_version_users(
@@ -1459,6 +1511,87 @@ mod tests {
             } if path == lock_directory
                 && source.kind() == std::io::ErrorKind::AlreadyExists
         ));
+    }
+
+    #[test]
+    fn recovery_lock_creates_nothing_when_there_is_nothing_to_recover() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join(".clickhouse").join("servers");
+
+        let lock = lock_metadata_if_recoverable_at(&lock_directory, || Ok(false)).unwrap();
+
+        assert!(lock.is_none());
+        assert!(!directory.path().join(".clickhouse").exists());
+    }
+
+    #[test]
+    fn recovery_lock_creates_the_state_for_a_recoverable_orphan() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join(".clickhouse").join("servers");
+
+        let lock = lock_metadata_if_recoverable_at(&lock_directory, || Ok(true))
+            .unwrap()
+            .expect("an orphan to recover yields a lock");
+
+        assert_eq!(lock.dir, lock_directory);
+        assert!(lock_directory.join(METADATA_LOCK_FILE).is_file());
+    }
+
+    #[test]
+    fn recovery_lock_skips_discovery_when_the_state_exists() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let lock = lock_metadata_if_recoverable_at(directory.path(), || {
+            panic!("existing state needs no discovery check")
+        })
+        .unwrap();
+
+        assert!(lock.is_some());
+    }
+
+    #[test]
+    fn recovery_lock_propagates_a_failed_discovery_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join("servers");
+
+        let result = lock_metadata_if_recoverable_at(&lock_directory, || {
+            Err(Error::Io(std::io::Error::other("no current directory")))
+        });
+
+        assert!(result.is_err());
+        assert!(!lock_directory.exists());
+    }
+
+    #[test]
+    fn current_project_processes_select_only_this_projects_clickhouse() {
+        let project = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let current_dir = project.path().canonicalize().unwrap().display().to_string();
+        let process = |root: &Path, name: &str| discovery::DiscoveredProcess {
+            pid: 42,
+            project_root: root.display().to_string(),
+            server_name: name.to_string(),
+            http_port: Some(8123),
+            tcp_port: Some(9000),
+            version: None,
+        };
+        let processes = [
+            process(project.path(), "default"),
+            process(other.path(), "elsewhere"),
+            // A project directory that no longer canonicalizes still matches
+            // by its recorded path.
+            process(Path::new("/nonexistent/project"), "gone"),
+        ];
+
+        let names: Vec<_> = current_project_processes(&processes, &current_dir)
+            .map(|proc| proc.server_name.as_str())
+            .collect();
+        assert_eq!(names, ["default"]);
+
+        let names: Vec<_> = current_project_processes(&processes, "/nonexistent/project")
+            .map(|proc| proc.server_name.as_str())
+            .collect();
+        assert_eq!(names, ["gone"]);
     }
 
     #[test]
