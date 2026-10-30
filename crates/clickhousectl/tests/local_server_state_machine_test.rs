@@ -827,7 +827,7 @@ fn default_lifecycle(fixture: &Fixture) {
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
                 "Server 'default' is already running",
-                Some("clickhousectl local clickhouse list"),
+                Some("clickhousectl local status"),
             )),
         },
         CommandCase {

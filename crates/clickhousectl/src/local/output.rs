@@ -428,8 +428,11 @@ impl LocalErrorOutput {
             }
 
             // ── servers ─────────────────────────────────────────────────────
+            // Name-only variants are raised for Postgres instances too, and an
+            // engine's own list cannot show the other engine: `local status`
+            // covers both.
             Error::ServerNotFound(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
-                .command("clickhousectl local clickhouse list"),
+                .command("clickhousectl local status"),
             Error::ServerStopSelectionRequired { .. }
             | Error::ServerRemoveSelectionRequired { .. } => {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
@@ -441,20 +444,21 @@ impl LocalErrorOutput {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
                     .command("clickhousectl local clickhouse list --global")
             }
-            // Deliberately the list, not a `start` command: this variant is
-            // also raised for Postgres servers and for global PID lookups,
+            // Deliberately the status list, not a `start` command: this variant
+            // is also raised for Postgres servers and for global PID lookups,
             // where the name is not a `clickhouse start` argument.
             Error::ServerNotRunning(_) => Mapping::parity(LocalErrorCode::ServerNotRunning)
-                .command("clickhousectl local clickhouse list"),
-            Error::ServerAlreadyRunning(_) => Mapping::parity(LocalErrorCode::ServerRunning)
-                .command("clickhousectl local clickhouse list"),
+                .command("clickhousectl local status"),
+            Error::ServerAlreadyRunning(_) => {
+                Mapping::parity(LocalErrorCode::ServerRunning).command("clickhousectl local status")
+            }
             // Stopping *this* server is the recovery; `clickhouse list` only
             // restates what the error already says.
             Error::ServerRunningCannotRemove { command, .. } => {
                 Mapping::parity(LocalErrorCode::ServerRunning).command(command.clone())
             }
             Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
-                .command("clickhousectl local clickhouse list"),
+                .command("clickhousectl local status"),
             Error::UnsupportedArgument(_) => Mapping::parity(LocalErrorCode::UnsupportedArgument)
                 .command("clickhousectl local clickhouse start --help"),
 
@@ -646,7 +650,7 @@ impl LocalErrorOutput {
                 LocalErrorCode::StartupExit,
                 format!("{kind} server '{name}' exited before becoming ready"),
             )
-            .command("clickhousectl local clickhouse list"),
+            .command(startup_list_command(*kind)),
             Error::StartupTimeout {
                 kind,
                 name,
@@ -656,7 +660,7 @@ impl LocalErrorOutput {
                 LocalErrorCode::StartupTimeout,
                 format!("{kind} server '{name}' did not become ready within {seconds} seconds"),
             )
-            .command("clickhousectl local clickhouse list"),
+            .command(startup_list_command(*kind)),
 
             // ── network, downloads and extraction ───────────────────────────
             Error::Network(failure)
@@ -1464,6 +1468,14 @@ impl ProjectList {
     /// Only ClickHouse has cross-project discovery.
     fn covers_clickhouse(self) -> bool {
         self != ProjectList::Postgres
+    }
+}
+
+/// The list that shows the server a startup failure names.
+fn startup_list_command(kind: crate::error::StartupKind) -> &'static str {
+    match kind {
+        crate::error::StartupKind::ClickHouse => ProjectList::Clickhouse.command(),
+        crate::error::StartupKind::Postgres => ProjectList::Postgres.command(),
     }
 }
 
@@ -2697,9 +2709,52 @@ mod tests {
         let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
         assert_eq!(
             wrapped,
-            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local clickhouse list"}}"#
+            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local postgres list"}}"#
         );
         assert!(!wrapped.contains("hunter2"));
+    }
+
+    /// Name-only errors are raised for either engine, so they point at the
+    /// combined list; startup failures know their engine and point at its list.
+    #[test]
+    fn server_json_errors_point_at_a_list_that_shows_the_server() {
+        let command = |error: Error| error_json(&error)["error"]["command"].clone();
+        for error in [
+            Error::ServerNotFound("app".into()),
+            Error::ServerNotRunning("app".into()),
+            Error::ServerAlreadyRunning("app".into()),
+            Error::InvalidServerName("bad/name".into()),
+        ] {
+            assert_eq!(
+                error_json(&error)["error"]["command"],
+                "clickhousectl local status",
+                "{error:?}"
+            );
+        }
+        for (kind, list) in [
+            (
+                crate::error::StartupKind::ClickHouse,
+                "clickhousectl local clickhouse list",
+            ),
+            (
+                crate::error::StartupKind::Postgres,
+                "clickhousectl local postgres list",
+            ),
+        ] {
+            let exit = command(Error::StartupExit {
+                kind,
+                name: "default".into(),
+                details: String::new(),
+            });
+            assert_eq!(exit, list, "startup_exit for {kind}");
+            let timeout = command(Error::StartupTimeout {
+                kind,
+                name: "default".into(),
+                seconds: 30,
+                details: String::new(),
+            });
+            assert_eq!(timeout, list, "startup_timeout for {kind}");
+        }
     }
 
     #[test]

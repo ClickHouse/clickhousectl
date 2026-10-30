@@ -75,6 +75,11 @@ fn unreachable_docker(project: &Path) -> String {
 
 /// A Docker daemon reporting `pg-container` as running.
 async fn running_postgres_docker() -> MockServer {
+    postgres_docker(true).await
+}
+
+/// A Docker daemon reporting `pg-container` as running or stopped.
+async fn postgres_docker(running: bool) -> MockServer {
     let docker = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path_regex(r"/_ping$"))
@@ -88,7 +93,9 @@ async fn running_postgres_docker() -> MockServer {
         .await;
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/pg-container/json$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"State": {"Running": true}})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"State": {"Running": running}})),
+        )
         .mount(&docker)
         .await;
     docker
@@ -240,4 +247,35 @@ fn empty_lists_point_at_their_own_command_and_create_no_state() {
         );
         assert!(!project.path().join(".clickhouse").exists(), "{args:?}");
     }
+}
+
+/// A name-only error for a Postgres instance must point at a list that shows
+/// it: `local clickhouse list` no longer does.
+#[tokio::test(flavor = "multi_thread")]
+async fn stopped_postgres_error_points_at_a_list_that_shows_it() {
+    let project = seeded_project();
+    let docker = postgres_docker(false).await;
+    let output = run(
+        project.path(),
+        &docker.uri(),
+        &["local", "postgres", "client", "app", "--json"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    let body: Value = serde_json::from_slice(&output.stderr).expect("JSON error on stderr");
+    assert_eq!(body["error"]["code"], "server_not_running", "{body}");
+    let command = body["error"]["command"].as_str().unwrap();
+    assert_eq!(command, "clickhousectl local status");
+
+    // Following the hint shows the instance.
+    let args: Vec<&str> = command
+        .strip_prefix("clickhousectl ")
+        .unwrap()
+        .split(' ')
+        .chain(["--json"])
+        .collect();
+    let listed = json_ok(&run(project.path(), &docker.uri(), &args));
+    assert!(
+        names_and_engines(&listed).contains(&("app".to_string(), "postgres".to_string())),
+        "{listed}"
+    );
 }
