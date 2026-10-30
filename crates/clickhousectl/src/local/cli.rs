@@ -328,8 +328,7 @@ CONTEXT FOR AGENTS:
         alias = "server",
         after_help = "\
 CONTEXT FOR AGENTS:
-  `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are
-  ClickHouse-only.
+  Covers ClickHouse only; `local postgres` manages Postgres and `local status` lists both.
   Data persists across stop/start; only `remove` deletes it.
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
@@ -348,14 +347,16 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
-  There is no `postgres list` — `local clickhouse list` shows ClickHouse and Postgres together.
-  `local clickhouse list --global` only discovers running ClickHouse servers, excluding Postgres.
+  Covers Postgres only; `local status` lists ClickHouse and Postgres together.
   Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`"
     )]
     Postgres {
         #[command(subcommand)]
         command: PostgresCommands,
     },
+
+    /// List ClickHouse and Postgres instances in this project
+    Status,
 
     /// Manage executable UDFs for local servers
     #[command(after_help = "\
@@ -445,7 +446,7 @@ CONTEXT FOR AGENTS:
   If names share a stem, specify the extension.")]
     Configs,
 
-    /// List all server instances (running and stopped)
+    /// List ClickHouse servers in this project (running and stopped)
     List {
         /// List running ClickHouse servers across all projects
         #[arg(long)]
@@ -480,7 +481,7 @@ CONTEXT FOR AGENTS:
         project: Option<String>,
     },
 
-    /// Stop all ClickHouse and Postgres servers in this project
+    /// Stop all ClickHouse servers in this project
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   ClickHouse processes get SIGTERM, then SIGKILL if they do not exit in time.")]
@@ -625,6 +626,9 @@ CONTEXT FOR AGENTS:
         )]
         wait_timeout: u16,
     },
+
+    /// List Postgres instances in this project (running and stopped)
+    List,
 
     /// Stop a running Postgres instance
     Stop {
@@ -2452,6 +2456,8 @@ mod tests {
                 parsed(&["stop", "dev"]),
                 PostgresCommands::Stop { name: Some(name), .. } if name == "dev"
             ));
+            assert!(matches!(parsed(&["list"]), PostgresCommands::List));
+            assert!(local_args(&[spelling, "list", "--json"]).json, "{spelling}");
             assert!(matches!(parsed(&["stop-all"]), PostgresCommands::StopAll));
             assert!(matches!(
                 parsed(&["remove", "dev"]),
@@ -2470,6 +2476,14 @@ mod tests {
                 "{spelling}"
             );
         }
+    }
+
+    #[test]
+    fn status_parses_with_and_without_json() {
+        assert!(matches!(local_command(&["status"]), LocalCommands::Status));
+        assert!(!local_args(&["status"]).json);
+        assert!(local_args(&["status", "--json"]).json);
+        assert!(local_args(&["--json", "status"]).json);
     }
 
     /// Names listed in the `Commands:` section of a rendered help screen,
@@ -2522,7 +2536,7 @@ mod tests {
         assert_eq!(postgres.get_visible_aliases().collect::<Vec<_>>(), ["pg"]);
 
         let names = listed_command_names(&rendered_help(&["--help"]));
-        for shown in ["clickhouse", "ch", "postgres", "pg"] {
+        for shown in ["clickhouse", "ch", "postgres", "pg", "status"] {
             assert!(names.iter().any(|name| name == shown), "{shown}: {names:?}");
         }
         assert!(!names.iter().any(|name| name == "server"), "{names:?}");

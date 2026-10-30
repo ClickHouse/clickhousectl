@@ -127,8 +127,11 @@ clickhousectl local postgres start app --version 18
 clickhousectl local postgres client app --query "SELECT version()"
 clickhousectl local postgres client app --queries-file pg-schema.sql
 clickhousectl local postgres dotenv app --local
-clickhousectl local clickhouse list
+clickhousectl local postgres list
+clickhousectl local status
 ```
+
+Each engine's `list` and `stop-all` cover only that engine. `local status` lists every ClickHouse server and Postgres instance in the project, running or stopped.
 
 Create `pg-schema.sql` with your Postgres SQL before running the file example. Put `\set ON_ERROR_STOP on` at the top of the file to stop on SQL errors.
 
@@ -152,7 +155,7 @@ clickhousectl local clickhouse remove dev
 clickhousectl local postgres remove app --version 18
 ```
 
-Both require stopped servers. `local clickhouse stop-all` stops both engines in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
+Both require stopped servers. `local clickhouse stop-all` and `local postgres stop-all` each stop one engine's servers in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
 
 `local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project. Its `--force` stops those servers across projects and removes the version even if it is the default.
 

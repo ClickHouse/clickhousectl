@@ -65,8 +65,8 @@ impl Project {
 }
 
 const STATUS_COMMANDS: &[&[&str]] = &[
-    &["local", "server", "list"],
-    &["local", "server", "stop-all"],
+    &["local", "status"],
+    &["local", "postgres", "list"],
     &["local", "postgres", "client", "-q", "SELECT 1"],
     &["local", "postgres", "stop", "default"],
     &["local", "postgres", "stop-all"],
@@ -90,7 +90,7 @@ fn unreachable_docker_propagates_across_status_and_lifecycle() {
         assert_error(&project.run(&host, args, true), "docker_unavailable");
         project.assert_preserved();
     }
-    let human = project.run(&host, &["local", "server", "list"], false);
+    let human = project.run(&host, &["local", "status"], false);
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
     assert!(String::from_utf8_lossy(&human.stderr).contains("Docker is not available"));
@@ -147,7 +147,7 @@ async fn successful_inspection_distinguishes_running_stopped_and_missing() {
         let project = Project::new();
         let docker = docker_mock(status, body).await;
         let host = docker.uri().replace("http://", "tcp://");
-        let output = project.run(&host, &["local", "server", "list"], true);
+        let output = project.run(&host, &["local", "postgres", "list"], true);
         assert!(output.status.success(), "{output:?}");
         let body: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(body["total_servers"], 1);

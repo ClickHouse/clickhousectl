@@ -77,6 +77,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         ),
         LocalCommands::Clickhouse { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
+        LocalCommands::Status => list_project_servers(output::ProjectList::Status, json),
         LocalCommands::Udf { command } => udf::run(command, json).await,
     }
 }
@@ -959,7 +960,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             if global {
                 list_servers_global(json)
             } else {
-                list_servers_local(json)
+                list_project_servers(output::ProjectList::Clickhouse, json)
             }
         }
         ServerCommands::Stop {
@@ -1228,9 +1229,15 @@ fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
     }
 }
 
-fn list_servers_local(json: bool) -> Result<()> {
+/// List this project's servers for one engine's `list` or for `local status`.
+pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Result<()> {
     let project_dir = init::canonical_project_dir()?;
-    let entries = server::list_all_servers()?;
+    let engine = match list {
+        output::ProjectList::Clickhouse => Some(server::Engine::Clickhouse),
+        output::ProjectList::Postgres => Some(server::Engine::Postgres),
+        output::ProjectList::Status => None,
+    };
+    let entries = server::list_project_servers(engine)?;
     let running_count = entries.iter().filter(|e| e.running).count();
     let total = entries.len();
 
@@ -1309,10 +1316,11 @@ fn list_servers_local(json: bool) -> Result<()> {
         total_running_servers: running_count,
         project_scope: Some(output::exact_current_project_scope(&project_dir)),
         guidance: if total == 0 {
-            output::project_scope_guidance(None)
+            output::empty_list_guidance(list)
         } else {
             Vec::new()
         },
+        list,
     };
     output::print_output(&out, json);
     Ok(())
@@ -1341,6 +1349,7 @@ fn list_servers_global(json: bool) -> Result<()> {
         total_running_servers: total,
         project_scope: None,
         guidance: Vec::new(),
+        list: output::ProjectList::Clickhouse,
     };
     output::print_output(&out, json);
     Ok(())
@@ -1396,9 +1405,9 @@ fn global_stop_target(name_input: ServerNameInput) -> Result<(String, output::Se
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    let metadata_lock = server::lock_recovered_metadata()?;
+    let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
     let servers = match &metadata_lock {
-        Some(lock) => server::list_running_servers_locked(lock)?,
+        Some(lock) => server::list_running_engine_servers_locked(lock, server::Engine::Clickhouse)?,
         None => Vec::new(),
     };
     let out = stop_servers(&servers, json, |name| match &metadata_lock {
@@ -1408,7 +1417,7 @@ fn stop_all_servers_local(json: bool) -> Result<()> {
     if json {
         output::print_output(&out, json);
     } else if servers.is_empty() {
-        println!("No running servers");
+        println!("No running ClickHouse servers");
     } else {
         println!("Done");
     }

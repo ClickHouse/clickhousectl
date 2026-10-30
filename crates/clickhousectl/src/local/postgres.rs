@@ -2,7 +2,7 @@
 //!
 //! All Docker work goes through `local::docker`. State is reused from
 //! `local::server` — Postgres entries land in the same metadata directory and
-//! show up alongside ClickHouse in `local clickhouse list`.
+//! show up alongside ClickHouse in `local status`.
 
 use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
@@ -218,6 +218,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             )
             .await
         }
+        PostgresCommands::List => super::list_project_servers(output::ProjectList::Postgres, json),
         PostgresCommands::StopAll => stop_all(json).await,
         PostgresCommands::Remove {
             name,
@@ -1041,14 +1042,11 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
 }
 
 async fn stop_all(json: bool) -> Result<()> {
-    let metadata_lock = server::lock_recovered_metadata()?;
-    let servers: Vec<_> = match &metadata_lock {
-        Some(lock) => server::list_running_servers_locked(lock)?,
+    let metadata_lock = server::lock_recovered_engine_metadata(Some(Engine::Postgres))?;
+    let servers = match &metadata_lock {
+        Some(lock) => server::list_running_engine_servers_locked(lock, Engine::Postgres)?,
         None => Vec::new(),
-    }
-    .into_iter()
-    .filter(|s| s.engine == Engine::Postgres)
-    .collect();
+    };
     if !json && servers.is_empty() {
         println!("No running Postgres servers");
         return Ok(());

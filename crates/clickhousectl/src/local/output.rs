@@ -1439,6 +1439,56 @@ pub struct ServerListOutput {
     pub(crate) project_scope: Option<ServerProjectScope>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) guidance: Vec<ProjectServerGuidance>,
+    /// The command that produced this list; selects the empty-list hint.
+    #[serde(skip)]
+    pub(crate) list: ProjectList,
+}
+
+/// A project-scoped list command: one engine's `list`, or `local status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectList {
+    Clickhouse,
+    Postgres,
+    Status,
+}
+
+impl ProjectList {
+    fn command(self) -> &'static str {
+        match self {
+            ProjectList::Clickhouse => "clickhousectl local clickhouse list",
+            ProjectList::Postgres => "clickhousectl local postgres list",
+            ProjectList::Status => "clickhousectl local status",
+        }
+    }
+
+    /// Only ClickHouse has cross-project discovery.
+    fn covers_clickhouse(self) -> bool {
+        self != ProjectList::Postgres
+    }
+}
+
+/// Hints for an empty project-scoped list.
+pub(crate) fn empty_list_guidance(list: ProjectList) -> Vec<ProjectServerGuidance> {
+    let mut guidance = vec![
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ReturnToProjectRoot,
+            message: "Change to the local project root where the server was started",
+            command: Some("cd <project-root>"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List servers after returning to that exact project",
+            command: Some(list.command()),
+        },
+    ];
+    if list.covers_clickhouse() {
+        guidance.push(ProjectServerGuidance {
+            action: LocalGuidanceAction::ListGlobalServers,
+            message: "Locate running ClickHouse servers across projects",
+            command: Some("clickhousectl local clickhouse list --global"),
+        });
+    }
+    guidance
 }
 
 #[derive(Tabled)]
@@ -1500,12 +1550,20 @@ impl fmt::Display for ServerListOutput {
                 writeln!(f, "No servers found in project '{}'.", scope.path)?;
                 writeln!(
                     f,
-                    "Project-local clickhouse list uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                    "Project-local lists use the exact current working directory; parent `.clickhouse` directories are not searched."
                 )?;
-                return write!(
+                write!(
                     f,
-                    "Return to the local project root where the server was started and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
-                );
+                    "Return to the local project root where the server was started and run `{}`",
+                    self.list.command()
+                )?;
+                if self.list.covers_clickhouse() {
+                    write!(
+                        f,
+                        ", or use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects"
+                    )?;
+                }
+                return write!(f, ".");
             }
             write!(f, "No servers")?;
             return Ok(());
@@ -3119,6 +3177,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3146,6 +3205,7 @@ mod tests {
             total_running_servers: 0,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: project_scope_guidance(None),
+            list: ProjectList::Clickhouse,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3488,6 +3548,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("Name"));
@@ -3530,6 +3591,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         }
         .to_string();
         let postgres_row = postgres
@@ -3568,6 +3630,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         }
         .to_string();
         let global_row = global
@@ -3599,6 +3662,7 @@ mod tests {
             total_running_servers: 0,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         assert_eq!(output.to_string(), "No servers");
     }
@@ -3611,12 +3675,53 @@ mod tests {
             total_running_servers: 0,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: project_scope_guidance(None),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("No servers found in project '/project'"));
         assert!(text.contains("exact current working directory"));
         assert!(text.contains("parent `.clickhouse` directories are not searched"));
         assert!(text.contains("clickhousectl local clickhouse list --global"));
+    }
+
+    #[test]
+    fn empty_engine_lists_point_at_their_own_command() {
+        for (list, command, global) in [
+            (
+                ProjectList::Clickhouse,
+                "clickhousectl local clickhouse list",
+                true,
+            ),
+            (
+                ProjectList::Postgres,
+                "clickhousectl local postgres list",
+                false,
+            ),
+            (ProjectList::Status, "clickhousectl local status", true),
+        ] {
+            let guidance = empty_list_guidance(list);
+            assert_eq!(guidance[1].action, LocalGuidanceAction::ListProjectServers);
+            assert_eq!(guidance[1].command, Some(command));
+            assert_eq!(
+                guidance
+                    .iter()
+                    .any(|hint| hint.action == LocalGuidanceAction::ListGlobalServers),
+                global,
+                "{list:?}"
+            );
+
+            let output = ServerListOutput {
+                servers: vec![],
+                total_servers: 0,
+                total_running_servers: 0,
+                project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+                guidance,
+                list,
+            };
+            let text = output.to_string();
+            assert!(text.contains(command), "{text}");
+            assert_eq!(text.contains("--global"), global, "{text}");
+        }
     }
 
     #[test]
@@ -3637,6 +3742,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("1 server, 1 running"));

@@ -20,7 +20,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
-| `local clickhouse list --json` | Object with `servers`, `total_servers`, and `project_scope` |
+| `local clickhouse list --json`, `local postgres list --json`, `local status --json` | Object with `servers`, `total_servers`, `total_running_servers`, and `project_scope`; each server has an `engine` (`clickhouse` or `postgres`). An engine's `list` holds only that engine; `status` holds both |
 | `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11, or another deployed UDF that is broken), `function_config`, and `scripts_dir` |
 | `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud udf deploy --json` | Object with `action` (`created` or `version_created`), `udf`, and `attachment` |
