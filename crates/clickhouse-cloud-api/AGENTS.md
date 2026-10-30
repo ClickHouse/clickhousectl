@@ -10,6 +10,7 @@ CLI capabilities and behaviour, so update them only when a change is exposed thr
 ## Layout
 
 - `src/client.rs` — `Client` and shared HTTP machinery; endpoint methods live in private per-domain `src/client/*.rs`.
+  The Query API (`run_query`, `run_query_bearer`, query-host resolution, `query_api_*` errors) is `src/client/query.rs`.
 - `src/models.rs` — the public model facade and the shared `discriminated_union!` macro (its rustdoc owns the
   grammar). Request/response structs, enums, aliases and impls live in private per-domain `src/models/*.rs` and
   are re-exported without changing the crate-root or `models::*` paths.
