@@ -28,3 +28,6 @@ bb5834b93b5c9d6640c7720991aaef9f750a61ef
 
 # Split models/clickpipes.rs into per-source-kind models/clickpipes/ modules (#1173)
 dcbccb5b72433469ecd7e5cfdfdf47ce8cc18a6b
+
+# Split models/clickstack.rs into per-resource models/clickstack/ modules (#1173)
+fa7012959ed81fed0f8520bbc3613c89ed57f691

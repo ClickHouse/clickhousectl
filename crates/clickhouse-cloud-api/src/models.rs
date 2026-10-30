@@ -130,7 +130,6 @@ mod backups;
 mod byoc;
 mod clickpipes;
 mod clickstack;
-mod clickstack_enums;
 mod invitations;
 mod members;
 mod organization_private_endpoints;
@@ -181,7 +180,6 @@ pub use byoc::{
 };
 pub use clickpipes::*;
 pub use clickstack::*;
-pub use clickstack_enums::*;
 pub use invitations::{
     Invitation, InvitationPostRequest, InvitationPostRequestRole, InvitationRole,
 };
