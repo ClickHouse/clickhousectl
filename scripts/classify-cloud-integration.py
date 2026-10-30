@@ -84,6 +84,39 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/clickpipes.rs": frozenset(
         {"clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/bigquery.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/kafka.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/kinesis.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/mod.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/mongodb.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/mysql.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/object_storage.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/postgres.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/pubsub.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/reverse_private_endpoints.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhouse-cloud-api/src/models/clickpipes/schema_discovery.rs": frozenset(
+        {"clickpipes"}
+    ),
     "crates/clickhouse-cloud-api/src/models/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/invitations.rs": frozenset(

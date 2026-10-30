@@ -25,3 +25,6 @@ bb5834b93b5c9d6640c7720991aaef9f750a61ef
 
 # Split tests/client_test.rs into per-domain tests/client/ modules (#1173)
 00b469bdbc23f95f27d97f953e6911d3e523db63
+
+# Split models/clickpipes.rs into per-source-kind models/clickpipes/ modules (#1173)
+dcbccb5b72433469ecd7e5cfdfdf47ce8cc18a6b
