@@ -5,8 +5,9 @@ its own PR (see `crates/clickhouse-cloud-api/AGENTS.md`).
 
 Everything for a command lives in its domain module, `src/cloud/<domain>.rs`: the clap definition, permissions,
 dispatch, the `CloudClient` wrapper, the request builder, the handler and the tests. Copy the pattern from
-`src/cloud/services.rs`, but not from its query commands or from `src/cloud/postgres.rs`. Those call
-`client.api()` directly.
+`src/cloud/services.rs` or `src/cloud/postgres.rs`. Handlers never call `client.api()`. The one wrapper that
+returns the raw library error is `run_service_query{,_bearer}` in `services.rs`: query paths stream the
+response and classify the error themselves. Don't copy that for other endpoints.
 
 1. **Definition.** Add the variant and its argument struct to the domain's command enum. For a new command
    group:
@@ -41,6 +42,11 @@ dispatch, the `CloudClient` wrapper, the request builder, the handler and the te
    errors that need the org ID or lookup context, use `convert_error_for_organization(e, org_id)` or
    `convert_error_for_lookup(e, lookup)` instead. Use the library's types. These conversions also record the
    failure kind for telemetry, so don't build a `CloudError` by hand.
+   - `convert_error_for_lookup` reports any 400 or 404 over well-formed IDs as a missing resource. Use it only
+     when the path names the resource itself and the request has no other input, such as a get or delete.
+   - For a subresource, or a request with a body, a 404 can mean the subresource is absent and a 400 can be a
+     validation error. Confirm the parent with its own GET first, as `convert_postgres_by_id_result` in
+     `postgres.rs` does, and declare that GET as a `Conditional` permission.
 6. **Request builder.** If the command sends a body, write `build_<name>_request(...)` returning the library's
    request struct. Unit-test it with minimal and maximal input, asserting on the struct's fields.
 7. **Handler.** Call the builder, then the wrapper, then print:
