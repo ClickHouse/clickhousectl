@@ -37,6 +37,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/client/query.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/saved_queries.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
