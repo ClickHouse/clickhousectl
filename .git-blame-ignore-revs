@@ -7,3 +7,6 @@ d78a6d2aa40a70d9e1093f09ae987ca1b26e3e41
 
 # Split cloud/services into per-command-family files (#1157)
 30bd640d06f010ddbcbcf59c0a403329748e72d2
+
+# Split cloud/postgres into per-command-family files (#1157)
+e7fcdb1a8f1e48c564717f1ccd0fa654d182aa73
