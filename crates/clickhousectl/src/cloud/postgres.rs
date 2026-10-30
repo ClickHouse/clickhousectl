@@ -1,6 +1,12 @@
 use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
+/// The GET that tells a missing service from a rejected request when a by-id
+/// subresource or write fails with a 400 or 404 (see
+/// `CloudClient::convert_postgres_by_id_result`).
+const CONFIRM_POSTGRES_SERVICE: Conditional =
+    Conditional::new("If the ID is rejected", &[&op::POSTGRES_SERVICE_GET]);
+
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("postgres list", &[&op::POSTGRES_SERVICE_GET_LIST]),
@@ -17,33 +23,46 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::POSTGRES_SERVICE_GET, &op::POSTGRES_SERVICE_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres certs get", &[&op::POSTGRES_SERVICE_CERTS_GET])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres config get", &[&op::POSTGRES_INSTANCE_CONFIG_GET])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres certs get", &[&op::POSTGRES_SERVICE_CERTS_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres config get", &[&op::POSTGRES_INSTANCE_CONFIG_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres config replace",
         &[&op::POSTGRES_INSTANCE_CONFIG_POST],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres config patch",
         &[&op::POSTGRES_INSTANCE_CONFIG_PATCH],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres reset-password",
         &[&op::POSTGRES_SERVICE_SET_PASSWORD],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres read-replica create",
         &[&op::POSTGRES_INSTANCE_CREATE_READ_REPLICA],
     )
-    .when(&[Conditional::flag(
-        "source-name",
-        &[&op::POSTGRES_SERVICE_GET_LIST],
-    )]),
+    .when(&[
+        Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres metrics", &[&op::POSTGRES_INSTANCE_METRICS_GET])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api(
@@ -68,16 +87,24 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
         Conditional::new("Applying access rules", &[&op::POSTGRES_SERVICE_PATCH]),
+        CONFIRM_POSTGRES_SERVICE,
     ]),
-    Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres promote", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres switchover", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres promote", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres switchover", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres update", &[&op::POSTGRES_SERVICE_PATCH]).when(&[
         Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Without --clear-tags", &[&op::POSTGRES_SERVICE_GET]),
+        CONFIRM_POSTGRES_SERVICE,
     ]),
 ];
 
@@ -2338,12 +2365,7 @@ pub async fn postgres_update(
     let tags = if opts.clear_tags {
         Some(Vec::new())
     } else {
-        let current = client
-            .api()
-            .postgres_service_get(&org_id, postgres_id)
-            .await
-            .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-        let current = CloudClient::unwrap_response(current)?;
+        let current = client.get_postgres_service(&org_id, postgres_id).await?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
@@ -3290,6 +3312,38 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    /// Convert a failed by-id Postgres request whose path names a
+    /// subresource of the service or whose body carries user input.
+    ///
+    /// [`CloudClient::convert_error_for_lookup`] reads a 400 or 404 against
+    /// well-formed ids as a missing service. That is sound only when the
+    /// path names the service itself and nothing else in the request is
+    /// user input (`get`, `delete`). Here a 404 can mean the subresource is
+    /// absent and a 400 can be the body's validation failure, so the status
+    /// alone cannot tell. A GET of the service itself decides: when it also
+    /// rejects the well-formed ids, the service is missing and the original
+    /// error is reported as such; otherwise the original error stands. The
+    /// extra GET only happens after such a rejection.
+    async fn convert_postgres_by_id_result<T>(
+        &self,
+        result: Result<T, clickhouse_cloud_api::Error>,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<T> {
+        let error = match result {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let lookup = ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id);
+        if lookup.rejected_well_formed_ids(&error)
+            && let Err(get_error) = self.api().postgres_service_get(org_id, postgres_id).await
+            && lookup.rejected_well_formed_ids(&get_error)
+        {
+            return Err(self.convert_error_for_lookup(error, lookup));
+        }
+        Err(self.convert_error_for_organization(error, org_id))
+    }
+
     /// Create a Postgres service.
     async fn create_postgres_service(
         &self,
@@ -3325,10 +3379,14 @@ impl CloudClient {
         org_id: &str,
         postgres_id: &str,
     ) -> CloudResult<String> {
-        self.api()
-            .postgres_service_certs_get(org_id, postgres_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))
+        self.convert_postgres_by_id_result(
+            self.api()
+                .postgres_service_certs_get(org_id, postgres_id)
+                .await,
+            org_id,
+            postgres_id,
+        )
+        .await
     }
 
     /// Fetch a Postgres service's runtime configuration.
@@ -3338,10 +3396,14 @@ impl CloudClient {
         postgres_id: &str,
     ) -> CloudResult<PostgresInstanceConfigResponse> {
         let response = self
-            .api()
-            .postgres_instance_config_get(org_id, postgres_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_get(org_id, postgres_id)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3353,10 +3415,14 @@ impl CloudClient {
         config: &PostgresInstanceConfig,
     ) -> CloudResult<PostgresInstanceUpdateConfigResponse> {
         let response = self
-            .api()
-            .postgres_instance_config_post(org_id, postgres_id, config)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_post(org_id, postgres_id, config)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3368,10 +3434,14 @@ impl CloudClient {
         config: &PostgresInstanceConfig,
     ) -> CloudResult<PostgresInstanceUpdateConfigResponse> {
         let response = self
-            .api()
-            .postgres_instance_config_patch(org_id, postgres_id, config)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_patch(org_id, postgres_id, config)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3383,10 +3453,14 @@ impl CloudClient {
         request: &PostgresServiceSetPassword,
     ) -> CloudResult<PostgresServicePasswordResource> {
         let response = self
-            .api()
-            .postgres_service_set_password(org_id, postgres_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_set_password(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3398,10 +3472,14 @@ impl CloudClient {
         request: &PostgresServiceReadReplicaRequest,
     ) -> CloudResult<PostgresService> {
         let response = self
-            .api()
-            .postgres_instance_create_read_replica(org_id, postgres_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_create_read_replica(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3413,10 +3491,14 @@ impl CloudClient {
         request: &PostgresServiceRestoreRequest,
     ) -> CloudResult<PostgresService> {
         let response = self
-            .api()
-            .postgres_instance_restore(org_id, postgres_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_restore(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3428,10 +3510,14 @@ impl CloudClient {
         request: &PostgresServicePatchRequest,
     ) -> CloudResult<PostgresService> {
         let response = self
-            .api()
-            .postgres_service_patch(org_id, postgres_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_patch(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3489,10 +3575,14 @@ impl CloudClient {
     ) -> CloudResult<PostgresService> {
         let request = PostgresServiceSetState { command };
         let response = self
-            .api()
-            .postgres_service_patch_state(org_id, postgres_id, &request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_patch_state(org_id, postgres_id, &request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 }
