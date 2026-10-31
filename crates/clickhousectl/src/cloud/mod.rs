@@ -1,3 +1,5 @@
+#[cfg(feature = "experimental-access-negotiation")]
+pub mod access;
 pub mod activity;
 pub mod api_keys;
 pub mod auth;
@@ -71,6 +73,21 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             )
             .await;
         }
+        // Access negotiation refreshes and uses only the OAuth user identity,
+        // bypassing normal API-key precedence and the ordinary OAuth write gate.
+        #[cfg(feature = "experimental-access-negotiation")]
+        CloudCommands::Access { command, org } => {
+            return access::run(
+                command,
+                args.url.as_deref(),
+                org.or(args.org_id),
+                args.org_name,
+                args.debug,
+                json,
+            )
+            .await
+            .map_err(cloud_error_to_top_level);
+        }
         command => command,
     };
 
@@ -108,11 +125,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     }
 
     if args.debug {
-        eprint_line(format!(
-            "[debug] auth source: {}",
-            client.auth_source().describe()
-        ));
-        eprint_line(format!("[debug] api url: {}", client.base_url()));
+        print_client_diagnostics(&client);
     }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
@@ -135,6 +148,14 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     dispatch(&client, command, json)
         .await
         .map_err(cloud_error_to_top_level)
+}
+
+fn print_client_diagnostics(client: &CloudClient) {
+    eprint_line(format!(
+        "[debug] auth source: {}",
+        client.auth_source().describe()
+    ));
+    eprint_line(format!("[debug] api url: {}", client.base_url()));
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
@@ -164,6 +185,8 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
 async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> client::Result<()> {
     match command {
         CloudCommands::Auth { command } => auth::run_with_client(client, command, json).await,
+        #[cfg(feature = "experimental-access-negotiation")]
+        CloudCommands::Access { .. } => unreachable!("handled above"),
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
         CloudCommands::Service { command } => services::run(client, command, json).await,
         CloudCommands::Member { command } => organizations::run_member(client, command, json).await,

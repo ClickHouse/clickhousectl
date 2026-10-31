@@ -116,8 +116,27 @@ impl From<serde_json::Error> for CloudError {
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
+    Basic {
+        key: String,
+        secret: String,
+    },
+    // The token is read only by `request_auth` (experimental-access-negotiation),
+    // but both builds keep the same variant shape.
+    #[cfg_attr(not(feature = "experimental-access-negotiation"), allow(dead_code))]
+    Bearer {
+        token: String,
+    },
+}
+
+/// The authentication a bespoke control-plane request (one made with a plain
+/// `reqwest` client, outside the typed Cloud API client) should carry. Mirrors
+/// [`AuthMode`] but owns its values so callers can build request headers after
+/// the borrow on the client ends. Used by the access-request PKCE flow
+/// (`cloud access request`), which talks to endpoints the library does not model.
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) enum RequestAuth {
     Basic { key: String, secret: String },
-    Bearer,
+    Bearer { token: String },
 }
 
 /// The resolved credential source that won precedence for a `CloudClient`.
@@ -577,8 +596,7 @@ impl CloudClient {
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let resolved = resolve_auth(api_key, api_secret, url_override)?;
-        Self::from_resolved(resolved, None)
+        Self::from_resolved_auth(resolve_auth(api_key, api_secret, url_override)?, None)
     }
 
     /// Like [`CloudClient::new`], but every request gives up after `timeout`,
@@ -589,8 +607,10 @@ impl CloudClient {
         url_override: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Self> {
-        let resolved = resolve_auth(api_key, api_secret, url_override)?;
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(
+            resolve_auth(api_key, api_secret, url_override)?,
+            Some(timeout),
+        )
     }
 
     /// A client for exactly this API key pair, bypassing the precedence
@@ -611,7 +631,7 @@ impl CloudClient {
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
         };
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(resolved, Some(timeout))
     }
 
     /// A client for exactly these OAuth tokens, bypassing the precedence
@@ -626,12 +646,66 @@ impl CloudClient {
                 token: tokens.access_token.clone(),
             },
             source: AuthSource::OAuthTokens,
-            base_url: tokens.api_url.clone(),
+            base_url: crate::cloud::auth::normalize_api_url(&tokens.api_url),
         };
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(resolved, Some(timeout))
     }
 
-    fn from_resolved(resolved: ResolvedAuth, timeout: Option<std::time::Duration>) -> Result<Self> {
+    /// Access negotiation identifies the user, never a previously issued API key.
+    #[cfg(feature = "experimental-access-negotiation")]
+    pub(super) async fn for_access(url_override: Option<&str>) -> Result<Self> {
+        // Suppress the normal refresh warning's API-key fallback advice: this
+        // lane requires OAuth even when other credentials are configured.
+        crate::cloud::auth::ensure_fresh_tokens(true)
+            .await
+            .map_err(|error| {
+                CloudError::auth(format!(
+                    "Unable to refresh OAuth identity: {error}. Run `clickhousectl cloud auth login` to re-authenticate."
+                ))
+            })?;
+        Self::from_access_tokens(
+            crate::cloud::auth::load_tokens()
+                .map_err(|_| CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_REQUIRED))?,
+            url_override,
+            // Membership and assignable-role discovery use the typed client
+            // directly, outside the handshake's `operation` wrapper, so this
+            // client carries the same 30-second access-operation bound; a
+            // server holding a response open must not stall either command.
+            Some(crate::cloud::access::OPERATION_TIMEOUT),
+        )
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    fn from_access_tokens(
+        tokens: Option<crate::cloud::auth::TokenStore>,
+        url_override: Option<&str>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Self> {
+        let tokens = tokens
+            .filter(crate::cloud::auth::is_token_valid)
+            .ok_or_else(|| {
+                CloudError::auth(
+                    "Access negotiation requires OAuth identity. Run `clickhousectl cloud auth login` to authenticate. API keys cannot be used for access negotiation.",
+                )
+            })?;
+        Self::from_resolved_auth(
+            ResolvedAuth {
+                creds: ResolvedCreds::Bearer {
+                    token: tokens.access_token,
+                },
+                source: AuthSource::OAuthTokens,
+                base_url: crate::cloud::auth::normalize_api_url(
+                    url_override.unwrap_or(&tokens.api_url),
+                ),
+            },
+            timeout,
+        )
+    }
+
+    fn from_resolved_auth(
+        resolved: ResolvedAuth,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Self> {
         let mut builder = crate::http::client_builder();
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
@@ -652,8 +726,8 @@ impl CloudClient {
                 AuthMode::Basic { key, secret },
             ),
             ResolvedCreds::Bearer { token } => (
-                clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
-                AuthMode::Bearer,
+                clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token.clone()),
+                AuthMode::Bearer { token },
             ),
         };
 
@@ -699,7 +773,7 @@ impl CloudClient {
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(&self.auth_mode, AuthMode::Bearer)
+        matches!(&self.auth_mode, AuthMode::Bearer { .. })
     }
 
     /// The active API key pair, for authenticating directly to a Query API
@@ -707,7 +781,23 @@ impl CloudClient {
     pub(crate) fn basic_auth_credentials(&self) -> Option<(&str, &str)> {
         match &self.auth_mode {
             AuthMode::Basic { key, secret } => Some((key, secret)),
-            AuthMode::Bearer => None,
+            AuthMode::Bearer { .. } => None,
+        }
+    }
+
+    /// The resolved credentials in a form a bespoke `reqwest` request can carry,
+    /// for control-plane endpoints the typed library client does not model (the
+    /// access-request PKCE flow). Clones so the value outlives the client borrow.
+    #[cfg(feature = "experimental-access-negotiation")]
+    pub(crate) fn request_auth(&self) -> RequestAuth {
+        match &self.auth_mode {
+            AuthMode::Basic { key, secret } => RequestAuth::Basic {
+                key: key.clone(),
+                secret: secret.clone(),
+            },
+            AuthMode::Bearer { token } => RequestAuth::Bearer {
+                token: token.clone(),
+            },
         }
     }
 
@@ -887,6 +977,82 @@ mod tests {
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
+    /// The access client's per-request bound must actually reach reqwest and
+    /// classify as a timeout: a response held open past the bound fails with
+    /// `FailureKind::Timeout` instead of stalling. `for_access` supplies
+    /// `access::OPERATION_TIMEOUT`; a short bound here keeps the test fast.
+    #[tokio::test]
+    #[cfg(feature = "experimental-access-negotiation")]
+    async fn access_client_applies_the_access_operation_bound_to_discovery() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        let tokens = serde_json::from_value(serde_json::json!({
+            "access_token": "test-token", "refresh_token": "unused",
+            "expires_at": 4102444800_i64,
+            "api_url": format!("{}/v1", server.uri()),
+            "auth_config": {"auth_url": server.uri(), "client_id": "test-client"},
+        }))
+        .unwrap();
+        let client =
+            CloudClient::from_access_tokens(Some(tokens), None, Some(Duration::from_millis(300)))
+                .unwrap();
+        let error = client
+            .api()
+            .organization_get_list(None, None)
+            .await
+            .map(|_| ())
+            .map_err(|error| client.convert_error(error))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.failure.as_ref().map(|f| &f.kind),
+                Some(crate::failure::FailureKind::Timeout)
+            ),
+            "expected a timeout classification: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-access-negotiation")]
+    fn access_client_uses_explicit_or_saved_api_base() {
+        // Records are complete: both `api_url` and `auth_config` are required
+        // at deserialization (rejection covered by the authentication tests),
+        // and endpoint selection only runs on a loaded record.
+        for (saved, explicit, expected) in [
+            (
+                "https://saved.example/v1/",
+                None,
+                "https://saved.example/v1",
+            ),
+            (
+                "https://saved.example/v1",
+                Some("http://localhost:2023/"),
+                "http://localhost:2023/v1",
+            ),
+            (DEFAULT_BASE_URL, None, DEFAULT_BASE_URL),
+        ] {
+            let value = serde_json::json!({
+                "access_token": "test-token", "refresh_token": "unused",
+                "expires_at": 4102444800_i64,
+                "api_url": saved,
+                "auth_config": {"auth_url": "https://auth.example.com", "client_id": "test-client"},
+            });
+            let tokens = serde_json::from_value(value).unwrap();
+            let client = CloudClient::from_access_tokens(Some(tokens), explicit, None).unwrap();
+            assert_eq!(client.base_url(), expected);
+            assert_eq!(client.auth_source(), AuthSource::OAuthTokens);
+            assert!(client.is_bearer_auth());
+            assert!(client.basic_auth_credentials().is_none());
+        }
+    }
+
     #[test]
     fn typed_udf_dependency_error_keeps_message_and_http_classification() {
         let error =
@@ -967,7 +1133,9 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
-            auth_mode: AuthMode::Bearer,
+            auth_mode: AuthMode::Bearer {
+                token: "test_token".into(),
+            },
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
         };
@@ -1123,7 +1291,9 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
-            auth_mode: AuthMode::Bearer,
+            auth_mode: AuthMode::Bearer {
+                token: "test_token".into(),
+            },
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
         };

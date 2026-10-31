@@ -76,6 +76,94 @@ fn aws_backup_external_id_update_preserves_omit_set_and_clear() {
 }
 
 #[test]
+fn assignable_role_required_fields_preserve_missing_null_and_empty_distinctions() {
+    let role = serde_json::json!({"id": "00000000-0000-0000-0000-000000000001", "name": "role", "type": "system", "policies": []});
+    for field in ["id", "name", "type", "policies"] {
+        for null in [false, true] {
+            let mut wire = role.clone();
+            if null {
+                wire[field] = serde_json::Value::Null;
+            } else {
+                wire.as_object_mut().unwrap().remove(field);
+            }
+            let parsed: AssignableRole = serde_json::from_value(wire).unwrap();
+            match field {
+                "id" => assert!(parsed.id.is_none()),
+                "name" => assert!(parsed.name.is_none()),
+                "type" => assert!(parsed.r#type.is_none()),
+                "policies" => assert!(parsed.policies.is_none()),
+                _ => unreachable!(),
+            }
+            assert!(serde_json::to_value(parsed).unwrap().get(field).is_none());
+        }
+    }
+    let parsed: AssignableRole = serde_json::from_value(role).unwrap();
+    assert_eq!(parsed.policies, Some(vec![]));
+    let policy = serde_json::json!({"allowDeny": "DENY", "permissions": [], "resources": []});
+    for field in ["allowDeny", "permissions", "resources", "tags"] {
+        for null in [false, true] {
+            let mut wire = policy.clone();
+            if null {
+                wire[field] = serde_json::Value::Null;
+            } else {
+                wire.as_object_mut().unwrap().remove(field);
+            }
+            let parsed: AssignableRolePolicy = serde_json::from_value(wire).unwrap();
+            match field {
+                "allowDeny" => assert!(parsed.allow_deny.is_none()),
+                "permissions" => assert!(parsed.permissions.is_none()),
+                "resources" => assert!(parsed.resources.is_none()),
+                "tags" => assert!(parsed.tags.is_none()),
+                _ => unreachable!(),
+            }
+            assert!(serde_json::to_value(parsed).unwrap().get(field).is_none());
+        }
+    }
+    let parsed: AssignableRolePolicy = serde_json::from_value(policy).unwrap();
+    assert_eq!(parsed.permissions, Some(vec![]));
+    assert_eq!(parsed.resources, Some(vec![]));
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"grants": null, "roleV2": null}),
+    ] {
+        let parsed: AssignableRolePolicyTags = serde_json::from_value(wire).unwrap();
+        assert!(parsed.grants.is_none());
+        assert!(parsed.role_v2.is_none());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+    }
+    let parsed: AssignableRolePolicyTags =
+        serde_json::from_value(serde_json::json!({"grants": []})).unwrap();
+    assert_eq!(parsed.grants, Some(vec![]));
+}
+
+#[test]
+fn assignable_role_preserves_unknown_enum_values_without_legacy_catalog_fields() {
+    let wire = serde_json::json!({"id": "role", "name": "future", "type": "future-type", "policies": [
+        {"allowDeny": "future-effect", "permissions": ["future:permission"], "resources": ["future/resource"], "tags": {"roleV2": "future-role", "grants": ["REVOKE ALL ON *.* FROM role"]}}
+    ]});
+    let mut extra = wire.clone();
+    extra["actors"] = serde_json::json!(["internal"]);
+    extra["tenantId"] = "tenant".into();
+    extra["policies"][0]["id"] = "policy-db-id".into();
+    extra["policies"][0]["futureField"] = true.into();
+    let parsed: AssignableRole = serde_json::from_value(extra).unwrap();
+    assert_eq!(
+        parsed.r#type,
+        Some(RBACRoleType::Unknown("future-type".into()))
+    );
+    let policy = &parsed.policies.as_ref().unwrap()[0];
+    assert_eq!(
+        policy.allow_deny,
+        Some(RBACPolicyAllowdeny::Unknown("future-effect".into()))
+    );
+    assert_eq!(
+        policy.tags.as_ref().unwrap().role_v2,
+        Some(RBACPolicyTagsRolev2::Unknown("future-role".into()))
+    );
+    assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+}
+
+#[test]
 fn snapshot_configuration_tolerates_missing_null_and_extra_fields() {
     for wire in [
         serde_json::json!({}),
