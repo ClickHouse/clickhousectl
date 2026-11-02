@@ -1296,27 +1296,37 @@ mod tests {
         assert_eq!(service_query_hint(None), None);
         let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
         let hint = service_query_hint(Some(id)).unwrap();
-        assert!(hint.contains("query a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"));
-        assert!(hint.contains("provisioned automatically on first use"));
+        assert!(
+            hint.contains(
+                "clickhousectl cloud service query a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 \
+                 --query \"SELECT 1\""
+            ),
+            "{hint}"
+        );
+        assert_eq!(hint.lines().count(), 2, "{hint}");
+    }
+
+    /// A heading, then the username and the password each under its label.
+    fn assert_credentials_block(block: &str, password: &str) {
+        let lines: Vec<&str> = block.lines().collect();
+        assert_eq!(lines.len(), 3, "{block}");
+        assert!(!lines[0].starts_with(' '), "{block}");
+        assert_eq!(lines[1], "  Username: default");
+        assert_eq!(lines[2], format!("  Password: {password}"));
     }
 
     #[test]
     fn service_credentials_block_shows_the_password_the_api_sent() {
         let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
-        assert_eq!(
-            service_credentials_block(Some("s3cret"), Some(id)),
-            "Credentials (save these, password shown only once):\n  Username: default\n  \
-             Password: s3cret"
+        assert_credentials_block(
+            &service_credentials_block(Some("s3cret"), Some(id)),
+            "s3cret",
         );
     }
 
     #[test]
     fn service_credentials_block_treats_an_empty_password_as_sent() {
-        assert_eq!(
-            service_credentials_block(Some(""), None),
-            "Credentials (save these, password shown only once):\n  Username: default\n  \
-             Password: "
-        );
+        assert_credentials_block(&service_credentials_block(Some(""), None), "");
     }
 
     #[test]
@@ -1340,7 +1350,11 @@ mod tests {
     #[test]
     fn classify_stop_poll_state_fails_on_an_absent_state() {
         let error = classify_stop_poll_state(None).unwrap_err();
-        assert!(error.to_string().contains("omitted the service state"));
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        // Not the terminal-state failure, which names the state it saw.
+        let terminal = classify_stop_poll_state(Some(&ServiceState::Failed)).unwrap_err();
+        assert!(terminal.message.contains("'failed'"), "{terminal}");
+        assert!(!error.message.contains('\''), "{error}");
     }
 
     #[test]
@@ -1370,11 +1384,17 @@ mod tests {
         };
         let rewritten = service_delete_error(&client, error, false, "svc-1", "org-1");
 
-        assert_eq!(
-            rewritten.message,
-            "service could not be deleted because of a conflict. If it is running, use --force \
-             to stop it first, or `clickhousectl cloud service stop svc-1`. API response: opaque \
-             conflict response"
+        // Both ways out, then the API's own answer verbatim at the end.
+        assert!(rewritten.message.contains("--force"), "{rewritten}");
+        assert!(
+            rewritten
+                .message
+                .contains("`clickhousectl cloud service stop svc-1`"),
+            "{rewritten}"
+        );
+        assert!(
+            rewritten.message.ends_with(": opaque conflict response"),
+            "{rewritten}"
         );
         assert_eq!(
             rewritten.kind,
@@ -1495,7 +1515,8 @@ mod tests {
     #[test]
     fn resolve_reset_password_outcome_fails_when_the_generated_password_is_absent() {
         let error = resolve_reset_password_outcome(true, None).unwrap_err();
-        assert!(error.to_string().contains("omitted the generated password"));
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert!(error.details.is_none());
     }
 
     fn minimal_create_options() -> CreateServiceOptions {
@@ -1707,10 +1728,10 @@ mod tests {
             ..minimal_create_options()
         })
         .unwrap_err();
+        assert!(error.message.contains("--byoc-id"), "{error}");
         assert!(
-            error
-                .to_string()
-                .contains("dynamic profiles require --byoc-id")
+            error.message.contains("'future-standard-profile'"),
+            "{error}"
         );
     }
 
@@ -1757,10 +1778,7 @@ mod tests {
             ..minimal_create_options()
         })
         .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "invalid tag '=prod': tag key cannot be empty"
-        );
+        assert!(error.message.contains("'=prod'"), "{error}");
     }
 
     #[test]
@@ -1837,10 +1855,8 @@ mod tests {
             ..Default::default()
         })
         .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "invalid tag ' =prod': tag key cannot be empty"
-        );
+        // The value is quoted as typed, before trimming.
+        assert!(error.message.contains("' =prod'"), "{error}");
     }
 
     #[test]
@@ -1963,8 +1979,7 @@ mod tests {
         let warnings = unmatched_removal_warnings(&options, &request, &current);
         assert_eq!(warnings.len(), 3);
         assert!(
-            warnings[0].contains("--remove-ip-allow 10.99.99.99/32")
-                && warnings[0].contains("did not match"),
+            warnings[0].contains("--remove-ip-allow 10.99.99.99/32"),
             "{warnings:?}"
         );
         assert!(

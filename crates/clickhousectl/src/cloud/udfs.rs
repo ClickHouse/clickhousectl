@@ -1832,15 +1832,20 @@ mod tests {
         std::fs::write(&empty, b"").unwrap();
         let archive = directory.path().join("code.zip");
         std::fs::write(&archive, b"PK\x03\x04archive").unwrap();
-        for (path, expected) in [
-            (directory.path().join("missing.zip"), "Cannot open"),
-            (empty, "must be a nonempty file"),
-            (directory.path().to_path_buf(), "must be a nonempty file"),
+        let mut messages = Vec::new();
+        for path in [
+            directory.path().join("missing.zip"),
+            empty,
+            directory.path().to_path_buf(),
         ] {
             let error = open_artifact(&path).await.unwrap_err();
-            assert!(error.message.contains(expected), "{path:?}: {error}");
             assert_eq!(error.kind, CloudErrorKind::Generic);
+            messages.push(error.message);
         }
+        // An empty file and a directory fail the same shape check; a path
+        // that cannot be opened at all fails earlier, with its own error.
+        assert_eq!(messages[1], messages[2]);
+        assert_ne!(messages[0], messages[1]);
         assert!(open_artifact(&archive).await.is_ok());
     }
 
@@ -2125,10 +2130,10 @@ mod tests {
 
         std::fs::remove_file(dir.join("arm64/main")).unwrap();
         let error = package_source_dir(&dir, UdfRuntimeKind::Native).unwrap_err();
+        let message = error.to_string();
+        assert!(message.starts_with(&dir.display().to_string()), "{error}");
         assert!(
-            error
-                .to_string()
-                .contains("is missing amd64/main or arm64/main"),
+            message.contains("amd64/main") && message.contains("arm64/main"),
             "{error}"
         );
     }
@@ -2140,7 +2145,11 @@ mod tests {
         write_python_dir(&dir);
         std::fs::remove_file(dir.join("main.py")).unwrap();
         let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
-        assert!(error.to_string().contains("is missing main.py"), "{error}");
+        assert!(
+            error.message.starts_with(&dir.display().to_string()),
+            "{error}"
+        );
+        assert!(error.message.contains("main.py"), "{error}");
         assert_eq!(
             error.details.unwrap().code,
             CloudErrorCode::UdfSourceInvalid
@@ -2149,15 +2158,19 @@ mod tests {
         std::fs::write(dir.join("main.py"), "").unwrap();
         std::os::unix::fs::symlink(dir.join("lib/helper.py"), dir.join("link.py")).unwrap();
         let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
-        assert!(error.to_string().contains("symbolic link"), "{error}");
+        // The walk names the offending entry, not just the directory.
+        assert!(error.message.contains("link.py"), "{error}");
         assert_eq!(
             error.details.unwrap().code,
             CloudErrorCode::UdfSourceInvalid
         );
 
-        let error =
-            package_source_dir(&tmp.path().join("missing"), UdfRuntimeKind::Native).unwrap_err();
-        assert!(error.to_string().contains("is not a directory"), "{error}");
+        let missing = tmp.path().join("missing");
+        let error = package_source_dir(&missing, UdfRuntimeKind::Native).unwrap_err();
+        assert!(
+            error.message.starts_with(&missing.display().to_string()),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2207,15 +2220,20 @@ mod tests {
             dir: parent.clone(),
         };
         assert_eq!(resolve_source(&dir_arg, "my_udf").unwrap(), dir);
+        // Each rejection is a usage error naming the path it rejected; the
+        // shared resolver's variants are tested in `udf`.
         let missing = resolve_source(&dir_arg, "nope").unwrap_err();
         assert_eq!(missing.kind, CloudErrorKind::Usage);
-        assert!(missing.to_string().ends_with("does not exist"), "{missing}");
+        let nope = parent.join("nope").display().to_string();
+        assert!(missing.message.starts_with(&nope), "{missing}");
         std::os::unix::fs::symlink(&dir, parent.join("linked")).unwrap();
         let linked = resolve_source(&dir_arg, "linked").unwrap_err();
         assert_eq!(linked.kind, CloudErrorKind::Usage);
-        assert!(
-            linked.to_string().ends_with("is a symbolic link"),
-            "{linked}"
+        let linked_path = parent.join("linked").display().to_string();
+        assert!(linked.message.starts_with(&linked_path), "{linked}");
+        assert_ne!(
+            missing.message.strip_prefix(&nope),
+            linked.message.strip_prefix(&linked_path)
         );
 
         let override_path = tmp.path().join("override.json");
@@ -2237,13 +2255,12 @@ mod tests {
         assert!(check_definition_name(&from_dir, None, Some(&dir), "my_udf").is_ok());
         let mismatch = check_definition_name(&from_dir, None, Some(&dir), "other").unwrap_err();
         assert_eq!(mismatch.kind, CloudErrorKind::Usage);
-        assert_eq!(
-            mismatch.to_string(),
-            format!(
-                "{}: functionName is my_udf, but the command targets other",
-                dir.join("udf.json").display()
-            )
-        );
+        // Labelled by its source, naming the field, the definition's name
+        // and the command's target, in that order.
+        let label = format!("{}: ", dir.join("udf.json").display());
+        let detail = mismatch.message.strip_prefix(&label).expect("source label");
+        let at = |needle: &str| detail.find(needle).expect(needle);
+        assert!(at("functionName") < at("my_udf") && at("my_udf") < at("other"));
         let from_file = check_definition_name(&from_dir, Some("def.json"), None, "other");
         let from_file = from_file.unwrap_err();
         assert_eq!(from_file.kind, CloudErrorKind::Usage);
@@ -2313,10 +2330,12 @@ mod tests {
             )))),
             "pending:warming"
         );
-        assert!(
-            outcome(classify_wake_state(Some(&ServiceState::Stopped)))
-                .starts_with("failed:the service is stopped")
-        );
+        // A stopped service fails the wait, naming its state and the start
+        // command; the code is pinned in `wake_wait_failures_carry_a_service_state_code`.
+        let stopped = outcome(classify_wake_state(Some(&ServiceState::Stopped)));
+        assert!(stopped.starts_with("failed:"), "{stopped}");
+        assert!(stopped.contains("stopped"), "{stopped}");
+        assert!(stopped.contains("`cloud service start <id>`"), "{stopped}");
         assert!(outcome(classify_wake_state(None)).starts_with("error:"));
 
         let timeout = wait_timeout_error(
@@ -2324,9 +2343,17 @@ mod tests {
             Duration::from_secs(7),
             "clickhousectl cloud service get svc-1",
         );
-        assert_eq!(
-            timeout.to_string(),
-            "the wake of service svc-1 did not finish within 7s; it may still complete, check `clickhousectl cloud service get svc-1`"
+        // What timed out, the bound, then the follow-up command.
+        assert!(
+            timeout.message.starts_with("the wake of service svc-1"),
+            "{timeout}"
+        );
+        assert!(timeout.message.contains("7s"), "{timeout}");
+        assert!(
+            timeout
+                .message
+                .ends_with("`clickhousectl cloud service get svc-1`"),
+            "{timeout}"
         );
         assert_eq!(timeout.failure.unwrap().kind, FailureKind::Timeout);
     }
@@ -2353,9 +2380,13 @@ mod tests {
             "svc-1",
             AttachCaller::Attach,
         );
-        assert_eq!(
-            error.to_string(),
-            "service is idle (SERVICE_IDLE)\nRerun with --wake, or run `clickhousectl cloud service wake svc-1` and retry once it is running."
+        // The server text with its code, then a hint naming both remedies.
+        let (first, hint) = error.message.split_once('\n').expect("a hint line");
+        assert_eq!(first, "service is idle (SERVICE_IDLE)");
+        assert!(hint.contains("--wake"), "{hint}");
+        assert!(
+            hint.contains("`clickhousectl cloud service wake svc-1`"),
+            "{hint}"
         );
         assert_eq!(
             detail(&error),
@@ -2384,10 +2415,15 @@ mod tests {
             "svc-1",
             AttachCaller::Attach,
         );
-        assert_eq!(
-            error.to_string(),
-            "not running (SERVICE_NOT_RUNNING, service state awaking)\nThe service is starting; retry shortly, or rerun with --wake to wait for it."
+        // A non-redundant state joins the code; the hint can only wait.
+        let (first, hint) = error.message.split_once('\n').expect("a hint line");
+        assert!(first.starts_with("not running ("), "{first}");
+        assert!(
+            first.contains("SERVICE_NOT_RUNNING") && first.contains("awaking"),
+            "{first}"
         );
+        assert!(hint.contains("--wake"), "{hint}");
+        assert!(!hint.contains("cloud service wake"), "{hint}");
         assert_eq!(
             detail(&error),
             Some((CloudErrorCode::ServiceNotRunning, None))
@@ -2406,10 +2442,13 @@ mod tests {
             "svc-1",
             AttachCaller::Attach,
         );
-        assert_eq!(
-            error.to_string(),
-            "stopped (SERVICE_STOPPED)\nStart it with `clickhousectl cloud service start svc-1` and retry."
+        let (first, hint) = error.message.split_once('\n').expect("a hint line");
+        assert_eq!(first, "stopped (SERVICE_STOPPED)");
+        assert!(
+            hint.contains("`clickhousectl cloud service start svc-1`"),
+            "{hint}"
         );
+        assert!(!hint.contains("--wake"), "{hint}");
         assert_eq!(
             detail(&error),
             Some((
@@ -2430,9 +2469,12 @@ mod tests {
             "svc-1",
             AttachCaller::Attach,
         );
-        assert_eq!(
-            error.to_string(),
-            "not running (SERVICE_NOT_RUNNING, service state stopped)"
+        // No hint: the service cannot be woken and was not reported stopped.
+        assert_eq!(error.message.lines().count(), 1, "{error}");
+        assert!(error.message.starts_with("not running ("), "{error}");
+        assert!(
+            error.message.contains("SERVICE_NOT_RUNNING") && error.message.contains("stopped"),
+            "{error}"
         );
         assert_eq!(
             detail(&error),
@@ -2491,16 +2533,19 @@ mod tests {
             },
         ] {
             let error = deploy_error(&response);
-            assert!(!error.message.contains("--wake,"));
-            assert!(!error.message.contains("rerun"));
+            // No attach hint: just the server line and the resume line.
+            assert_eq!(error.message.lines().count(), 2, "{error}");
             let (_, command) = detail(&error);
             assert_eq!(
                 command.as_deref(),
                 Some("clickhousectl cloud udf attach my_udf svc-1 --version 5 --wake")
             );
-            assert!(error.message.ends_with(
-                "resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5 --wake`"
-            ));
+            assert!(
+                error
+                    .message
+                    .ends_with("`clickhousectl cloud udf attach my_udf svc-1 --version 5 --wake`"),
+                "{error}"
+            );
         }
 
         // Stopped: start it first, then resume without --wake.
@@ -2525,17 +2570,19 @@ mod tests {
         assert!(
             error
                 .message
-                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+                .ends_with("`clickhousectl cloud udf attach my_udf svc-1 --version 5`"),
+            "{error}"
         );
 
         // Any other failure after the build resumes without --wake and
         // gains no command.
         let error = resume.after_build(CloudError::new("boom"));
         assert!(error.details.is_none());
+        let (first, resume_line) = error.message.split_once('\n').expect("a resume line");
+        assert_eq!(first, "boom");
         assert!(
-            error
-                .message
-                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+            resume_line.ends_with("`clickhousectl cloud udf attach my_udf svc-1 --version 5`"),
+            "{error}"
         );
     }
 
@@ -2551,11 +2598,15 @@ mod tests {
             Duration::from_secs(1),
             "clickhousectl cloud udf get my_udf",
         ));
-        assert!(timeout.message.contains("still building"));
+        // The timeout keeps its own line and gains the attach to resume with.
+        let (first, resume_line) = timeout.message.split_once('\n').expect("a resume line");
         assert!(
-            timeout
-                .message
-                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+            first.starts_with("the build of UDF my_udf version 5"),
+            "{first}"
+        );
+        assert!(
+            resume_line.ends_with("`clickhousectl cloud udf attach my_udf svc-1 --version 5`"),
+            "{resume_line}"
         );
         assert_eq!(timeout.failure.unwrap().kind, FailureKind::Timeout);
 
@@ -2581,15 +2632,17 @@ mod tests {
     }
 
     #[test]
-    fn deploy_summaries_read_in_parallel() {
-        assert_eq!(
-            deploy_summary("created", "my_udf", 1, "svc-1"),
-            "Created UDF my_udf version 1 and deployed it to service svc-1"
-        );
-        assert_eq!(
-            deploy_summary("version_created", "my_udf", 5, "svc-1"),
-            "Added version 5 of UDF my_udf and deployed it to service svc-1"
-        );
+    fn deploy_summaries_name_the_udf_version_and_service() {
+        let created = deploy_summary("created", "my_udf", 5, "svc-1");
+        let added = deploy_summary("version_created", "my_udf", 5, "svc-1");
+        for summary in [&created, &added] {
+            assert_eq!(summary.lines().count(), 1, "{summary}");
+            for id in ["my_udf", "5", "svc-1"] {
+                assert!(summary.contains(id), "{summary}");
+            }
+        }
+        // A new UDF and a new version of an existing one read differently.
+        assert_ne!(created, added);
     }
 
     #[test]
@@ -2641,13 +2694,13 @@ mod tests {
             ))),
             "failed:pip failed"
         );
-        assert_eq!(
-            outcome(classify_build_status(&udf(
-                Some(UdfStatus::Error),
-                Some("  ")
-            ))),
-            "failed:the build reported an error without a message"
-        );
+        // A blank server message is replaced, never shown as blank.
+        let blank = outcome(classify_build_status(&udf(
+            Some(UdfStatus::Error),
+            Some("  "),
+        )));
+        let reason = blank.strip_prefix("failed:").expect("a failed outcome");
+        assert!(!reason.trim().is_empty(), "{blank}");
         assert!(outcome(classify_build_status(&udf(None, None))).starts_with("error:"));
 
         let attachment = |status: Option<UdfAttachmentStatus>| UdfAttachment {

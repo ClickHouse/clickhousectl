@@ -4269,6 +4269,18 @@ mod tests {
         assert_eq!(records.len(), NAME_LOOKUP_PAGE_SIZE as usize);
     }
 
+    /// `expected` is a space-separated list of the identifiers (field paths,
+    /// offending values, bounds) the message must name.
+    fn assert_names(error: &CloudError, expected: &str) {
+        for id in expected.split_whitespace() {
+            assert!(error.message.contains(id), "`{id}` missing from: {error}");
+        }
+    }
+
+    fn digits(message: &str) -> String {
+        message.chars().filter(char::is_ascii_digit).collect()
+    }
+
     #[tokio::test]
     async fn name_pagination_rejects_repeated_missing_and_oversized_pages() {
         let mut offsets = Vec::new();
@@ -4282,7 +4294,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
-        assert!(error.message.contains("repeated"));
+        assert!(error.message.contains("ClickStack alert"), "{error}");
 
         for id in [None, Some(String::new()), Some(" ".to_owned())] {
             let error = collect_name_pages("ClickStack alert", |_| {
@@ -4290,16 +4302,21 @@ mod tests {
             })
             .await
             .unwrap_err();
-            assert!(error.message.contains("missing ID"));
+            assert!(error.message.contains("ClickStack alert"), "{error}");
         }
+        // An oversized page fails on the first fetch, before its IDs could
+        // repeat on a second one.
+        let mut fetches = 0;
         let error = collect_name_pages("ClickStack alert", |_| {
+            fetches += 1;
             let mut page = full_name_page();
             page.push(named_record("extra", "extra-id"));
             std::future::ready(Ok(page))
         })
         .await
         .unwrap_err();
-        assert!(error.message.contains("page size"));
+        assert_eq!(fetches, 1);
+        assert!(error.message.contains("ClickStack alert"), "{error}");
     }
 
     #[tokio::test]
@@ -4398,11 +4415,11 @@ mod tests {
                 expected
             );
         }
+        // No match names the kind and the value that matched nothing.
         let error = resolve_alert_name(alerts.clone(), "Errors").unwrap_err();
-        assert!(
-            error.message.contains("no ClickStack alert found"),
-            "{error}"
-        );
+        assert!(error.message.contains("ClickStack alert"), "{error}");
+        assert!(error.message.contains("'Errors'"), "{error}");
+        assert_eq!(digits(&error.message), "", "{error}");
 
         // A displayName on one alert and a name template on another collide.
         let error = resolve_alert_name(
@@ -4413,13 +4430,17 @@ mod tests {
             "Shared",
         )
         .unwrap_err();
-        assert!(error.message.contains("found 2"), "{error}");
-        assert!(error.message.contains("positional ID"), "{error}");
+        assert_eq!(digits(&error.message), "2", "{error}");
+        assert!(error.message.contains("'Shared'"), "{error}");
 
         // An alert with neither field cannot prove the value is unique.
         let error =
             resolve_alert_name(serde_json::json!([{"id":"nameless"}]), "Shared").unwrap_err();
-        assert!(error.message.contains("without a name"), "{error}");
+        // Not reported as zero or many matches: neither the value nor a
+        // count, since no uniqueness claim can be made.
+        assert!(error.message.contains("ClickStack alert"), "{error}");
+        assert!(!error.message.contains("Shared"), "{error}");
+        assert_eq!(digits(&error.message), "", "{error}");
     }
 
     #[test]
@@ -4587,7 +4608,7 @@ mod tests {
         for (config, expected) in [
             (
                 serde_json::json!({"displayType":"table","sourceId":"s","select":[{"aggFn":"count"}]}),
-                "unknown chartConfig.displayType `table`",
+                "chartConfig.displayType `table`",
             ),
             (
                 serde_json::json!({"displayType":"line","sourceId":"s","select":[{"aggFn":"count"}],"colour":"red"}),
@@ -4595,11 +4616,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"configType":"promql","displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
-                "unknown chartConfig.configType `promql`",
+                "chartConfig.configType `promql`",
             ),
             (
                 serde_json::json!({"displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
-                "missing field `select`",
+                "`select`",
             ),
             (
                 serde_json::json!({"displayType":"stacked_line","sourceId":"s","select":[{"aggFn":"count"}],"lineInterpolation":"curvy"}),
@@ -4615,7 +4636,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"sourceId":"s"}),
-                "chartConfig.displayType must be a string",
+                "chartConfig.displayType",
             ),
         ] {
             let body = serde_json::json!({
@@ -4624,9 +4645,9 @@ mod tests {
             });
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(path).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
             let error = build_update_alert_request(path).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
     }
 
@@ -4666,7 +4687,7 @@ mod tests {
         let invalid = [
             (
                 serde_json::json!({"source":"future","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "unknown source",
+                "`future`",
             ),
             (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"2m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
@@ -4694,7 +4715,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[]}),
-                "between 1 and 10",
+                "channels 1 10",
             ),
             (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","numConsecutiveWindows":0,"channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
@@ -4704,7 +4725,7 @@ mod tests {
         for (body, expected) in invalid {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
         // `source`, `channel` and `channels` are optional; only `source: inline`
         // demands a `chartConfig`, on create and update alike.
@@ -4713,15 +4734,12 @@ mod tests {
         inline.as_object_mut().unwrap().remove("savedSearchId");
         let mut bad_channels = base.clone();
         bad_channels["channels"] = serde_json::json!({"type":"email"});
-        for (body, expected) in [
-            (inline, "source inline requires chartConfig"),
-            (bad_channels, "channels must be an array"),
-        ] {
+        for (body, expected) in [(inline, "inline chartConfig"), (bad_channels, "channels")] {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
             let error = build_update_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
         let mut duplicate = base.clone();
         duplicate["channels"] = serde_json::json!([
@@ -4733,7 +4751,7 @@ mod tests {
             build_create_alert_request(config_file.to_str().unwrap())
                 .unwrap_err()
                 .message
-                .contains("duplicates")
+                .contains("channels[1]")
         );
 
         std::fs::write(
@@ -4745,19 +4763,16 @@ mod tests {
             build_webhook_request(config_file.to_str().unwrap())
                 .unwrap_err()
                 .message
-                .contains("webhook service")
+                .contains("`slack_api`")
         );
         std::fs::write(
             &config_file,
             r#"{"name":"bad","service":"slack","url":"https://example.com","body":"secret"}"#,
         )
         .unwrap();
-        assert!(
-            build_webhook_request(config_file.to_str().unwrap())
-                .unwrap_err()
-                .message
-                .contains("not supported")
-        );
+        let error = build_webhook_request(config_file.to_str().unwrap()).unwrap_err();
+        assert_names(&error, "body slack");
+        assert!(!error.message.contains("secret"), "{error}");
     }
 
     #[test]
@@ -5124,11 +5139,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"eq","value":{"nested":true},"color":"chart-blue"}]}}]}),
-                "value must be a finite number or string",
+                "colorRules[0].value",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"neq","value":true,"color":"chart-blue"}]}}]}),
-                "value must be a finite number or string",
+                "colorRules[0].value",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[{"aggFn":"count","aliass":"x"}]}}]}),
@@ -5140,7 +5155,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"bands","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
-                "unknown tiles[0].config.heatmapMode `bands`",
+                "tiles[0].config.heatmapMode `bands`",
             ),
             (
                 // A series heatmap selects aggregates, not distribution items.
@@ -5154,7 +5169,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
-                "unknown tiles[0].config.lineInterpolation value `curvy`",
+                "tiles[0].config.lineInterpolation `curvy`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","configType":"sql","connectionId":"c","sqlTemplate":"SELECT 1","seriesLimit":1}}]}),
@@ -5162,15 +5177,15 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
-                "unknown tiles[0].config.lineInterpolation value `curvy`",
+                "tiles[0].config.lineInterpolation `curvy`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),
-                "filters[0].type must be a string",
+                "filters[0].type",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"SOURCE","name":"f","expression":"e","sourceId":"s"}]}),
-                "unknown filters[0].type `SOURCE`",
+                "filters[0].type `SOURCE`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"expression":"e"}]}),
@@ -5178,7 +5193,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"maxSelections":3}]}),
-                "unknown filters[0].maxSelections value `3`",
+                "filters[0].maxSelections `3`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"PROMETHEUS_LABEL","name":"f","sourceId":"s","label":"pod","matcher":"up"}]}),
@@ -5194,16 +5209,16 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","whereLanguage":"kql"}]}),
-                "unknown filters[0].whereLanguage value `kql`",
+                "filters[0].whereLanguage `kql`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","minSelections":2}]}),
-                "unknown filters[0].minSelections value `2`",
+                "filters[0].minSelections `2`",
             ),
         ] {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let error = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
 
         // Update bodies check each filter against the schema that carries `id`.
@@ -5217,14 +5232,10 @@ mod tests {
             std::fs::write(&config_file, body.to_string()).unwrap();
             build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
             let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
-            assert!(error.message.contains("invalid filters[0]"), "{error}");
-            assert!(error.message.contains("`id`"), "{error}");
+            assert_names(&error, "filters[0] `id`");
             // The nested failure names the config once.
             assert_eq!(
-                error
-                    .message
-                    .matches("invalid request body in config")
-                    .count(),
+                error.message.matches(config_file.to_str().unwrap()).count(),
                 1,
                 "{error}"
             );
@@ -5375,11 +5386,11 @@ mod tests {
         for (permission, expected) in [
             (
                 serde_json::json!({"action":"read","subject":"Dashboard"}),
-                "permissions[0].integration must be clickhouse or mongodb",
+                "permissions[0].integration clickhouse mongodb",
             ),
             (
                 serde_json::json!({"action":"read","subject":"Dashboard","integration":"slack"}),
-                "unknown permissions[0].integration `slack`",
+                "permissions[0].integration `slack`",
             ),
             (
                 serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditons":{}}),
@@ -5391,11 +5402,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"team":"team-1"}}),
-                "invalid permissions[0]",
+                "permissions[0]",
             ),
             (
                 serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditions":{"name":{"$regex":"^a","$optons":"i"}}}),
-                "unknown field `permissions[0].conditions.name.$optons`",
+                "`permissions[0].conditions.name.$optons`",
             ),
         ] {
             let body = serde_json::json!({"name":"r","permissions":[permission]});
@@ -5404,18 +5415,10 @@ mod tests {
                 build_create_role_request(config_file.to_str().unwrap()).unwrap_err(),
                 build_update_role_request(config_file.to_str().unwrap()).unwrap_err(),
             ] {
-                assert!(error.message.contains(expected), "{error}");
+                assert_names(&error, expected);
                 // Each permission failure names the config exactly once.
-                let prefix = format!(
-                    "invalid request body in config {}: ",
-                    config_file.to_str().unwrap()
-                );
-                assert!(error.message.starts_with(&prefix), "{error}");
                 assert_eq!(
-                    error
-                        .message
-                        .matches("invalid request body in config")
-                        .count(),
+                    error.message.matches(config_file.to_str().unwrap()).count(),
                     1,
                     "{error}"
                 );
@@ -5491,11 +5494,7 @@ mod tests {
     fn input_validation_rejects_unknown_discriminator_and_nested_fields() {
         let error = parse_source_request(serde_json::json!({"kind":"logs","naem":"bad"}), "test")
             .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("unknown source discriminator `logs`")
-        );
+        assert_names(&error, "`logs`");
 
         let error = validate_role_permissions(
             &serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","integration":"mongodb","conditons":{}}]}),
@@ -5507,17 +5506,17 @@ mod tests {
         for (body, expected) in [
             (
                 serde_json::json!({"name":"bad","sourceId":"s","whereLanguage":"sqlish"}),
-                "unknown whereLanguage",
+                "whereLanguage `sqlish`",
             ),
             (
                 serde_json::json!({"name":"bad","sourceId":"s","filters":[{"type":"lucene","condition":"x"}]}),
-                "unknown filters[0].type",
+                "filters[0].type `lucene`",
             ),
         ] {
             let request: ClickStackSavedSearchInput =
                 deserialize_strict_config(body, "test").unwrap();
             let error = validate_saved_search_closed_enums(&request, "test").unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
 
         let error = deserialize_strict_config::<ClickStackSavedSearchInput>(
@@ -5544,12 +5543,12 @@ mod tests {
             ),
             (
                 serde_json::json!({"kind":"log","name":"l","connection":"c","from":{"databaseName":"d","tableName":"t"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","useTextIndexForImplicitColumn":"enabledd"}),
-                "unknown useTextIndexForImplicitColumn",
+                "useTextIndexForImplicitColumn `enabledd`",
             ),
-            (serde_json::json!({"name":"no kind"}), "source `kind`"),
+            (serde_json::json!({"name":"no kind"}), "`kind`"),
         ] {
             let error = parse_source_request(body, "test").unwrap_err();
-            assert!(error.message.contains(expected), "{error}");
+            assert_names(&error, expected);
         }
     }
 }

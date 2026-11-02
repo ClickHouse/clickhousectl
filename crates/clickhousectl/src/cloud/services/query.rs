@@ -1424,25 +1424,28 @@ mod tests {
         // Not an auth failure of the command: the management credentials
         // worked, and exit code 4 would send the user to `cloud auth`.
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
-        assert!(
-            error.message.starts_with(&format!(
-                "the query key for service {VERIFIED_SERVICE_ID} was replaced (new API key \
-                 new-key-uuid) and stored in .clickhouse/credentials.json, but the Query API \
-                 kept rejecting it"
-            )),
-            "{}",
-            error.message
-        );
-        assert!(
-            error.message.contains("Do not rerun repair-query-key"),
-            "{}",
-            error.message
-        );
+        // The message names what was replaced and where it was stored, the
+        // command not to rerun, and the query that classifies the rejection.
+        for id in [
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            ".clickhouse/credentials.json",
+            "repair-query-key",
+        ] {
+            assert!(error.message.contains(id), "{id}: {}", error.message);
+        }
         assert_eq!(
             error.failure.map(|failure| failure.kind),
             Some(FailureKind::Timeout)
         );
         let details = error.details.expect("the timeout has a structured form");
+        assert!(
+            error
+                .message
+                .contains(&format!("`{}`", details.command.as_deref().unwrap())),
+            "{}",
+            error.message
+        );
         assert_eq!(details.code, CloudErrorCode::QueryKeyRepairUnverified);
         assert_eq!(details.api_key_id.as_deref(), Some("new-key-uuid"));
         assert_eq!(
@@ -1558,17 +1561,19 @@ mod tests {
             repaired_query_credential(Ok(Some(stored("new"))), "svc-1", "new"),
             Ok(("kid".to_string(), "sec".to_string()))
         );
-        // A concurrent repair replaced the key, or the record vanished.
-        let changed = "the stored query key for service svc-1 changed before the replacement \
-                       could be probed";
-        assert_eq!(
-            repaired_query_credential(Ok(Some(stored("newer"))), "svc-1", "new"),
-            Err(changed.to_string())
-        );
+        // A concurrent repair replaced the key, or the record vanished: one
+        // reason for both, naming the service.
+        let replaced =
+            repaired_query_credential(Ok(Some(stored("newer"))), "svc-1", "new").unwrap_err();
+        assert!(replaced.contains("svc-1"), "{replaced}");
         assert_eq!(
             repaired_query_credential(Ok(None), "svc-1", "new"),
-            Err(changed.to_string())
+            Err(replaced.clone())
         );
+        // Distinct from an unreadable record's reason.
+        let unreadable =
+            repaired_query_credential(Err(CloudError::new("boom")), "svc-1", "new").unwrap_err();
+        assert_ne!(replaced, unreadable);
     }
 
     #[test]
@@ -1583,10 +1588,11 @@ mod tests {
             "new",
         )
         .unwrap_err();
-        assert_eq!(
-            reason,
-            "the stored query key for service svc-1 could not be read (credentials.json is not \
-             valid JSON)"
+        // Names the service and carries the read error verbatim.
+        assert!(reason.contains("svc-1"), "{reason}");
+        assert!(
+            reason.contains("(credentials.json is not valid JSON)"),
+            "{reason}"
         );
     }
 
@@ -1742,11 +1748,8 @@ mod tests {
         };
         let error = query_timeout_error(test_query_target(Some(&native)));
 
-        assert!(
-            error.message.contains("about 30 seconds"),
-            "{}",
-            error.message
-        );
+        // The gateway's limit, in seconds.
+        assert!(error.message.contains("30"), "{}", error.message);
         assert!(
             error
                 .message
@@ -1841,7 +1844,14 @@ mod tests {
                 wake_requested: true,
             }
             .into_cloud_error(&client, test_query_target(None));
-            assert!(!error.message.contains("waking"));
+            // Only a timeout is reworded for a waking service; anything else
+            // converts exactly as it would without the wake.
+            let plain = client.convert_error(clickhouse_cloud_api::Error::Api {
+                status,
+                message: "unrelated failure".into(),
+            });
+            assert_eq!(error.message, plain.message);
+            assert!(error.details.is_none());
             assert_eq!(error.failure.unwrap().http_status, Some(status));
             assert_eq!(
                 error.kind == crate::cloud::client::CloudErrorKind::Auth,
@@ -1925,7 +1935,14 @@ mod tests {
             clickhouse_cloud_api::Error::ServiceStopped,
             test_query_target(None),
         );
-        assert!(stopped.message.contains("is stopped"));
+        // Rewritten to name the service and the command that starts it.
+        assert!(stopped.message.contains("'demo'"), "{stopped}");
+        assert!(
+            stopped
+                .message
+                .contains("`clickhousectl cloud service start svc-1 --org-id org-1`"),
+            "{stopped}"
+        );
         assert_eq!(
             stopped.failure,
             Some(ApiFailure::new(FailureKind::ServiceStopped))

@@ -2613,10 +2613,13 @@ mod tests {
 
     #[test]
     fn validate_private_endpoint_id_rejects_empty_values() {
-        for id in ["", "   ", "\t"] {
-            let error = validate_private_endpoint_id(id).expect_err("empty must be rejected");
-            assert!(error.contains("must not be empty"), "{error}");
-        }
+        // One message for every blank value: the blank branch runs before
+        // the shape check, which would quote each value differently.
+        let errors: std::collections::HashSet<String> = ["", "   ", "\t"]
+            .into_iter()
+            .map(|id| validate_private_endpoint_id(id).expect_err("empty must be rejected"))
+            .collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
     }
 
     #[test]
