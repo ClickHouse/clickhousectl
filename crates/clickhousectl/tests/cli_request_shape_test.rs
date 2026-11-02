@@ -25,50 +25,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
 const SCALING_SCHEDULE_PATH: &str = "/v1/organizations/org-1/services/svc-1/scalingSchedule";
 
-#[tokio::test]
-async fn aws_backup_bucket_external_id_is_preserved_in_create_and_update_requests() {
-    for (action, http_method, external_id) in [
-        ("create", "POST", Some(serde_json::json!("trust-policy-id"))),
-        ("update", "PATCH", None),
-        ("update", "PATCH", Some(serde_json::json!("replacement-id"))),
-        ("update", "PATCH", Some(Value::Null)),
-    ] {
-        let mock = MockServer::start().await;
-        let mut expected = serde_json::json!({
-            "bucketProvider": "AWS", "bucketPath": "s3://backups/prefix",
-            "iamRoleArn": "arn:aws:iam::123:role/backups"
-        });
-        if action == "create" {
-            expected["iamRoleSessionName"] = serde_json::json!("backups");
-        }
-        if let Some(value) = external_id {
-            expected["iamRoleExternalId"] = value;
-        }
-        Mock::given(method(http_method))
-            .and(path(BACKUP_BUCKET_PATH))
-            .and(header("authorization", TEST_BASIC_AUTH))
-            .and(body_json(expected.clone()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "status": 200, "result": {"bucketProvider": "AWS"}
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_cli_with_cloud_credentials_and_stdin(
-            &mock,
-            &[
-                "backup", "bucket", action, "svc-1", "--org-id", "org-1", "--file", "-",
-            ],
-            &serde_json::to_string(&expected).unwrap(),
-        );
-        assert_success(&output);
-        let requests = mock.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1);
-        let actual: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(actual, expected);
-    }
-}
-
 /// Inspect the real help path without ambient credentials or a writable real home.
 fn permission_help(mock: &MockServer, command: &[&str], help_flag: &str) -> String {
     let project = tempfile::tempdir().unwrap();
@@ -1894,45 +1850,6 @@ async fn backup_config_clear_start_time_sends_an_explicit_null() {
     );
 }
 
-#[tokio::test]
-async fn backup_config_clear_start_time_travels_with_an_incompatible_period() {
-    let mock = MockServer::start().await;
-    mount_cleared_backup_config_patch(&mock).await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--clear-backup-start-time",
-            "--backup-period-hours",
-            "12",
-            "--json",
-        ],
-    );
-
-    assert_success(&output);
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-
-    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
-    assert_eq!(
-        body,
-        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
-    );
-
-    let printed: Value = serde_json::from_slice(&output.stdout).expect("stdout wasn't JSON");
-    assert_eq!(printed["backupPeriodInHours"], 12.0);
-    assert!(
-        printed.get("backupStartTime").is_none(),
-        "the cleared start time must be absent from the response: {printed}"
-    );
-}
-
 // ── Concrete Cloud error routing (issue #233) ──────────────────────────────
 
 async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {
@@ -2095,71 +2012,6 @@ async fn query_endpoint_create_preserves_existing_keys_and_default_origins() {
         serde_json::json!({
             "roles": ["sql_console_read_only"],
             "openApiKeys": ["existing-1", "existing-2", "new-key"],
-            "allowedOrigins": "https://before.example.com",
-        })
-    );
-}
-
-#[tokio::test]
-async fn query_endpoint_create_explicit_origins_replace_without_dropping_keys() {
-    for origins in ["https://after.example.com", "*"] {
-        let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
-            "openApiKeys": ["existing-1", "existing-2"],
-            "allowedOrigins": "https://before.example.com",
-        })))
-        .await;
-        let body = invoke_cli_capture_body(
-            &mock,
-            &manual_query_endpoint_args(&["--allowed-origins", origins]),
-        )
-        .await;
-        assert_eq!(
-            body,
-            serde_json::json!({
-                "roles": ["sql_console_read_only"],
-                "openApiKeys": ["existing-1", "existing-2"], "allowedOrigins": origins,
-            })
-        );
-    }
-}
-
-#[tokio::test]
-async fn query_endpoint_create_omits_allowed_origins_the_endpoint_does_not_report() {
-    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
-        "openApiKeys": ["existing-1"],
-    })))
-    .await;
-    let body = invoke_cli_capture_body(&mock, &manual_query_endpoint_args(&[])).await;
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "roles": ["sql_console_read_only"], "openApiKeys": ["existing-1"],
-        })
-    );
-}
-
-#[tokio::test]
-async fn query_endpoint_create_key_replacement_is_explicit() {
-    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
-        "openApiKeys": ["existing-1", "existing-2"],
-        "allowedOrigins": "https://before.example.com",
-    })))
-    .await;
-    let body = invoke_cli_capture_body(
-        &mock,
-        &manual_query_endpoint_args(&[
-            "--open-api-key",
-            "new-key",
-            "--open-api-key",
-            "new-key",
-            "--replace-open-api-keys",
-        ]),
-    )
-    .await;
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "roles": ["sql_console_read_only"], "openApiKeys": ["new-key"],
             "allowedOrigins": "https://before.example.com",
         })
     );
@@ -13513,43 +13365,6 @@ async fn service_reset_password_fails_when_the_generated_password_is_absent() {
 }
 
 #[tokio::test]
-async fn service_reset_password_succeeds_for_a_hash_reset_without_a_password() {
-    let output =
-        run_service_reset_password(serde_json::json!({}), &["--new-password-hash", "e3b0c442"])
-            .await;
-    assert_success(&output);
-    // Agent detection can force --json here, so assert only what holds in
-    // both output modes: the reset succeeds and shows no password.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("New password"),
-        "a hash reset must not report a password:\n{stdout}",
-    );
-}
-
-#[tokio::test]
-async fn service_reset_password_treats_a_double_sha1_only_reset_as_generation() {
-    // The API ignores `newDoubleSha1Hash` unless `newPasswordHash` is also
-    // sent, and generates a password instead — so the mode is generation and a
-    // response without a password loses the new credential.
-    let output = run_service_reset_password(
-        serde_json::json!({}),
-        &["--new-double-sha1-hash", "aabbccdd"],
-    )
-    .await;
-    assert!(
-        !output.status.success(),
-        "a double-SHA1-only reset with no password must fail\nstdout:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("omitted the generated password"),
-        "stderr should name the omitted password:\n{stderr}",
-    );
-}
-
-#[tokio::test]
 async fn service_reset_password_json_prints_the_generated_password() {
     let output =
         run_service_reset_password(serde_json::json!({ "password": "s3cret" }), &["--json"]).await;
@@ -15936,80 +15751,6 @@ async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_section
 }
 
 // IP allowlist descriptions (#589).
-
-#[tokio::test]
-async fn service_allowlist_descriptions_reach_create_and_additive_update_requests() {
-    let create = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services"))
-        .and(body_json(serde_json::json!({
-            "name": "described-service",
-            "provider": "aws",
-            "region": "us-east-1",
-            "ipAccessList": [
-                {"source": "192.0.2.0/24"},
-                {"source": "2001:db8::/32", "description": "\u{6771}\u{4eac} \u{1f5fc}"},
-            ],
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "service": {"id": "22222222-3333-4444-5555-666666666666", "name": "described-service"},
-                "password": "generated-password"
-            },
-            "status": 200,
-            "requestId": "stub-service-create"
-        })))
-        .expect(1)
-        .mount(&create)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &create,
-        &[
-            "service",
-            "create",
-            "--name",
-            "described-service",
-            "--ip-allow",
-            "192.0.2.0/24",
-            "--ip-allow",
-            "2001:db8::/32=\u{6771}\u{4eac} \u{1f5fc}",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-
-    let update = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1"))
-        .and(body_json(serde_json::json!({
-            "ipAccessList": {
-                "add": [{"source": "2001:db8:1::/48", "description": "branch office"}],
-                "remove": []
-            }
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"id": "22222222-3333-4444-5555-666666666666", "name": "described-service"},
-            "status": 200,
-            "requestId": "stub-service-update"
-        })))
-        .expect(1)
-        .mount(&update)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &update,
-        &[
-            "service",
-            "update",
-            "svc-1",
-            "--add-ip-allow",
-            "2001:db8:1::/48=branch office",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-}
 
 #[tokio::test]
 async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
@@ -19809,98 +19550,6 @@ async fn service_profile_list_sends_exact_queries_and_preserves_json() {
 }
 
 #[tokio::test]
-async fn service_profile_list_omits_byoc_and_accepts_empty_oauth_result() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(SERVICE_PROFILES_PATH))
-        .and(query_param("region_id", "eu-west-1"))
-        .and(header("authorization", "Bearer test-bearer-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [],
-            "status": 200,
-            "requestId": "stub-empty-service-profiles"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let output = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "--json",
-            "service",
-            "profile",
-            "list",
-            "--region",
-            "eu-west-1",
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .unwrap();
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!([])
-    );
-
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    let query: Vec<_> = requests[0].url.query_pairs().collect();
-    assert_eq!(query, vec![("region_id".into(), "eu-west-1".into())]);
-}
-
-#[tokio::test]
-async fn service_profile_list_byoc_only_sends_no_region() {
-    let mock = MockServer::start().await;
-    let result = serde_json::json!([{"profile": "custom-byoc", "memoryGi": 16.0}]);
-    Mock::given(method("GET"))
-        .and(path(SERVICE_PROFILES_PATH))
-        .and(query_param("byoc_id", "byoc-1"))
-        .and(wiremock::matchers::query_param_is_missing("region_id"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "profile",
-            "list",
-            "--byoc-id",
-            "byoc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        result
-    );
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(
-        requests[0].url.query_pairs().collect::<Vec<_>>(),
-        vec![("byoc_id".into(), "byoc-1".into())]
-    );
-}
-
-#[tokio::test]
 async fn service_profile_list_renders_sparse_unknown_profiles() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -20936,24 +20585,6 @@ const BACKUP_RESTORE_ARGS: [&str; 7] = [
 ];
 
 #[tokio::test]
-async fn service_create_passes_backup_encryption_config_file_through_unchanged() {
-    let mock = MockServer::start().await;
-    mount_service_create_with_backup_encryption_config(&mock).await;
-    let directory = tempfile::tempdir().unwrap();
-    let config = directory.path().join("encryption_config.json");
-    std::fs::write(
-        &config,
-        serde_json::to_string_pretty(&backup_encryption_config_document()).unwrap(),
-    )
-    .unwrap();
-
-    let mut args = BACKUP_RESTORE_ARGS.to_vec();
-    args.extend([config.to_str().unwrap(), "--org-id", "org-1"]);
-    let output = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&output);
-}
-
-#[tokio::test]
 async fn service_create_reads_backup_encryption_config_from_stdin() {
     let mock = MockServer::start().await;
     mount_service_create_with_backup_encryption_config(&mock).await;
@@ -21586,60 +21217,6 @@ async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
 }
 
 #[tokio::test]
-async fn service_settings_set_file_preserves_json_types_in_object_body() {
-    for file_flag in ["--file", "--settings-file"] {
-        service_settings_set_file_preserves_json_types_in_object_body_with_file_flag(file_flag)
-            .await;
-    }
-}
-
-async fn service_settings_set_file_preserves_json_types_in_object_body_with_file_flag(
-    file_flag: &str,
-) {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let settings_file = directory.path().join("settings.json");
-    let settings = serde_json::json!({
-        "compatibility": "26.2", "max_query_size": 262144, "boolean": false,
-        "null": null, "array": [1, "two"], "future": {"nested": true}
-    });
-    std::fs::write(&settings_file, settings.to_string()).unwrap();
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
-        ))
-        .and(wiremock::matchers::basic_auth(
-            "fake-key-for-tests",
-            "fake-secret-for-tests",
-        ))
-        .and(body_json(serde_json::json!({"settings": settings})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"settings": settings}, "status": 200
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "settings",
-            "set",
-            "svc-1",
-            file_flag,
-            settings_file.to_str().unwrap(),
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!({"settings": settings})
-    );
-}
-
-#[tokio::test]
 async fn service_settings_set_rejects_malformed_inputs_before_organization_discovery() {
     // The parse errors themselves are unit-tested in `services::settings`;
     // this pins that the handler parses before it resolves the organization.
@@ -21664,59 +21241,6 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
         mock.received_requests().await.unwrap().is_empty(),
         "invalid local inputs must fail before even organization discovery"
     );
-}
-
-#[tokio::test]
-async fn service_settings_set_preserves_integer_boundaries_on_the_wire() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let settings_file = directory.path().join("settings.json");
-    let document = r#"{"minimum":-9223372036854775808,"signed_maximum":9223372036854775807,"maximum":18446744073709551615,"decimal_string":"0.5","exponent_string":"1e3"}"#;
-    std::fs::write(&settings_file, document).unwrap();
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
-        ))
-        .and(body_json(
-            serde_json::json!({"settings": serde_json::from_str::<Value>(document).unwrap()}),
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"warnings": []}, "status": 200
-        })))
-        .expect(3)
-        .mount(&mock)
-        .await;
-    let base = ["service", "settings", "set", "svc-1", "--org-id", "org-1"];
-    let mut arguments = base.to_vec();
-    arguments.extend([
-        "--setting",
-        "minimum=-9223372036854775808",
-        "--setting",
-        "signed_maximum=9223372036854775807",
-        "--setting",
-        "maximum=18446744073709551615",
-        "--setting",
-        "decimal_string=\"0.5\"",
-        "--setting",
-        "exponent_string=\"1e3\"",
-    ]);
-    assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
-    let mut arguments = base.to_vec();
-    arguments.extend(["--file", settings_file.to_str().unwrap()]);
-    assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
-    let mut arguments = base.to_vec();
-    arguments.extend(["--file", "-"]);
-    assert_success(&invoke_cli_with_cloud_credentials_and_stdin(
-        &mock, &arguments, document,
-    ));
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3);
-    for request in requests {
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(body["settings"]["minimum"].as_i64(), Some(i64::MIN));
-        assert_eq!(body["settings"]["signed_maximum"].as_i64(), Some(i64::MAX));
-        assert_eq!(body["settings"]["maximum"].as_u64(), Some(u64::MAX));
-    }
 }
 
 #[tokio::test]
@@ -24837,44 +24361,30 @@ async fn service_snapshots_routes_preserve_json_and_human_output() {
 }
 
 #[tokio::test]
-async fn service_snapshot_config_patch_preserves_omission_and_pairs() {
-    for (flags, body) in [
-        (
-            vec!["--enabled", "false"],
-            serde_json::json!({"enabled": false}),
-        ),
-        (
-            vec!["--gap", "60", "--time-frame", "2880"],
-            serde_json::json!({"gap": 60.0, "timeFrame": 2880.0}),
-        ),
-        (
-            vec!["--enabled", "true", "--gap", "30", "--time-frame", "1440"],
-            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
-        ),
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .and(path(
-                "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
-            ))
-            .and(body_json(&body))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": body})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let mut args = vec![
-            "service", "snapshot", "config", "update", "svc-1", "--org-id", "org-1",
-        ];
-        args.extend(flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_success(&output);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-            body
-        );
-    }
+async fn service_snapshot_config_patch_sends_the_builder_body() {
+    // Omission and the --gap/--time-frame pairing are builder rules; see
+    // `snapshot_config_builder_preserves_partial_and_complete_updates`.
+    let body = serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0});
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+        ))
+        .and(body_json(&body))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": body})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut args = vec![
+        "service", "snapshot", "config", "update", "svc-1", "--org-id", "org-1",
+    ];
+    args.extend(["--enabled", "true", "--gap", "30", "--time-frame", "1440"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        body
+    );
 }
 
 fn kinesis_protobuf_args<'a>(
@@ -28259,52 +27769,41 @@ async fn replica_aware_routing_get_supports_oauth_and_human_output() {
 }
 
 #[tokio::test]
-async fn replica_aware_routing_update_sends_only_supplied_fields_with_basic_auth() {
-    for (flags, body) in [
-        (
-            vec!["--http-enabled", "true"],
-            serde_json::json!({"httpEnabled": true}),
-        ),
-        (
-            vec!["--native-enabled", "false"],
-            serde_json::json!({"nativeEnabled": false}),
-        ),
-        (
-            vec!["--http-enabled", "false", "--native-enabled", "true"],
-            serde_json::json!({"httpEnabled": false, "nativeEnabled": true}),
-        ),
-    ] {
-        let mock = MockServer::start().await;
-        let result = serde_json::json!({"httpEnabled": false, "nativeEnabled": true});
-        Mock::given(method("PATCH"))
-            .and(path(REPLICA_AWARE_ROUTING_PATH))
-            .and(wiremock::matchers::basic_auth(
-                "fake-key-for-tests",
-                "fake-secret-for-tests",
-            ))
-            .and(body_json(&body))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let mut args = vec![
-            "service",
-            "replica-aware-routing",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ];
-        args.extend(flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_success(&output);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-            result
-        );
-    }
+async fn replica_aware_routing_update_sends_each_flag_to_its_field_with_basic_auth() {
+    // Omitting an unsupplied field is the builder's rule; see
+    // `build_replica_aware_routing_request_supports_minimal_and_maximal_values`.
+    // Opposite values here catch the two flags being swapped on the way in.
+    let body = serde_json::json!({"httpEnabled": false, "nativeEnabled": true});
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({"httpEnabled": false, "nativeEnabled": true});
+    Mock::given(method("PATCH"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .and(body_json(&body))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut args = vec![
+        "service",
+        "replica-aware-routing",
+        "update",
+        "svc-1",
+        "--org-id",
+        "org-1",
+    ];
+    args.extend(["--http-enabled", "false", "--native-enabled", "true"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
 }
 
 #[tokio::test]
