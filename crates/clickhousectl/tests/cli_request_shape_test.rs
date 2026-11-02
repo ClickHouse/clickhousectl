@@ -2139,6 +2139,74 @@ async fn service_start_and_stop_human_output_reports_acceptance_and_returned_sta
     }
 }
 
+/// `service scale` wiring: one PATCH to the service's replicaScaling route,
+/// carrying every flag in its own field; JSON mode prints the response.
+#[tokio::test]
+async fn service_scale_sends_the_builder_body_to_the_replica_scaling_route() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "name": "demo",
+        "autoscalingMode": "vertical",
+        "minReplicaMemoryGb": 8.0,
+        "maxReplicaMemoryGb": 32.0,
+        "numReplicas": 3,
+    });
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaScaling",
+        ))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result, "status": 200, "requestId": "stub-service-scale",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "scale",
+            "svc-1",
+            "--autoscaling-mode",
+            "vertical",
+            "--min-replica-memory-gb",
+            "8",
+            "--max-replica-memory-gb",
+            "32",
+            "--num-replicas",
+            "3",
+            "--idle-scaling",
+            "false",
+            "--idle-timeout-minutes",
+            "15",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].body_json::<Value>().unwrap(),
+        serde_json::json!({
+            "autoscalingMode": "vertical",
+            "minReplicaMemoryGb": 8.0,
+            "maxReplicaMemoryGb": 32.0,
+            "numReplicas": 3,
+            "idleScaling": false,
+            "idleTimeoutMinutes": 15.0,
+        })
+    );
+}
+
 #[tokio::test]
 async fn service_start_and_stop_preserve_json_responses() {
     for (command, returned_state) in [("start", "running"), ("stop", "stopped")] {
