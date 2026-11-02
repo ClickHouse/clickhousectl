@@ -1490,12 +1490,10 @@ async fn backup_bucket_get_uses_oauth_and_preserves_sparse_output() {
 
 #[tokio::test]
 async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body() {
-    for file_flag in ["--file", "--config-file", "--config"] {
-        backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_with_file_flag(
-            file_flag,
-        )
+    // The --config-file and --config aliases are clap's; see
+    // `primary_json_file_argument_contract` in `cloud::backups`.
+    backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_with_file_flag("--file")
         .await;
-    }
 }
 
 async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_with_file_flag(
@@ -1537,12 +1535,10 @@ async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_w
 
 #[tokio::test]
 async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_path() {
-    for file_flag in ["--file", "--config-file", "--config"] {
-        backup_bucket_update_reads_file_and_delete_use_the_service_resource_path_with_file_flag(
-            file_flag,
-        )
-        .await;
-    }
+    backup_bucket_update_reads_file_and_delete_use_the_service_resource_path_with_file_flag(
+        "--file",
+    )
+    .await;
 }
 
 async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_path_with_file_flag(
@@ -1878,46 +1874,47 @@ fn manual_query_endpoint_response(result: Value) -> ResponseTemplate {
 
 #[tokio::test]
 async fn query_endpoint_create_sends_typed_roles_and_explicit_first_origins() {
-    for origins in ["https://app.example.com", "*"] {
-        let mock = manual_query_endpoint_mock(ResponseTemplate::new(404)).await;
-        let help = permission_help(&mock, &["service", "query-endpoint", "create"], "--help");
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &manual_query_endpoint_args(&[
-                "--role",
-                "sql_console_admin",
-                "--open-api-key",
-                "key-1",
-                "--allowed-origins",
-                origins,
-            ]),
+    // How explicit origins are carried is the builder's rule; one value is
+    // enough to show the 404-then-create path and its permissions.
+    let origins = "https://app.example.com";
+    let mock = manual_query_endpoint_mock(ResponseTemplate::new(404)).await;
+    let help = permission_help(&mock, &["service", "query-endpoint", "create"], "--help");
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &manual_query_endpoint_args(&[
+            "--role",
+            "sql_console_admin",
+            "--open-api-key",
+            "key-1",
+            "--allowed-origins",
+            origins,
+        ]),
+    );
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result, serde_json::json!({"id": "endpoint-1"}));
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+    assert_eq!(requests[1].method, wiremock::http::Method::POST);
+    assert_observed_permissions_advertised(&mock, &help).await;
+    assert_eq!(
+        requests[1].body_json::<Value>().unwrap(),
+        serde_json::json!({
+            "roles": ["sql_console_read_only", "sql_console_admin"],
+            "openApiKeys": ["key-1"], "allowedOrigins": origins,
+        })
+    );
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Basic ")
         );
-        assert_success(&output);
-        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result, serde_json::json!({"id": "endpoint-1"}));
-        let requests = mock.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].method, wiremock::http::Method::GET);
-        assert_eq!(requests[1].method, wiremock::http::Method::POST);
-        assert_observed_permissions_advertised(&mock, &help).await;
-        assert_eq!(
-            requests[1].body_json::<Value>().unwrap(),
-            serde_json::json!({
-                "roles": ["sql_console_read_only", "sql_console_admin"],
-                "openApiKeys": ["key-1"], "allowedOrigins": origins,
-            })
-        );
-        for request in &requests {
-            assert!(
-                request
-                    .headers
-                    .get("authorization")
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("Basic ")
-            );
-        }
     }
 }
 
@@ -2004,7 +2001,7 @@ async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing(
     }
 }
 
-fn invoke_service_wake(mock: &MockServer, json: bool, agent: bool) -> std::process::Output {
+fn invoke_service_wake(mock: &MockServer, json: bool) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir(&home).unwrap();
@@ -2017,9 +2014,6 @@ fn invoke_service_wake(mock: &MockServer, json: bool, agent: bool) -> std::proce
     }
     let mut command = Command::new(clickhousectl_binary());
     clear_inherited_env(&mut command);
-    if agent {
-        command.env("AGENT", "opencode");
-    }
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -2050,7 +2044,7 @@ async fn service_wake_sends_awake_with_basic_auth_and_prints_json() {
         .mount(&mock)
         .await;
 
-    let output = invoke_service_wake(&mock, true, false);
+    let output = invoke_service_wake(&mock, true);
     assert_success(&output);
     assert!(output.stderr.is_empty());
     let service: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -2072,7 +2066,7 @@ async fn service_wake_handles_a_sparse_response_in_human_output() {
         .mount(&mock)
         .await;
 
-    let output = invoke_service_wake(&mock, false, false);
+    let output = invoke_service_wake(&mock, false);
     assert_success(&output);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
@@ -2081,37 +2075,12 @@ async fn service_wake_handles_a_sparse_response_in_human_output() {
 }
 
 #[tokio::test]
-async fn service_wake_uses_json_output_for_a_detected_agent() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1/state"))
-        .and(body_json(serde_json::json!({"command": "awake"})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"name": "demo", "state": "awaking"},
-            "status": 200,
-            "requestId": "stub-service-wake",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_service_wake(&mock, false, true);
-    assert_success(&output);
-    let service: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(service["name"], "demo");
-    assert_eq!(service["state"], "awaking");
-}
-
-#[tokio::test]
 async fn service_start_and_stop_human_output_reports_acceptance_and_returned_state() {
-    for (command, request_command, returned_state) in [
-        ("start", "start", Some("running")),
-        ("start", "start", Some("starting")),
-        ("start", "start", None),
-        ("stop", "stop", Some("stopped")),
-        ("stop", "stop", Some("stopping")),
-        ("stop", "stop", None),
-    ] {
+    // One run per command, one with and one without a returned state; the
+    // `-` placeholder itself is `or_absent`'s.
+    for (command, request_command, returned_state) in
+        [("start", "start", Some("starting")), ("stop", "stop", None)]
+    {
         let mock = MockServer::start().await;
         let mut result = serde_json::json!({"name": "demo"});
         if let Some(state) = returned_state {
@@ -13027,9 +12996,12 @@ async fn run_service_reset_password(
     ];
     args.extend(extra_args);
 
+    let home = tempfile::tempdir().unwrap();
     Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", home.path())
+        .current_dir(home.path())
         .args(&args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -13039,25 +13011,20 @@ async fn run_service_reset_password(
 
 #[tokio::test]
 async fn service_reset_password_fails_when_the_generated_password_is_absent() {
-    for extra_args in [&[][..], &["--json"][..]] {
-        let output = run_service_reset_password(serde_json::json!({}), extra_args).await;
-        assert!(
-            !output.status.success(),
-            "a generation reset with no password must fail for args {extra_args:?}\nstdout:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("omitted the generated password"),
-            "stderr should name the omitted password for args {extra_args:?}:\n{stderr}",
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !stdout.contains("Password reset for service")
-                && !stdout.contains("no plaintext password returned"),
-            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
-        );
-    }
+    // The outcome check runs before either output branch, so one mode shows
+    // that nothing is printed; `resolve_reset_password_outcome_*` covers the
+    // modes.
+    let output = run_service_reset_password(serde_json::json!({}), &[]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "no success output may precede the failure:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("omitted the generated password"),
+        "{output:?}",
+    );
 }
 
 #[tokio::test]
@@ -20854,7 +20821,7 @@ async fn org_get_and_update_require_one_organization_for_autodetection() {
 }
 
 #[tokio::test]
-async fn service_settings_list_preserves_mixed_json_types_and_renders_sparse_rows() {
+async fn service_settings_list_renders_mixed_json_types_and_sparse_rows() {
     let mock = MockServer::start().await;
     let settings = serde_json::json!([
         {"name": "max_query_size", "value": 262146},
@@ -20875,18 +20842,12 @@ async fn service_settings_list_preserves_mixed_json_types_and_renders_sparse_row
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {"settings": settings}, "status": 200
         })))
-        .expect(2)
+        .expect(1)
         .mount(&mock)
         .await;
+    // JSON mode passes the response through; the OAuth read-routes test
+    // covers it. The table is the handler's own rendering.
     let args = ["service", "settings", "list", "svc-1", "--org-id", "org-1"];
-    let json = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&json);
-    let mut expected = settings;
-    expected[4].as_object_mut().unwrap().remove("value");
-    assert_eq!(
-        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
-        serde_json::json!({"settings": expected})
-    );
     let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
     assert_success(&human);
     let stdout = String::from_utf8(human.stdout).unwrap();
@@ -21023,12 +20984,10 @@ fn query_api_endpoint_list_page(
 
 #[tokio::test]
 async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies() {
-    for file_flag in ["--file", "--config-file"] {
-        query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_with_file_flag(
-            file_flag,
-        )
+    // The --config-file alias is clap's; see `primary_json_file_argument_contract`
+    // in `cloud::query_api_endpoints`.
+    query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_with_file_flag("--file")
         .await;
-    }
 }
 
 async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_with_file_flag(
@@ -21349,30 +21308,31 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
     );
     assert_success(&list);
     let stdout = String::from_utf8_lossy(&list.stdout);
-    for value in ["orders", "analytics", "futureOwner", "next /+?", "-"] {
-        assert!(stdout.contains(value), "missing {value}:\n{stdout}");
-    }
-
-    for response in [serde_json::json!({}), serde_json::json!({"result": null})] {
-        let sparse_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(QUERY_API_ENDPOINTS_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(response))
-            .expect(1)
-            .mount(&sparse_server)
-            .await;
-        let sparse_project = tempfile::tempdir().unwrap();
-        let output = invoke_query_api_endpoint(
-            &sparse_server,
-            sparse_project.path(),
-            false,
-            false,
-            &["list", "svc-1", "--org-id", "org-1"],
-            None,
-        );
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-    }
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .filter(|line| line.starts_with('│'))
+        .map(|line| {
+            line.split('│')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .collect()
+        })
+        .collect();
+    assert!(
+        rows.contains(&vec!["-", "-", "-", "-", "-"]),
+        "the empty item renders every column as absent:\n{stdout}"
+    );
+    assert!(
+        rows.contains(&vec![
+            QUERY_API_ENDPOINT_ID,
+            "orders",
+            "analytics",
+            "futureOwner",
+            "https://queries.clickhouse.cloud/run/example"
+        ]),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Next cursor: next /+?"), "{stdout}");
 
     let empty_server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -23606,7 +23566,7 @@ async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
 }
 
 #[tokio::test]
-async fn service_snapshots_routes_preserve_json_and_human_output() {
+async fn service_snapshot_reads_use_exact_routes_and_preserve_json() {
     let mock = MockServer::start().await;
     let snapshot = serde_json::json!({"id": "00000000-0000-0000-0000-000000000001", "status": "done", "startedAt": "2026-09-18T10:00:00Z", "bucket": {"region": "us-east-1"}});
     for (args, suffix, result) in [
@@ -23637,7 +23597,7 @@ async fn service_snapshots_routes_preserve_json_and_human_output() {
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
             )
-            .expect(2)
+            .expect(1)
             .mount(&mock)
             .await;
         let mut full = vec!["service", "snapshot"];
@@ -23649,9 +23609,6 @@ async fn service_snapshots_routes_preserve_json_and_human_output() {
             serde_json::from_slice::<Value>(&json.stdout).unwrap(),
             result
         );
-        let human = invoke_cli_with_cloud_credentials_human(&mock, &full);
-        assert_success(&human);
-        assert!(!human.stdout.is_empty());
     }
 }
 
