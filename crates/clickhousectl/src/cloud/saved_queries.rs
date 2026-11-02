@@ -532,6 +532,19 @@ mod tests {
     }
 
     #[test]
+    fn read_sql_reports_an_unreadable_file_as_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("does-not-exist.sql");
+        let missing = missing.to_str().unwrap();
+        let mut input = body("default", &[]);
+        input.sql_file = Some(missing.to_owned());
+        let error = read_sql(&input).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert!(error.message.contains(missing), "{}", error.message);
+        assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
+    }
+
+    #[test]
     fn saved_query_builder_counts_sql_characters() {
         let ok = "é".repeat(MAX_SQL_CHARS);
         assert!(build_saved_query_request("q".into(), ok, body("default", &[])).is_ok());

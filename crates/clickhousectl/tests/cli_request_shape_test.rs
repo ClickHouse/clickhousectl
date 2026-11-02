@@ -1476,31 +1476,6 @@ async fn backup_list_uses_utc_created_times_only_in_human_output() {
     );
 }
 
-#[tokio::test]
-async fn backup_config_rejects_incompatible_period_before_any_request() {
-    let mock = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-period-hours",
-            "12",
-            "--backup-start-time",
-            "02:00",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("--backup-period-hours must be 24 or 48 when --backup-start-time is set")
-    );
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 // ── Bring-your-own backup buckets (issue #576) ─────────────────────────────
 
 const BACKUP_BUCKET_PATH: &str = "/v1/organizations/org-1/services/svc-1/backupBucket";
@@ -1683,49 +1658,6 @@ async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_pat
 }
 
 #[tokio::test]
-async fn backup_bucket_invalid_stdin_unknown_provider_and_field_fail_before_http() {
-    let mock = MockServer::start().await;
-
-    for input in [
-        b"not JSON".as_slice(),
-        br#"{"bucketProvider":"S3"}"#.as_slice(),
-        br#"{"bucketProvider":"AZURE","containerName":"backups","connectionString":"secret","bucketPath":"s3://wrong"}"#.as_slice(),
-    ] {
-        let url = mock.uri();
-        let mut child = Command::new(clickhousectl_binary())
-            .env("DO_NOT_TRACK", "1")
-            .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
-            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-            .args([
-                "cloud",
-                "--url",
-                &url,
-                "--json",
-                "backup",
-                "bucket",
-                "create",
-                "svc-1",
-                "--org-id",
-                "org-1",
-                "--file",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(input).unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn backup_bucket_api_error_is_reported() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -1842,25 +1774,6 @@ fn backup_config_update_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     ];
     args.extend_from_slice(extra);
     args
-}
-
-#[tokio::test]
-async fn backup_config_update_without_changes_is_usage_error_before_auth_or_http() {
-    let mock = MockServer::start().await;
-    let args = [
-        "service",
-        "backup-config",
-        "update",
-        "svc-1",
-        "--org-id",
-        "org-1",
-    ]
-    .map(String::from);
-
-    let output = invoke_cli_without_cloud_credentials(&mock, &args);
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -2018,34 +1931,6 @@ async fn backup_config_clear_start_time_travels_with_an_incompatible_period() {
         printed.get("backupStartTime").is_none(),
         "the cleared start time must be absent from the response: {printed}"
     );
-}
-
-#[tokio::test]
-async fn backup_config_rejects_setting_and_clearing_the_start_time_together() {
-    let mock = MockServer::start().await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--backup-start-time",
-            "02:00",
-            "--clear-backup-start-time",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
-        "unexpected stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── Concrete Cloud error routing (issue #233) ──────────────────────────────
@@ -2331,28 +2216,6 @@ async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing(
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, wiremock::http::Method::GET);
     }
-}
-
-#[tokio::test]
-async fn query_endpoint_create_omitted_role_fails_before_contacting_api() {
-    let mock = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "query-endpoint",
-            "create",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--open-api-key",
-            "new-key",
-            "--allowed-origins",
-            "*",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -2889,49 +2752,6 @@ async fn scaling_schedule_delete_uses_the_exact_route_and_preserves_metadata() {
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].url.query().is_none());
-}
-
-#[tokio::test]
-async fn scaling_schedule_set_rejects_bad_input_before_http() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    for (name, body, expected) in [
-        (
-            "unknown.json",
-            r#"{"entries":[{"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"idleScalng":true}]}"#,
-            "idleScalng",
-        ),
-        (
-            "time.json",
-            r#"{"entries":[{"name":"x","weekdays":[1],"startHourUtc":24,"endHourUtc":9}]}"#,
-            "startHourUtc must be between 0 and 23",
-        ),
-        ("syntax.json", r#"{"entries":["#, "failed to parse config"),
-    ] {
-        let file = directory.path().join(name);
-        std::fs::write(&file, body).unwrap();
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "service",
-                "scaling-schedule",
-                "set",
-                "svc-1",
-                "--file",
-                file.to_str().unwrap(),
-                "--org-id",
-                "org-1",
-            ],
-        );
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(expected),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -6876,39 +6696,6 @@ async fn org_usage_auto_detects_the_only_organization() {
 }
 
 #[tokio::test]
-async fn tag_filters_reject_malformed_values_before_auth_or_http() {
-    let mock = MockServer::start().await;
-    let dir = tempfile::tempdir().unwrap();
-    for mut args in [
-        vec!["service", "list"],
-        vec![
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ],
-    ] {
-        args.extend(["--filter", "tag:env=prod", "--filter", "garbage"]);
-        let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
-        let output = command
-            .env("DO_NOT_TRACK", "1")
-            .env("HOME", dir.path())
-            .current_dir(dir.path())
-            .args(["cloud", "--url", &mock.uri(), "--json"])
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("tag:KEY"));
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn tag_filters_preserve_repeated_equality_and_existence_filters_on_wire() {
     let mock = MockServer::start().await;
     for endpoint in ["services", "usageCost"] {
@@ -8436,75 +8223,21 @@ async fn service_query_agent_json_uses_json_each_row_unless_format_is_explicit()
 }
 
 #[tokio::test]
-async fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
-    let control = MockServer::start().await;
-    let url = control.uri();
-    let cases = [
-        vec![
-            "cloud",
-            "--url",
-            &url,
-            "--json",
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--query",
-            "SELECT 1",
-            "--format",
-            "CSV",
-        ],
-        vec![
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--query",
-            "SELECT 1",
-            "--json",
-            "--format",
-            "CSV",
-        ],
-    ];
-
-    for args in cases {
-        let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
-        let output = command
-            .env("DO_NOT_TRACK", "1")
-            .env("CLICKHOUSE_CLOUD_API_KEY", "unused-key")
-            .env("CLICKHOUSE_CLOUD_API_SECRET", "unused-secret")
-            .args(args)
-            .output()
-            .expect("failed to spawn clickhousectl");
-
-        assert_eq!(output.status.code(), Some(2));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("--json"), "{stderr}");
-        assert!(stderr.contains("--format"), "{stderr}");
-        assert!(
-            stderr.contains("clickhousectl cloud service query"),
-            "{stderr}"
-        );
-    }
-
-    assert!(control.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn service_query_requires_exactly_one_selector_before_network_access() {
+async fn service_query_runs_with_each_selector_form() {
     let control = start_mock_control_plane_with_service().await;
     let query_host = start_mock_query_host().await;
     let dir = tempfile::tempdir().unwrap();
     let home_dir = dir.path().join("home");
     std::fs::create_dir(&home_dir).unwrap();
     let url = control.uri();
-    let missing_query_file = dir.path().join("must-not-be-read.sql");
 
-    let invoke = |selector: &[&str], query_input: &[&str], authenticated: bool| {
+    // Selector validation (exactly one of --name, --id or the positional ID)
+    // is clap's; see `rejects_service_query_without_name_or_id`.
+    for selector in [
+        vec!["--name", "demo"],
+        vec!["--id", QUERY_TEST_SERVICE_ID],
+        vec![QUERY_TEST_SERVICE_ID],
+    ] {
         let mut args = vec![
             "cloud",
             "--url",
@@ -8513,60 +8246,23 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
             "query",
             "--org-id",
             "org-1",
+            "--query",
+            "SELECT 1",
         ];
-        args.extend_from_slice(query_input);
-        args.extend_from_slice(selector);
-
+        args.extend_from_slice(&selector);
         let mut command = Command::new(clickhousectl_binary());
         clear_inherited_env(&mut command);
-        command
+        let output = command
             .env("DO_NOT_TRACK", "1")
             .env("HOME", &home_dir)
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
             .current_dir(dir.path())
             .stdin(Stdio::null())
-            .args(args);
-        if authenticated {
-            command
-                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests");
-        }
-        command.output().expect("failed to spawn clickhousectl")
-    };
-
-    let missing = invoke(
-        &[],
-        &["--queries-file", missing_query_file.to_str().unwrap()],
-        false,
-    );
-    assert_eq!(missing.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&missing.stderr);
-    assert!(stderr.contains("--name <NAME>"), "{stderr}");
-    assert!(stderr.contains("--id <ID>"), "{stderr}");
-    assert!(
-        !stderr.contains("must-not-be-read.sql"),
-        "query input was read before selector validation: {stderr}"
-    );
-
-    let both = invoke(
-        &["--name", "demo", "--id", QUERY_TEST_SERVICE_ID],
-        &["--query", "SELECT 1"],
-        false,
-    );
-    assert_eq!(both.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&both.stderr);
-    assert!(stderr.contains("--name <NAME>"), "{stderr}");
-    assert!(stderr.contains("--id <ID>"), "{stderr}");
-
-    assert!(control.received_requests().await.unwrap().is_empty());
-    assert!(query_host.received_requests().await.unwrap().is_empty());
-
-    for selector in [
-        vec!["--name", "demo"],
-        vec!["--id", QUERY_TEST_SERVICE_ID],
-        vec![QUERY_TEST_SERVICE_ID],
-    ] {
-        let output = invoke(&selector, &["--query", "SELECT 1"], true);
+            .args(args)
+            .output()
+            .expect("failed to spawn clickhousectl");
         assert_success(&output);
         assert_eq!(output.stdout, b"1\n");
     }
@@ -8650,42 +8346,6 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
         })
         .collect();
     assert_eq!(sql, ["SELECT 1", "SELECT 2\n", "SELECT 3\n"]);
-}
-
-#[tokio::test]
-async fn service_query_rejects_conflicting_sql_sources_before_file_or_network_access() {
-    let control = MockServer::start().await;
-    let dir = tempfile::tempdir().unwrap();
-    let missing_query_file = dir.path().join("must-not-be-read.sql");
-    let url = control.uri();
-
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .current_dir(dir.path())
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--query",
-            "SELECT 1",
-            "--queries-file",
-            missing_query_file.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to spawn clickhousectl");
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--query <QUERY>"), "{stderr}");
-    assert!(stderr.contains("--queries-file <QUERIES_FILE>"), "{stderr}");
-    assert!(!stderr.contains("No such file or directory"), "{stderr}");
-    assert!(control.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -14277,31 +13937,6 @@ async fn service_update_skips_get_when_no_removals_requested() {
     );
 }
 
-#[tokio::test]
-async fn service_update_rejects_mixed_tag_operations_before_auth_or_http() {
-    let mock = MockServer::start().await;
-
-    for args in [
-        ["--add-tag", "env=prod", "--remove-tag", "env=prod"],
-        ["--remove-tag", "env=staging", "--add-tag", "env=prod"],
-        ["--add-tag", "env=prod", "--remove-tag", "team=analytics"],
-        ["--remove-tag", "team", "--add-tag", "env"],
-    ] {
-        let mut command = vec!["service", "update", "svc-1"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>();
-        command.extend(args.into_iter().map(String::from));
-
-        let output = invoke_cli_without_cloud_credentials(&mock, &command);
-
-        assert_eq!(output.status.code(), Some(2), "{command:?}");
-        assert!(output.stdout.is_empty(), "{command:?}");
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 // ── Private endpoint ID format validation (issue #611) ─────────────────────
 
 #[tokio::test]
@@ -14338,116 +13973,6 @@ async fn private_endpoint_create_sends_well_formed_endpoint_id() {
     let requests = mock.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["id"], "vpce-0123456789abcdef0");
-}
-
-/// A malformed ID must fail as a clap usage error (exit 2) before any request
-/// is sent: registering one is org-wide and has to be unpicked by hand.
-#[tokio::test]
-async fn private_endpoint_create_rejects_malformed_endpoint_id_without_calling_api() {
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
-        ))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "private-endpoint",
-            "create",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--endpoint-id",
-            "vpce-bogus",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("invalid AWS VPC endpoint ID 'vpce-bogus'"),
-        "stderr should explain the format: {stderr}"
-    );
-    assert!(
-        mock.received_requests().await.unwrap().is_empty(),
-        "a rejected endpoint ID must not reach the API"
-    );
-}
-
-#[tokio::test]
-async fn service_update_rejects_malformed_added_private_endpoint_id_without_calling_api() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--add-private-endpoint-id",
-            "vpce-bogus",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-/// GCP (numeric PSC connection ID) and Azure (Resource ID) formats are not
-/// AWS-shaped and must still be forwarded verbatim.
-#[tokio::test]
-async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
-    for endpoint_id in [
-        "102600141743718403",
-        "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe-demo",
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(
-                "/v1/organizations/org-1/services/svc-1/privateEndpoint",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": { "id": endpoint_id, "description": "" },
-                "status": 200,
-                "requestId": "stub-private-endpoint-create",
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "service",
-                "private-endpoint",
-                "create",
-                "svc-1",
-                "--org-id",
-                "org-1",
-                "--endpoint-id",
-                endpoint_id,
-            ],
-        );
-
-        assert_success(&output);
-        let requests = mock.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body["id"], endpoint_id);
-    }
 }
 
 // ── `clickpipe scale` (issue #605) ─────────────────────────────────────────
@@ -16559,19 +16084,13 @@ async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
 }
 
 #[tokio::test]
-async fn invalid_allowlist_sources_fail_before_service_or_key_requests() {
-    for args in [
-        vec![
-            "service",
-            "create",
-            "--name",
-            "invalid-service",
-            "--ip-allow",
-            "2001:db8::/129=invalid",
-            "--org-id",
-            "org-1",
-        ],
-        vec![
+async fn invalid_allowlist_source_fails_before_key_requests() {
+    // The service create/update forms share `parse_ip_access_entries`, which
+    // `parse_ip_access_entries_rejects_invalid_sources` covers.
+    let server = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &server,
+        &[
             "key",
             "update",
             "key-1",
@@ -16580,26 +16099,14 @@ async fn invalid_allowlist_sources_fail_before_service_or_key_requests() {
             "--org-id",
             "org-1",
         ],
-        vec![
-            "service",
-            "update",
-            "svc-1",
-            "--remove-ip-allow",
-            "2001:db8::/129=invalid",
-            "--org-id",
-            "org-1",
-        ],
-    ] {
-        let server = MockServer::start().await;
-        let output = invoke_cli_with_cloud_credentials(&server, &args);
-        assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("invalid IP allowlist entry"),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(server.received_requests().await.unwrap().is_empty());
-    }
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid IP allowlist entry"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 // API key nullable expiry (#698) and explicit list clearing (#597).
@@ -20394,65 +19901,6 @@ async fn service_profile_list_byoc_only_sends_no_region() {
 }
 
 #[tokio::test]
-async fn service_profile_list_requires_region_or_byoc_before_credentials_or_network() {
-    let mock = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    for flags in [vec![], vec!["--region"], vec!["--byoc-id"]] {
-        let output = Command::new(clickhousectl_binary())
-            .isolated_env()
-            .env("DO_NOT_TRACK", "1")
-            .env("HOME", project.path())
-            .current_dir(project.path())
-            .args(["cloud", "--url", &mock.uri(), "service", "profile", "list"])
-            .args(flags)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn service_profile_list_leaves_region_byoc_validation_to_cloud() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(SERVICE_PROFILES_PATH))
-        .and(query_param("region_id", "eu-west-1"))
-        .and(query_param("byoc_id", "byoc-1"))
-        .respond_with(ResponseTemplate::new(400).set_body_json(
-            serde_json::json!({"error": "region does not match BYOC infrastructure"}),
-        ))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "profile",
-            "list",
-            "--region",
-            "eu-west-1",
-            "--byoc-id",
-            "byoc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let error = cloud_runtime_error(&output);
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("region does not match BYOC infrastructure")
-    );
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url.query_pairs().count(), 2);
-}
-
-#[tokio::test]
 async fn service_profile_list_renders_sparse_unknown_profiles() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -21521,40 +20969,6 @@ async fn service_create_reads_backup_encryption_config_from_stdin() {
 }
 
 #[tokio::test]
-async fn service_create_rejects_bad_backup_encryption_config_before_any_request() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("missing.json");
-    for stdin in ["[1, 2, 3]", "\"just a string\"", "{not json"] {
-        let mut args = BACKUP_RESTORE_ARGS.to_vec();
-        args.extend(["-", "--org-id", "org-1"]);
-        let output = invoke_cli_with_cloud_credentials_and_stdin(&mock, &args, stdin);
-        assert_eq!(output.status.code(), Some(2), "{stdin}");
-    }
-    let mut args = BACKUP_RESTORE_ARGS.to_vec();
-    args.extend([missing.to_str().unwrap(), "--org-id", "org-1"]);
-    let output = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_eq!(output.status.code(), Some(2));
-
-    // Clap requires --backup-id alongside the config.
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "create",
-            "--name",
-            "restored",
-            "--backup-encryption-config",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -21781,15 +21195,7 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
 }
 
 #[tokio::test]
-async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http() {
-    for file_flag in ["--file", "--settings-file"] {
-        service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http_with_file_flag(file_flag).await;
-    }
-}
-
-async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http_with_file_flag(
-    file_flag: &str,
-) {
+async fn service_settings_set_reads_a_map_from_stdin() {
     let mock = MockServer::start().await;
     let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
     Mock::given(method("PATCH"))
@@ -21813,8 +21219,8 @@ async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .args([
-            "cloud", "--url", &url, "--json", "service", "settings", "set", "svc-1", file_flag,
-            "-", "--org-id", "org-1",
+            "cloud", "--url", &url, "--json", "service", "settings", "set", "svc-1", "--file", "-",
+            "--org-id", "org-1",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -21829,36 +21235,6 @@ async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before
         .unwrap();
     let valid = child.wait_with_output().unwrap();
     assert_success(&valid);
-
-    let before_bad = mock.received_requests().await.unwrap().len();
-    let mut bad_child = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .args([
-            "cloud", "--url", &url, "service", "settings", "set", "svc-1", file_flag, "-",
-            "--org-id", "org-1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    bad_child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"{not-json")
-        .unwrap();
-    let bad = bad_child.wait_with_output().unwrap();
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("invalid JSON in stdin"));
-    assert_eq!(
-        mock.received_requests().await.unwrap().len(),
-        before_bad,
-        "invalid stdin must fail before HTTP"
-    );
 }
 
 #[tokio::test]
@@ -22265,48 +21641,25 @@ async fn service_settings_set_file_preserves_json_types_in_object_body_with_file
 
 #[tokio::test]
 async fn service_settings_set_rejects_malformed_inputs_before_organization_discovery() {
+    // The parse errors themselves are unit-tested in `services::settings`;
+    // this pins that the handler parses before it resolves the organization.
     let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let settings_file = directory.path().join("settings.json");
-    for invalid in [
-        "{broken",
-        "[]",
-        "null",
-        "42",
-        "{}",
-        r#"{"settings":{"compatibility":"26.2"}}"#,
-    ] {
-        std::fs::write(&settings_file, invalid).unwrap();
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "service",
-                "settings",
-                "set",
-                "svc-1",
-                "--file",
-                settings_file.to_str().unwrap(),
-            ],
-        );
-        assert_eq!(output.status.code(), Some(1), "invalid file: {invalid}");
-    }
-    for assignments in [
-        vec!["compatibility"],
-        vec!["=1"],
-        vec!["compatibility=unquoted"],
-        vec!["max_query_size=1", "max_query_size=2"],
-    ] {
-        let mut arguments = vec!["service", "settings", "set", "svc-1"];
-        for assignment in &assignments {
-            arguments.extend(["--setting", assignment]);
-        }
-        let output = invoke_cli_with_cloud_credentials(&mock, &arguments);
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "invalid assignments: {assignments:?}"
-        );
-    }
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "value=1e3",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("numeric settings must be integers"),
+        "{output:?}"
+    );
     assert!(
         mock.received_requests().await.unwrap().is_empty(),
         "invalid local inputs must fail before even organization discovery"
@@ -22364,97 +21717,6 @@ async fn service_settings_set_preserves_integer_boundaries_on_the_wire() {
         assert_eq!(body["settings"]["signed_maximum"].as_i64(), Some(i64::MAX));
         assert_eq!(body["settings"]["maximum"].as_u64(), Some(u64::MAX));
     }
-}
-
-#[tokio::test]
-async fn service_settings_set_rejects_inexact_numbers_before_organization_discovery() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let settings_file = directory.path().join("settings.json");
-    for literal in [
-        "18446744073709551616",
-        "99999999999999999999",
-        "-9223372036854775809",
-        "1e3",
-        "1E3",
-        "1e-3",
-        "1.5",
-        "18446744073709551615.0",
-        "[99999999999999999999]",
-        r#"{"nested":1e3}"#,
-    ] {
-        let assignment = format!("value={literal}");
-        let document = format!("{{\"value\":{literal}}}");
-        std::fs::write(&settings_file, &document).unwrap();
-        let outputs = [
-            invoke_cli_with_cloud_credentials(
-                &mock,
-                &[
-                    "service",
-                    "settings",
-                    "set",
-                    "svc-1",
-                    "--setting",
-                    &assignment,
-                ],
-            ),
-            invoke_cli_with_cloud_credentials(
-                &mock,
-                &[
-                    "service",
-                    "settings",
-                    "set",
-                    "svc-1",
-                    "--file",
-                    settings_file.to_str().unwrap(),
-                ],
-            ),
-            invoke_cli_with_cloud_credentials_and_stdin(
-                &mock,
-                &["service", "settings", "set", "svc-1", "--file", "-"],
-                &document,
-            ),
-        ];
-        for output in outputs {
-            assert_eq!(output.status.code(), Some(1), "{literal}: {output:?}");
-            assert!(
-                String::from_utf8_lossy(&output.stderr)
-                    .contains("numeric settings must be integers"),
-                "{literal}: {output:?}"
-            );
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn service_settings_set_names_unreadable_files_before_organization_discovery() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let settings_file = directory.path().join("missing-settings.json");
-    // Exercise both opening a missing file and reading invalid UTF-8.
-    for contents in [None, Some([0xff])] {
-        if let Some(contents) = contents {
-            std::fs::write(&settings_file, contents).unwrap();
-        }
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "service",
-                "settings",
-                "set",
-                "svc-1",
-                "--file",
-                settings_file.to_str().unwrap(),
-            ],
-        );
-        assert_eq!(output.status.code(), Some(1));
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(settings_file.to_str().unwrap()),
-            "{output:?}"
-        );
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -23242,64 +22504,6 @@ async fn query_api_endpoint_delete_has_a_typed_human_confirmation() {
 }
 
 #[tokio::test]
-async fn query_api_endpoint_invalid_configs_fail_before_org_discovery() {
-    let server = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    let valid = query_api_endpoint_config();
-    let cases = [
-        ("malformed.json", "{".to_string(), "parse"),
-        (
-            "unknown.json",
-            {
-                let mut body = valid.clone();
-                body["typo"] = serde_json::json!(true);
-                body.to_string()
-            },
-            "typo",
-        ),
-        ("missing.json", serde_json::json!({}).to_string(), "name"),
-    ];
-    for (file_name, body, expected) in cases {
-        let file = project.path().join(file_name);
-        std::fs::write(&file, body).unwrap();
-        let output = invoke_query_api_endpoint(
-            &server,
-            project.path(),
-            false,
-            true,
-            &["create", "svc-1", "--file", file.to_str().unwrap()],
-            None,
-        );
-        assert_eq!(output.status.code(), Some(1), "{file_name}");
-        assert!(output.stdout.is_empty(), "{file_name}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected), "{file_name}: {stderr}");
-    }
-    let missing_file = project.path().join("does-not-exist.json");
-    let output = invoke_query_api_endpoint(
-        &server,
-        project.path(),
-        false,
-        true,
-        &[
-            "update",
-            "svc-1",
-            QUERY_API_ENDPOINT_ID,
-            "--file",
-            missing_file.to_str().unwrap(),
-        ],
-        None,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("does-not-exist.json"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(server.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn query_api_endpoint_writes_reject_oauth_before_config_or_http() {
     let server = MockServer::start().await;
     for args in [
@@ -23321,22 +22525,6 @@ async fn query_api_endpoint_writes_reject_oauth_before_config_or_http() {
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-    assert!(server.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn query_api_endpoint_list_rejects_limits_outside_one_to_one_hundred() {
-    let server = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    for args in [
-        vec!["list", "svc-1", "--limit", "0", "--org-id", "org-1"],
-        vec!["list", "svc-1", "--limit", "101", "--org-id", "org-1"],
-        vec!["list", "svc-1", "--limit", "-1", "--org-id", "org-1"],
-        vec!["list", "svc-1", "--limit=-1", "--org-id", "org-1"],
-    ] {
-        let output = invoke_query_api_endpoint(&server, project.path(), false, true, &args, None);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
     assert!(server.received_requests().await.unwrap().is_empty());
 }
@@ -27184,79 +26372,6 @@ async fn saved_query_api_errors_keep_message_and_exit_codes() {
     }
 }
 
-#[tokio::test]
-async fn saved_query_invalid_input_and_oauth_writes_fail_before_http() {
-    let server = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    for (args, exit) in [
-        (saved_query_create_args(&["--param", "id=again"]), 2),
-        (saved_query_create_args(&["--param", "novalue"]), 2),
-        (
-            vec![
-                "create",
-                "svc-1",
-                "--name",
-                " ",
-                "--sql",
-                "SELECT 1",
-                "--database",
-                "default",
-                "--org-id",
-                "org-1",
-            ],
-            2,
-        ),
-        (
-            vec![
-                "create",
-                "svc-1",
-                "--name",
-                "q",
-                "--sql-file",
-                "does-not-exist.sql",
-                "--database",
-                "default",
-                "--org-id",
-                "org-1",
-            ],
-            1,
-        ),
-        (
-            vec!["list", "svc-1", "--limit", "101", "--org-id", "org-1"],
-            2,
-        ),
-    ] {
-        let output = invoke_saved_query(&server, project.path(), false, true, &args, None);
-        assert_eq!(output.status.code(), Some(exit), "{args:?}");
-        assert!(output.stdout.is_empty(), "{args:?}");
-    }
-    for args in [
-        saved_query_create_args(&[]),
-        vec![
-            "update",
-            "svc-1",
-            SAVED_QUERY_ID,
-            "--new-name",
-            "q",
-            "--sql",
-            "SELECT 1",
-            "--database",
-            "default",
-        ],
-        vec!["delete", "svc-1", SAVED_QUERY_ID],
-    ] {
-        let project = tempfile::tempdir().unwrap();
-        let output = invoke_saved_query(&server, project.path(), true, true, &args, None);
-        assert_eq!(output.status.code(), Some(4), "{args:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("API key"),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert!(server.received_requests().await.unwrap().is_empty());
-}
-
 const POSTGRES_BACKUPS_PATH: &str = "/v1/organizations/org-1/postgres/pg-1/backups";
 const WHOAMI_USER_ID: &str = "44444444-5555-4666-8777-888888888888";
 const WHOAMI_ORG_ID: &str = "55555555-6666-4777-8888-999999999999";
@@ -29190,51 +28305,6 @@ async fn replica_aware_routing_update_sends_only_supplied_fields_with_basic_auth
             result
         );
     }
-}
-
-#[tokio::test]
-async fn replica_aware_routing_update_rejects_oauth_and_missing_changes_before_http() {
-    let mock = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let oauth = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", &home)
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "service",
-            "replica-aware-routing",
-            "update",
-            "svc-1",
-            "--http-enabled",
-            "true",
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(oauth.status.code(), Some(4), "{oauth:?}");
-
-    let no_change = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "replica-aware-routing",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(no_change.status.code(), Some(2), "{no_change:?}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
