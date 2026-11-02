@@ -680,7 +680,8 @@ async fn organization_role_human_output_handles_sparse_fields() {
         .respond_with(organization_role_envelope(serde_json::json!([
             {},
             {"id": "system-1", "name": "admin", "type": "system"},
-            {"id": "role-1", "name": "reader", "type": "custom"}
+            {"id": "role-1", "name": "reader", "type": "custom",
+             "actors": ["user/user-1", "apiKey/key-1"], "policies": []}
         ])))
         .expect(1)
         .mount(&mock)
@@ -698,15 +699,21 @@ async fn organization_role_human_output_handles_sparse_fields() {
     );
     assert_success(&list);
     let stdout = String::from_utf8_lossy(&list.stdout);
-    for heading in ["Name", "ID", "Type", "Actors", "Policies"] {
-        assert!(
-            stdout.contains(heading),
-            "missing {heading} column:\n{stdout}"
-        );
-    }
-    assert!(stdout.contains("| -"), "{stdout}");
-    assert!(stdout.contains("| admin  | system-1 | system"), "{stdout}");
-    assert!(stdout.contains("| reader | role-1   | custom"), "{stdout}");
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .filter(|line| line.starts_with('|') && !line.starts_with("|-"))
+        .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["Name", "ID", "Type", "Actors", "Policies"],
+            ["-", "-", "-", "-", "-"],
+            ["admin", "system-1", "system", "-", "-"],
+            ["reader", "role-1", "custom", "2", "0"],
+        ],
+        "{stdout}"
+    );
 
     let get = invoke_cli_with_cloud_credentials_human(
         &mock,
@@ -12323,6 +12330,13 @@ async fn service_reset_password_sends_both_hashes_and_accepts_no_password() {
 // response and exit zero.
 
 async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Output {
+    run_key_create_with_requests(result, extra_args).await.0
+}
+
+async fn run_key_create_with_requests(
+    result: Value,
+    extra_args: &[&str],
+) -> (std::process::Output, Vec<Value>) {
     let mock = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/keys"))
@@ -12343,7 +12357,7 @@ async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Out
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir(&home).unwrap();
-    Command::new(clickhousectl_binary())
+    let output = Command::new(clickhousectl_binary())
         .isolated_env()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -12352,7 +12366,15 @@ async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Out
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(dir.path())
         .output()
-        .expect("failed to spawn clickhousectl")
+        .expect("failed to spawn clickhousectl");
+    let bodies = mock
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.body_json().unwrap())
+        .collect();
+    (output, bodies)
 }
 
 #[tokio::test]
@@ -12366,8 +12388,9 @@ async fn key_create_fails_when_the_generated_material_is_absent() {
             extra_args,
         )
         .await;
-        assert!(
-            !output.status.success(),
+        assert_eq!(
+            output.status.code(),
+            Some(1),
             "a generated key create with no secret must fail for args {extra_args:?}\nstdout:\n{}",
             String::from_utf8_lossy(&output.stdout),
         );
@@ -12425,27 +12448,11 @@ async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
 }
 
 #[tokio::test]
-async fn key_create_human_output_renders_absent_resource_fields() {
-    let output = run_key_create(
-        serde_json::json!({
-            "keyId": "generated-key-id",
-            "keySecret": "generated-key-secret",
-        }),
-        &["--ip-allow", "198.51.100.4/32"],
-    )
-    .await;
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "API key created!\n  Name: -\n  Management resource ID: -\n  Authentication key ID: generated-key-id\n  Key Secret: generated-key-secret\n\nSave the key secret now — it will not be shown again.\n"
-    );
-    assert!(output.stderr.is_empty());
-}
-
-#[tokio::test]
 async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
-    let output = run_key_create(
-        serde_json::json!({ "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" } }),
+    // The response has no key object either, so the absent name and resource
+    // ID render as placeholders; an --ip-allow entry suppresses the warning.
+    let (output, bodies) = run_key_create_with_requests(
+        serde_json::json!({}),
         &[
             "--hash-key-id",
             "0f1e2d3c",
@@ -12453,16 +12460,26 @@ async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
             "3c",
             "--hash-key-secret",
             "4b5a6978",
+            "--ip-allow",
+            "198.51.100.4/32",
         ],
     )
     .await;
     assert_success(&output);
-    // Agent detection can force --json here, so assert only what holds in
-    // both output modes: no key material is reported.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.contains("Key Secret"),
-        "a pre-hashed create must not report key material:\n{stdout}",
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "API key created!\n  Name: -\n  Management resource ID: -\n  Pre-hashed credentials accepted; no generated key material returned\n"
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        bodies,
+        [serde_json::json!({
+            "name": "ci",
+            "state": "enabled",
+            "assignedRoleIds": [],
+            "ipAccessList": [{"source": "198.51.100.4/32"}],
+            "hashData": {"keyIdHash": "0f1e2d3c", "keyIdSuffix": "3c", "keySecretHash": "4b5a6978"},
+        })]
     );
 }
 
@@ -14446,14 +14463,15 @@ async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
 // IP allowlist descriptions (#589).
 
 #[tokio::test]
-async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
+async fn api_key_create_and_update_pass_every_flag_and_allowlist_description() {
     let create = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/keys"))
         .and(body_json(serde_json::json!({
             "name": "described-key",
-            "state": "enabled",
-            "assignedRoleIds": [],
+            "state": "disabled",
+            "assignedRoleIds": ["11111111-2222-3333-4444-555555555555"],
+            "expireAt": "2030-01-01T00:00:00Z",
             "ipAccessList": [
                 {"source": "198.51.100.4"},
                 {"source": "2001:db8::/32", "description": "production"},
@@ -14478,6 +14496,12 @@ async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
             "create",
             "--name",
             "described-key",
+            "--role-id",
+            "11111111-2222-3333-4444-555555555555",
+            "--expires-at",
+            "2030-01-01T00:00:00Z",
+            "--state",
+            "disabled",
             "--ip-allow",
             "198.51.100.4",
             "--ip-allow",
@@ -17987,7 +18011,13 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
                     "Basic dGVzdC1rZXk6dGVzdC1zZWNyZXQ=",
                 ));
             if subcommand == "update" {
-                target = target.and(body_json(serde_json::json!({"name": "Selected org"})));
+                target = target.and(body_json(serde_json::json!({
+                    "name": "Selected org",
+                    "enableCoreDumps": false,
+                    "privateEndpoints": {"remove": [
+                        {"id": "pe-1", "cloudProvider": "aws", "region": "us-east-1"}
+                    ]}
+                })));
             }
             target
                 .respond_with(
@@ -17996,6 +18026,8 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
                 .expect(1)
                 .mount(&mock)
                 .await;
+            // The update with an explicit selector also covers the human branch.
+            let human = subcommand == "update" && !selector.is_empty();
             let mut cmd = Command::new(clickhousectl_binary());
             clear_inherited_env(&mut cmd);
             cmd.current_dir(home.path())
@@ -18009,20 +18041,36 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
                     "test-key",
                     "--api-secret",
                     "test-secret",
-                    "--json",
                     "org",
                     subcommand,
                 ])
                 .args(&selector);
+            if !human {
+                cmd.arg("--json");
+            }
             if subcommand == "update" {
-                cmd.args(["--new-name", "Selected org"]);
+                cmd.args([
+                    "--new-name",
+                    "Selected org",
+                    "--remove-private-endpoint",
+                    "pe-1,cloud-provider=aws,region=us-east-1",
+                    "--enable-core-dumps",
+                    "false",
+                ]);
             }
             let output = cmd.output().unwrap();
             assert_success(&output);
-            assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-                result
-            );
+            if human {
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout),
+                    "Organization updated: Selected org (00000000-0000-0000-0000-000000000001)\n"
+                );
+            } else {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                    result
+                );
+            }
             assert_eq!(
                 mock.received_requests().await.unwrap().len(),
                 if selector.is_empty() { 2 } else { 1 }
