@@ -625,6 +625,17 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies_with_file_
     );
     assert_success(&create);
 
+    // Update selects the role by name: `org role get` is the selector table's
+    // case, so this is the update dispatcher's own lookup.
+    Mock::given(method("GET"))
+        .and(path(ORG_ROLES_PATH))
+        .and(header("authorization", BASIC_TEST_AUTH))
+        .respond_with(organization_role_envelope(serde_json::json!([
+            {"id": "role-1", "name": "auditor", "type": "custom"}
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
     let update_body = serde_json::json!({"name": "renamed"});
     Mock::given(method("PATCH"))
         .and(path(format!("{ORG_ROLES_PATH}/role-1")))
@@ -641,7 +652,7 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies_with_file_
     let update = invoke_cli_with_cloud_credentials_and_stdin(
         &mock,
         &[
-            "org", "role", "update", "role-1", file_flag, "-", "--org-id", "org-1",
+            "org", "role", "update", "--name", "auditor", file_flag, "-", "--org-id", "org-1",
         ],
         &update_body.to_string(),
     );
@@ -668,7 +679,7 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies_with_file_
     );
 
     let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests.iter().all(|request| request.url.query().is_none()));
 }
 
@@ -17283,14 +17294,36 @@ async fn org_notification_types_human_output_lists_rows() {
     );
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for value in [
-        "billing.credit_low",
-        "Credits running low",
-        "critical",
-        "organization",
-    ] {
-        assert!(stdout.contains(value), "{value}: {stdout}");
-    }
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .filter(|line| line.starts_with('|') && !line.starts_with("|-"))
+        .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            vec![
+                "Name",
+                "Title",
+                "Category",
+                "Severity",
+                "Resource Type",
+                "Configurable",
+                "Available"
+            ],
+            vec![
+                "billing.credit_low",
+                "Credits running low",
+                "billing",
+                "critical",
+                "organization",
+                "false",
+                "true"
+            ],
+            vec!["-", "-", "-", "-", "-", "-", "-"],
+        ],
+        "{stdout}"
+    );
 }
 
 #[tokio::test]
