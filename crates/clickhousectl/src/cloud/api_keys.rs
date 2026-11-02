@@ -530,6 +530,33 @@ fn resolve_key_create_material<'a>(
     }
 }
 
+/// The human confirmation of `key create`: each value on its own line, under the label
+/// that tells the management resource ID apart from the authentication key ID.
+fn render_key_created(
+    name: Option<&str>,
+    resource_id: Option<&uuid::Uuid>,
+    material: &KeyCreateMaterial<'_>,
+) -> String {
+    let mut out = String::from("API key created!\n");
+    out.push_str(&format!("  Name: {}\n", or_absent(name)));
+    out.push_str(&format!(
+        "  Management resource ID: {}\n",
+        or_absent(resource_id)
+    ));
+    match material {
+        KeyCreateMaterial::Generated { key_id, key_secret } => {
+            out.push_str(&format!("  Authentication key ID: {}\n", key_id));
+            out.push_str(&format!("  Key Secret: {}\n", key_secret));
+            out.push('\n');
+            out.push_str("Save the key secret now — it will not be shown again.\n");
+        }
+        KeyCreateMaterial::PreHashed => {
+            out.push_str("  Pre-hashed credentials accepted; no generated key material returned\n");
+        }
+    }
+    out
+}
+
 async fn key_create(
     client: &CloudClient,
     options: KeyCreateOptions,
@@ -557,20 +584,7 @@ async fn key_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        println!("API key created!");
-        println!("  Name: {}", or_absent(name));
-        println!("  Management resource ID: {}", or_absent(resource_id));
-        match material {
-            KeyCreateMaterial::Generated { key_id, key_secret } => {
-                println!("  Authentication key ID: {}", key_id);
-                println!("  Key Secret: {}", key_secret);
-                println!();
-                println!("Save the key secret now — it will not be shown again.");
-            }
-            KeyCreateMaterial::PreHashed => {
-                println!("  Pre-hashed credentials accepted; no generated key material returned");
-            }
-        }
+        print!("{}", render_key_created(name, resource_id, &material));
         if deny_all {
             eprint_line(
                 "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`.",
@@ -825,6 +839,8 @@ impl CloudClient {
 mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
+    use crate::cloud::client::CloudErrorKind;
+    use crate::cloud::output::ABSENT;
     use clap::Parser;
 
     /// The continuation hint is pasted into a shell: quoted tokens must split
@@ -1217,7 +1233,10 @@ mod tests {
 
             match result {
                 Ok(_) => panic!("{command:?}: expected invalid expires-at input to be rejected"),
-                Err(error) => assert!(error.to_string().contains("expected ISO 8601 / RFC 3339")),
+                Err(error) => {
+                    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                    assert!(error.to_string().contains("2025-12-31"), "{error}");
+                }
             }
         }
     }
@@ -1514,18 +1533,78 @@ mod tests {
 
     #[test]
     fn resolve_key_create_material_fails_when_generated_material_is_absent() {
-        let error = resolve_key_create_material(false, None, Some("key-secret"), Some("ci"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("omitted the generated key material"));
-        assert!(error.contains("the key 'ci' may still have been created"));
+        let named =
+            resolve_key_create_material(false, None, Some("key-secret"), Some("ci")).unwrap_err();
+        assert_eq!(named.kind, CloudErrorKind::Generic);
+        assert!(named.message.contains("'ci'"), "{}", named.message);
+        // Neither half of the material leaks into the error.
+        assert!(!named.message.contains("key-secret"), "{}", named.message);
 
         let material = resolve_key_create_material(false, Some(""), Some(""), Some("ci")).unwrap();
         assert!(matches!(material, KeyCreateMaterial::Generated { .. }));
 
-        let error = resolve_key_create_material(false, Some("key-id"), None, None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("the key may still have been created"));
+        // Without a name the same error is reported, just without the name.
+        let unnamed = resolve_key_create_material(false, Some("key-id"), None, None).unwrap_err();
+        assert_eq!(unnamed.message, named.message.replace(" 'ci'", ""));
+        assert!(!unnamed.message.contains("key-id"), "{}", unnamed.message);
+    }
+
+    /// The label on the line that ends with `value`, which must be on exactly one line.
+    fn label_of(output: &str, value: &str) -> String {
+        let suffix = format!(": {value}");
+        let lines: Vec<_> = output
+            .lines()
+            .filter(|line| line.ends_with(&suffix))
+            .collect();
+        assert_eq!(lines.len(), 1, "{value}: {output}");
+        lines[0].trim().strip_suffix(&suffix).unwrap().to_string()
+    }
+
+    #[test]
+    fn key_created_render_shows_each_value_once_under_its_label() {
+        let resource_id = uuid::Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let output = render_key_created(
+            Some("ci"),
+            Some(&resource_id),
+            &KeyCreateMaterial::Generated {
+                key_id: "generated-key-id",
+                key_secret: "generated-key-secret",
+            },
+        );
+        assert_eq!(label_of(&output, "ci"), "Name");
+        assert_eq!(
+            label_of(&output, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            "Management resource ID"
+        );
+        assert_eq!(
+            label_of(&output, "generated-key-id"),
+            "Authentication key ID"
+        );
+        assert_eq!(label_of(&output, "generated-key-secret"), "Key Secret");
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn key_created_render_for_pre_hashed_keys_shows_no_key_material() {
+        let generated = render_key_created(
+            None,
+            None,
+            &KeyCreateMaterial::Generated {
+                key_id: "generated-key-id",
+                key_secret: "generated-key-secret",
+            },
+        );
+        let output = render_key_created(None, None, &KeyCreateMaterial::PreHashed);
+        // The absent name and resource ID render as placeholders under their labels.
+        let absent: Vec<_> = output
+            .lines()
+            .filter_map(|line| line.trim().strip_suffix(&format!(": {ABSENT}")))
+            .collect();
+        assert_eq!(absent, ["Name", "Management resource ID"], "{output}");
+        assert_eq!(output.lines().count(), 4, "{output}");
+        for label in ["Authentication key ID", "Key Secret"] {
+            assert!(generated.contains(&format!("{label}: ")), "{generated}");
+            assert!(!output.contains(&format!("{label}: ")), "{output}");
+        }
     }
 }

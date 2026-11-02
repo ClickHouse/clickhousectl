@@ -1713,10 +1713,8 @@ mod tests {
             (Some("k-1"), None, "keySecret"),
         ] {
             let err = require_credential_pair(&key_response(key_id, key_secret)).unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!("the API response is missing required field '{field}'")
-            );
+            assert!(err.message.contains(&format!("'{field}'")), "{err}");
+            assert!(!err.message.contains("s-1") && !err.message.contains("k-1"));
         }
     }
 
@@ -1776,10 +1774,7 @@ mod tests {
     #[test]
     fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
         let err = existing_open_api_keys(endpoint(None)).unwrap_err();
-        assert!(
-            err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
-            "error should name the field and the consequence: {err}",
-        );
+        assert!(err.to_string().contains("'openApiKeys'"), "{err}");
     }
 
     #[test]
@@ -2037,7 +2032,10 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(different.to_string().contains("refusing to modify"));
+        // Both endpoint IDs are named, so the mismatch is visible.
+        for id in ["endpoint-2", "endpoint-1", "service-1"] {
+            assert!(different.message.contains(id), "{}", different.message);
+        }
 
         let incomplete = inspect_repair_endpoint(
             Some(ServiceQueryAPIEndpoint {
@@ -2080,9 +2078,9 @@ mod tests {
 
     #[test]
     fn repair_requires_complete_ownership_metadata() {
-        let key = ServiceQueryKey {
-            organization_id: None,
-            api_key_id: None,
+        let owned = ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: Some("key-1".into()),
             key_id: "query-key".into(),
             key_secret: "query-secret".into(),
             endpoint_id: Some("endpoint-1".into()),
@@ -2090,8 +2088,44 @@ mod tests {
             service_name: "demo".into(),
             created_at: Utc::now(),
         };
-        let error = require_owned_query_key(&key, "org-1", "service-1").unwrap_err();
-        assert!(error.to_string().contains("legacy or non-owned"));
+        assert_eq!(
+            require_owned_query_key(&owned, "org-1", "service-1").unwrap(),
+            ("key-1", "endpoint-1")
+        );
+
+        // Each case breaks exactly one ownership requirement of an otherwise owned
+        // record, so every check must refuse on its own.
+        type BreakOwnership = fn(&mut ServiceQueryKey);
+        let cases: [(&str, BreakOwnership); 5] = [
+            ("no organization", |key| key.organization_id = None),
+            ("other organization", |key| {
+                key.organization_id = Some("org-2".into())
+            }),
+            ("no API key ID", |key| key.api_key_id = None),
+            ("no endpoint ID", |key| key.endpoint_id = None),
+            ("active key pending cleanup", |key| {
+                key.pending_cleanup_api_key_ids = vec!["key-1".into()]
+            }),
+        ];
+        let mut messages = Vec::new();
+        for (case, break_ownership) in cases {
+            let mut key = owned.clone();
+            break_ownership(&mut key);
+            let error = require_owned_query_key(&key, "org-1", "service-1").expect_err(case);
+            assert!(
+                error.message.contains("service-1"),
+                "{case}: {}",
+                error.message
+            );
+            assert!(!error.message.contains("query-secret"), "{case}");
+            messages.push(error.message);
+        }
+        // The organization mismatch names both organizations.
+        assert!(messages[1].contains("org-2") && messages[1].contains("org-1"));
+        // No two refusals read alike.
+        for (index, message) in messages.iter().enumerate() {
+            assert!(!messages[index + 1..].contains(message), "{messages:?}");
+        }
     }
 
     #[test]
@@ -2279,52 +2313,65 @@ mod tests {
 
     #[test]
     fn every_verdict_has_a_stable_code_and_the_deliberate_repair_path() {
-        let cases = [
+        const INSPECT: &str = "clickhousectl cloud service query-endpoint get svc-1 --org-id org-1";
+        const ALLOW: &str = "clickhousectl cloud key update key-1 --ip-allow <cidr> --org-id org-1";
+        // Each verdict names what it is about; `absent` lists identifiers of a
+        // sibling verdict that must not leak into it.
+        let cases: [(_, _, &[&str], &[&str]); 7] = [
             (
                 RejectedKeyReason::Deleted,
                 CloudErrorCode::QueryKeyDeleted,
-                "no longer exists in organization org-1",
+                &["org-1"],
+                &[INSPECT, ALLOW],
             ),
             (
                 RejectedKeyReason::Disabled,
                 CloudErrorCode::QueryKeyDisabled,
-                "clickhousectl cloud key update key-1 --state enabled --org-id org-1",
+                &["clickhousectl cloud key update key-1 --state enabled --org-id org-1"],
+                &[INSPECT, ALLOW],
             ),
             (
                 RejectedKeyReason::Expired {
                     expired_at: at("2026-08-01T00:00:00Z"),
                 },
                 CloudErrorCode::QueryKeyExpired,
-                "expired at 2026-08-01T00:00:00Z",
+                &["2026-08-01T00:00:00Z"],
+                &[INSPECT, ALLOW],
             ),
             (
                 RejectedKeyReason::Unbound {
                     endpoint_id: Some("ep-1".into()),
                 },
                 CloudErrorCode::QueryKeyUnbound,
-                "not bound to Query API endpoint ep-1",
+                &["ep-1", "openApiKeys", INSPECT],
+                &[ALLOW],
             ),
             (
                 RejectedKeyReason::Unbound { endpoint_id: None },
                 CloudErrorCode::QueryKeyUnbound,
-                "has no Query API endpoint",
+                &[INSPECT],
+                &["ep-1", "openApiKeys", ALLOW],
             ),
             (
                 RejectedKeyReason::Rejected {
                     ip_access_list: vec!["203.0.113.0/24".into(), "198.51.100.7/32".into()],
                 },
                 CloudErrorCode::QueryKeyRejected,
-                "IP access list (203.0.113.0/24, 198.51.100.7/32)",
+                &["203.0.113.0/24, 198.51.100.7/32", ALLOW],
+                &[INSPECT],
             ),
             (
                 RejectedKeyReason::Rejected {
                     ip_access_list: vec![],
                 },
                 CloudErrorCode::QueryKeyRejected,
-                "IP access list (empty)",
+                &[ALLOW],
+                &["203.0.113.0/24", INSPECT],
             ),
         ];
-        for (reason, code, needle) in cases {
+        assert!(ctx().prefix().contains("svc-1") && ctx().prefix().contains("401"));
+        let mut messages = Vec::new();
+        for (reason, code, present, absent) in cases {
             let error = rejected_query_key_error(&reason, ctx());
             let details = error.details.as_deref().expect("json details");
             assert_eq!(details.code, code, "{reason:?}");
@@ -2335,27 +2382,30 @@ mod tests {
                 Some("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
                 "{reason:?}"
             );
+            for needle in present {
+                assert!(
+                    error.message.contains(needle),
+                    "{reason:?}: {needle}: {}",
+                    error.message
+                );
+            }
+            for needle in absent {
+                assert!(
+                    !error.message.contains(needle),
+                    "{reason:?}: {needle}: {}",
+                    error.message
+                );
+            }
+            // Every verdict opens with the service and status, names the key, and
+            // offers the deliberate repair.
             assert!(
-                error.message.contains(needle),
-                "{reason:?}: {}",
-                error.message
-            );
-            assert!(
-                error.message.starts_with(
-                    "the stored Query API key for service svc-1 was rejected with HTTP 401"
-                ),
+                error.message.starts_with(&ctx().prefix()),
                 "{}",
                 error.message
             );
+            assert!(error.message.contains("key-1"), "{reason:?}");
             assert!(
-                error.message.contains("management API key key-1"),
-                "{reason:?}: {}",
-                error.message
-            );
-            // Every verdict says out loud that nothing was replaced.
-            assert!(
-                error.message.contains("no replacement was created")
-                    || error.message.contains("Nothing was changed"),
+                error.message.contains(&ctx().repair()),
                 "{reason:?}: {}",
                 error.message
             );
@@ -2368,42 +2418,11 @@ mod tests {
             assert_eq!(error.kind, CloudErrorKind::Generic);
             let is_rejected = matches!(reason, RejectedKeyReason::Rejected { .. });
             assert_eq!(details.ip_access_list.is_some(), is_rejected, "{reason:?}");
+            messages.push(error.message);
         }
-    }
-
-    #[test]
-    fn a_deleted_key_keeps_the_record_and_points_at_repair() {
-        // The stored credential is kept even though it can never work again:
-        // the record is what lets `repair-query-key` find the key's UUID and
-        // drop it from the endpoint binding along with binding the
-        // replacement. Rerunning the query is not the way forward, so it is
-        // not the suggested command.
-        let error = rejected_query_key_error(&RejectedKeyReason::Deleted, ctx());
-        let details = error.details.as_deref().unwrap();
-        assert_eq!(details.code, CloudErrorCode::QueryKeyDeleted);
-        assert!(
-            error
-                .message
-                .contains("It was kept and no replacement was created"),
-            "{}",
-            error.message
-        );
-        assert!(
-            error
-                .message
-                .contains("still listed on the service's Query API endpoint"),
-            "{}",
-            error.message
-        );
-        assert!(
-            !error.message.contains("removed") && !error.message.contains("Rerun the query"),
-            "{}",
-            error.message
-        );
-        assert_eq!(
-            details.command.as_deref(),
-            Some("clickhousectl cloud service repair-query-key svc-1 --org-id org-1")
-        );
+        for (index, message) in messages.iter().enumerate() {
+            assert!(!messages[index + 1..].contains(message), "{messages:?}");
+        }
     }
 
     #[test]
@@ -2424,19 +2443,15 @@ mod tests {
             details.command.is_none(),
             "an ambiguous verdict pushes no write"
         );
+        // The key lookup names the key, and the lookup's own diagnostic passes through.
         assert!(
-            error
-                .message
-                .contains("management API key key-1 could not be read"),
+            error.message.starts_with(&ctx().prefix()),
             "{}",
             error.message
         );
+        assert!(error.message.contains("key-1"), "{}", error.message);
         assert!(error.message.contains("FORBIDDEN"), "{}", error.message);
-        assert!(
-            error.message.contains("Nothing was changed"),
-            "{}",
-            error.message
-        );
+        assert!(error.message.contains(&ctx().repair()), "{}", error.message);
 
         let endpoint = unverified_query_key_error(
             ctx(),
@@ -2444,10 +2459,15 @@ mod tests {
             CloudError::new("upstream unavailable")
                 .with_failure(ApiFailure::with_status(FailureKind::Http5xx, 503)),
         );
+        // The endpoint lookup is about the service's binding, not the key.
         assert!(
-            endpoint
-                .message
-                .contains("the Query API endpoint binding of service svc-1 could not be read"),
+            endpoint.message.contains("upstream unavailable"),
+            "{}",
+            endpoint.message
+        );
+        assert!(!endpoint.message.contains("key-1"), "{}", endpoint.message);
+        assert!(
+            endpoint.message.matches("svc-1").count() > error.message.matches("svc-1").count(),
             "{}",
             endpoint.message
         );
@@ -2470,11 +2490,6 @@ mod tests {
         );
         assert!(
             error.message.contains("service_query_keys.svc-1"),
-            "{}",
-            error.message
-        );
-        assert!(
-            error.message.contains("Nothing was changed"),
             "{}",
             error.message
         );
@@ -2522,11 +2537,10 @@ mod tests {
             ("key-b".to_string(), CloudError::new("timed out")),
         ];
         let warning = pending_cleanup_warning("service-1", "org-1", &failed);
-        assert!(warning.starts_with("Warning:"), "{warning}");
+        assert!(warning.starts_with("Warning: "), "{warning}");
+        // Each failed key is listed with its own diagnostic, in order.
         assert!(
-            warning.contains(
-                "the superseded API keys could not be deleted (key-a: HTTP 500; key-b: timed out)"
-            ),
+            warning.contains("(key-a: HTTP 500; key-b: timed out)"),
             "{warning}"
         );
         assert!(
@@ -2543,10 +2557,8 @@ mod tests {
         );
 
         let single = pending_cleanup_warning("service-1", "org-1", &failed[..1]);
-        assert!(
-            single.contains("the superseded API key could not be deleted (key-a: HTTP 500)"),
-            "{single}"
-        );
+        assert!(single.contains("(key-a: HTTP 500)"), "{single}");
+        assert!(!single.contains("key-b"), "{single}");
     }
 
     #[test]

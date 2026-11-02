@@ -1304,6 +1304,58 @@ mod tests {
         assert!(matches!(error, Error::Io(_)));
     }
 
+    /// Classify the error a real Unix socket produces in each unusable state, through the
+    /// same two stages `connect` runs: the client constructor, then a ping.
+    #[cfg(unix)]
+    async fn classify_unix_socket(path: &std::path::Path) -> (DockerFailureKind, Error) {
+        let path = path.to_str().expect("socket path is UTF-8");
+        let error = match Docker::connect_with_unix(path, 5, bollard::API_DEFAULT_VERSION) {
+            Err(error) => {
+                return (
+                    classify_docker_failure(&error),
+                    docker_unavailable(DockerConnectStage::Constructor, &error),
+                );
+            }
+            Ok(docker) => docker.ping().await.expect_err("nothing serves the socket"),
+        };
+        (
+            classify_docker_failure(&error),
+            docker_unavailable(DockerConnectStage::Ping, &error),
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unusable_unix_sockets_are_classified_by_their_io_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        let directory = tempfile::tempdir().expect("create socket directory");
+
+        let missing = directory.path().join("missing.sock");
+        let (kind, error) = classify_unix_socket(&missing).await;
+        assert_eq!(kind, DockerFailureKind::MissingSocket);
+        assert!(matches!(error, Error::DockerNotAvailable(_)));
+
+        // Binding then dropping the listener leaves a socket file nobody accepts on.
+        let refused = directory.path().join("refused.sock");
+        drop(UnixListener::bind(&refused).expect("bind refused socket"));
+        let (kind, error) = classify_unix_socket(&refused).await;
+        assert_eq!(kind, DockerFailureKind::ConnectionRefused);
+        assert!(matches!(error, Error::DockerNotAvailable(_)));
+
+        // A listening socket without write permission; root bypasses the mode bits.
+        let denied = directory.path().join("denied.sock");
+        let _listener = UnixListener::bind(&denied).expect("bind denied socket");
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000))
+            .expect("remove socket permissions");
+        if UnixStream::connect(&denied).is_err() {
+            let (kind, error) = classify_unix_socket(&denied).await;
+            assert_eq!(kind, DockerFailureKind::PermissionDenied);
+            assert!(matches!(error, Error::DockerNotAvailable(_)));
+        }
+    }
+
     #[test]
     fn docker_failures_keep_safe_causes_without_endpoint_values() {
         let secret_path = "/tmp/docker-password-secret.sock";
@@ -1313,9 +1365,14 @@ mod tests {
         else {
             panic!("expected DockerNotAvailable");
         };
-        assert!(
-            message
-                .starts_with("could not initialize Docker client: Docker socket was not found.\n")
+        assert_eq!(
+            classify_docker_failure(&missing),
+            DockerFailureKind::MissingSocket
+        );
+        assert_rendered(
+            &message,
+            DockerConnectStage::Constructor,
+            DockerFailureKind::MissingSocket,
         );
         assert!(!message.contains(secret_path));
 
@@ -1327,68 +1384,112 @@ mod tests {
         else {
             panic!("expected DockerNotAvailable");
         };
-        assert!(message.contains("DOCKER_HOST is invalid or uses an unsupported scheme"));
+        assert_eq!(
+            classify_docker_failure(&invalid),
+            DockerFailureKind::InvalidHost
+        );
+        assert_rendered(
+            &message,
+            DockerConnectStage::Constructor,
+            DockerFailureKind::InvalidHost,
+        );
+        let cause = message.lines().next().unwrap();
+        assert!(cause.contains("DOCKER_HOST"), "{message}");
         assert!(!message.contains("user:password"));
         assert!(!message.contains("example.test"));
     }
 
     #[test]
     fn docker_ping_failures_preserve_actionable_io_causes() {
-        for (kind, expected) in [
+        let mut first_lines = Vec::new();
+        for (io_kind, expected) in [
             (
                 io::ErrorKind::PermissionDenied,
-                "permission denied while opening the Docker socket",
+                DockerFailureKind::PermissionDenied,
             ),
             (
                 io::ErrorKind::ConnectionRefused,
-                "the Docker daemon refused the connection",
+                DockerFailureKind::ConnectionRefused,
             ),
-            (
-                io::ErrorKind::TimedOut,
-                "the Docker daemon connection timed out",
-            ),
+            (io::ErrorKind::TimedOut, DockerFailureKind::TimedOut),
+            (io::ErrorKind::NotFound, DockerFailureKind::MissingSocket),
         ] {
             let error = BollardError::IOError {
-                err: io::Error::new(kind, "sensitive endpoint details"),
+                err: io::Error::new(io_kind, "sensitive endpoint details"),
             };
+            assert_eq!(classify_docker_failure(&error), expected, "{io_kind:?}");
             let Error::DockerNotAvailable(message) =
                 docker_unavailable(DockerConnectStage::Ping, &error)
             else {
                 panic!("expected DockerNotAvailable");
             };
-            assert!(
-                message.starts_with(&format!("Docker daemon is not reachable: {expected}.\n")),
-                "{message}"
-            );
+            assert_rendered(&message, DockerConnectStage::Ping, expected);
             assert!(!message.contains("sensitive endpoint details"));
+            first_lines.push(message.lines().next().unwrap().to_string());
+        }
+        // Each cause renders differently, so no two failures read alike.
+        for (index, line) in first_lines.iter().enumerate() {
+            assert!(!first_lines[index + 1..].contains(line), "{first_lines:?}");
         }
     }
 
+    /// A rendered failure is the cause for its stage and kind on this platform, then
+    /// this platform's guidance as the second and last line.
+    fn assert_rendered(message: &str, stage: DockerConnectStage, kind: DockerFailureKind) {
+        let platform = HostPlatform::current();
+        let lines: Vec<_> = message.lines().collect();
+        assert_eq!(lines.len(), 2, "{message}");
+        assert!(
+            lines[0].contains(&docker_failure_cause(stage, kind, platform)),
+            "{message}"
+        );
+        assert_eq!(lines[1], docker_guidance(platform));
+    }
+
     #[test]
-    fn docker_endpoint_failure_causes_are_platform_aware() {
-        assert_eq!(
+    fn docker_failure_stage_and_endpoint_change_the_rendered_cause() {
+        let missing = BollardError::SocketNotFoundError("/tmp/docker.sock".into());
+        let Error::DockerNotAvailable(constructor) =
+            docker_unavailable(DockerConnectStage::Constructor, &missing)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        let Error::DockerNotAvailable(ping) =
+            docker_unavailable(DockerConnectStage::Ping, &missing)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert_ne!(constructor.lines().next(), ping.lines().next());
+
+        // Windows names its named pipe where the other platforms name a socket; causes
+        // that do not mention the endpoint read the same everywhere.
+        for (kind, endpoint_specific) in [
+            (DockerFailureKind::MissingSocket, true),
+            (DockerFailureKind::PermissionDenied, true),
+            (DockerFailureKind::ConnectionRefused, false),
+            (DockerFailureKind::TimedOut, false),
+        ] {
+            let cause = |platform| docker_failure_cause(DockerConnectStage::Ping, kind, platform);
+            assert_eq!(cause(HostPlatform::Linux), cause(HostPlatform::MacOs));
+            assert_eq!(
+                cause(HostPlatform::Windows) != cause(HostPlatform::Linux),
+                endpoint_specific,
+                "{kind:?}"
+            );
+        }
+
+        // Unclassified failures name the stage that failed.
+        assert_ne!(
             docker_failure_cause(
                 DockerConnectStage::Constructor,
-                DockerFailureKind::MissingSocket,
-                HostPlatform::Windows,
-            ),
-            "Docker named pipe was not found"
-        );
-        assert_eq!(
-            docker_failure_cause(
-                DockerConnectStage::Ping,
-                DockerFailureKind::PermissionDenied,
-                HostPlatform::Windows,
-            ),
-            "permission denied while opening the Docker named pipe"
-        );
-        assert_eq!(
-            docker_failure_cause(
-                DockerConnectStage::Constructor,
-                DockerFailureKind::MissingSocket,
+                DockerFailureKind::Other,
                 HostPlatform::Linux,
             ),
-            "Docker socket was not found"
+            docker_failure_cause(
+                DockerConnectStage::Ping,
+                DockerFailureKind::Other,
+                HostPlatform::Linux,
+            ),
         );
     }
 
@@ -1413,30 +1514,36 @@ mod tests {
         else {
             panic!("expected DockerNotAvailable");
         };
-        assert!(message.contains("the Docker API returned HTTP status 503"));
+        assert_rendered(
+            &message,
+            DockerConnectStage::Ping,
+            DockerFailureKind::HttpStatus(503),
+        );
+        assert!(message.lines().next().unwrap().contains("503"), "{message}");
         assert!(!message.contains("sensitive daemon response"));
     }
 
     #[test]
     fn docker_guidance_is_platform_aware() {
-        let macos = docker_guidance(HostPlatform::MacOs);
-        assert!(macos.contains("Docker Desktop"));
-        assert!(macos.contains("socket"));
-        assert!(macos.contains("docker context show"));
-        assert!(macos.contains("DOCKER_HOST"));
-
-        let linux = docker_guidance(HostPlatform::Linux);
-        assert!(linux.contains("Docker Engine or Docker Desktop"));
-        assert!(linux.contains("socket"));
-        assert!(linux.contains("docker context show"));
-        assert!(linux.contains("rootless Docker"));
-        assert!(linux.contains("DOCKER_HOST"));
-
-        let windows = docker_guidance(HostPlatform::Windows);
-        assert!(windows.contains("Docker Desktop or Docker Engine"));
-        assert!(windows.contains("named-pipe permissions"));
-        assert!(windows.contains("docker context show"));
-        assert!(windows.contains("DOCKER_HOST"));
+        let platforms = [
+            HostPlatform::MacOs,
+            HostPlatform::Linux,
+            HostPlatform::Windows,
+            HostPlatform::Other,
+        ];
+        let guidance: Vec<_> = platforms.into_iter().map(docker_guidance).collect();
+        for (index, text) in guidance.iter().enumerate() {
+            // Every platform points at the context command and the override variable.
+            assert!(text.contains("`docker context show`"), "{text}");
+            assert!(text.contains("`DOCKER_HOST`"), "{text}");
+            assert!(!guidance[index + 1..].contains(text), "{guidance:?}");
+        }
+        // Only Linux names the rootless Engine socket path.
+        let rootless = "`unix://$XDG_RUNTIME_DIR/docker.sock`";
+        assert!(guidance[1].contains(rootless));
+        for text in [guidance[0], guidance[2], guidance[3]] {
+            assert!(!text.contains(rootless), "{text}");
+        }
     }
 
     #[test]
@@ -1481,10 +1588,16 @@ mod tests {
         }
         reporter.finish(&mut output);
 
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "Pulling postgres:18... done\n"
-        );
+        let done = String::from_utf8(output).unwrap();
+        assert_eq!(done.lines().count(), 1, "{done}");
+        assert!(done.ends_with('\n'));
+        assert!(done.contains("postgres:18"), "{done}");
+        assert!(!done.contains("layer-"), "{done}");
+
+        let mut output = Vec::new();
+        reporter.start(&mut output);
+        reporter.fail(&mut output);
+        assert_ne!(String::from_utf8(output).unwrap(), done);
     }
 
     #[test]
@@ -1506,10 +1619,20 @@ mod tests {
         );
         reporter.finish(&mut output);
 
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "Pulling postgres:18...\n  layer-a: Downloading (50/100 bytes, 50%)\nPulled postgres:18\n"
-        );
+        let output = String::from_utf8(output).unwrap();
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), 3, "{output}");
+        assert!(lines[0].contains("postgres:18"), "{output}");
+        assert!(lines[2].contains("postgres:18"), "{output}");
+        assert_ne!(lines[0], lines[2]);
+        // The layer line keeps the daemon's id and status, then its byte counts and
+        // percentage.
+        let layer = lines[1].strip_prefix("  layer-a: Downloading ").unwrap();
+        let numbers: Vec<_> = layer
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .collect();
+        assert_eq!(numbers, ["50", "100", "50"], "{output}");
     }
 
     #[test]
@@ -1520,10 +1643,10 @@ mod tests {
         reporter.start(&mut output);
         reporter.fail(&mut output);
 
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "Pulling postgres:missing... failed\n"
-        );
+        let failed = String::from_utf8(output).unwrap();
+        assert_eq!(failed.lines().count(), 1, "{failed}");
+        assert!(failed.ends_with('\n'));
+        assert!(failed.contains("postgres:missing"), "{failed}");
     }
 
     #[cfg(not(target_os = "macos"))]

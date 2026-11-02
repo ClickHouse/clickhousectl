@@ -703,12 +703,16 @@ mod tests {
             }]),
         };
         let output = postgres_metrics_human_view(&metrics).unwrap();
-        assert_eq!(
-            output.pointer("/metrics/0/series/0/dataPoints/1"),
-            Some(&serde_json::Value::String(
-                "9223372036854775807 (outside displayable date range)  1".to_string()
-            ))
-        );
+        // The raw epoch stays visible, marked as undisplayable, before its value.
+        let point = output
+            .pointer("/metrics/0/series/0/dataPoints/1")
+            .and_then(serde_json::Value::as_str)
+            .expect("a rendered data point");
+        let marker = point
+            .strip_prefix("9223372036854775807 ")
+            .and_then(|rest| rest.strip_suffix("  1"))
+            .expect("the epoch, then the value");
+        assert!(!marker.trim().is_empty(), "{point}");
     }
 
     #[test]

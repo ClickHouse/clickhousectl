@@ -1643,9 +1643,11 @@ mod tests {
             converted.kind,
             crate::cloud::client::CloudErrorKind::Generic
         );
-        assert_eq!(
-            converted.message,
-            format!("Query API endpoint did not become ready within {timeout:?}")
+        // The message reports the bound that elapsed.
+        assert!(
+            converted.message.contains(&format!("{timeout:?}")),
+            "{}",
+            converted.message
         );
         // The readiness deadline is reported as a timeout (#450), not as a
         // generic 4xx: the CLI, not the API, gave up — so there is no HTTP
