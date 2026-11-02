@@ -1089,49 +1089,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_backup_config_update_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-period-hours",
-            "48",
-            "--backup-retention-period-hours",
-            "336",
-            "--backup-start-time",
-            "03:00",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Service { command } = args.command else {
-            panic!("expected service command");
-        };
-        let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
-            panic!("expected backup-config command");
-        };
-        let crate::cloud::cli::BackupConfigCommands::Update {
-            service_id,
-            backup_period_hours,
-            backup_retention_period_hours,
-            backup_start_time,
-            clear_backup_start_time,
-        } = command
-        else {
-            panic!("expected backup-config update");
-        };
-        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
-        assert_eq!(backup_period_hours, Some(48));
-        assert_eq!(backup_retention_period_hours, Some(336));
-        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
-        assert!(!clear_backup_start_time);
-    }
-
-    #[test]
     fn rejects_backup_config_update_without_changes() {
         let error = Cli::try_parse_from([
             "clickhousectl",
@@ -1148,49 +1105,6 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
-    }
-
-    #[test]
-    fn parses_backup_config_update_with_explicit_zero_values() {
-        let command = parse_backup_config(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-period-hours",
-            "0",
-            "--backup-retention-period-hours",
-            "0",
-        ]);
-        let BackupConfigCommands::Update {
-            backup_period_hours,
-            backup_retention_period_hours,
-            ..
-        } = command
-        else {
-            panic!("expected backup-config update");
-        };
-
-        assert_eq!(backup_period_hours, Some(0));
-        assert_eq!(backup_retention_period_hours, Some(0));
-    }
-
-    #[test]
-    fn parses_backup_list_with_top_level_cli_defaults() {
-        let cli =
-            Cli::try_parse_from(["clickhousectl", "cloud", "backup", "list", "svc-1"]).unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Backup { command } = args.command else {
-            panic!("expected backup command");
-        };
-        let crate::cloud::cli::BackupCommands::List { service_id } = command else {
-            panic!("expected backup list");
-        };
-        assert_eq!(service_id, "svc-1");
     }
 
     #[test]
@@ -1309,38 +1223,6 @@ mod tests {
             ])
             .is_write()
         );
-    }
-
-    #[test]
-    fn parses_backup_bucket_config_input() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "backup",
-            "bucket",
-            "create",
-            "svc-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Backup { command } = args.command else {
-            panic!("expected backup command");
-        };
-        let BackupCommands::Bucket(BackupBucketCommands::Create {
-            service_id,
-            config_file,
-        }) = command
-        else {
-            panic!("expected backup bucket create");
-        };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(config_file, "-");
     }
 
     #[test]

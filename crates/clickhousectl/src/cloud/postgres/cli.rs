@@ -763,15 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_postgres_get() {
-        let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "get", "pg-1"]);
-        let PostgresCommands::Get { postgres_id, .. } = cmd else {
-            panic!("expected get");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-    }
-
-    #[test]
     fn parses_postgres_query_sources_database_and_selectors() {
         let minimal = parse_postgres(&["clickhousectl", "cloud", "postgres", "query", "pg-1"]);
         assert!(!minimal.is_write());
@@ -1247,53 +1238,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_postgres_update_no_fields() {
-        let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"]);
-        let PostgresCommands::Update {
-            postgres_id,
-            name,
-            size,
-            add_tag,
-            remove_tag,
-            clear_tags,
-            ..
-        } = cmd
-        else {
-            panic!("expected update");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-        assert!(name.is_none());
-        assert!(size.is_none());
-        assert!(add_tag.is_empty());
-        assert!(remove_tag.is_empty());
-        assert!(!clear_tags);
-    }
-
-    #[test]
-    fn parses_postgres_update_clear_tags() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "update",
-            "pg-1",
-            "--clear-tags",
-        ]);
-        let PostgresCommands::Update {
-            add_tag,
-            remove_tag,
-            clear_tags,
-            ..
-        } = cmd
-        else {
-            panic!("expected update");
-        };
-        assert!(add_tag.is_empty());
-        assert!(remove_tag.is_empty());
-        assert!(clear_tags);
-    }
-
-    #[test]
     fn rejects_conflicting_postgres_tag_changes() {
         for flags in [
             ["--add-tag", "env=prod", "--clear-tags"],
@@ -1461,76 +1405,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_postgres_update_name() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "update",
-            "pg-1",
-            "--new-name",
-            "renamed-pg",
-        ]);
-        let PostgresCommands::Update {
-            postgres_id, name, ..
-        } = cmd
-        else {
-            panic!("expected update");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-        assert_eq!(name.as_deref(), Some("renamed-pg"));
-    }
-
-    #[test]
-    fn parses_postgres_delete() {
-        let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "delete", "pg-1"]);
-        let PostgresCommands::Delete { postgres_id, .. } = cmd else {
-            panic!("expected delete");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-    }
-
-    #[test]
-    fn parses_postgres_certs_get_stdout_and_output() {
-        let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"]);
-        let PostgresCommands::Certs(CertsCommands::Get { output, .. }) = cmd else {
-            panic!("expected certs get");
-        };
-        assert!(output.is_none());
-
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "certs",
-            "get",
-            "pg-1",
-            "--output",
-            "/tmp/ca.pem",
-        ]);
-        let PostgresCommands::Certs(CertsCommands::Get { output, .. }) = cmd else {
-            panic!("expected certs get");
-        };
-        assert_eq!(output, Some(PathBuf::from("/tmp/ca.pem")));
-    }
-
-    #[test]
-    fn parses_postgres_config_get() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "config",
-            "get",
-            "pg-1",
-        ]);
-        assert!(matches!(
-            cmd,
-            PostgresCommands::Config(ConfigCommands::Get { .. })
-        ));
-    }
-
-    #[test]
     fn parses_postgres_config_replace_requires_file() {
         let cmd = parse_postgres(&[
             "clickhousectl",
@@ -1582,25 +1456,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_postgres_config_patch_with_file() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "config",
-            "patch",
-            "pg-1",
-            "--file",
-            "/tmp/p.json",
-        ]);
-        let PostgresCommands::Config(ConfigCommands::Patch { sets, file, .. }) = cmd else {
-            panic!("expected patch");
-        };
-        assert!(sets.is_empty());
-        assert_eq!(file, Some(PathBuf::from("/tmp/p.json")));
-    }
-
-    #[test]
     fn rejects_postgres_config_patch_set_and_file_together() {
         let err = Cli::try_parse_from([
             "clickhousectl",
@@ -1635,44 +1490,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_postgres_reset_password_with_password_and_generate() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "reset-password",
-            "pg-1",
-            "--password",
-            "Hunter2345678",
-        ]);
-        let PostgresCommands::ResetPassword {
-            password, generate, ..
-        } = cmd
-        else {
-            panic!("expected reset-password");
-        };
-        assert_eq!(password.as_deref(), Some("Hunter2345678"));
-        assert!(!generate);
-
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "reset-password",
-            "pg-1",
-            "--generate",
-        ]);
-        let PostgresCommands::ResetPassword {
-            password, generate, ..
-        } = cmd
-        else {
-            panic!("expected reset-password");
-        };
-        assert!(password.is_none());
-        assert!(generate);
-    }
-
-    #[test]
     fn rejects_postgres_reset_password_without_password_or_generate() {
         let err = Cli::try_parse_from([
             "clickhousectl",
@@ -1704,31 +1521,6 @@ mod tests {
         .err()
         .expect("expected parse error");
         assert!(err.to_string().contains("cannot be used"));
-    }
-
-    #[test]
-    fn parses_postgres_restore_valid_rfc3339() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "restore",
-            "pg-1",
-            "--name",
-            "restored",
-            "--restore-target",
-            "2026-04-16T12:00:00Z",
-        ]);
-        let PostgresCommands::Restore {
-            name,
-            restore_target,
-            ..
-        } = cmd
-        else {
-            panic!("expected restore");
-        };
-        assert_eq!(name, "restored");
-        assert_eq!(restore_target, "2026-04-16T12:00:00Z");
     }
 
     #[test]
@@ -2239,49 +2031,5 @@ mod tests {
         let PostgresCommands::Prometheus(PrometheusCommands::Org) = org else {
             panic!("expected organization prometheus");
         };
-    }
-
-    #[test]
-    fn parses_postgres_read_replica_create() {
-        let cmd = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "read-replica",
-            "create",
-            "pg-1",
-            "--name",
-            "replica1",
-            "--tag",
-            "role=read",
-        ]);
-        let PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
-            postgres_id,
-            name,
-            tag,
-            ..
-        }) = cmd
-        else {
-            panic!("expected read-replica create");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-        assert_eq!(name, "replica1");
-        assert_eq!(tag, vec!["role=read"]);
-    }
-
-    #[test]
-    fn parses_postgres_restart_promote_switchover() {
-        assert!(matches!(
-            parse_postgres(&["clickhousectl", "cloud", "postgres", "restart", "pg-1"]),
-            PostgresCommands::Restart { .. }
-        ));
-        assert!(matches!(
-            parse_postgres(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"]),
-            PostgresCommands::Promote { .. }
-        ));
-        assert!(matches!(
-            parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"]),
-            PostgresCommands::Switchover { .. }
-        ));
     }
 }

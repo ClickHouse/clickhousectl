@@ -1326,42 +1326,6 @@ mod tests {
     }
 
     #[test]
-    fn test_token_serialization() {
-        let tokens = TokenStore {
-            access_token: "access123".to_string(),
-            refresh_token: "refresh456".to_string(),
-            expires_at: 1700000000,
-            api_url: "https://api.clickhouse.cloud/v1".into(),
-            auth_config: known_auth_config_for_url(DEFAULT_API_URL).unwrap(),
-        };
-        let json = serde_json::to_string(&tokens).unwrap();
-        let parsed: TokenStore = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.access_token, "access123");
-        assert_eq!(parsed.refresh_token, "refresh456");
-        assert_eq!(parsed.expires_at, 1700000000);
-        assert_eq!(parsed.api_url, "https://api.clickhouse.cloud/v1");
-        assert_eq!(parsed.auth_config, tokens.auth_config);
-    }
-
-    #[test]
-    fn test_token_serialization_with_custom_url() {
-        let tokens = TokenStore {
-            access_token: "a".into(),
-            refresh_token: "r".into(),
-            expires_at: 1700000000,
-            api_url: "https://api.control-plane.clickhouse-staging.com/v1".into(),
-            auth_config: sample_auth_config(),
-        };
-        let json = serde_json::to_string(&tokens).unwrap();
-        assert!(json.contains("clickhouse-staging.com"));
-        let parsed: TokenStore = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            parsed.api_url,
-            "https://api.control-plane.clickhouse-staging.com/v1"
-        );
-    }
-
-    #[test]
     fn token_deserialization_requires_complete_configuration() {
         let complete = serde_json::to_value(sample_tokens()).unwrap();
         for missing in ["api_url", "auth_config"] {

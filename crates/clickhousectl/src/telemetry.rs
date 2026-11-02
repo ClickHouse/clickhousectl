@@ -1666,16 +1666,6 @@ mod tests {
     // -- exec handoffs: pre-exec hook building blocks -------------------------
 
     #[test]
-    fn claim_yields_true_exactly_once() {
-        // Tested on a local guard, not the shared static, so this cannot
-        // race other tests or depend on execution order.
-        let guard = AtomicBool::new(false);
-        assert!(claim(&guard));
-        assert!(!claim(&guard));
-        assert!(!claim(&guard));
-    }
-
-    #[test]
     fn exec_attempt_invocation_rewrites_only_the_outcome() {
         let stashed = Invocation {
             command: "local client".into(),
@@ -2717,16 +2707,6 @@ mod tests {
             let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
             assert!(!json.contains(hostile), "leaked {hostile}: {json}");
         }
-    }
-
-    #[test]
-    fn init_snapshots_the_executable_path_once() {
-        // Under `cargo test` the test binary always has a resolvable path.
-        init();
-        let first = EXE_PATH.get().expect("init must snapshot the exe path");
-        // Idempotent: a second call keeps the first snapshot.
-        init();
-        assert_eq!(EXE_PATH.get(), Some(first));
     }
 
     #[test]

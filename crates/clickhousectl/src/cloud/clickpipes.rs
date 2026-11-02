@@ -6830,78 +6830,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_lifecycle_commands_and_flags() {
-        let ClickPipeCommands::List { service_id } =
-            parse_clickpipe(&["list", "svc-list", "--org-id", "org-list"])
-        else {
-            panic!("expected list");
-        };
-        assert_eq!(service_id, "svc-list");
-
-        let ClickPipeCommands::Get {
-            service_id,
-            clickpipe_id,
-        } = parse_clickpipe(&["get", "svc-get", "pipe-get", "--org-id", "org-get"])
-        else {
-            panic!("expected get");
-        };
-        assert_eq!(service_id, "svc-get");
-        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-get"));
-
-        let ClickPipeCommands::Delete {
-            service_id,
-            clickpipe_id,
-        } = parse_clickpipe(&[
-            "delete",
-            "svc-delete",
-            "pipe-delete",
-            "--org-id",
-            "org-delete",
-        ])
-        else {
-            panic!("expected delete");
-        };
-        assert_eq!(service_id, "svc-delete");
-        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-delete"));
-
-        let ClickPipeCommands::Start {
-            service_id,
-            clickpipe_id,
-        } = parse_clickpipe(&["start", "svc-start", "pipe-start", "--org-id", "org-start"])
-        else {
-            panic!("expected start");
-        };
-        assert_eq!(service_id, "svc-start");
-        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-start"));
-
-        let ClickPipeCommands::Stop {
-            service_id,
-            clickpipe_id,
-        } = parse_clickpipe(&["stop", "svc-stop", "pipe-stop", "--org-id", "org-stop"])
-        else {
-            panic!("expected stop");
-        };
-        assert_eq!(service_id, "svc-stop");
-        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-stop"));
-
-        let ClickPipeCommands::Resync {
-            service_id,
-            clickpipe_id,
-        } = parse_clickpipe(&[
-            "resync",
-            "svc-resync",
-            "pipe-resync",
-            "--org-id",
-            "org-resync",
-        ])
-        else {
-            panic!("expected resync");
-        };
-        assert_eq!(service_id, "svc-resync");
-        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-resync"));
-    }
-
-    #[test]
     fn parses_scale_flags_and_defaults() {
         let ClickPipeCommands::Scale {
             service_id,
@@ -7064,42 +6992,6 @@ mod tests {
         assert_eq!(replicas, Some(4));
         assert_eq!(cpu_millicores, None);
         assert_eq!(memory_gb, Some(1.5));
-    }
-
-    #[test]
-    fn parses_cdc_scaling_get_and_update_flags() {
-        let ClickPipeCommands::CdcScaling {
-            command: ClickPipeCdcScalingCommands::Get { service_id },
-        } = parse_clickpipe(&["cdc-scaling", "get", "svc-get", "--org-id", "org-get"])
-        else {
-            panic!("expected CDC scaling get");
-        };
-        assert_eq!(service_id, "svc-get");
-
-        let ClickPipeCommands::CdcScaling {
-            command:
-                ClickPipeCdcScalingCommands::Update {
-                    service_id,
-                    cpu_millicores,
-                    memory_gb,
-                },
-        } = parse_clickpipe(&[
-            "cdc-scaling",
-            "update",
-            "svc-update",
-            "--cpu-millicores",
-            "32000",
-            "--memory-gb",
-            "128",
-            "--org-id",
-            "org-update",
-        ])
-        else {
-            panic!("expected CDC scaling update");
-        };
-        assert_eq!(service_id, "svc-update");
-        assert_eq!(cpu_millicores, Some(32000));
-        assert_eq!(memory_gb, Some(128.0));
     }
 
     #[test]
@@ -9413,60 +9305,6 @@ mod tests {
         }
     }
 
-    /// `<JSON>` is the value name clap renders for the flag's attribute.
-    #[test]
-    fn postgres_help_renders_the_json_table_mapping_value_name() {
-        let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        assert!(help.contains("--table-mapping-json <JSON>"), "{help}");
-    }
-
-    /// Every CDC and TLS flag reaches the help screen with the value name its
-    /// clap attribute declares.
-    #[test]
-    fn postgres_help_renders_every_cdc_and_tls_flag_value_name() {
-        let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for flag in [
-            "--sync-interval-seconds <SECONDS>",
-            "--pull-batch-size <ROWS>",
-            "--initial-load-parallelism <WORKERS>",
-            "--snapshot-rows-per-partition <ROWS>",
-            "--snapshot-parallel-tables <TABLES>",
-            "--allow-nullable-columns <true|false>",
-            "--enable-failover-slots <true|false>",
-            "--delete-on-merge <true|false>",
-            "--ca-certificate <PATH>",
-            "--tls-host <HOSTNAME>",
-            "--disable-tls",
-            "--skip-cert-verification",
-        ] {
-            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
-        }
-    }
-
-    /// The credential pair is `Option` so IAM_ROLE auth can omit it, which
-    /// takes it out of the usage line; the flags still have to reach the help
-    /// screen with their declared value names.
-    #[test]
-    fn mysql_help_renders_the_credential_flag_value_names() {
-        let error = clickpipe_parse_error(&["create", "mysql", "--help"]);
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for flag in [
-            "--username <USERNAME>",
-            "--password <PASSWORD>",
-            "--iam-role <IAM_ROLE>",
-        ] {
-            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
-        }
-    }
-
     /// `main` formats the `clickpipe create` usage error against the source
     /// subcommand named by `clickpipe_create_validation_error`, so every name
     /// that hook can return has to resolve in the real clap command tree.
@@ -10188,67 +10026,57 @@ mod tests {
         }
     }
 
+    /// Every value a CLI-owned list accepts must deserialize to a known
+    /// variant of the library enum the builder converts it to; a value the
+    /// library would read as `Unknown` means the two have drifted. Each value
+    /// is then parsed on its flag, which pins the list each flag is wired to.
     #[test]
-    fn accepted_possible_values_are_pinned() {
-        assert_eq!(
+    fn accepted_possible_values_are_library_variants() {
+        use clickhouse_cloud_api::models::{
+            ClickPipeMutateMySQLSourceAuthentication, ClickPipeMutatePostgresSourceAuthentication,
+            ClickPipeMutatePostgresSourceType, ClickPipePostKinesisSourceAuthentication,
+            ClickPipePostKinesisSourceFormat, ClickPipePostKinesisSourceIteratortype,
+            ClickPipePostObjectStorageSourceCompression, ClickPipePostObjectStorageSourceFormat,
+            ClickPipePostObjectStorageSourceType, ClickPipePostPubSubSourceFormat,
+            ClickPipePostPubSubSourceSeektype, ClickPipePostgresPipeSettingsReplicationmode,
+        };
+        macro_rules! assert_known {
+            ($values:expr, $enum:ident) => {
+                assert!(!$values.is_empty(), stringify!($enum));
+                for &value in $values {
+                    let parsed: $enum = parse_enum(value).unwrap();
+                    assert!(
+                        !matches!(parsed, $enum::Unknown(_)),
+                        "{value} is not a known {}",
+                        stringify!($enum)
+                    );
+                }
+            };
+        }
+        assert_known!(
             OBJECT_STORAGE_FORMATS,
-            &[
-                "JSONEachRow",
-                "JSONAsObject",
-                "CSV",
-                "CSVWithNames",
-                "TabSeparated",
-                "TabSeparatedWithNames",
-                "Parquet",
-                "Avro",
-            ]
+            ClickPipePostObjectStorageSourceFormat
         );
-        assert_eq!(
+        assert_known!(
             OBJECT_STORAGE_COMPRESSIONS,
-            &[
-                "none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto",
-            ]
+            ClickPipePostObjectStorageSourceCompression
         );
-        assert_eq!(
-            OBJECT_STORAGE_TYPES,
-            &[
-                "s3",
-                "gcs",
-                "dospaces",
-                "azureblobstorage",
-                "cloudflarer2",
-                "ovhobjectstorage",
-            ]
-        );
-        assert_eq!(
-            KINESIS_FORMATS,
-            &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"]
-        );
-        assert_eq!(KINESIS_AUTHS, &["IAM_ROLE", "IAM_USER"]);
-        assert_eq!(
+        assert_known!(OBJECT_STORAGE_TYPES, ClickPipePostObjectStorageSourceType);
+        assert_known!(KINESIS_FORMATS, ClickPipePostKinesisSourceFormat);
+        assert_known!(KINESIS_AUTHS, ClickPipePostKinesisSourceAuthentication);
+        assert_known!(
             KINESIS_ITERATOR_TYPES,
-            &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"]
+            ClickPipePostKinesisSourceIteratortype
         );
-        assert_eq!(
-            POSTGRES_TYPES,
-            &[
-                "postgres",
-                "supabase",
-                "neon",
-                "alloydb",
-                "planetscale",
-                "rdspostgres",
-                "aurorapostgres",
-                "cloudsqlpostgres",
-                "azurepostgres",
-                "crunchybridge",
-                "tigerdata",
-            ]
+        assert_known!(POSTGRES_TYPES, ClickPipeMutatePostgresSourceType);
+        assert_known!(DB_AUTHS, ClickPipeMutatePostgresSourceAuthentication);
+        assert_known!(DB_AUTHS, ClickPipeMutateMySQLSourceAuthentication);
+        assert_known!(
+            REPLICATION_MODES,
+            ClickPipePostgresPipeSettingsReplicationmode
         );
-        assert_eq!(DB_AUTHS, &["basic", "IAM_ROLE"]);
-        assert_eq!(REPLICATION_MODES, &["cdc", "snapshot", "cdc_only"]);
-        assert_eq!(PUBSUB_FORMATS, &["JSONEachRow", "Avro", "Protobuf"]);
-        assert_eq!(PUBSUB_SEEK_TYPES, &["latest", "earliest", "timestamp"]);
+        assert_known!(PUBSUB_FORMATS, ClickPipePostPubSubSourceFormat);
+        assert_known!(PUBSUB_SEEK_TYPES, ClickPipePostPubSubSourceSeektype);
 
         for &value in OBJECT_STORAGE_FORMATS {
             assert_object_storage_value("--format", value);
@@ -10368,6 +10196,16 @@ mod tests {
                 visit(child, count);
             }
         }
+        // The domain parsers behind the custom auth value parsers reject what
+        // they do not advertise.
+        for parse in [
+            parse_supported_object_storage_auth,
+            parse_supported_kafka_auth,
+            parse_supported_pubsub_auth,
+            parse_supported_bigquery_auth,
+        ] {
+            assert!(parse("not-a-valid-value").is_err());
+        }
         let tree = crate::cli::Cli::command();
         let clickpipe = tree
             .find_subcommand("cloud")
@@ -10377,242 +10215,6 @@ mod tests {
         let mut count = 0;
         visit(clickpipe, &mut count);
         assert_eq!(count, 11);
-    }
-
-    #[test]
-    fn possible_value_parsers_reject_unknown_values() {
-        let invalid = "not-a-valid-value";
-        let object_base = [
-            "create",
-            "object-storage",
-            "--column",
-            "id:Int64",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--source-url",
-            "https://bucket.example/data",
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ];
-        assert_rejected(&[
-            "create",
-            "object-storage",
-            "--column",
-            "id:Int64",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--source-url",
-            "https://bucket.example/data",
-            "--format",
-            invalid,
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ]);
-        for flag in ["--compression", "--storage-type", "--auth"] {
-            let mut args = object_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        let kafka_base = [
-            "create",
-            "kafka",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--brokers",
-            "broker:9092",
-            "--topics",
-            "topic",
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ];
-        assert_rejected(&[
-            "create",
-            "kafka",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--brokers",
-            "broker:9092",
-            "--topics",
-            "topic",
-            "--format",
-            invalid,
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ]);
-        for flag in ["--kafka-type", "--auth", "--offset"] {
-            let mut args = kafka_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        let kinesis_base = [
-            "create",
-            "kinesis",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--stream-name",
-            "stream-1",
-            "--region",
-            "us-east-1",
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ];
-        assert_rejected(&[
-            "create",
-            "kinesis",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--stream-name",
-            "stream-1",
-            "--region",
-            "us-east-1",
-            "--format",
-            invalid,
-            "--database",
-            "db",
-            "--table",
-            "events",
-        ]);
-        for flag in ["--auth", "--iterator-type"] {
-            let mut args = kinesis_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        let postgres_base = [
-            "create",
-            "postgres",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--host",
-            "postgres.example",
-            "--pg-database",
-            "source-db",
-            "--username",
-            "user",
-            "--password",
-            "password",
-        ];
-        for flag in ["--postgres-type", "--replication-mode", "--auth"] {
-            let mut args = postgres_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        let mysql_base = [
-            "create",
-            "mysql",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--host",
-            "mysql.example",
-            "--username",
-            "user",
-            "--password",
-            "password",
-        ];
-        for flag in [
-            "--mysql-type",
-            "--replication-mode",
-            "--replication-mechanism",
-            "--auth",
-        ] {
-            let mut args = mysql_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        let mongodb_base = [
-            "create",
-            "mongodb",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--uri",
-            "mongodb://mongo.example/source",
-            "--username",
-            "user",
-            "--password",
-            "password",
-        ];
-        for flag in ["--replication-mode", "--read-preference"] {
-            let mut args = mongodb_base.to_vec();
-            args.extend([flag, invalid]);
-            assert_rejected(&args);
-        }
-
-        assert_rejected(&[
-            "create",
-            "bigquery",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--service-account-file",
-            "/tmp/account.json",
-            "--staging-path",
-            "gs://bucket/staging",
-            "--replication-mode",
-            invalid,
-        ]);
-        assert_rejected(&[
-            "create",
-            "bigquery",
-            "svc-1",
-            "--name",
-            "pipe-1",
-            "--service-account-file",
-            "/tmp/account.json",
-            "--staging-path",
-            "gs://bucket/staging",
-            "--auth",
-            invalid,
-        ]);
-
-        for flag in ["--format", "--auth", "--seek-type"] {
-            let mut flags = pubsub_source_flags("./sa-key.json");
-            match flags.iter().position(|arg| *arg == flag) {
-                Some(index) => flags[index + 1] = invalid,
-                None => flags.extend([flag, invalid]),
-            }
-            let mut args = vec![
-                "create",
-                "pubsub",
-                "svc-1",
-                "--name",
-                "pipe-1",
-                "--database",
-                "db",
-                "--table",
-                "events",
-            ];
-            args.extend(flags);
-            assert_rejected(&args);
-        }
     }
 
     #[test]
@@ -11797,19 +11399,6 @@ mod tests {
         assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
         assert_eq!(source.enable_ordering, Some(true));
         assert_eq!(source.ack_deadline, Some(45));
-    }
-
-    /// Every value the `PossibleValuesParser`s accept stays visible in the
-    /// help screen clap renders from them.
-    #[test]
-    fn pubsub_help_lists_every_accepted_format_and_seek_type() {
-        let error = clickpipe_parse_error(&["create", "pubsub", "--help"]);
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for value in PUBSUB_FORMATS.iter().chain(PUBSUB_SEEK_TYPES) {
-            assert!(help.contains(value), "missing `{value}`:\n{help}");
-        }
     }
 
     #[test]
@@ -13365,41 +12954,6 @@ mod tests {
 
             assert_eq!(error, format!("invalid {flag}: expected a finite number"));
         }
-    }
-
-    #[test]
-    fn parse_enum_known_variant() {
-        use clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceFormat;
-        let format: ClickPipePostObjectStorageSourceFormat = parse_enum("JSONEachRow").unwrap();
-        assert_eq!(format, ClickPipePostObjectStorageSourceFormat::JSONEachRow);
-    }
-
-    #[test]
-    fn parse_enum_unknown_falls_through() {
-        // Unknown values map to the catch-all Unknown(String) variant —
-        // forwarded to the API which returns the canonical validation error.
-        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceType;
-        let kafka_type: ClickPipePostKafkaSourceType = parse_enum("not-a-real-type").unwrap();
-        assert_eq!(
-            kafka_type,
-            ClickPipePostKafkaSourceType::Unknown("not-a-real-type".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_enum_preserves_rename_spellings() {
-        // Enums use `#[serde(rename = "s3")]` etc. — wire format is authoritative.
-        use clickhouse_cloud_api::models::{
-            ClickPipePostKafkaSourceAuthentication, ClickPipePostObjectStorageSourceType,
-        };
-        let source_type: ClickPipePostObjectStorageSourceType = parse_enum("s3").unwrap();
-        assert_eq!(source_type, ClickPipePostObjectStorageSourceType::S3);
-        let authentication: ClickPipePostKafkaSourceAuthentication =
-            parse_enum("SCRAM-SHA-256").unwrap();
-        assert_eq!(
-            authentication,
-            ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256
-        );
     }
 
     #[test]

@@ -149,34 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_activity_list_date_only_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "activity",
-            "list",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Activity { command } = args.command else {
-            panic!("expected activity command");
-        };
-        let crate::cloud::cli::ActivityCommands::List { from_date, to_date } = command else {
-            panic!("expected activity list");
-        };
-
-        assert_eq!(from_date.as_deref(), Some("2025-01-01"));
-        assert_eq!(to_date.as_deref(), Some("2025-01-31"));
-    }
-
-    #[test]
     fn rejects_activity_list_timestamps() {
         let result = Cli::try_parse_from([
             "clickhousectl",

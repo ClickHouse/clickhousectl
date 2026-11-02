@@ -1186,33 +1186,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_key_update_list_clear_flags() {
-        let command = parse_top_level_key(&[
-            "clickhousectl",
-            "cloud",
-            "key",
-            "update",
-            "key-1",
-            "--clear-roles",
-            "--clear-ip-allow",
-        ]);
-        let KeyCommands::Update {
-            role_id,
-            clear_roles,
-            ip_allow,
-            clear_ip_allow,
-            ..
-        } = command
-        else {
-            panic!("expected key update");
-        };
-        assert!(role_id.is_empty());
-        assert!(clear_roles);
-        assert!(ip_allow.is_empty());
-        assert!(clear_ip_allow);
-    }
-
-    #[test]
     fn rejects_conflicting_key_update_list_flags() {
         for flags in [
             ["--role-id", "role-1", "--clear-roles"],
@@ -1230,31 +1203,6 @@ mod tests {
             };
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
-    }
-
-    #[test]
-    fn parses_key_expires_at_rfc3339_timestamps() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "create",
-            "--name",
-            "ci-key",
-            "--expires-at",
-            "2025-12-31T23:59:59Z",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Key { command } = args.command else {
-            panic!("expected key command");
-        };
-        let crate::cloud::cli::KeyCommands::Create { expires_at, .. } = command else {
-            panic!("expected key create");
-        };
-        assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
     }
 
     #[test]

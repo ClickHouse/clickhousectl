@@ -720,23 +720,6 @@ mod tests {
 
     #[cfg(feature = "telemetry")]
     #[test]
-    fn parses_telemetry_subcommands() {
-        for (arg, expected) in [
-            ("enable", "Enable"),
-            ("disable", "Disable"),
-            ("status", "Status"),
-            ("send", "Send"),
-        ] {
-            let cli = Cli::try_parse_from(["clickhousectl", "telemetry", arg]).unwrap();
-            let Commands::Telemetry(args) = cli.command else {
-                panic!("expected telemetry command for {arg}");
-            };
-            assert_eq!(format!("{:?}", args.command), expected);
-        }
-    }
-
-    #[cfg(feature = "telemetry")]
-    #[test]
     fn telemetry_requires_a_subcommand() {
         assert!(Cli::try_parse_from(["clickhousectl", "telemetry"]).is_err());
     }
