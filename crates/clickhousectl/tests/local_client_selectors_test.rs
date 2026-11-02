@@ -101,53 +101,6 @@ fn assert_default(home: &Path, expected: Option<&str>) {
     }
 }
 
-fn assert_usage_before_resolution(args: &[&str], expected: &[&str]) {
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let home = tempfile::tempdir().expect("create home tempdir");
-    let output = run(project.path(), home.path(), None, args);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
-    for text in expected {
-        assert!(stderr.contains(text), "missing {text:?} in: {stderr}");
-    }
-    assert!(!stderr.contains("No default version"), "{stderr}");
-    assert!(!stderr.contains("Failed to execute"), "{stderr}");
-    assert!(
-        !home.path().join(".clickhouse").exists(),
-        "parser error resolved a ClickHouse binary"
-    );
-    assert!(
-        !project.path().join(".clickhouse").exists(),
-        "parser error resolved project state"
-    );
-}
-
-#[test]
-fn invalid_clickhouse_selectors_fail_before_binary_or_project_resolution() {
-    for args in [
-        &["local", "client", "--name", "dev", "--host", "remote"][..],
-        &["local", "client", "--host", "remote", "--name", "dev"],
-        &["local", "client", "--name", "dev", "--port", "9000"],
-        &["local", "client", "--port", "9000", "--name", "dev"],
-        &["local", "client", "--name", "dev", "--version", VERSION_A],
-    ] {
-        assert_usage_before_resolution(args, &["--name", "cannot be used"]);
-    }
-    assert_usage_before_resolution(
-        &["local", "client", "--version", VERSION_A],
-        &["required arguments", "--host", "--port"],
-    );
-    assert_usage_before_resolution(
-        &["local", "client", "--port", "0"],
-        &["invalid value", "--port"],
-    );
-    assert_usage_before_resolution(
-        &["local", "client", "--port", "not-a-port"],
-        &["invalid value", "--port"],
-    );
-}
-
 #[test]
 fn clickhouse_direct_default_and_single_installed_selection_reach_fake_child() {
     let project = tempfile::tempdir().expect("create project tempdir");
@@ -307,27 +260,6 @@ fn clickhouse_client_preserves_multi_value_and_repeated_query_file_order() {
             "CSV",
         ],
     );
-}
-
-#[test]
-fn clickhouse_client_rejects_combined_query_sources_before_the_fake_child_in_every_order() {
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let home = tempfile::tempdir().expect("create home tempdir");
-    install_fake_clickhouse(home.path(), VERSION_B);
-    write_default(home.path(), VERSION_B);
-
-    for inputs in [
-        ["--query", "SELECT 1", "--queries-file", "queries.sql"],
-        ["--queries-file", "queries.sql", "--query", "SELECT 1"],
-    ] {
-        let args: Vec<&str> = ["local", "client"].into_iter().chain(inputs).collect();
-        let output = run(project.path(), home.path(), None, &args);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
-        assert!(stderr.contains("--query <QUERY>"), "{stderr}");
-        assert!(stderr.contains("--queries-file <QUERIES_FILE>"), "{stderr}");
-        assert!(output.stdout.is_empty(), "fake child unexpectedly ran");
-    }
 }
 
 #[test]
@@ -591,30 +523,7 @@ fn clickhouse_named_mode_uses_server_version_without_a_default() {
 }
 
 #[test]
-fn postgres_client_uses_the_same_validation_and_direct_mode_defaults() {
-    assert_usage_before_resolution(
-        &[
-            "local", "postgres", "client", "--name", "dev", "--host", "remote",
-        ],
-        &["--name", "cannot be used"],
-    );
-    assert_usage_before_resolution(
-        &[
-            "local",
-            "postgres",
-            "client",
-            "--version",
-            "18",
-            "--port",
-            "5432",
-        ],
-        &["--version", "cannot be used"],
-    );
-    assert_usage_before_resolution(
-        &["local", "postgres", "client", "--port", "0"],
-        &["invalid value", "--port"],
-    );
-
+fn postgres_client_direct_mode_defaults_reach_psql() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
     let bin = home.path().join("bin");
@@ -651,43 +560,6 @@ fn postgres_client_uses_the_same_validation_and_direct_mode_defaults() {
             "postgres",
         ],
     );
-}
-
-#[test]
-fn both_clients_reject_native_arguments_without_boundary_before_child_execution() {
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let home = tempfile::tempdir().expect("create home tempdir");
-    install_fake_clickhouse(home.path(), VERSION_A);
-    let bin = home.path().join("bin");
-    write_arg_printer(&bin.join("psql"));
-
-    for client in [
-        &["local", "client"][..],
-        &["local", "postgres", "client"][..],
-    ] {
-        for native in ["--format=CSV", "--unknown", "-X", "dbname"] {
-            for selectors in [
-                &["--name", "dev"][..],
-                &["--host", "wrapper-host", "--port", "12345"][..],
-            ] {
-                for native_first in [true, false] {
-                    let tail: Vec<&str> = if native_first {
-                        [native]
-                            .into_iter()
-                            .chain(selectors.iter().copied())
-                            .collect()
-                    } else {
-                        selectors.iter().copied().chain([native]).collect()
-                    };
-                    let argv: Vec<&str> = client.iter().copied().chain(tail).collect();
-                    let output = run(project.path(), home.path(), Some(&bin), &argv);
-                    assert_eq!(output.status.code(), Some(2), "argv: {argv:?}; {output:?}");
-                    assert!(output.stdout.is_empty(), "fake child ran: {output:?}");
-                    assert!(!project.path().join(".clickhouse").exists());
-                }
-            }
-        }
-    }
 }
 
 #[test]

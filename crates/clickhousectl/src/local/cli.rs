@@ -1385,7 +1385,7 @@ mod tests {
     #[test]
     fn both_clients_require_boundary_before_native_arguments() {
         for client in [&["client"][..], &["postgres", "client"][..]] {
-            for native in ["--unknown", "--format", "-X"] {
+            for native in ["--unknown", "--format", "--format=CSV", "-X"] {
                 for selectors in [
                     &["--name", "dev"][..],
                     &["--host", "remote", "--port", "9000"][..],
@@ -1796,6 +1796,43 @@ mod tests {
                 "DATABASE_URL=postgres://localhost/db?option=a=b"
             ]
         );
+    }
+
+    #[test]
+    fn postgres_start_env_conflicts_are_reported_after_parsing() {
+        for args in [
+            &["postgres", "start"][..],
+            &[
+                "postgres",
+                "start",
+                "--password",
+                "pw",
+                "-e",
+                "APP_MODE=dev",
+            ],
+            &["client", "--host", "remote"],
+        ] {
+            assert_eq!(local_args(args).postgres_start_validation_error(), None);
+        }
+        for (args, expected) in [
+            (
+                &["--password", "pw", "--env", "POSTGRES_PASSWORD=env"][..],
+                "both --password and --env",
+            ),
+            (
+                &["-e", "APP_MODE=dev", "--env", "APP_MODE=test"],
+                "'APP_MODE' was provided more than once",
+            ),
+        ] {
+            let argv: Vec<_> = ["postgres", "start"]
+                .into_iter()
+                .chain(args.iter().copied())
+                .collect();
+            let error = local_args(&argv)
+                .postgres_start_validation_error()
+                .expect("conflicting env arguments");
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

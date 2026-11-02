@@ -109,7 +109,6 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/src/timing.rs",
                     "crates/clickhousectl/src/user_agent.rs",
                     "crates/clickhousectl/tests/local_install_local_first_test.rs",
-                    "crates/clickhousectl/tests/local_version_error_test.rs",
                     "scripts/classify-install-integration.py",
                     "scripts/tests/test_classify_install_integration.py",
                 }

@@ -37,24 +37,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
-            let result = init::init()?;
-            let mut paths = Vec::new();
-            if result.clickhouse_dir_created {
-                paths.push(".clickhouse/".to_string());
-            } else if result.runtime_gitignore_created {
-                paths.push(".clickhouse/.gitignore".to_string());
-            }
-            if result.clickhouse_scaffold_created {
-                paths.push("clickhouse/".to_string());
-            }
-            if result.postgres_scaffold_created {
-                paths.push("postgres/".to_string());
-            }
-            let out = output::InitOutput {
-                paths,
-                already_initialized: !result.clickhouse_dir_created,
-            };
-            output::print_output(&out, json);
+            output::print_output(&init_output(init::init()?), json);
             Ok(())
         }
         LocalCommands::Client {
@@ -1437,9 +1420,71 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// What `local init` reports: the paths this run created, with `.clickhouse/`
+/// standing in for its own ignore file on a first run.
+fn init_output(result: init::InitResult) -> output::InitOutput {
+    let mut paths = Vec::new();
+    if result.clickhouse_dir_created {
+        paths.push(".clickhouse/".to_string());
+    } else if result.runtime_gitignore_created {
+        paths.push(".clickhouse/.gitignore".to_string());
+    }
+    if result.clickhouse_scaffold_created {
+        paths.push("clickhouse/".to_string());
+    }
+    if result.postgres_scaffold_created {
+        paths.push("postgres/".to_string());
+    }
+    output::InitOutput {
+        paths,
+        already_initialized: !result.clickhouse_dir_created,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_output_lists_created_paths_and_flags_a_rerun() {
+        let first_run = init::InitResult {
+            clickhouse_dir_created: true,
+            runtime_gitignore_created: true,
+            clickhouse_scaffold_created: true,
+            postgres_scaffold_created: true,
+        };
+        for (result, paths, already_initialized) in [
+            (
+                first_run,
+                &[".clickhouse/", "clickhouse/", "postgres/"][..],
+                false,
+            ),
+            (init::InitResult::default(), &[][..], true),
+            (
+                init::InitResult {
+                    runtime_gitignore_created: true,
+                    ..Default::default()
+                },
+                &[".clickhouse/.gitignore"][..],
+                true,
+            ),
+            (
+                init::InitResult {
+                    postgres_scaffold_created: true,
+                    ..Default::default()
+                },
+                &["postgres/"][..],
+                true,
+            ),
+        ] {
+            let output = init_output(result);
+            assert_eq!(output.paths, paths, "{result:?}");
+            assert_eq!(
+                output.already_initialized, already_initialized,
+                "{result:?}"
+            );
+        }
+    }
 
     #[test]
     fn repeated_query_support_matches_the_native_client_contract() {

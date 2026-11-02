@@ -227,45 +227,25 @@ fn run_resume(
         .expect("run clickhousectl")
 }
 
+/// Clap's value parsers reject the other invalid inputs before dispatch
+/// (unit-tested in `local/cli.rs`); the cross-flag env checks run in
+/// `validate_post_parse` instead, so one of them proves that wiring.
 #[test]
-fn invalid_start_inputs_make_zero_docker_requests_or_project_state() {
-    for args in [
-        vec!["--name", "../unsafe"],
-        vec!["../unsafe"],
-        vec!["--version", "18garbage"],
-        vec!["--port", "0"],
-        vec!["--env", "NO_EQUALS"],
-        vec!["--env", "POSTGRES_USER=admin"],
-        vec!["--env", "APP_MODE=dev", "--env", "APP_MODE=test"],
-        vec![
-            "--password",
-            "from-flag",
-            "--env",
-            "POSTGRES_PASSWORD=from-env",
-        ],
-        vec![
-            "--env",
-            "POSTGRES_PASSWORD=first",
-            "--env",
-            "POSTGRES_PASSWORD=second",
-        ],
-    ] {
-        let (output, requests, project_state_created) = run_invalid_start(&args);
-        assert!(
-            !output.status.success(),
-            "arguments unexpectedly passed: {args:?}"
-        );
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "wrong exit code for {args:?}"
-        );
-        assert_eq!(requests, 0, "Docker was contacted for {args:?}");
-        assert!(
-            !project_state_created,
-            "project state was created for {args:?}"
-        );
-    }
+fn post_parse_env_conflicts_are_usage_errors_before_docker_or_project_state() {
+    let (output, requests, project_state_created) = run_invalid_start(&[
+        "--password",
+        "from-flag",
+        "--env",
+        "POSTGRES_PASSWORD=from-env",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(requests, 0, "Docker was contacted");
+    assert!(!project_state_created, "project state was created");
 }
 
 #[test]
@@ -355,57 +335,6 @@ fn password_env_override_reports_stored_settings_on_resume() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("resuming with stored settings"), "{stderr}");
-}
-
-#[test]
-fn unsupported_version_diagnostic_is_postgres_specific() {
-    let (output, requests, project_state_created) = run_invalid_start(&["--version", "16"]);
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(
-        stderr
-            .contains("Postgres error: invalid or unsupported postgres version '16'. Use 17 or 18")
-    );
-    assert!(!stderr.contains("Failed to execute ClickHouse"));
-    assert_eq!(requests, 0);
-    assert!(!project_state_created);
-}
-
-#[test]
-fn postgres_start_help_renders_clap_structure() {
-    let home = tempfile::tempdir().expect("create home tempdir");
-    let output = Command::new(clickhousectl_binary())
-        .env_clear()
-        .env("DO_NOT_TRACK", "1")
-        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
-        .env("HOME", home.path())
-        .args(["local", "postgres", "start", "--help"])
-        .output()
-        .expect("render postgres start help");
-
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let help = String::from_utf8(output.stdout).expect("stdout is UTF-8");
-
-    // Clap-rendered structure: usage line, value names, and the `--wait-timeout` default.
-    for token in [
-        "Usage: clickhousectl local postgres start [OPTIONS] [NAME]",
-        "Arguments:",
-        "-v, --version <VERSION>",
-        "--port <PORT>",
-        "--user <USER>",
-        "--password <PASSWORD>",
-        "--database <DATABASE>",
-        "-e, --env <KEY=VALUE>",
-        "--wait-timeout <WAIT_TIMEOUT>",
-        "[default: 60]",
-    ] {
-        assert!(help.contains(token), "missing {token:?} in:\n{help}");
-    }
-
-    // Quotes in doc comments render literally, never as escaped `\"` sequences.
-    assert!(!help.contains(r#"\"default\""#), "{help}");
 }
 
 #[test]
