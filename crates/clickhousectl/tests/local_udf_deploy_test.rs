@@ -309,10 +309,6 @@ fn deploy_native_is_unsupported_off_linux_and_writes_nothing() {
     ));
     assert_eq!(error["error"]["code"], "udf_runtime_unsupported");
     assert_eq!(
-        error["error"]["message"],
-        "native UDFs run only on local servers on Linux amd64 or arm64; deploy from a Linux host, or to Cloud with `cloud udf deploy`"
-    );
-    assert_eq!(
         error["error"]["command"],
         "clickhousectl local udf deploy --help"
     );
@@ -403,12 +399,8 @@ fn deploy_native_needs_only_the_host_architecture_binary() {
         &["local", "udf", "deploy", "native_fn", "--json"],
     ));
     assert_eq!(error["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        format!(
-            "UDF source directory 'clickhouse/udfs/native_fn' is missing {arch}/main, the binary runtime native runs on this host"
-        )
-    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&format!("{arch}/main")), "{message}");
 }
 
 #[test]
@@ -527,7 +519,7 @@ fn deploy_stores_a_relative_python_path_absolute_and_normalised() {
 }
 
 #[test]
-fn redeploy_replaces_previous_scripts_and_human_output_explains_next_start() {
+fn redeploy_replaces_previous_scripts_and_human_mode_notes_requirements_on_stderr() {
     let env = setup();
     create_stopped_server(&env, "default");
     let dir = write_python_udf(&env, "my_fn", true);
@@ -546,24 +538,13 @@ fn redeploy_replaces_previous_scripts_and_human_output_explains_next_start() {
     assert!(!scripts.join("lib/helper.py").exists());
     assert!(scripts.join("main.py").is_file());
 
+    // Human mode: the result on stdout, the requirements notice alone on
+    // stderr (JSON mode prints no notice; see the first deploy test).
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.starts_with("Deployed UDF my_fn to server 'default' (python3.11, executable)\n"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("  ignored fields: memoryLimitMib\n"),
-        "{stdout}"
-    );
-    assert!(
-        stdout
-            .ends_with("Server 'default' is not running; the function loads on its next start.\n"),
-        "{stdout}"
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "requirements.txt is not installed locally; install its packages into the interpreter you deploy with (e.g. a virtualenv passed with --python).\n"
-    );
+    assert!(stdout.lines().next().unwrap().contains("my_fn"), "{stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("requirements.txt "), "{stderr}");
 }
 
 #[test]
@@ -643,17 +624,6 @@ fn list_and_remove_work_without_a_running_server() {
             {"name": "other_fn", "type": "executable", "runtime": "python3.11", "loaded": null, "last_deploy_rejected": false}
         ])
     );
-    let human = run(&env, &["local", "udf", "list"]);
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    assert!(stdout.contains("| my_fn"), "{stdout}");
-    assert!(stdout.contains("| other_fn"), "{stdout}");
-    assert!(
-        stdout.ends_with(
-            "Server 'default' is not running; loaded state is unknown until it starts.\n"
-        ),
-        "{stdout}"
-    );
-
     let removed = success_json(&run(&env, &["local", "udf", "remove", "my_fn", "--json"]));
     assert_eq!(
         removed,
@@ -672,26 +642,21 @@ fn list_and_remove_work_without_a_running_server() {
     let again = error_json(&run(&env, &["local", "udf", "remove", "my_fn", "--json"]));
     assert_eq!(again["error"]["code"], "udf_not_found");
     assert_eq!(
-        again["error"]["message"],
-        "UDF 'my_fn' is not deployed to server 'default'"
-    );
-    assert_eq!(
         again["error"]["command"],
         "clickhousectl local udf list --server default"
     );
 
-    let human = run(&env, &["local", "udf", "remove", "other_fn"]);
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout),
-        "Removed UDF other_fn from server 'default'; the change applies on its next start\n"
-    );
-    let empty = run(&env, &["local", "udf", "list"]);
-    assert_eq!(
-        String::from_utf8_lossy(&empty.stdout),
-        "No UDFs deployed to server 'default'\n"
-    );
+    success_json(&run(
+        &env,
+        &["local", "udf", "remove", "other_fn", "--json"],
+    ));
+    let empty = success_json(&run(&env, &["local", "udf", "list", "--json"]));
+    assert_eq!(empty["udfs"], serde_json::json!([]));
 }
 
+/// Each kind of input problem reaches the deploy handler and stops it before
+/// anything is staged. The checks themselves and their wording are
+/// unit-tested in `src/udf.rs` and `src/local/udf.rs`.
 #[test]
 fn definition_and_source_problems_are_structured_errors_before_anything_is_staged() {
     let env = setup();
@@ -699,44 +664,12 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
     let dir = write_python_udf(&env, "my_fn", false);
     let args = ["local", "udf", "deploy", "my_fn", "--json"];
 
+    // serde's objection goes to `details`, and no command documents the schema.
     std::fs::write(dir.join("udf.json"), "{ not json").unwrap();
     let error = error_json(&run(&env, &args));
     assert_eq!(error["error"]["code"], "udf_definition_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON at line 1 column 3"
-    );
-    assert_eq!(
-        error["error"]["details"],
-        "key must be a string at line 1 column 3"
-    );
-    // No help documents the schema and `init` keeps an existing udf.json.
+    assert!(error["error"]["details"].is_string(), "{error}");
     assert_eq!(error["error"].get("command"), None);
-
-    std::fs::write(
-        dir.join("udf.json"),
-        r#"{"functionName":"my_fn","type":"executable","runtime":"python3.11","arguments":[],"returnType":"String","typo":1}"#,
-    )
-    .unwrap();
-    let error = error_json(&run(&env, &args));
-    assert_eq!(error["error"]["code"], "udf_definition_invalid");
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("clickhouse/udfs/my_fn/udf.json"),
-        "{message}"
-    );
-    assert!(message.contains("unknown field `typo`"), "{message}");
-
-    std::fs::write(
-        dir.join("udf.json"),
-        r#"{"type":"executable","runtime":"python3.11","arguments":[],"returnType":"String"}"#,
-    )
-    .unwrap();
-    let error = error_json(&run(&env, &args));
-    assert_eq!(
-        error["error"]["message"],
-        "UDF definition 'clickhouse/udfs/my_fn/udf.json' is invalid: UDF definition requires functionName"
-    );
 
     std::fs::write(
         dir.join("udf.json"),
@@ -745,58 +678,25 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
     .unwrap();
     let error = error_json(&run(&env, &args));
     assert_eq!(error["error"]["code"], "udf_definition_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        "UDF definition 'clickhouse/udfs/my_fn/udf.json' is invalid: functionName is other, but the command targets my_fn"
-    );
 
     std::fs::remove_file(dir.join("udf.json")).unwrap();
     let error = error_json(&run(&env, &args));
     assert_eq!(error["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/my_fn' has no udf.json"
-    );
     assert_eq!(error["error"].get("command"), None);
 
     write_python_udf(&env, "my_fn", false);
     std::fs::remove_file(dir.join("main.py")).unwrap();
     let error = error_json(&run(&env, &args));
     assert_eq!(error["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/my_fn' is missing main.py, the entrypoint required by runtime python3.11"
-    );
 
-    std::fs::write(dir.join("main.py"), "").unwrap();
-    std::os::unix::fs::symlink(dir.join("main.py"), dir.join("link.py")).unwrap();
-    let error = error_json(&run(&env, &args));
-    assert_eq!(
-        error["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/my_fn' contains a symbolic link at link.py"
-    );
-    std::fs::remove_file(dir.join("link.py")).unwrap();
-
-    std::os::unix::fs::symlink(&dir, env.project.path().join("clickhouse/udfs/linked")).unwrap();
-    let error = error_json(&run(&env, &["local", "udf", "deploy", "linked", "--json"]));
-    assert_eq!(error["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        error["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/linked' is a symbolic link"
-    );
-
+    // A missing directory under the default parent can be scaffolded there;
+    // under another parent `init` cannot, so no command is suggested.
     let missing_dir = error_json(&run(&env, &["local", "udf", "deploy", "nope", "--json"]));
     assert_eq!(missing_dir["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        missing_dir["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/nope' does not exist; create it with `clickhousectl local udf init nope`"
-    );
     assert_eq!(
         missing_dir["error"]["command"],
         "clickhousectl local udf init nope"
     );
-
-    // Another parent: init cannot scaffold there, so it is named with its target.
     let other_parent = error_json(&run(
         &env,
         &[
@@ -809,20 +709,8 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
             "--json",
         ],
     ));
-    assert_eq!(
-        other_parent["error"]["message"],
-        "UDF source directory 'elsewhere/nope' does not exist; `clickhousectl local udf init nope` scaffolds one in clickhouse/udfs"
-    );
+    assert_eq!(other_parent["error"]["code"], "udf_source_invalid");
     assert_eq!(other_parent["error"].get("command"), None);
-
-    // A path that exists but is a file keeps its own wording.
-    std::fs::write(env.project.path().join("clickhouse/udfs/plain"), "").unwrap();
-    let file = error_json(&run(&env, &["local", "udf", "deploy", "plain", "--json"]));
-    assert_eq!(file["error"]["code"], "udf_source_invalid");
-    assert_eq!(
-        file["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/plain' is not a directory"
-    );
 
     assert_nothing_staged(&env, "default");
 }
@@ -840,10 +728,6 @@ fn missing_python_interpreter_is_a_structured_error_and_explicit_python_is_honou
         .unwrap();
     let error = error_json(&output);
     assert_eq!(error["error"]["code"], "udf_interpreter_not_found");
-    assert_eq!(
-        error["error"]["message"],
-        "No python3.11 or python3 interpreter found on PATH; pass --python <PATH>"
-    );
     assert_eq!(
         error["error"]["command"],
         "clickhousectl local udf deploy --help"
@@ -882,10 +766,8 @@ fn missing_python_interpreter_is_a_structured_error_and_explicit_python_is_honou
     );
     let error = error_json(&output);
     assert_eq!(error["error"]["code"], "udf_interpreter_not_found");
-    assert_eq!(
-        error["error"]["message"],
-        "Python interpreter '/nonexistent/python' is not an executable file"
-    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("/nonexistent/python"), "{message}");
 }
 
 #[test]
@@ -896,13 +778,10 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
     let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
     assert_eq!(error["error"]["code"], "server_not_found");
     let project_root = env.project.path().canonicalize().unwrap();
-    assert_eq!(
-        error["error"]["message"],
-        format!(
-            "Server 'default' not found in project '{}'; start it with \
-             `clickhousectl local clickhouse start default`",
-            project_root.display()
-        )
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!("'{}'", project_root.display())),
+        "{message}"
     );
     assert_eq!(
         error["error"]["command"],
@@ -978,7 +857,6 @@ fn a_server_missing_from_a_subdirectory_is_not_started_there() {
             message.contains(&format!("'{}'", sub.canonicalize().unwrap().display())),
             "{message}"
         );
-        assert!(!message.contains("server start"), "{message}");
         assert_eq!(
             error["error"]["command"], "clickhousectl local clickhouse list --global",
             "{args:?}"
@@ -1025,11 +903,6 @@ fn server_naming_a_local_postgres_instance_is_rejected_before_anything_is_writte
         ] {
             let error = error_json(&run(&env, &args));
             assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
-            assert_eq!(
-                error["error"]["message"],
-                format!("'{server}' is a local Postgres instance, not a ClickHouse server"),
-                "{args:?}"
-            );
             assert_eq!(
                 error["error"]["command"], "clickhousectl local clickhouse list",
                 "{args:?}"

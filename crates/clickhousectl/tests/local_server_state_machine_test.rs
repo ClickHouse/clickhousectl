@@ -454,11 +454,43 @@ struct CommandCase {
     expected: ExpectedOutput,
 }
 
+/// JSON is compared field by field with every `message` reduced to "is a
+/// string"; human text by the values and commands it must name. Wording is
+/// unit-tested beside the output types.
 enum ExpectedOutput {
     JsonSuccess(Value),
     JsonFailure(Value),
-    HumanSuccess(String),
-    HumanFailure(String),
+    HumanSuccess(Vec<String>),
+    HumanFailure(Vec<String>),
+}
+
+fn without_messages(mut value: Value) -> Value {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map.iter_mut() {
+                    if key == "message" && child.is_string() {
+                        *child = Value::String("<message>".into());
+                    } else {
+                        walk(child);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(&mut value);
+    value
+}
+
+fn assert_names_all(label: &str, text: &str, fragments: &[String]) {
+    for fragment in fragments {
+        assert!(
+            text.contains(fragment.as_str()),
+            "{label} missing {fragment:?}: {text}"
+        );
+    }
 }
 
 impl ExpectedOutput {
@@ -476,9 +508,11 @@ impl ExpectedOutput {
                     "{label} wrote JSON success stderr"
                 );
                 assert_eq!(
-                    serde_json::from_slice::<Value>(&output.stdout)
-                        .unwrap_or_else(|error| panic!("{label} JSON stdout: {error}")),
-                    *expected,
+                    without_messages(
+                        serde_json::from_slice::<Value>(&output.stdout)
+                            .unwrap_or_else(|error| panic!("{label} JSON stdout: {error}"))
+                    ),
+                    without_messages(expected.clone()),
                     "{label} JSON stdout"
                 );
             }
@@ -491,9 +525,11 @@ impl ExpectedOutput {
                 );
                 assert!(output.stdout.is_empty(), "{label} failure wrote stdout");
                 assert_eq!(
-                    serde_json::from_slice::<Value>(&output.stderr)
-                        .unwrap_or_else(|error| panic!("{label} JSON stderr: {error}")),
-                    *expected,
+                    without_messages(
+                        serde_json::from_slice::<Value>(&output.stderr)
+                            .unwrap_or_else(|error| panic!("{label} JSON stderr: {error}"))
+                    ),
+                    without_messages(expected.clone()),
                     "{label} JSON stderr"
                 );
             }
@@ -508,7 +544,7 @@ impl ExpectedOutput {
                     output.stderr.is_empty(),
                     "{label} wrote human success stderr"
                 );
-                assert_eq!(String::from_utf8_lossy(&output.stdout), expected.as_str());
+                assert_names_all(label, &String::from_utf8_lossy(&output.stdout), expected);
             }
             Self::HumanFailure(expected) => {
                 assert_eq!(
@@ -521,7 +557,9 @@ impl ExpectedOutput {
                     output.stdout.is_empty(),
                     "{label} human failure wrote stdout"
                 );
-                assert_eq!(String::from_utf8_lossy(&output.stderr), expected.as_str());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.starts_with("Error: "), "{label}: {stderr}");
+                assert_names_all(label, &stderr, expected);
             }
         }
     }
@@ -635,18 +673,19 @@ fn project_not_found(project: &Path, name: &str, stop: bool) -> Value {
     })
 }
 
-fn human_project_not_found(project: &Path, name: &str, command: &str) -> String {
-    let global_stop = if command == "stop" {
-        "; after confirming the project, use `clickhousectl local clickhouse stop <name> --global --project <project-root>`"
-    } else {
-        ""
-    };
-    format!(
-        "Error: Server '{name}' was not found in project '{}'.\n\
-         Project-local clickhouse {command} uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-         Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects{global_stop}.\n",
-        canonical(project)
-    )
+fn human_project_not_found(project: &Path, name: &str, command: &str) -> Vec<String> {
+    let mut fragments = vec![
+        format!("'{name}'"),
+        format!("'{}'", canonical(project)),
+        "`clickhousectl local clickhouse list`".into(),
+        "`clickhousectl local clickhouse list --global`".into(),
+    ];
+    if command == "stop" {
+        fragments.push(
+            "`clickhousectl local clickhouse stop <name> --global --project <project-root>`".into(),
+        );
+    }
+    fragments
 }
 
 fn empty_server_list(project: &Path) -> Value {
@@ -732,13 +771,11 @@ fn fresh_project(fixture: &Fixture) {
             label: "fresh omitted stop human output".into(),
             cwd: TestCwd::Root,
             args: strings(&["local", "server", "stop"]),
-            expected: ExpectedOutput::HumanSuccess(format!(
-                "No ClickHouse servers found; nothing to stop\n\
-                 No `.clickhouse` directory existed under project '{}' when the command started.\n\
-                 Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-                 The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects.\n",
-                canonical(&fixture.project)
-            )),
+            expected: ExpectedOutput::HumanSuccess(vec![
+                format!("'{}'", canonical(&fixture.project)),
+                "`clickhousectl local clickhouse list`".into(),
+                "`clickhousectl local clickhouse list --global`".into(),
+            ]),
         },
         CommandCase {
             label: "fresh omitted remove".into(),
@@ -843,10 +880,10 @@ fn default_lifecycle(fixture: &Fixture) {
             label: "running default remove".into(),
             cwd: TestCwd::Root,
             args: strings(&["local", "server", "remove"]),
-            expected: ExpectedOutput::HumanFailure(
-                "Error: Server 'default' is running; stop it first with `clickhousectl local clickhouse stop default`\n"
-                    .into(),
-            ),
+            expected: ExpectedOutput::HumanFailure(vec![
+                "'default'".into(),
+                "`clickhousectl local clickhouse stop default`".into(),
+            ]),
         },
     ]);
     fixture.assert_running_metadata(&server);

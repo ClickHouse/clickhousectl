@@ -1,6 +1,6 @@
 //! Managed local-client project-scope diagnostics.
 
-use serde::Serialize;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -34,7 +34,9 @@ fn run(project: &Path, home: &Path, json: bool, client_args: &[&str]) -> Output 
         .expect("run clickhousectl")
 }
 
-fn assert_failure(output: &Output, expected: &str) {
+/// The structured error a failed managed lookup prints on stderr, with
+/// nothing on stdout.
+fn error_json(output: &Output) -> Value {
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -42,7 +44,7 @@ fn assert_failure(output: &Output, expected: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty());
-    assert_eq!(String::from_utf8_lossy(&output.stderr), expected);
+    serde_json::from_slice(&output.stderr).expect("stderr is one JSON error")
 }
 
 fn canonical(project: &Path) -> String {
@@ -82,151 +84,127 @@ fn install_fake_clickhouse(home: &Path, version: &str) {
     std::fs::write(binary, "#!/bin/sh\nexit 0\n").expect("write fake ClickHouse");
 }
 
-#[derive(Serialize)]
-struct ExpectedEnvelope<'a> {
-    error: ExpectedError<'a>,
-}
+const LIST: &str = "clickhousectl local clickhouse list";
+const DIRECT: &str = "clickhousectl local client --host <host> --port <port>";
 
-#[derive(Serialize)]
-struct ExpectedError<'a> {
-    code: &'a str,
-    message: &'a str,
-    project_scope: ExpectedScope<'a>,
-    server: ExpectedServer<'a>,
-    guidance: Vec<ExpectedGuidance>,
-}
-
-#[derive(Serialize)]
-struct ExpectedScope<'a> {
-    path: &'a str,
-}
-
-#[derive(Serialize)]
-struct ExpectedServer<'a> {
-    selection: &'a str,
-    name: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    binary_version: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-struct ExpectedGuidance {
-    message: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    command: Option<&'static str>,
-}
-
-fn list_guidance() -> ExpectedGuidance {
-    ExpectedGuidance {
-        message: "List managed servers in this exact project",
-        command: Some("clickhousectl local clickhouse list"),
-    }
-}
-
-fn direct_guidance() -> ExpectedGuidance {
-    ExpectedGuidance {
-        message: "Bypass managed project lookup and connect directly",
-        command: Some("clickhousectl local client --host <host> --port <port>"),
-    }
-}
-
-fn start_guidance(selection: &str) -> ExpectedGuidance {
+fn start_command(selection: &str) -> &'static str {
     if selection == "default" {
-        ExpectedGuidance {
-            message: "Start the default managed server in this project",
-            command: Some("clickhousectl local clickhouse start"),
-        }
+        "clickhousectl local clickhouse start"
     } else {
-        ExpectedGuidance {
-            message: "Start the selected named managed server in this project",
-            command: Some("clickhousectl local clickhouse start <name>"),
-        }
+        "clickhousectl local clickhouse start <name>"
     }
 }
 
-fn expected_json(
+/// The guidance commands for each code, in order; `None` is advice without a
+/// command.
+fn expected_commands(code: &str, selection: &str) -> Vec<Option<&'static str>> {
+    match code {
+        "managed_client_server_not_found" => {
+            vec![
+                Some(LIST),
+                None,
+                Some(start_command(selection)),
+                Some(DIRECT),
+            ]
+        }
+        "managed_client_server_not_running" => {
+            vec![Some(LIST), Some(start_command(selection)), Some(DIRECT)]
+        }
+        "managed_client_binary_not_found" => vec![
+            Some(LIST),
+            Some("clickhousectl local install <version>"),
+            Some(DIRECT),
+        ],
+        "managed_client_project_state_unavailable" => vec![None, Some(LIST), Some(DIRECT)],
+        other => panic!("unexpected code: {other}"),
+    }
+}
+
+/// Assert the managed-mode envelope by its fields: the code, the exact
+/// project scope, the selected server, and the guidance commands.
+fn assert_managed_error(
+    error: &Value,
     project: &str,
     code: &str,
-    message: &str,
     selection: &str,
     name: &str,
     binary_version: Option<&str>,
-) -> String {
-    let mut guidance = vec![list_guidance()];
-    match code {
-        "managed_client_server_not_found" => {
-            guidance.push(ExpectedGuidance {
-                message: "Return to the project directory that owns the managed server",
-                command: None,
-            });
-            guidance.push(start_guidance(selection));
-        }
-        "managed_client_server_not_running" => guidance.push(start_guidance(selection)),
-        "managed_client_binary_not_found" => guidance.push(ExpectedGuidance {
-            message: "Install the version selected by the managed server metadata",
-            command: Some("clickhousectl local install <version>"),
-        }),
-        "managed_client_project_state_unavailable" => guidance.insert(
-            0,
-            ExpectedGuidance {
-                message: "Repair the reported project state error before retrying",
-                command: None,
-            },
-        ),
-        other => panic!("unexpected code: {other}"),
+) {
+    let error = &error["error"];
+    assert_eq!(error["code"], code, "{error}");
+    assert!(error["message"].is_string(), "{error}");
+    assert_eq!(error["project_scope"], json!({ "path": project }));
+    let mut server = json!({ "selection": selection, "name": name });
+    if let Some(version) = binary_version {
+        server["binary_version"] = json!(version);
     }
-    guidance.push(direct_guidance());
+    assert_eq!(error["server"], server);
+    let guidance = error["guidance"].as_array().expect("guidance list");
+    assert!(guidance.iter().all(|item| item["message"].is_string()));
+    let commands: Vec<Option<&str>> = guidance
+        .iter()
+        .map(|item| item.get("command").map(|command| command.as_str().unwrap()))
+        .collect();
+    assert_eq!(commands, expected_commands(code, selection));
+}
 
-    let expected = ExpectedEnvelope {
-        error: ExpectedError {
-            code,
-            message,
-            project_scope: ExpectedScope { path: project },
-            server: ExpectedServer {
-                selection,
-                name,
-                binary_version,
-            },
-            guidance,
-        },
-    };
-    format!("{}\n", serde_json::to_string_pretty(&expected).unwrap())
+/// Human mode fails the same way and names the scope, the server and every
+/// guidance command the JSON envelope carries.
+fn assert_human_parity(output: &Output, project: &str, json: &Value) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(stderr.contains(&format!("'{project}'")), "{stderr}");
+    let name = json["error"]["server"]["name"].as_str().unwrap();
+    assert!(stderr.contains(&format!("'{name}'")), "{stderr}");
+    for item in json["error"]["guidance"].as_array().unwrap() {
+        if let Some(command) = item.get("command") {
+            let command = command.as_str().unwrap();
+            assert!(
+                stderr.contains(&format!("`{command}`")),
+                "{command}: {stderr}"
+            );
+        }
+    }
 }
 
 fn assert_human_and_json(
     project: &Path,
     home: &Path,
     client_args: &[&str],
-    human: &str,
-    json: &str,
+    (code, selection, name, binary_version): (&str, &str, &str, Option<&str>),
 ) {
-    assert_failure(&run(project, home, false, client_args), human);
-    assert_failure(&run(project, home, true, client_args), json);
+    let project_path = canonical(project);
+    let json = error_json(&run(project, home, true, client_args));
+    assert_managed_error(&json, &project_path, code, selection, name, binary_version);
+    assert_human_parity(
+        &run(project, home, false, client_args),
+        &project_path,
+        &json,
+    );
 }
 
 #[test]
 fn empty_project_identifies_default_managed_mode_and_exact_scope() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
-    let project_path = canonical(project.path());
-    let human = format!(
-        "Error: Managed client mode: server 'default' was not found in current project '{project_path}'; parent projects are not searched.\n\
-         Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `clickhousectl local clickhouse start`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
-    );
-    let json = expected_json(
-        &project_path,
-        "managed_client_server_not_found",
-        "Managed client server was not found in the current project",
-        "default",
-        "default",
-        None,
-    );
 
-    assert_human_and_json(project.path(), home.path(), &[], &human, &json);
+    assert_human_and_json(
+        project.path(),
+        home.path(),
+        &[],
+        (
+            "managed_client_server_not_found",
+            "default",
+            "default",
+            None,
+        ),
+    );
 }
 
 #[test]
-fn child_of_valid_parent_does_not_search_parent_and_agent_gets_exact_json() {
+fn child_of_valid_parent_does_not_search_parent_and_agent_gets_json() {
     let parent = tempfile::tempdir().expect("create parent project");
     let home = tempfile::tempdir().expect("create home");
     install_fake_clickhouse(home.path(), VERSION);
@@ -234,22 +212,22 @@ fn child_of_valid_parent_does_not_search_parent_and_agent_gets_exact_json() {
     let child = parent.path().join("child");
     std::fs::create_dir(&child).expect("create child directory");
     let child_path = canonical(&child);
-    let expected = expected_json(
+
+    let explicit = error_json(&run(&child, home.path(), true, &[]));
+    assert_managed_error(
+        &explicit,
         &child_path,
         "managed_client_server_not_found",
-        "Managed client server was not found in the current project",
         "default",
         "default",
         None,
     );
-
-    assert_failure(&run(&child, home.path(), true, &[]), &expected);
     let agent = command(&child, home.path())
         .env("AGENT", "opencode")
         .args(["local", "client"])
         .output()
         .expect("run agent-mode client");
-    assert_failure(&agent, &expected);
+    assert_eq!(error_json(&agent), explicit);
     assert!(
         parent
             .path()
@@ -263,28 +241,20 @@ fn explicit_wrong_name_preserves_named_selection_without_unsafe_command_interpol
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     write_server(project.path(), "default", std::process::id(), VERSION);
-    let project_path = canonical(project.path());
-    let human = format!(
-        "Error: Managed client mode: server 'wrong name' was not found in current project '{project_path}'; parent projects are not searched.\n\
-         Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `clickhousectl local clickhouse start <name>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
-    );
-    let json = expected_json(
-        &project_path,
-        "managed_client_server_not_found",
-        "Managed client server was not found in the current project",
-        "named",
-        "wrong name",
-        None,
-    );
 
+    // The named start command keeps its `<name>` placeholder rather than
+    // interpolating the unquoted name.
     assert_human_and_json(
         project.path(),
         home.path(),
         &["--name", "wrong name"],
-        &human,
-        &json,
+        (
+            "managed_client_server_not_found",
+            "named",
+            "wrong name",
+            None,
+        ),
     );
-    assert!(!json.contains("server start wrong name"));
 }
 
 #[test]
@@ -292,26 +262,12 @@ fn stopped_metadata_suggests_starting_the_selected_named_server() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     write_server(project.path(), "dev", 0, "");
-    let project_path = canonical(project.path());
-    let human = format!(
-        "Error: Managed client mode: server 'dev' is not running in current project '{project_path}'.\n\
-         Run `clickhousectl local clickhouse list`, then `clickhousectl local clickhouse start <name>`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
-    );
-    let json = expected_json(
-        &project_path,
-        "managed_client_server_not_running",
-        "Managed client server is not running in the current project",
-        "named",
-        "dev",
-        None,
-    );
 
     assert_human_and_json(
         project.path(),
         home.path(),
         &["--name", "dev"],
-        &human,
-        &json,
+        ("managed_client_server_not_running", "named", "dev", None),
     );
 }
 
@@ -320,26 +276,17 @@ fn selected_missing_binary_keeps_managed_scope_and_install_guidance() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     write_server(project.path(), "dev", std::process::id(), VERSION);
-    let project_path = canonical(project.path());
-    let human = format!(
-        "Error: Managed client mode: server 'dev' in current project '{project_path}' selected ClickHouse version '{VERSION}', but its client binary is missing.\n\
-         Run `clickhousectl local clickhouse list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
-    );
-    let json = expected_json(
-        &project_path,
-        "managed_client_binary_not_found",
-        "Managed client binary selected by server metadata is not installed",
-        "named",
-        "dev",
-        Some(VERSION),
-    );
 
     assert_human_and_json(
         project.path(),
         home.path(),
         &["--name", "dev"],
-        &human,
-        &json,
+        (
+            "managed_client_binary_not_found",
+            "named",
+            "dev",
+            Some(VERSION),
+        ),
     );
 }
 
@@ -351,29 +298,18 @@ fn invalid_metadata_lock_path_keeps_managed_scope_in_json_and_human_errors() {
     std::fs::create_dir(&state_dir).expect("create state directory");
     std::fs::write(state_dir.join("servers"), "not a directory")
         .expect("create invalid servers path");
-    let project_path = canonical(project.path());
-    let json = expected_json(
-        &project_path,
-        "managed_client_project_state_unavailable",
-        "Managed client project state is unavailable",
-        "default",
-        "default",
-        None,
-    );
 
-    assert_failure(&run(project.path(), home.path(), true, &[]), &json);
-
-    let human = run(project.path(), home.path(), false, &[]);
-    assert_eq!(human.status.code(), Some(1));
-    assert!(human.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(
-        stderr.starts_with("Error: Managed client mode: server 'default' could not be resolved")
+    assert_human_and_json(
+        project.path(),
+        home.path(),
+        &[],
+        (
+            "managed_client_project_state_unavailable",
+            "default",
+            "default",
+            None,
+        ),
     );
-    assert!(stderr.contains(&project_path));
-    assert!(stderr.contains("open the server metadata lock file"));
-    assert!(stderr.contains("`clickhousectl local clickhouse list`"));
-    assert!(stderr.contains("`clickhousectl local client --host <host> --port <port>`"));
 }
 
 #[test]
@@ -383,25 +319,23 @@ fn corrupt_metadata_keeps_managed_scope_and_redacts_source_from_json() {
     let servers = project.path().join(".clickhouse/servers");
     std::fs::create_dir_all(&servers).expect("create servers directory");
     std::fs::write(servers.join("default.json"), "{").expect("write corrupt metadata");
-    let project_path = canonical(project.path());
-    let json = expected_json(
-        &project_path,
-        "managed_client_project_state_unavailable",
-        "Managed client project state is unavailable",
-        "default",
-        "default",
-        None,
+
+    assert_human_and_json(
+        project.path(),
+        home.path(),
+        &[],
+        (
+            "managed_client_project_state_unavailable",
+            "default",
+            "default",
+            None,
+        ),
     );
-
+    // The serde source reaches the human error only.
     let json_output = run(project.path(), home.path(), true, &[]);
-    assert_failure(&json_output, &json);
     assert!(!String::from_utf8_lossy(&json_output.stderr).contains("not valid JSON"));
-
     let human = run(project.path(), home.path(), false, &[]);
-    assert_eq!(human.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.contains(&project_path));
-    assert!(stderr.contains("not valid JSON"));
+    assert!(String::from_utf8_lossy(&human.stderr).contains("not valid JSON"));
 }
 
 #[cfg(unix)]
@@ -413,17 +347,15 @@ fn symlinked_working_directory_reports_the_canonical_project_scope() {
     let home = tempfile::tempdir().expect("create home");
     std::fs::create_dir(&project).expect("create real project");
     std::os::unix::fs::symlink(&project, &alias).expect("create project symlink");
-    let project_path = canonical(&project);
-    let expected = expected_json(
-        &project_path,
+
+    let output = run(&alias, home.path(), true, &[]);
+    assert_managed_error(
+        &error_json(&output),
+        &canonical(&project),
         "managed_client_server_not_found",
-        "Managed client server was not found in the current project",
         "default",
         "default",
         None,
     );
-
-    let output = run(&alias, home.path(), true, &[]);
-    assert_failure(&output, &expected);
     assert!(!String::from_utf8_lossy(&output.stderr).contains("project-alias"));
 }

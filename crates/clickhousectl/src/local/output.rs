@@ -3484,6 +3484,84 @@ mod tests {
     }
 
     #[test]
+    fn udf_list_and_remove_human_output_follow_the_server_state() {
+        let entry = |name: &str, loaded, last_deploy_rejected| UdfListEntry {
+            name: name.to_string(),
+            r#type: Some("executable".to_string()),
+            runtime: Some("python3.11".to_string()),
+            loaded,
+            last_deploy_rejected,
+        };
+        let list = |server_running, udfs| {
+            UdfListOutput {
+                server: "dev".to_string(),
+                server_running,
+                udfs,
+            }
+            .to_string()
+        };
+
+        let empty = list(false, Vec::new());
+        assert_eq!(empty.lines().count(), 1, "{empty}");
+        assert!(empty.contains("'dev'") && !empty.contains('|'), "{empty}");
+
+        let states = [
+            (Some(true), false),
+            (Some(true), true),
+            (Some(false), false),
+            (Some(false), true),
+            (None, false),
+            (None, true),
+        ];
+        let udfs = || {
+            states
+                .iter()
+                .enumerate()
+                .map(|(i, (loaded, rejected))| entry(&format!("f{i}"), *loaded, *rejected))
+                .collect()
+        };
+        let running = list(true, udfs());
+        let lines: Vec<&str> = running.lines().collect();
+        assert_eq!(lines.len(), 2 + states.len(), "{running}");
+        assert!(lines.iter().all(|line| line.starts_with('|')), "{running}");
+        let loaded_cells: Vec<&str> = lines[2..]
+            .iter()
+            .map(|line| line.trim_matches('|').split('|').nth(3).unwrap().trim())
+            .collect();
+        for (cell, (loaded, rejected)) in loaded_cells.iter().zip(states) {
+            let prefix = match loaded {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "-",
+            };
+            assert!(cell.starts_with(prefix), "{cell}");
+            assert_eq!(*cell != prefix, rejected, "{cell}");
+        }
+        let distinct: std::collections::HashSet<_> = loaded_cells.iter().collect();
+        assert_eq!(distinct.len(), states.len(), "{loaded_cells:?}");
+
+        // Stopped: the same table, then one trailing note naming the server.
+        let stopped = list(false, udfs());
+        let note = stopped.strip_prefix(&running).expect("table first");
+        assert_eq!(note.lines().filter(|line| !line.is_empty()).count(), 1);
+        assert!(note.contains("'dev'"), "{note}");
+
+        let remove = |reloaded| {
+            UdfRemoveOutput {
+                name: "my_fn".to_string(),
+                server: "dev".to_string(),
+                reloaded,
+            }
+            .to_string()
+        };
+        let (reloaded, deferred) = (remove(true), remove(false));
+        assert_ne!(reloaded, deferred);
+        for text in [&reloaded, &deferred] {
+            assert!(text.contains("my_fn") && text.contains("'dev'"), "{text}");
+        }
+    }
+
+    #[test]
     fn optional_suffixes_appear_only_when_their_flag_is_set() {
         let install = |set_as_default| {
             InstallOutput {

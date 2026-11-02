@@ -326,23 +326,26 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
     );
     assert_eq!(ambiguous.status.code(), Some(1));
     assert!(ambiguous.stdout.is_empty());
+    let error = serde_json::from_slice::<Value>(&ambiguous.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "server_selection_required");
     assert_eq!(
-        serde_json::from_slice::<Value>(&ambiguous.stderr).unwrap(),
-        json!({
-            "error": {
-                "code": "server_selection_required",
-                "message": "No server name was provided and multiple non-default ClickHouse servers exist (available: 2). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every server with `clickhousectl local clickhouse stop-all`.",
-                "command": "clickhousectl local clickhouse list"
-            }
-        })
+        error["error"]["command"],
+        "clickhousectl local clickhouse list"
     );
-
+    // The message counts the candidates and names both ways forward, in
+    // either output mode.
     let human = run(project.path(), home.path(), &["local", "server", "stop"]);
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.contains("multiple non-default ClickHouse servers exist (available: 2)"));
-    assert!(stderr.contains("clickhousectl local clickhouse stop <name>"));
-    assert!(stderr.contains("clickhousectl local clickhouse stop-all"));
+    for text in [error["error"]["message"].as_str().unwrap(), &stderr] {
+        for fragment in [
+            "available: 2",
+            "`clickhousectl local clickhouse stop <name>`",
+            "`clickhousectl local clickhouse stop-all`",
+        ] {
+            assert!(text.contains(fragment), "{fragment}: {text}");
+        }
+    }
     assert!(alpha.exists());
     assert!(beta.exists());
 
@@ -355,10 +358,7 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
         assert_eq!(explicit_unknown.status.code(), Some(1));
         let error: Value = serde_json::from_slice(&explicit_unknown.stderr).unwrap();
         assert_eq!(error["error"]["code"], "server_not_found");
-        assert_eq!(
-            error["error"]["message"],
-            "Server 'missing' was not found in the current project"
-        );
+        assert_eq!(error["error"]["server"]["name"], "missing");
     }
 }
 
@@ -382,15 +382,14 @@ fn omitted_remove_never_selects_custom_servers() {
         assert!(remove.stdout.is_empty());
         let error: Value = serde_json::from_slice(&remove.stderr).unwrap();
         assert_eq!(error["error"]["code"], "server_selection_required");
-        assert_eq!(
-            error["error"]["message"],
-            format!(
-                "No server name was provided and the default ClickHouse server does not exist \
-                 (custom ClickHouse servers available: {}); no server was removed. Inspect them \
-                 with `clickhousectl local clickhouse list`; to remove one, pass its name with \
-                 `clickhousectl local clickhouse remove <name>`.",
-                names.len()
-            )
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("available: {}", names.len())),
+            "{message}"
+        );
+        assert!(
+            message.contains("`clickhousectl local clickhouse remove <name>`"),
+            "{message}"
         );
         assert_eq!(
             error["error"]["command"],
