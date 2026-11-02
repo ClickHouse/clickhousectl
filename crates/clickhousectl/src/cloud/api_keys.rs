@@ -827,6 +827,34 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use clap::Parser;
 
+    /// The continuation hint is pasted into a shell: quoted tokens must split
+    /// back to exactly the cursor, and control characters are never printed.
+    #[test]
+    fn quote_shell_argument_for_display_round_trips_or_refuses_control_characters() {
+        for cursor in [
+            "",
+            "plain-token",
+            "-leading-hyphen",
+            "-opaque +/=&?'雪",
+            "$(printf injected); `printf injected`",
+            "{one,two}\u{a0}three",
+            "\"double\" \\backslash",
+        ] {
+            let quoted = quote_shell_argument_for_display(cursor).expect("printable cursor");
+            assert_eq!(
+                shlex::split(&format!("--cursor={quoted}")),
+                Some(vec![format!("--cursor={cursor}")]),
+                "{cursor:?} quoted as {quoted}"
+            );
+        }
+        for cursor in ["nul\0byte", "tab\there", "return\rhere", "\n\u{1b}[31m"] {
+            assert!(
+                quote_shell_argument_for_display(cursor).is_none(),
+                "{cursor:?}"
+            );
+        }
+    }
+
     #[test]
     fn key_list_pagination_parses_defaults_bounds_and_opaque_cursors() {
         let KeyCommands::List { limit, cursor, all } =
