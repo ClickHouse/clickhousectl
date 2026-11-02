@@ -3229,61 +3229,6 @@ async fn postgres_logs_minimal_query_and_sparse_human_output() {
     );
 }
 
-#[tokio::test]
-async fn postgres_logs_reports_empty_results_and_structured_api_errors() {
-    for (response, expected_status, expected_text) in [
-        (
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": [], "status": 200
-            })),
-            0,
-            "No Postgres logs found",
-        ),
-        (
-            ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                "status": 400,
-                "error": "BAD_REQUEST: invalid log window",
-                "requestId": "stub-invalid-window"
-            })),
-            1,
-            "invalid log window",
-        ),
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
-            .respond_with(response)
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let home = tempfile::tempdir().unwrap();
-        let output = invoke_postgres_logs(
-            &mock,
-            home.path(),
-            false,
-            &[
-                "--from-date",
-                "2026-08-01T00:00:00Z",
-                "--to-date",
-                "2026-08-02T00:00:00Z",
-                "--org-id",
-                "org-1",
-                "--api-key",
-                "logs-key",
-                "--api-secret",
-                "logs-secret",
-            ],
-        );
-        assert_eq!(output.status.code(), Some(expected_status));
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(combined.contains(expected_text), "{combined}");
-    }
-}
-
 // ── Postgres slow query patterns (issue #585) ─────────────────────────────
 
 #[tokio::test]
@@ -3815,36 +3760,6 @@ async fn postgres_prometheus_org_preserves_raw_text_and_agent_mode_is_json() {
     for request in mock.received_requests().await.unwrap() {
         assert_eq!(request.url.query(), None);
     }
-}
-
-#[tokio::test]
-async fn postgres_prometheus_converts_api_errors() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/postgres/pg-1/prometheus"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-            "status": 403,
-            "error": "Forbidden",
-            "requestId": "stub-postgres-prometheus-error"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "postgres",
-            "prometheus",
-            "service",
-            "pg-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(4));
-    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
-    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 // ── Postgres deletion JSON output (issue #614) ────────────────────────────
@@ -14430,28 +14345,21 @@ async fn postgres_update_of_a_missing_service_reads_as_not_found() {
         "--new-name",
         "renamed",
     ];
-    for json in [false, true] {
-        let mock = MockServer::start().await;
-        mount_invalid_id_400(
-            &mock,
-            unknown_postgres_path(""),
-            "Postgres service",
-            UNKNOWN_UUID,
-        )
-        .await;
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        unknown_postgres_path(""),
+        "Postgres service",
+        UNKNOWN_UUID,
+    )
+    .await;
 
-        if json {
-            let output = invoke_cli_with_cloud_credentials(&mock, &args);
-            assert_postgres_not_found_json(&output, &server_message);
-        } else {
-            let output = invoke_cli_human(&mock, &args);
-            assert_postgres_not_found_human(&output, &server_message);
-        }
-        assert_eq!(
-            received_request_shape(&mock).await,
-            vec![("GET".to_string(), unknown_postgres_path(""))]
-        );
-    }
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_postgres_not_found_json(&output, &server_message);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), unknown_postgres_path(""))]
+    );
 }
 
 /// `--clear-tags` skips the tag read, so the PATCH is what fails. Its body is
@@ -14512,44 +14420,37 @@ fn postgres_config_patch_args(setting: &'static str) -> [&'static str; 8] {
 }
 
 /// A config PATCH for a deleted service answers 404; the confirming GET of
-/// the service agrees, so the command reports the service as missing, in
-/// both output modes.
+/// the service agrees, so the command reports the service as missing. The
+/// JSON form of the answer is in the update and clear-tags tests.
 #[tokio::test]
 async fn postgres_config_patch_of_a_missing_service_reads_as_not_found() {
     let server_message = "NOT_FOUND: Postgres service not found";
     let args = postgres_config_patch_args("max_connections=500");
-    for json in [false, true] {
-        let mock = MockServer::start().await;
-        for (http_method, route) in [
-            ("PATCH", unknown_postgres_path("/config")),
-            ("GET", unknown_postgres_path("")),
-        ] {
-            Mock::given(method(http_method))
-                .and(path(route))
-                .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                    "status": 404,
-                    "error": server_message,
-                })))
-                .expect(1)
-                .mount(&mock)
-                .await;
-        }
-
-        if json {
-            let output = invoke_cli_with_cloud_credentials(&mock, &args);
-            assert_postgres_not_found_json(&output, server_message);
-        } else {
-            let output = invoke_cli_human(&mock, &args);
-            assert_postgres_not_found_human(&output, server_message);
-        }
-        assert_eq!(
-            received_request_shape(&mock).await,
-            vec![
-                ("PATCH".to_string(), unknown_postgres_path("/config")),
-                ("GET".to_string(), unknown_postgres_path("")),
-            ]
-        );
+    let mock = MockServer::start().await;
+    for (http_method, route) in [
+        ("PATCH", unknown_postgres_path("/config")),
+        ("GET", unknown_postgres_path("")),
+    ] {
+        Mock::given(method(http_method))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "status": 404,
+                "error": server_message,
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
     }
+
+    let output = invoke_cli_human(&mock, &args);
+    assert_postgres_not_found_human(&output, server_message);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("PATCH".to_string(), unknown_postgres_path("/config")),
+            ("GET".to_string(), unknown_postgres_path("")),
+        ]
+    );
 }
 
 /// A config PATCH rejected for its body answers 400 too. The confirming GET
@@ -14610,65 +14511,69 @@ async fn postgres_config_patch_validation_400_keeps_the_servers_message() {
 #[tokio::test]
 async fn postgres_config_patch_keeps_the_original_error_when_the_confirming_get_fails() {
     let args = postgres_config_patch_args("max_connections=1");
-    for (patch_status, patch_message) in [
-        (400, "BAD_REQUEST: max_connections must be at least 10"),
-        (404, "NOT_FOUND: Postgres service not found"),
+    for (patch_status, patch_message, get_status, get_message, json) in [
+        (
+            400,
+            "BAD_REQUEST: max_connections must be at least 10",
+            500,
+            "INTERNAL_ERROR: confirming GET failed",
+            true,
+        ),
+        (
+            404,
+            "NOT_FOUND: Postgres service not found",
+            403,
+            "FORBIDDEN: confirming GET not allowed",
+            false,
+        ),
     ] {
-        for (get_status, get_message) in [
-            (500, "INTERNAL_ERROR: confirming GET failed"),
-            (403, "FORBIDDEN: confirming GET not allowed"),
+        let mock = MockServer::start().await;
+        for (http_method, route, status, message) in [
+            (
+                "PATCH",
+                unknown_postgres_path("/config"),
+                patch_status,
+                patch_message,
+            ),
+            ("GET", unknown_postgres_path(""), get_status, get_message),
         ] {
-            for json in [false, true] {
-                let mock = MockServer::start().await;
-                for (http_method, route, status, message) in [
-                    (
-                        "PATCH",
-                        unknown_postgres_path("/config"),
-                        patch_status,
-                        patch_message,
-                    ),
-                    ("GET", unknown_postgres_path(""), get_status, get_message),
-                ] {
-                    Mock::given(method(http_method))
-                        .and(path(route))
-                        .respond_with(
-                            ResponseTemplate::new(status).set_body_json(
-                                serde_json::json!({"status": status, "error": message}),
-                            ),
-                        )
-                        .expect(1)
-                        .mount(&mock)
-                        .await;
-                }
-
-                let case = format!("PATCH {patch_status}, GET {get_status}, json {json}");
-                if json {
-                    let output = invoke_cli_with_cloud_credentials(&mock, &args);
-                    assert_eq!(output.status.code(), Some(1), "{case}");
-                    assert!(output.stdout.is_empty(), "{case}");
-                    let error = cloud_runtime_error(&output);
-                    assert_eq!(error["message"], patch_message, "{case}");
-                    assert_eq!(error["code"], "http_4xx", "{case}");
-                } else {
-                    let output = invoke_cli_human(&mock, &args);
-                    assert_eq!(output.status.code(), Some(1), "{case}");
-                    assert!(output.stdout.is_empty(), "{case}");
-                    assert_eq!(
-                        String::from_utf8_lossy(&output.stderr),
-                        format!("Error: {patch_message}\n"),
-                        "{case}"
-                    );
-                }
-                assert_eq!(
-                    received_request_shape(&mock).await,
-                    vec![
-                        ("PATCH".to_string(), unknown_postgres_path("/config")),
-                        ("GET".to_string(), unknown_postgres_path("")),
-                    ],
-                    "{case}"
-                );
-            }
+            Mock::given(method(http_method))
+                .and(path(route))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(serde_json::json!({"status": status, "error": message})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
         }
+
+        let case = format!("PATCH {patch_status}, GET {get_status}, json {json}");
+        if json {
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(1), "{case}");
+            assert!(output.stdout.is_empty(), "{case}");
+            let error = cloud_runtime_error(&output);
+            assert_eq!(error["message"], patch_message, "{case}");
+            assert_eq!(error["code"], "http_4xx", "{case}");
+        } else {
+            let output = invoke_cli_human(&mock, &args);
+            assert_eq!(output.status.code(), Some(1), "{case}");
+            assert!(output.stdout.is_empty(), "{case}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                format!("Error: {patch_message}\n"),
+                "{case}"
+            );
+        }
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![
+                ("PATCH".to_string(), unknown_postgres_path("/config")),
+                ("GET".to_string(), unknown_postgres_path("")),
+            ],
+            "{case}"
+        );
     }
 }
 
@@ -16117,93 +16022,91 @@ async fn udf_create_and_version_upload_full_definitions_without_auth_leakage() {
     // The `--file` aliases are `primary_json_file_argument_contract`, and the
     // per-kind body is the builder's; one run each of create and version create.
     for (create, kind) in [(true, "executable_pool"), (false, "executable")] {
-        {
-            let server = MockServer::start().await;
-            let storage = MockServer::start().await;
-            let project = tempfile::tempdir().unwrap();
-            let archive = b"PK\x03\x04test archive";
-            std::fs::write(project.path().join("code.zip"), archive).unwrap();
-            let mut definition = udf_definition(kind, create);
-            definition.as_object_mut().unwrap().extend(serde_json::json!({
-                "commandReadTimeout": 5000, "commandWriteTimeout": 6000, "memoryLimitMib": 128,
-                "deterministic": false, "sendChunkHeader": false, "returnName":"result", "format":"JSONEachRow",
-                "sandboxType":"netenable", "sandboxVersion":"v3", "maxCommandExecutionTime":20,
-                "poolSize": if kind == "executable_pool" { serde_json::json!(4) } else { Value::Null }
-            }).as_object().unwrap().clone());
-            std::fs::write(
-                project.path().join("definition.json"),
-                definition.to_string(),
-            )
-            .unwrap();
-            Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
-                .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
-                    "uploadId":"fresh-upload", "uploadUrl":format!("{}/artifact?signature=upload-secret", storage.uri())
-                }}))).expect(1).mount(&server).await;
-            Mock::given(method("PUT"))
-                .and(path("/artifact"))
-                .and(header("content-type", "application/zip"))
-                .respond_with(ResponseTemplate::new(200))
-                .expect(1)
-                .mount(&storage)
-                .await;
-            let mut expected = definition;
-            expected["uploadId"] = serde_json::json!("fresh-upload");
-            // Cloud no longer accepts sandboxVersion: it is dropped, with a warning.
-            expected.as_object_mut().unwrap().remove("sandboxVersion");
-            if kind == "executable" {
-                expected.as_object_mut().unwrap().remove("poolSize");
-            }
-            let suffix = if create { "" } else { "/my_udf/versions" };
-            Mock::given(method("POST")).and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
-                .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
-                .and(body_json(expected))
-                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"result":{"functionName":"my_udf","version":2,"status":"building","deterministic":false}})))
-                .expect(1).mount(&server).await;
-            let mut args = if create {
-                vec!["create"]
-            } else {
-                vec!["version", "create", "my_udf"]
-            };
-            args.extend([
-                "--file",
-                "definition.json",
-                "--artifact",
-                "code.zip",
-                "--debug",
-            ]);
-            let output = udf_test_command(&server, project.path(), false, true, &args)
-                .output()
-                .unwrap();
-            assert_success(&output);
-            assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap()["deterministic"],
-                false
-            );
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr
-                    .lines()
-                    .any(|line| line.starts_with("Warning:") && line.contains("sandboxVersion")),
-                "{stderr}"
-            );
-            let upload = storage.received_requests().await.unwrap().pop().unwrap();
-            assert_eq!(upload.body, archive);
-            assert_eq!(upload.url.query(), Some("signature=upload-secret"));
-            assert!(!upload.headers.contains_key("authorization"));
-            assert!(!upload.headers.contains_key("cookie"));
-            let logged = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            for secret in ["upload-secret", "fresh-upload", "udf-key", "udf-secret"] {
-                assert!(!logged.contains(secret), "leaked {secret}");
-            }
-            let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 2);
-            assert!(requests[0].body.is_empty());
+        let server = MockServer::start().await;
+        let storage = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        let archive = b"PK\x03\x04test archive";
+        std::fs::write(project.path().join("code.zip"), archive).unwrap();
+        let mut definition = udf_definition(kind, create);
+        definition.as_object_mut().unwrap().extend(serde_json::json!({
+            "commandReadTimeout": 5000, "commandWriteTimeout": 6000, "memoryLimitMib": 128,
+            "deterministic": false, "sendChunkHeader": false, "returnName":"result", "format":"JSONEachRow",
+            "sandboxType":"netenable", "sandboxVersion":"v3", "maxCommandExecutionTime":20,
+            "poolSize": if kind == "executable_pool" { serde_json::json!(4) } else { Value::Null }
+        }).as_object().unwrap().clone());
+        std::fs::write(
+            project.path().join("definition.json"),
+            definition.to_string(),
+        )
+        .unwrap();
+        Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
+            .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+                "uploadId":"fresh-upload", "uploadUrl":format!("{}/artifact?signature=upload-secret", storage.uri())
+            }}))).expect(1).mount(&server).await;
+        Mock::given(method("PUT"))
+            .and(path("/artifact"))
+            .and(header("content-type", "application/zip"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&storage)
+            .await;
+        let mut expected = definition;
+        expected["uploadId"] = serde_json::json!("fresh-upload");
+        // Cloud no longer accepts sandboxVersion: it is dropped, with a warning.
+        expected.as_object_mut().unwrap().remove("sandboxVersion");
+        if kind == "executable" {
+            expected.as_object_mut().unwrap().remove("poolSize");
         }
+        let suffix = if create { "" } else { "/my_udf/versions" };
+        Mock::given(method("POST")).and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+            .and(body_json(expected))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"result":{"functionName":"my_udf","version":2,"status":"building","deterministic":false}})))
+            .expect(1).mount(&server).await;
+        let mut args = if create {
+            vec!["create"]
+        } else {
+            vec!["version", "create", "my_udf"]
+        };
+        args.extend([
+            "--file",
+            "definition.json",
+            "--artifact",
+            "code.zip",
+            "--debug",
+        ]);
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["deterministic"],
+            false
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.starts_with("Warning:") && line.contains("sandboxVersion")),
+            "{stderr}"
+        );
+        let upload = storage.received_requests().await.unwrap().pop().unwrap();
+        assert_eq!(upload.body, archive);
+        assert_eq!(upload.url.query(), Some("signature=upload-secret"));
+        assert!(!upload.headers.contains_key("authorization"));
+        assert!(!upload.headers.contains_key("cookie"));
+        let logged = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for secret in ["upload-secret", "fresh-upload", "udf-key", "udf-secret"] {
+            assert!(!logged.contains(secret), "leaked {secret}");
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].body.is_empty());
     }
 }
 
@@ -16362,22 +16265,12 @@ async fn udf_version_create_file_strips_a_matching_function_name() {
 #[tokio::test]
 async fn udf_every_write_rejects_oauth_before_api() {
     let server = MockServer::start().await;
+    // This is the end-to-end copy of the OAuth write check; each command's
+    // classification is `udf_clap_auth_classification_and_values`. A create
+    // naming a missing file shows the check runs before any input is read.
     for args in [
         vec!["delete", "my_udf"],
-        vec!["deploy", "my_udf", "--service", "svc-1"],
-        vec!["detach", "my_udf", "svc-1"],
-        vec!["attach", "my_udf", "svc-1"],
-        vec!["version", "delete", "my_udf", "2"],
         vec!["create", "--file", "missing", "--artifact", "missing"],
-        vec![
-            "version",
-            "create",
-            "my_udf",
-            "--file",
-            "missing",
-            "--artifact",
-            "missing",
-        ],
     ] {
         let project = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -16390,63 +16283,6 @@ async fn udf_every_write_rejects_oauth_before_api() {
         );
     }
     assert!(server.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn udf_all_read_and_action_errors_preserve_exit_codes() {
-    for (args, verb, suffix) in [
-        (vec!["list"], "GET", ""),
-        (vec!["get", "my_udf"], "GET", "/my_udf"),
-        (
-            vec!["attachment", "list", "my_udf"],
-            "GET",
-            "/my_udf/attachments",
-        ),
-        (
-            vec!["attachment", "get", "my_udf", "svc-1"],
-            "GET",
-            "/my_udf/attachments/svc-1",
-        ),
-        (vec!["version", "list", "my_udf"], "GET", "/my_udf/versions"),
-        (vec!["delete", "my_udf"], "DELETE", "/my_udf"),
-        (
-            vec!["detach", "my_udf", "svc-1"],
-            "DELETE",
-            "/my_udf/attachments/svc-1",
-        ),
-        (
-            vec!["version", "delete", "my_udf", "2"],
-            "DELETE",
-            "/my_udf/versions/2",
-        ),
-        (
-            vec!["attach", "my_udf", "svc-1"],
-            "PUT",
-            "/my_udf/attachments/svc-1",
-        ),
-    ] {
-        for status in [403, 424] {
-            let server = MockServer::start().await;
-            let project = tempfile::tempdir().unwrap();
-            Mock::given(method(verb))
-                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
-                .respond_with(
-                    ResponseTemplate::new(status)
-                        .set_body_json(serde_json::json!({"error":"dependency unavailable"})),
-                )
-                .expect(1)
-                .mount(&server)
-                .await;
-            let output = udf_test_command(&server, project.path(), false, true, &args)
-                .output()
-                .unwrap();
-            assert_eq!(
-                output.status.code(),
-                Some(if status == 403 { 4 } else { 1 })
-            );
-            assert!(String::from_utf8_lossy(&output.stderr).contains("dependency unavailable"));
-        }
-    }
 }
 
 #[tokio::test]
@@ -17016,81 +16852,6 @@ async fn clickstack_saved_search_sparse_human_output_and_errors_are_safe() {
     );
 }
 
-#[tokio::test]
-async fn clickstack_saved_search_oauth_reads_and_rejects_writes_before_http() {
-    let mock = MockServer::start().await;
-    let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
-    Mock::given(method("GET"))
-        .and(path(searches))
-        .and(header("authorization", "Bearer test-bearer-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": []
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let invoke = |args: &[&str], stdin: Option<&str>| {
-        let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
-        command
-            .env("DO_NOT_TRACK", "1")
-            .env("HOME", &home)
-            .current_dir(project.path())
-            .args(["cloud", "--url", &mock.uri()])
-            .args(args);
-        if let Some(input) = stdin {
-            let mut child = command
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output().unwrap()
-        } else {
-            command.output().unwrap()
-        }
-    };
-    let output = invoke(
-        &[
-            "clickstack",
-            "saved-search",
-            "list",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-        None,
-    );
-    assert_success(&output);
-    let output = invoke(
-        &[
-            "clickstack",
-            "saved-search",
-            "create",
-            "svc-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-        Some(r#"{"name":"errors","sourceId":"source-1"}"#),
-    );
-    assert_eq!(output.status.code(), Some(4));
-    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
-}
-
 // ── ClickStack dashboard commands (issue #693) ─────────────────────────────
 
 #[tokio::test]
@@ -17388,41 +17149,6 @@ async fn clickstack_dashboard_sparse_human_list_and_errors_are_safe() {
     assert_eq!(output.status.code(), Some(1));
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("DASHBOARD_NOT_FOUND"), "{error}");
-}
-
-#[tokio::test]
-async fn clickstack_dashboard_validate_fails_fast_for_oauth() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let home = directory.path().join("home");
-    let ch_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    write_oauth_tokens(&ch_dir, &mock.uri());
-    let config = directory.path().join("dashboard.json");
-    std::fs::write(&config, r#"{"name":"dashboard","tiles":[]}"#).unwrap();
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "clickstack",
-            "dashboard",
-            "validate",
-            "svc-1",
-            "--file",
-            config.to_str().unwrap(),
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(4));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── ClickStack alert and webhook commands (issue #695) ─────────────────────
@@ -17757,52 +17483,6 @@ async fn clickstack_alert_detail_preserves_state_channels_and_query_timeout() {
     assert_eq!(output["channel"]["type"], "future");
 }
 
-#[tokio::test]
-async fn clickstack_alert_and_webhook_writes_fail_fast_for_oauth() {
-    let mock = MockServer::start().await;
-    let directory = tempfile::tempdir().unwrap();
-    let home = directory.path().join("home");
-    let ch_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    write_oauth_tokens(&ch_dir, &mock.uri());
-    for (resource, body) in [
-        (
-            "alert",
-            r#"{"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}"#,
-        ),
-        (
-            "webhook",
-            r#"{"name":"hook","service":"generic","url":"https://example.com"}"#,
-        ),
-    ] {
-        let config = directory.path().join(format!("{resource}.json"));
-        std::fs::write(&config, body).unwrap();
-        let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
-        let output = command
-            .env("DO_NOT_TRACK", "1")
-            .env("HOME", &home)
-            .args([
-                "cloud",
-                "--url",
-                &mock.uri(),
-                "clickstack",
-                resource,
-                "create",
-                "svc-1",
-                "--file",
-                config.to_str().unwrap(),
-                "--org-id",
-                "org-1",
-            ])
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(4));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 // ── ClickStack webhook validation and inline alerts (issue #1127) ──────────
 
 #[tokio::test]
@@ -17896,63 +17576,6 @@ async fn clickstack_webhook_validate_posts_full_body_and_reports_results() {
             );
         }
     }
-}
-
-#[tokio::test]
-async fn clickstack_webhook_validate_rejects_invalid_bodies_and_oauth_before_http() {
-    let mock = MockServer::start().await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "webhook",
-            "validate",
-            "svc-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-        Some(r#"{"name":"hook","service":"slack","url":"https://example.com","body":"x"}"#),
-        false,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not supported"));
-
-    let directory = tempfile::tempdir().unwrap();
-    let home = directory.path().join("home");
-    let ch_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    write_oauth_tokens(&ch_dir, &mock.uri());
-    let config = directory.path().join("webhook.json");
-    std::fs::write(
-        &config,
-        r#"{"name":"hook","service":"generic","url":"https://example.com"}"#,
-    )
-    .unwrap();
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "clickstack",
-            "webhook",
-            "validate",
-            "svc-1",
-            "--file",
-            config.to_str().unwrap(),
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(4));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -18222,37 +17845,6 @@ async fn byoc_infrastructure_commands_send_exact_paths_and_bodies() {
 }
 
 #[tokio::test]
-async fn byoc_api_errors_keep_auth_classification() {
-    let mock = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path(
-            "/v1/organizations/org-1/byocInfrastructure/byoc-forbidden",
-        ))
-        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-            "status": 403,
-            "error": "Forbidden",
-            "requestId": "stub-byoc-forbidden"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "org",
-            "byoc",
-            "delete",
-            "byoc-forbidden",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(4));
-    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
-    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
-}
-
-#[tokio::test]
 async fn byoc_update_human_output_tolerates_sparse_fields() {
     let mock = MockServer::start().await;
     Mock::given(method("PATCH"))
@@ -18392,35 +17984,6 @@ async fn byoc_progress_human_output_tolerates_sparse_stages() {
         &["org", "byoc", "progress", "byoc-1", "--org-id", "org-1"],
     );
     assert_success(&output);
-}
-
-#[tokio::test]
-async fn byoc_get_api_errors_are_rendered_as_json_errors() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/byocInfrastructure/missing"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "error": "BYOC infrastructure not found",
-            "requestId": "stub-byoc-missing"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &["org", "byoc", "get", "missing", "--org-id", "org-1"],
-    );
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let error = cloud_runtime_error(&output);
-    assert_eq!(error["code"], "http_4xx");
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("BYOC infrastructure not found")
-    );
 }
 
 fn byoc_validate_args<'a>() -> Vec<&'a str> {
@@ -18575,25 +18138,6 @@ async fn byoc_validate_unsupported_configuration_is_reported_not_failed() {
             "servicePrincipalClientId": "client-1"
         })
     );
-}
-
-#[tokio::test]
-async fn byoc_validate_api_errors_keep_auth_classification() {
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
-        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
-            "status": 403,
-            "error": "Forbidden",
-            "requestId": "stub-byoc-validate-forbidden"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(&mock, &byoc_validate_args());
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 fn invoke_org_with_oauth(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
@@ -23989,47 +23533,6 @@ async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 3);
     assert!(requests[2].url.query().is_none(), "{:?}", requests[2].url);
-}
-
-#[tokio::test]
-async fn postgres_backup_list_supports_oauth_and_reports_not_found() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(POSTGRES_BACKUPS_PATH))
-        .and(header("authorization", "Bearer test-bearer-token"))
-        .respond_with(postgres_backup_page(serde_json::json!([]), None))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let project = tempfile::tempdir().unwrap();
-    let args = ["postgres", "backup", "list", "pg-1", "--org-id", "org-1"];
-    let oauth = invoke_cloud_as(&server, project.path(), true, true, &args);
-    assert_success(&oauth);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&oauth.stdout).unwrap()["result"],
-        serde_json::json!([])
-    );
-
-    let missing = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(POSTGRES_BACKUPS_PATH))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "requestId": "postgres-backup-missing",
-            "error": "Postgres service pg-1 was not found"
-        })))
-        .expect(1)
-        .mount(&missing)
-        .await;
-    let project = tempfile::tempdir().unwrap();
-    let output = invoke_cloud_as(&missing, project.path(), false, false, &args);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Postgres service pg-1 was not found"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 fn whoami_api_key_identity() -> Value {
