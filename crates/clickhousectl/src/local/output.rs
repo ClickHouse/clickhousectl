@@ -3484,6 +3484,42 @@ mod tests {
     }
 
     #[test]
+    fn optional_suffixes_appear_only_when_their_flag_is_set() {
+        let install = |set_as_default| {
+            InstallOutput {
+                version: "25.12.5.44".to_string(),
+                set_as_default,
+            }
+            .to_string()
+        };
+        let plain = install(false);
+        let default = install(true);
+        assert!(default.starts_with(&plain) && default.len() > plain.len());
+
+        let stop = |selection| {
+            ServerStopOutput {
+                name: "default".to_string(),
+                already_stopped: false,
+                selection,
+            }
+            .to_string()
+        };
+        let remove = |selection| {
+            ServerRemoveOutput {
+                name: "default".to_string(),
+                selection,
+            }
+            .to_string()
+        };
+        for render in [&stop as &dyn Fn(_) -> String, &remove] {
+            let plain = render(None);
+            assert_eq!(render(Some(ServerSelection::Explicit)), plain);
+            let implicit = render(Some(ServerSelection::Implicit));
+            assert!(implicit.starts_with(&plain) && implicit.len() > plain.len());
+        }
+    }
+
+    #[test]
     fn server_list_display_with_entries() {
         let output = ServerListOutput {
             servers: vec![

@@ -1734,6 +1734,18 @@ mod tests {
             assert!(global);
             assert_eq!(project.as_deref(), Some("/tmp/project"));
         }
+
+        assert_eq!(
+            local_parse_error(&[
+                "clickhouse",
+                "stop",
+                "analytics",
+                "--project",
+                "/tmp/project"
+            ])
+            .kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
