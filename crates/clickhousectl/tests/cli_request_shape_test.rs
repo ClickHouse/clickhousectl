@@ -3415,6 +3415,27 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
     ] {
         assert!(stdout.contains(value), "missing {value:?} from:\n{stdout}");
     }
+    let cells = |id: &str| -> Vec<String> {
+        stdout
+            .lines()
+            .find(|line| line.contains(id))
+            .unwrap_or_else(|| panic!("missing {id} row:\n{stdout}"))
+            .split('|')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        cells("query-1"),
+        [
+            "query-1",
+            "SELECT * FROM events WHERE id = $1",
+            "2",
+            "1190.8419405320817",
+            "2381.6838810641634"
+        ]
+    );
     let second_row = stdout
         .lines()
         .find(|line| line.contains("query-2"))
@@ -4688,6 +4709,83 @@ async fn postgres_switchover_human_output_survives_a_closed_stdout() {
             format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state")
         )),
         "the switchover must still reach the API: {shape:?}"
+    );
+}
+
+/// `certs get`, `reset-password` and `restart` each reach their own route:
+/// the certificate is written to `--output` with owner-only permissions, the
+/// password the caller chose is the PATCH body, and restart is a state PATCH.
+#[tokio::test]
+async fn postgres_certs_reset_password_and_restart_reach_their_routes() {
+    use std::os::unix::fs::PermissionsExt;
+    let mock = MockServer::start().await;
+    let service = format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}");
+    let pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+    Mock::given(method("GET"))
+        .and(path(format!("{service}/caCertificates")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(pem))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!("{service}/password")))
+        .and(body_json(
+            serde_json::json!({"password": "Chosen-Pass-123"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {}, "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    mount_postgres_state(&mock, "restart", postgres_role_service("sync")).await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let ca_path = directory.path().join("ca.pem");
+    let ca = ca_path.to_str().unwrap();
+    let id = ROLE_TEST_POSTGRES_ID;
+    let certs = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres", "certs", "get", id, "--output", ca, "--org-id", "org-1",
+        ],
+    );
+    assert_success(&certs);
+    assert_eq!(std::fs::read_to_string(&ca_path).unwrap(), pem);
+    assert_eq!(
+        std::fs::metadata(&ca_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&certs.stdout).unwrap(),
+        serde_json::json!({"path": ca})
+    );
+
+    let reset = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "reset-password",
+            id,
+            "--password",
+            "Chosen-Pass-123",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&reset);
+    // The response omitted the password, so the one sent is reported.
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reset.stdout).unwrap(),
+        serde_json::json!({"password": "Chosen-Pass-123"})
+    );
+
+    let restart =
+        invoke_cli_with_cloud_credentials(&mock, &["postgres", "restart", id, "--org-id", "org-1"]);
+    assert_success(&restart);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&restart.stdout).unwrap(),
+        postgres_role_service("sync")
     );
 }
 
@@ -15432,12 +15530,16 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
     for (args, stdin) in commands {
         let output = invoke_clickstack_cli(&mock, &args, stdin, true);
         assert_success(&output);
-        serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
+        let printed = serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
             panic!(
                 "invalid JSON output for {args:?}: {error}\n{}",
                 String::from_utf8_lossy(&output.stdout)
             )
         });
+        // A delete confirms the id it was given, not the service's.
+        if args[2] == "delete" {
+            assert_eq!(printed, serde_json::json!({"deleted": args[4]}), "{args:?}");
+        }
     }
 
     let requests = mock.received_requests().await.unwrap();
@@ -15486,9 +15588,15 @@ async fn clickstack_human_lists_render_every_resource_table() {
         (
             "role",
             "roles",
-            serde_json::json!([{}]),
+            serde_json::json!([
+                {"name": "ops", "id": "role-1", "isPredefined": false, "description": "Operators"},
+                {}
+            ]),
             vec!["Name", "ID", "Predefined", "Description"],
-            vec![vec!["-", "-", "-", "-"]],
+            vec![
+                vec!["ops", "role-1", "false", "Operators"],
+                vec!["-", "-", "-", "-"],
+            ],
         ),
         (
             "dashboard",
@@ -15517,9 +15625,15 @@ async fn clickstack_human_lists_render_every_resource_table() {
         (
             "saved-search",
             "saved-searches",
-            serde_json::json!([{}]),
+            serde_json::json!([
+                {"name": "errors", "id": "search-1", "sourceId": "source-1", "whereLanguage": "sql"},
+                {}
+            ]),
             vec!["Name", "ID", "Source ID", "Language"],
-            vec![vec!["-", "-", "-", "-"]],
+            vec![
+                vec!["errors", "search-1", "source-1", "sql"],
+                vec!["-", "-", "-", "-"],
+            ],
         ),
     ] {
         let mock = MockServer::start().await;
@@ -16169,7 +16283,10 @@ async fn udf_stdin_minimal_definition_and_sparse_human_output() {
         (
             vec!["attachment", "list", "my_udf"],
             "/my_udf/attachments",
-            serde_json::json!([{}]),
+            serde_json::json!([
+                {"functionName": "my_udf", "serviceId": "svc-1", "version": 2, "status": "deployed"},
+                {}
+            ]),
         ),
         (
             vec!["version", "list", "my_udf"],
@@ -16192,6 +16309,23 @@ async fn udf_stdin_minimal_definition_and_sparse_human_output() {
         assert_success(&output);
         if args == vec!["list"] {
             assert!(String::from_utf8_lossy(&output.stdout).contains("next"));
+        }
+        if args[0] == "attachment" {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let rows: Vec<Vec<&str>> = stdout
+                .lines()
+                .filter(|line| line.starts_with('|') && !line.starts_with("|-"))
+                .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ["name", "service_id", "version", "status"],
+                    ["my_udf", "svc-1", "2", "deployed"],
+                    ["-", "-", "-", "-"],
+                ],
+                "{stdout}"
+            );
         }
         let request = server.received_requests().await.unwrap().pop().unwrap();
         assert!(request.url.query().is_none());
@@ -16502,12 +16636,16 @@ async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output
     for (args, stdin) in commands {
         let output = invoke_clickstack_cli(&mock, &args, stdin, true);
         assert_success(&output);
-        serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
+        let printed = serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
             panic!(
                 "invalid JSON output for {args:?}: {error}\n{}",
                 String::from_utf8_lossy(&output.stdout)
             )
         });
+        // A delete confirms the id it was given, not the service's.
+        if args[2] == "delete" {
+            assert_eq!(printed, serde_json::json!({"deleted": args[4]}), "{args:?}");
+        }
     }
 
     let requests = mock.received_requests().await.unwrap();
@@ -16682,7 +16820,11 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
     for (args, stdin) in commands {
         let output = invoke_clickstack_cli(&mock, &args, stdin, true);
         assert_success(&output);
-        serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        let printed = serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        // A delete confirms the id it was given, not the service's.
+        if args[2] == "delete" {
+            assert_eq!(printed, serde_json::json!({"deleted": args[4]}), "{args:?}");
+        }
     }
 
     let requests = mock.received_requests().await.unwrap();
@@ -16922,7 +17064,11 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth()
     for (args, stdin) in commands {
         let output = invoke_clickstack_cli(&mock, &args, stdin, true);
         assert_success(&output);
-        serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        let printed = serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        // A delete confirms the id it was given, not the service's.
+        if args[2] == "delete" {
+            assert_eq!(printed, serde_json::json!({"deleted": args[4]}), "{args:?}");
+        }
     }
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 9);
