@@ -4295,6 +4295,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
         assert!(error.message.contains("ClickStack alert"), "{error}");
+        let mut messages = vec![error.message];
 
         for id in [None, Some(String::new()), Some(" ".to_owned())] {
             let error = collect_name_pages("ClickStack alert", |_| {
@@ -4303,6 +4304,9 @@ mod tests {
             .await
             .unwrap_err();
             assert!(error.message.contains("ClickStack alert"), "{error}");
+            if id.is_none() {
+                messages.push(error.message);
+            }
         }
         // An oversized page fails on the first fetch, before its IDs could
         // repeat on a second one.
@@ -4317,6 +4321,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(fetches, 1);
         assert!(error.message.contains("ClickStack alert"), "{error}");
+        // A repeated, a missing and an oversized page are reported apart.
+        messages.push(error.message);
+        for (index, message) in messages.iter().enumerate() {
+            assert!(!messages[index + 1..].contains(message), "{messages:?}");
+        }
     }
 
     #[tokio::test]

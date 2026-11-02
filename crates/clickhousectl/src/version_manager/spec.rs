@@ -120,5 +120,13 @@ mod tests {
                 assert!(message.contains(identifier), "{input:?}: {message}");
             }
         }
+        // Too many parts and a non-numeric part are rejected for different reasons.
+        let reason = |input: &str| {
+            parse_version_spec(input)
+                .unwrap_err()
+                .to_string()
+                .replace(&format!("'{input}'"), "")
+        };
+        assert_ne!(reason("25.12.9.61.2"), reason("25.foo"));
     }
 }

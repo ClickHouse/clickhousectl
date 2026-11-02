@@ -11981,6 +11981,44 @@ mod tests {
             );
         }
 
+        // A missing or blank field names only that field, unlike the
+        // not-an-object error that lists them all.
+        for (raw, field) in [
+            (
+                r#"{"sourceTable":"users","targetTable":"users"}"#,
+                "sourceSchemaName",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"  "}"#,
+                "targetTable",
+            ),
+        ] {
+            let message = parse_postgres_table_mapping_json(0, raw)
+                .unwrap_err()
+                .message;
+            let named: Vec<_> = fields
+                .iter()
+                .filter(|name| names_word(&message, name))
+                .collect();
+            assert_eq!(named, [&field], "{message}");
+        }
+
+        // The two sortingKeys contradictions are told apart.
+        let contradiction = |use_custom: &str, keys: &str| {
+            parse_postgres_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","useCustomSortingKey":{use_custom},"sortingKeys":{keys}}}"#
+                ),
+            )
+            .unwrap_err()
+            .message
+        };
+        assert_ne!(
+            contradiction("true", "[]"),
+            contradiction("false", r#"["id"]"#)
+        );
+
         // The occurrence number is one-based over the flag's own values.
         let error = parse_postgres_table_mapping_json(2, "{ nope").unwrap_err();
         assert!(
@@ -12739,6 +12777,12 @@ mod tests {
             let error = build_mysql_request(&args).unwrap_err();
             assert_names(&error.message, names);
         }
+
+        // A minimum names its bound.
+        let mut args = mysql_builder_args();
+        args.sync_interval_seconds = Some(0);
+        let message = build_mysql_request(&args).unwrap_err().message;
+        assert!(names_word(&message, "1"), "{message}");
     }
 
     #[test]
@@ -13961,8 +14005,9 @@ mod tests {
         // Already Protobuf, so this rejects the registry flags instead.
         args.format = "Protobuf".into();
         args.schema_registry_url = Some("https://registry.example".into());
-        let error = build_kafka_source(&args).unwrap_err();
-        assert_names(&error.message, &["--protobuf-schema-file"]);
+        let registry = build_kafka_source(&args).unwrap_err();
+        assert_names(&registry.message, &["--protobuf-schema-file"]);
+        assert_ne!(registry.message, error.message);
     }
 
     #[test]

@@ -623,7 +623,7 @@ mod tests {
             ("uploadId", json!("old"), vec!["uploadId"]),
             ("functionName", json!("../oops"), vec!["functionName"]),
             ("returnName", json!("1x"), vec!["returnName"]),
-            ("arguments", json!([{"type": "String"}]), vec![]),
+            ("arguments", json!([{"type": "String"}]), vec!["name"]),
             ("type", json!(1), vec!["type"]),
         ];
         for (key, value, identifiers) in cases {
