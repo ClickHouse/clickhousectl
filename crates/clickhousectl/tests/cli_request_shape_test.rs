@@ -6333,16 +6333,14 @@ async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     );
 }
 
-/// Mock a `--force` delete of a service that is observed mid-`stopping`:
-/// `running` on the pre-stop check, then `stopping` and `stopped` from the
-/// poll loop.
-async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
+/// Mock a `--force` delete of a service whose `GET`s answer `states` in
+/// order: the first is the pre-stop check, the rest come from the poll loop.
+async fn mount_forced_delete_stop_sequence(mock: &MockServer, states: &'static [&'static str]) {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
-    let states = ["running", "stopping", "stopped"];
     let request_index = Arc::new(AtomicUsize::new(0));
     Mock::given(method("GET"))
         .and(path(format!(
@@ -6361,7 +6359,7 @@ async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
                 "requestId": format!("stub-service-get-{index}"),
             }))
         })
-        .expect(3)
+        .expect(states.len() as u64)
         .mount(mock)
         .await;
     Mock::given(method("PATCH"))
@@ -6390,6 +6388,27 @@ async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
         .await;
 }
 
+/// `--json` with stderr redirected: the stop notice still reaches stderr, and
+/// the poll reports state transitions only, not every poll.
+#[tokio::test]
+async fn forced_service_delete_reports_only_poll_state_transitions_when_redirected() {
+    let mock = MockServer::start().await;
+    mount_forced_delete_stop_sequence(&mock, &["running", "stopping", "stopping", "stopped"]).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_service_delete(&mock, dir.path(), true);
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    let (notice, polls) = lines.split_first().expect("a stop notice on stderr");
+    assert!(notice.contains(DELETE_TEST_SERVICE_ID), "{stderr}");
+    let states: Vec<&str> = polls
+        .iter()
+        .map(|line| line.trim().strip_prefix("state: ").unwrap_or(line))
+        .collect();
+    assert_eq!(states, ["stopping", "stopped"], "{stderr}");
+}
+
 /// #598: a `--force` delete that observed the service mid-`stopping` panicked
 /// with exit 101. The stop poll streams a progress line per state change for as
 /// long as the stop takes (minutes on a real service), so it outlives readers
@@ -6399,7 +6418,7 @@ async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
 #[tokio::test]
 async fn forced_service_delete_survives_a_closed_stderr_while_stopping() {
     let mock = MockServer::start().await;
-    mount_forced_delete_stop_sequence(&mock).await;
+    mount_forced_delete_stop_sequence(&mock, &["running", "stopping", "stopped"]).await;
 
     let dir = tempfile::tempdir().unwrap();
     let mut child = spawn_service_delete(&mock, dir.path(), true, Stdio::null(), Stdio::piped());
@@ -13758,6 +13777,95 @@ async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
     assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert_eq!(repaired["key_id"], "replacement-key-id");
     assert!(repaired.get("pending_cleanup_api_key_ids").is_none());
+}
+
+#[tokio::test]
+async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
+    // The control plane keeps refusing the new key for the whole (shortened)
+    // window. The repair then fails exactly as an unretried failure did:
+    // original binding restored, new key deleted, record untouched, and the
+    // error the user sees is the upsert's own last answer.
+    let control = MockServer::start().await;
+    mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let binds_new_key = body["openApiKeys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == QUERY_TEST_KEY_UUID);
+            if binds_new_key {
+                key_not_in_organization_response(QUERY_TEST_KEY_UUID)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                }))
+            }
+        })
+        .mount(&control)
+        .await;
+    mount_key_delete(&control, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .env("CHCTL_KEY_PROPAGATION_TIMEOUT_MS", "1500")
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        stderr_without_notes(&output)
+    );
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "OpenAPI key {QUERY_TEST_KEY_UUID} does not belong to the organization"
+        )),
+        "the last 400 is the error reported: {stderr}"
+    );
+
+    let upserts = endpoint_upserts_received(&control).await;
+    assert!(
+        upserts.len() >= 3,
+        "several attempts then a rollback: {upserts:?}"
+    );
+    let (rollback, attempts) = upserts.split_last().unwrap();
+    for attempt in attempts {
+        assert_eq!(
+            attempt["openApiKeys"],
+            serde_json::json!(["unrelated-key", QUERY_TEST_KEY_UUID])
+        );
+    }
+    assert_eq!(
+        rollback["openApiKeys"],
+        serde_json::json!(["unrelated-key", OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![QUERY_TEST_KEY_UUID.to_string()],
+        "only the new key is deleted; the superseded key is untouched"
+    );
+    assert_eq!(read_credentials(project.path()), original);
 }
 
 #[tokio::test]
