@@ -445,8 +445,8 @@ pub async fn refresh_update_cache() {
         crate::timing::UPDATE_CHECK_TIMEOUT_ENV,
         BACKGROUND_TIMEOUT,
     );
-    // No time allowed means no request: subprocess tests turn the check off
-    // so they never reach the real release server.
+    // No time allowed means no request: subprocess tests turn the background
+    // check off. The explicit checks (`--version`, `update`) are unaffected.
     if timeout.is_zero() {
         return;
     }
