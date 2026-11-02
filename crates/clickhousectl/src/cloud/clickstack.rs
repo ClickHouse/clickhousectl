@@ -4274,6 +4274,9 @@ mod tests {
         let mut offsets = Vec::new();
         let error = collect_name_pages("ClickStack alert", |offset| {
             offsets.push(offset);
+            // Every page repeats, so a regression that let repeats through
+            // would page forever; fail it instead.
+            assert!(offsets.len() <= 2, "paged past a repeat: {offsets:?}");
             std::future::ready(Ok(full_name_page()))
         })
         .await

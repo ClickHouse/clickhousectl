@@ -1071,6 +1071,8 @@ mod tests {
         let mut calls = 0;
         let error = CloudClient::collect_cursor_pages("thing", |_| {
             calls += 1;
+            // Bound the fake so a regression fails instead of paging forever.
+            assert!(calls <= 2, "paged past a repeated cursor");
             async { cursor_page(vec![], Some("same")) }
         })
         .await

@@ -21698,10 +21698,12 @@ async fn postgres_query_reports_truncated_stream_as_failure() {
         ])
         .output()
         .unwrap();
-    server.join().unwrap();
+    // Assert before joining: a child that never reached the query host leaves
+    // the fake server blocked in accept(), so joining first would hang.
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(cloud_runtime_error(&output)["code"], "transport");
     assert!(control.received_requests().await.unwrap().is_empty());
+    server.join().unwrap();
 }
 
 #[tokio::test]
