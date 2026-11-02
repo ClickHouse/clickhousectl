@@ -464,13 +464,15 @@ enum ExpectedOutput {
     HumanFailure(Vec<String>),
 }
 
+const ANY_MESSAGE: &str = "<message>";
+
 fn without_messages(mut value: Value) -> Value {
     fn walk(value: &mut Value) {
         match value {
             Value::Object(map) => {
                 for (key, child) in map.iter_mut() {
                     if key == "message" && child.is_string() {
-                        *child = Value::String("<message>".into());
+                        *child = ANY_MESSAGE.into();
                     } else {
                         walk(child);
                     }
@@ -618,11 +620,11 @@ fn wait_for_process(pid: u32, alive: bool) {
     }
 }
 
-fn error(code: &str, message: impl Into<String>, command: Option<&str>) -> Value {
+/// An expected error envelope; its `message` is compared only as a string.
+fn error(code: &str, command: Option<&str>) -> Value {
     let mut detail = serde_json::Map::new();
     detail.insert("code".into(), code.into());
-    let message: String = message.into();
-    detail.insert("message".into(), message.into());
+    detail.insert("message".into(), ANY_MESSAGE.into());
     if let Some(command) = command {
         detail.insert("command".into(), command.into());
     }
@@ -633,24 +635,24 @@ fn scope_guidance(include_global_stop: bool) -> Value {
     let mut guidance = vec![
         json!({
             "action": "return_to_project_root",
-            "message": "Change to the local project root where the server was started",
+            "message": ANY_MESSAGE,
             "command": "cd <project-root>"
         }),
         json!({
             "action": "list_project_servers",
-            "message": "List servers after returning to that exact project",
+            "message": ANY_MESSAGE,
             "command": "clickhousectl local clickhouse list"
         }),
         json!({
             "action": "list_global_servers",
-            "message": "Locate running ClickHouse servers across projects",
+            "message": ANY_MESSAGE,
             "command": "clickhousectl local clickhouse list --global"
         }),
     ];
     if include_global_stop {
         guidance.push(json!({
             "action": "stop_global_project_server",
-            "message": "After confirming the project, stop the server with explicit global project selection",
+            "message": ANY_MESSAGE,
             "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
         }));
     }
@@ -661,7 +663,7 @@ fn project_not_found(project: &Path, name: &str, stop: bool) -> Value {
     json!({
         "error": {
             "code": "server_not_found",
-            "message": format!("Server '{name}' was not found in the current project"),
+            "message": ANY_MESSAGE,
             "project_scope": {
                 "kind": "exact_current_project",
                 "path": canonical(project),
@@ -784,7 +786,7 @@ fn fresh_project(fixture: &Fixture) {
             expected: ExpectedOutput::JsonFailure(json!({
                 "error": {
                     "code": "server_selection_required",
-                    "message": "No project-local server state was found in the current directory; no server was removed",
+                    "message": ANY_MESSAGE,
                     "project_scope": {
                         "kind": "exact_current_project",
                         "path": canonical(&fixture.project),
@@ -863,7 +865,6 @@ fn default_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "start", "default", "--no-wait"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
-                "Server 'default' is already running",
                 Some("clickhousectl local status"),
             )),
         },
@@ -972,10 +973,6 @@ fn custom_name_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_selection_required",
-                "No server name was provided and the default ClickHouse server does not exist \
-                 (custom ClickHouse servers available: 1); no server was removed. Inspect them with \
-                 `clickhousectl local clickhouse list`; to remove one, pass its name with \
-                 `clickhousectl local clickhouse remove <name>`.",
                 Some("clickhousectl local clickhouse list"),
             )),
         },
@@ -985,7 +982,6 @@ fn custom_name_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove", "dev"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
-                "Server 'dev' is running; stop it first with `clickhousectl local clickhouse stop dev`",
                 Some("clickhousectl local clickhouse stop dev"),
             )),
         },
@@ -1083,9 +1079,6 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
 
     let ambiguous_stop = error(
         "server_selection_required",
-        "No server name was provided and multiple non-default ClickHouse servers exist \
-         (available: 2). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every \
-         server with `clickhousectl local clickhouse stop-all`.",
         Some("clickhousectl local clickhouse list"),
     );
     fixture.run_cases(&[
@@ -1101,10 +1094,6 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_selection_required",
-                "No server name was provided and the default ClickHouse server does not exist \
-                 (custom ClickHouse servers available: 2); no server was removed. Inspect them with \
-                 `clickhousectl local clickhouse list`; to remove one, pass its name with \
-                 `clickhousectl local clickhouse remove <name>`.",
                 Some("clickhousectl local clickhouse list"),
             )),
         },
@@ -1121,9 +1110,7 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
         CommandCase {
             label: "many custom-only explicit flag stop".into(),
             cwd: TestCwd::Root,
-            args: strings(&[
-                "local", "--json", "server", "stop", "--name", "beta",
-            ]),
+            args: strings(&["local", "--json", "server", "stop", "--name", "beta"]),
             expected: ExpectedOutput::JsonSuccess(json!({
                 "name": "beta",
                 "already_stopped": false,

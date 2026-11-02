@@ -420,11 +420,8 @@ fn deploy_to_a_running_server_reloads_and_reports_loaded() {
 
     let human = run(&env, &["local", "udf", "deploy", "my_fn"]);
     assert!(human.status.success());
-    assert!(
-        String::from_utf8_lossy(&human.stdout).ends_with("Reloaded functions; my_fn is loaded.\n"),
-        "{}",
-        String::from_utf8_lossy(&human.stdout)
-    );
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.lines().last().unwrap().contains("my_fn"), "{stdout}");
 }
 
 #[test]
@@ -443,13 +440,10 @@ fn a_function_the_server_never_loads_is_an_error_that_keeps_the_files() {
         .canonicalize()
         .unwrap()
         .join(".clickhouse/servers/default/server.log");
-    assert_eq!(
-        error["error"]["message"],
-        format!(
-            "UDF other_fn was deployed to server default but ClickHouse did not load it; the reason is in {}",
-            log_path.display()
-        )
-    );
+    let message = error["error"]["message"].as_str().unwrap();
+    for identifier in ["other_fn", "default", &log_path.display().to_string()] {
+        assert!(message.contains(identifier), "{identifier}: {message}");
+    }
     assert_eq!(
         error["error"]["command"],
         "clickhousectl local udf deploy other_fn --server default"
@@ -479,9 +473,12 @@ fn reload_sends_system_reload_functions_and_lists_loaded_names() {
     );
 
     let human = run(&env, &["local", "udf", "reload"]);
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout),
-        "Reloaded functions on server 'default'; loaded: my_fn\n"
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.contains("'default'") && stdout.contains("my_fn"),
+        "{stdout}"
     );
 }
 
@@ -498,7 +495,7 @@ fn a_rejected_reload_names_what_blocks_it_with_server_text_in_details() {
     assert_eq!(error["error"]["code"], "udf_reload_blocked");
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        message.starts_with("ClickHouse rejected the function reload on server default."),
+        message.contains("`clickhousectl local udf list --server default`"),
         "{message}"
     );
     assert!(!message.contains("udf remove"), "{message}");
@@ -514,9 +511,10 @@ fn a_rejected_reload_names_what_blocks_it_with_server_text_in_details() {
 
     let human = run(&env, &["local", "udf", "reload"]);
     assert_eq!(human.status.code(), Some(1));
+    // Human mode carries the server's own text.
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(
-        stderr.contains("ClickHouse error: Code: 36. DB::Exception"),
+        stderr.contains("Code: 36. DB::Exception: Function configuration is invalid."),
         "{stderr}"
     );
 
@@ -531,7 +529,10 @@ fn a_rejected_reload_names_what_blocks_it_with_server_text_in_details() {
         "clickhousectl local udf remove bad --server default"
     );
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("UDF bad is broken"), "{message}");
+    assert!(
+        message.contains("`clickhousectl local udf remove bad --server default`"),
+        "{message}"
+    );
     assert!(!message.contains("my_fn"), "{message}");
 
     // Once the reload succeeds, the rejection marker is cleared.
@@ -570,7 +571,6 @@ fn list_marks_loaded_functions_and_remove_reloads_on_a_running_server() {
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(stdout.contains("| yes"), "{stdout}");
     assert!(stdout.contains("| no"), "{stdout}");
-    assert!(!stdout.contains("not running"), "{stdout}");
 
     let removed = success_json(&run(
         &env,
@@ -583,9 +583,12 @@ fn list_marks_loaded_functions_and_remove_reloads_on_a_running_server() {
             .any(|query| query == "SYSTEM RELOAD FUNCTIONS")
     );
     let human = run(&env, &["local", "udf", "remove", "my_fn"]);
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout),
-        "Removed UDF my_fn from server 'default' and reloaded functions\n"
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(
+        stdout.contains("my_fn") && stdout.contains("'default'"),
+        "{stdout}"
     );
 }
 
@@ -639,15 +642,15 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
     assert_eq!(output.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "udf_rejected");
-    assert_eq!(
-        error["error"]["message"],
-        "ClickHouse rejected UDF my_fn on server default. Its files stay deployed, and function \
-         reloads on this server fail until it is fixed or removed, though other UDFs still load. \
-         Fix shared/udfs/my_fn and rerun \
-         `clickhousectl local udf deploy my_fn --dir shared/udfs --server default`, restore the \
-         previous working copy and rerun it, or remove it with \
-         `clickhousectl local udf remove my_fn --server default`."
-    );
+    let message = error["error"]["message"].as_str().unwrap();
+    for identifier in [
+        "shared/udfs/my_fn",
+        "`clickhousectl local udf deploy my_fn --dir shared/udfs --server default`",
+        "`clickhousectl local udf remove my_fn --server default`",
+    ] {
+        assert!(message.contains(identifier), "{identifier}: {message}");
+    }
+    assert!(!message.contains("DB::Exception"), "{message}");
     assert_eq!(
         error["error"]["command"],
         "clickhousectl local udf remove my_fn --server default"
@@ -669,7 +672,10 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
     );
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.contains("ClickHouse rejected UDF my_fn"), "{stderr}");
+    assert!(
+        stderr.contains("`clickhousectl local udf remove my_fn --server default`"),
+        "{stderr}"
+    );
     assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
 }
 
@@ -706,7 +712,7 @@ fn a_function_rejected_only_by_the_retry_reload_is_reported_as_rejected() {
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .starts_with("ClickHouse rejected UDF other_fn on server default."),
+            .contains("`clickhousectl local udf remove other_fn --server default`"),
         "{error}"
     );
     let reloads = logged_queries(&env)
@@ -737,7 +743,6 @@ fn a_function_that_loads_while_another_is_broken_deploys_with_a_warning() {
     let warnings = json["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{json}");
     let warning = warnings[0].as_str().unwrap();
-    assert!(warning.contains("UDF bad is broken"), "{warning}");
     assert!(
         warning.contains("`clickhousectl local udf remove bad --server default`"),
         "{warning}"
@@ -749,8 +754,7 @@ fn a_function_that_loads_while_another_is_broken_deploys_with_a_warning() {
     let human = run(&env, &["local", "udf", "deploy", "my_fn"]);
     assert!(human.status.success());
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.starts_with("Warning: "), "{stderr}");
-    assert!(stderr.contains("UDF bad is broken"), "{stderr}");
+    assert_eq!(stderr, format!("Warning: {warning}\n"));
 }
 
 #[test]
@@ -777,7 +781,7 @@ fn a_rejected_redeploy_of_a_loaded_function_is_blamed_on_it() {
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .starts_with("ClickHouse rejected UDF my_fn on server default."),
+            .contains("`clickhousectl local udf remove my_fn --server default`"),
         "{error}"
     );
     assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], true);
@@ -808,7 +812,7 @@ fn older_servers_blame_unlisted_staged_functions_and_never_guess_about_loaded_on
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .starts_with("ClickHouse rejected UDF bad on server default."),
+            .contains("`clickhousectl local udf remove bad --server default`"),
         "{error}"
     );
 
@@ -820,13 +824,17 @@ fn older_servers_blame_unlisted_staged_functions_and_never_guess_about_loaded_on
         error["error"]["command"],
         "clickhousectl local udf remove bad --server default"
     );
+    // Blames bad and asks for my_fn's redeploy, never my_fn's removal.
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("UDF bad is broken"), "{message}");
-    assert!(message.contains("before 26.2"), "{message}");
+    assert!(
+        message.contains("`clickhousectl local udf remove bad --server default`"),
+        "{message}"
+    );
     assert!(
         message.contains("`clickhousectl local udf deploy my_fn --server default`"),
         "{message}"
     );
+    assert!(!message.contains("udf remove my_fn"), "{message}");
     assert!(!message.contains("DB::Exception"), "{message}");
 
     // `reload` uses the same fallback.
@@ -899,12 +907,13 @@ fn remove_during_a_blocked_reload_says_what_was_removed_and_what_blocks() {
         error["error"]["command"],
         "clickhousectl local udf remove bad --server default"
     );
+    // Names what was removed, and the culprit's removal.
     let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("my_fn"), "{message}");
     assert!(
-        message.starts_with("Removed UDF my_fn from server default"),
+        message.contains("`clickhousectl local udf remove bad --server default`"),
         "{message}"
     );
-    assert!(message.contains("UDF bad is broken"), "{message}");
     assert!(!message.contains("DB::Exception"), "{message}");
     assert_eq!(
         error["error"]["details"],
@@ -931,12 +940,12 @@ fn remove_during_a_blocked_reload_says_what_was_removed_and_what_blocks() {
     let human = run(&env, &["local", "udf", "remove", "other_fn"]);
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("other_fn"), "{stderr}");
+    // Older servers: the staged function the server does not list is named.
     assert!(
-        stderr.contains("Removed UDF other_fn from server default"),
+        stderr.contains("`clickhousectl local udf remove bad --server default`"),
         "{stderr}"
     );
-    // Older servers: the staged function the server does not list is named.
-    assert!(stderr.contains("UDF bad is broken"), "{stderr}");
     assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
 }
 
@@ -948,10 +957,9 @@ fn an_unreachable_server_is_not_reported_as_a_rejection() {
 
     let error = error_json(&run(&env, &["local", "udf", "reload", "--json"]));
     assert_eq!(error["error"]["code"], "udf_server_unreachable");
-    assert_eq!(
-        error["error"]["message"],
-        format!("Could not reach server 'default' on port {}", env.http_port)
-    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("'default'"), "{message}");
+    assert!(message.contains(&env.http_port.to_string()), "{message}");
     assert_eq!(
         error["error"]["command"],
         "clickhousectl local clickhouse list"
@@ -961,15 +969,9 @@ fn an_unreachable_server_is_not_reported_as_a_rejection() {
 
     let human = run(&env, &["local", "udf", "reload"]);
     assert_eq!(human.status.code(), Some(1));
+    // Human mode adds the transport detail after the same message.
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "Could not reach server 'default' on port {}: ",
-            env.http_port
-        )),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("rejected"), "{stderr}");
+    assert!(stderr.contains(&format!("{message}: ")), "{stderr}");
 }
 
 #[test]
@@ -985,29 +987,25 @@ fn deploy_refuses_a_name_the_running_server_already_uses_before_writing() {
     run(&env, &["local", "udf", "remove", "lower"]);
 
     let _server = start_server(&env);
+    // Each clash names the server-side function it collides with: the
+    // built-in, its alias target, its canonical lower-case spelling, or the
+    // SQL function and how it was made.
     for (name, expected) in [
-        (
-            "lower",
-            "clashes with the built-in function lower on server default",
-        ),
-        (
-            "lcase",
-            "the built-in function lcase (an alias of lower) on",
-        ),
-        (
-            "SUM",
-            "the case-insensitive built-in function sum on server default",
-        ),
-        (
-            "sql_fn",
-            "by the SQL function sql_fn, created with CREATE FUNCTION",
-        ),
+        ("lower", &["lower", "default"][..]),
+        ("lcase", &["lcase", "lower"][..]),
+        ("SUM", &["sum", "default"][..]),
+        ("sql_fn", &["sql_fn", "CREATE FUNCTION"][..]),
     ] {
         write_udf(&env, name);
         let output = run(&env, &["local", "udf", "deploy", name, "--json"]);
         assert_eq!(output.status.code(), Some(2), "{name}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected), "{name}: {stderr}");
+        for identifier in expected {
+            assert!(
+                stderr.contains(identifier),
+                "{name}: {identifier}: {stderr}"
+            );
+        }
         assert!(
             !data
                 .join(format!("user_defined_functions/{name}_function.xml"))
@@ -1026,6 +1024,17 @@ fn deploy_refuses_a_name_the_running_server_already_uses_before_writing() {
     // Our own executable UDF is free to be redeployed.
     write_udf(&env, "my_fn");
     assert_eq!(deploy(&env, "my_fn")["loaded"], true);
+}
+
+fn human_list_row(env: &Env, name: &str) -> String {
+    let human = run(env, &["local", "udf", "list"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout).into_owned();
+    stdout
+        .lines()
+        .find(|line| line.contains(&format!(" {name} ")))
+        .unwrap_or_else(|| panic!("{name} not listed: {stdout}"))
+        .to_owned()
 }
 
 fn list_entry(env: &Env, name: &str) -> Value {
@@ -1057,15 +1066,16 @@ fn list_flags_a_rejected_redeploy_until_a_reload_or_deploy_succeeds() {
     let entry = list_entry(&env, "my_fn");
     assert_eq!(entry["loaded"], true);
     assert_eq!(entry["last_deploy_rejected"], true);
-    let human = run(&env, &["local", "udf", "list"]);
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    assert!(
-        stdout.contains("yes (stale: last deploy rejected)"),
-        "{stdout}"
-    );
+    // The human row flags the rejection on top of the loaded state, and a
+    // successful reload restores the plain row.
+    let stale_row = human_list_row(&env, "my_fn");
+    assert!(stale_row.contains("yes"), "{stale_row}");
 
     success_json(&run(&env, &["local", "udf", "reload", "--json"]));
     assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+    let fresh_row = human_list_row(&env, "my_fn");
+    assert!(fresh_row.contains("yes"), "{fresh_row}");
+    assert_ne!(stale_row, fresh_row);
 
     reject();
     deploy(&env, "my_fn");

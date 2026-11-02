@@ -194,10 +194,11 @@ fn running_server_remove_has_stop_first_error_and_start_keeps_collision_error() 
     );
     assert_eq!(remove.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&remove.stderr);
-    assert!(stderr.contains(
-        "Server 'test2' is running; stop it first with `clickhousectl local clickhouse stop test2`"
-    ));
-    assert!(!stderr.contains("already running"));
+    assert!(stderr.contains("'test2'"), "{stderr}");
+    assert!(
+        stderr.contains("`clickhousectl local clickhouse stop test2`"),
+        "{stderr}"
+    );
 
     let restart = run(
         project.path(),
@@ -205,7 +206,13 @@ fn running_server_remove_has_stop_first_error_and_start_keeps_collision_error() 
         &["local", "server", "start", "--name", "test2"],
     );
     assert_eq!(restart.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&restart.stderr).contains("Server 'test2' is already running"));
+    assert!(String::from_utf8_lossy(&restart.stderr).contains("'test2'"));
+    let restart = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "start", "--name", "test2"],
+    );
+    assert_eq!(json_error_code(&restart), "server_running");
 
     let stop = run(
         project.path(),
@@ -261,12 +268,21 @@ fn stopped_server_connection_commands_fail_without_using_saved_ports() {
     );
     assert_eq!(client.status.code(), Some(1));
     let client_stderr = String::from_utf8_lossy(&client.stderr);
-    assert!(client_stderr.contains("Managed client mode: server 'default' is not running"));
+    assert!(client_stderr.contains("'default'"), "{client_stderr}");
     assert!(client_stderr.contains(&project.path().canonicalize().unwrap().display().to_string()));
-    assert!(client_stderr.contains("clickhousectl local clickhouse list"));
-    assert!(client_stderr.contains("clickhousectl local clickhouse start <name>"));
+    assert!(client_stderr.contains("`clickhousectl local clickhouse list`"));
+    assert!(client_stderr.contains("`clickhousectl local clickhouse start <name>`"));
     assert!(!client_stderr.contains("8123"));
     assert!(!client_stderr.contains("9000"));
+    let client = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "client", "--name", "default"],
+    );
+    assert_eq!(
+        json_error_code(&client),
+        "managed_client_server_not_running"
+    );
 
     let dotenv = run(
         project.path(),
@@ -274,6 +290,21 @@ fn stopped_server_connection_commands_fail_without_using_saved_ports() {
         &["local", "server", "dotenv", "--name", "default"],
     );
     assert_eq!(dotenv.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&dotenv.stderr).contains("Server 'default' is not running"));
+    assert!(String::from_utf8_lossy(&dotenv.stderr).contains("'default'"));
+    let dotenv = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "dotenv", "--name", "default"],
+    );
+    assert_eq!(json_error_code(&dotenv), "server_not_running");
     assert!(!project.path().join(".env").exists());
+}
+
+fn json_error_code(output: &Output) -> String {
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).expect("parse JSON error");
+    error["error"]["code"]
+        .as_str()
+        .expect("error code")
+        .to_owned()
 }

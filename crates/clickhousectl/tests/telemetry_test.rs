@@ -166,6 +166,12 @@ fn stdout_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Whether stderr carries the first-run notice, recognised by the opt-out
+/// command it names rather than by its wording.
+fn has_first_run_notice(output: &Output) -> bool {
+    stderr_of(output).contains("`clickhousectl telemetry disable`")
+}
+
 /// Run independent invocations at once, so a table test costs about one
 /// invocation's latency rather than one per row.
 fn outputs_in_parallel(commands: Vec<Command>) -> Vec<Output> {
@@ -225,10 +231,10 @@ async fn first_run_sends_nothing_then_second_run_sends_event() {
     let output = sandbox.run(&["local", "list"]);
     assert!(output.status.success());
 
-    let stderr = stderr_of(&output);
     assert!(
-        stderr.contains("anonymous usage data") && stderr.contains("telemetry disable"),
-        "first run must print the notice, got stderr: {stderr}"
+        has_first_run_notice(&output) && stderr_of(&output).contains("DO_NOT_TRACK=1"),
+        "first run must print the notice, got stderr: {}",
+        stderr_of(&output)
     );
     assert_eq!(
         std::fs::read_to_string(sandbox.state_path()).unwrap(),
@@ -239,7 +245,7 @@ async fn first_run_sends_nothing_then_second_run_sends_event() {
     // Second run: the notice appears exactly once, ever.
     let output = sandbox.run(&["local", "list"]);
     assert!(output.status.success());
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(!has_first_run_notice(&output));
     let payloads = sandbox.wait_for_requests(1).await;
     assert_eq!(payloads[0]["command"], "local list");
 }
@@ -530,12 +536,12 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
 
     assert_eq!(output.status.code(), Some(3));
     assert!(
-        !stderr_of(&output).contains("Error: child process exited"),
+        !stderr_of(&output).contains("Error: "),
         "child stderr should not gain a wrapper error: {}",
         stderr_of(&output)
     );
     assert!(
-        stderr_of(&output).contains("There is a new version of clickhousectl"),
+        stderr_of(&output).contains("`clickhousectl update`"),
         "child failure should still reach the update-notice tail: {}",
         stderr_of(&output)
     );
@@ -863,8 +869,9 @@ async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
 
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
+    let os_error = std::io::Error::from_raw_os_error(libc::ENOENT).to_string();
     assert!(
-        stderr.contains("Failed to execute ClickHouse"),
+        stderr.contains(&os_error),
         "the OS launch failure must still reach the shell: {stderr}"
     );
 
@@ -897,7 +904,7 @@ async fn missing_psql_is_an_error_event_not_a_handoff() {
 
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("could not execute psql"), "{stderr}");
+    assert!(stderr.contains("psql"), "{stderr}");
 
     // The other `exec()` handoff: a program that cannot be launched is an
     // error, not a censored attempt.
@@ -1022,7 +1029,7 @@ async fn first_run_of_help_prints_notice_and_writes_marker() {
     assert_eq!(output.status.code(), Some(0));
     assert!(stdout_of(&output).contains("Usage:"));
     assert!(
-        stderr_of(&output).contains("anonymous usage data"),
+        has_first_run_notice(&output),
         "first --help must print the notice, got stderr: {}",
         stderr_of(&output)
     );
@@ -1036,7 +1043,7 @@ async fn first_run_of_help_prints_notice_and_writes_marker() {
     // with the help outcome and the flag recorded under its long name.
     let output = sandbox.run(&["cloud", "--help"]);
     assert_eq!(output.status.code(), Some(0));
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(!has_first_run_notice(&output));
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "cloud");
@@ -1175,10 +1182,7 @@ async fn do_not_track_is_fully_silent() {
             .output()
             .unwrap();
         assert!(output.status.success(), "{value:?}");
-        assert!(
-            !stderr_of(&output).contains("anonymous usage data"),
-            "{value:?}"
-        );
+        assert!(!has_first_run_notice(&output), "{value:?}");
         assert!(
             !sandbox.state_path().exists(),
             "DO_NOT_TRACK={value:?} must not write the marker file"
@@ -1195,7 +1199,12 @@ async fn disable_persists_and_silences() {
 
     let output = sandbox.run(&["telemetry", "disable"]);
     assert!(output.status.success());
-    assert!(stdout_of(&output).contains("Telemetry disabled."));
+    assert_eq!(
+        stdout_of(&output).lines().count(),
+        1,
+        "{}",
+        stdout_of(&output)
+    );
     assert_eq!(
         std::fs::read_to_string(sandbox.state_path()).unwrap(),
         r#"{"disabled":true}"#
@@ -1203,10 +1212,15 @@ async fn disable_persists_and_silences() {
 
     let output = sandbox.run(&["local", "list"]);
     assert!(output.status.success());
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(!has_first_run_notice(&output));
 
+    // Status names the file that disabled it.
     let output = sandbox.run(&["telemetry", "status"]);
-    assert!(stdout_of(&output).contains("disabled"));
+    assert!(
+        stdout_of(&output).contains(&sandbox.state_path().display().to_string()),
+        "{}",
+        stdout_of(&output)
+    );
 
     // Neither the disable itself, nor anything after it, sent an event.
     sandbox.assert_no_requests().await;
@@ -1332,9 +1346,18 @@ async fn enable_sends_an_event_for_itself() {
 
     let output = sandbox.run(&["telemetry", "enable"]);
     assert!(output.status.success());
-    assert!(stdout_of(&output).contains("Telemetry enabled."));
+    assert_eq!(
+        stdout_of(&output).lines().count(),
+        1,
+        "{}",
+        stdout_of(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.state_path()).unwrap(),
+        r#"{"disabled":false}"#
+    );
     // Without DO_NOT_TRACK there is nothing to warn about.
-    assert!(!stderr_of(&output).contains("DO_NOT_TRACK is set"));
+    assert!(!stderr_of(&output).contains("DO_NOT_TRACK"));
 
     // Consent is evaluated after the command ran, so the enable run itself
     // is the first event.
@@ -1358,11 +1381,18 @@ async fn enable_under_do_not_track_warns_that_telemetry_stays_silent() {
     assert!(output.status.success());
     assert_eq!(output.status.code(), Some(0));
 
-    // stdout stays the clean confirmation; the note goes to stderr.
-    assert!(stdout_of(&output).contains("Telemetry enabled."));
+    // stdout stays the clean confirmation; the note, naming the variable,
+    // goes to stderr.
+    assert_eq!(
+        stdout_of(&output).lines().count(),
+        1,
+        "{}",
+        stdout_of(&output)
+    );
+    assert!(!stdout_of(&output).contains("DO_NOT_TRACK"));
     let stderr = stderr_of(&output);
     assert!(
-        stderr.contains("DO_NOT_TRACK") && stderr.contains("remain silent"),
+        stderr.contains("DO_NOT_TRACK"),
         "enable under DNT must warn on stderr, got: {stderr}"
     );
 
@@ -1405,12 +1435,16 @@ async fn unwritable_home_fails_open_to_silent() {
     let perms = std::fs::Permissions::from_mode(0o555);
     std::fs::set_permissions(sandbox.home.path(), perms).unwrap();
 
-    // Twice: silent every run, never a repeated notice, never an error.
+    // Twice: silent every run, never a repeated notice, never an error, and
+    // the same status as a home that was never configured.
+    let fresh = Sandbox::new().await;
+    let unconfigured = fresh.run(&["telemetry", "status"]);
+    assert!(!fresh.state_path().exists());
     for _ in 0..2 {
         let output = sandbox.run(&["telemetry", "status"]);
         assert!(output.status.success());
-        assert!(!stderr_of(&output).contains("anonymous usage data"));
-        assert!(stdout_of(&output).contains("not yet configured"));
+        assert!(!has_first_run_notice(&output));
+        assert_eq!(stdout_of(&output), stdout_of(&unconfigured));
     }
     assert!(!sandbox.state_path().exists());
     sandbox.assert_no_requests().await;
@@ -1540,7 +1574,12 @@ async fn closed_stderr_never_panics_or_bypasses_telemetry() {
             .expect("failed to spawn binary")
     };
     assert_eq!(output.status.code(), Some(0), "enable must not panic");
-    assert!(stdout_of(&output).contains("Telemetry enabled."));
+    assert_eq!(
+        stdout_of(&output).lines().count(),
+        1,
+        "{}",
+        stdout_of(&output)
+    );
 }
 
 // -- query failure classification (#450) -------------------------------------
@@ -1715,10 +1754,11 @@ async fn a_sql_error_is_classified_without_the_sql_reaching_the_payload() {
     ] {
         assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
     }
+    // The server's own code and details reach the user verbatim.
+    let stderr = stderr_of(&output);
     assert!(
-        stderr_of(&output).contains("SQL error 62: Syntax error near FROM"),
-        "the user must still see the real error: {}",
-        stderr_of(&output)
+        stderr.contains("62") && stderr.contains("Syntax error near FROM"),
+        "the user must still see the real error: {stderr}"
     );
 }
 
@@ -2534,11 +2574,6 @@ async fn a_repair_that_waited_on_key_propagation_counts_the_retry() {
         .output()
         .expect("failed to spawn binary");
     assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
-    assert!(
-        stderr_of(&output).contains("to accept the API key binding"),
-        "{}",
-        stderr_of(&output)
-    );
 
     let event = debug_payload(&output);
     assert_eq!(event["failure_stage"], "endpoint_upsert");

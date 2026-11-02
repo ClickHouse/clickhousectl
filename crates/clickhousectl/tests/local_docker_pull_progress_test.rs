@@ -129,10 +129,11 @@ fn non_tty_pull_collapses_repeated_layer_events() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "Pulling postgres:18... done\n"
-    );
+    // One progress line for the image; no per-layer events.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.contains("postgres:18"), "{stderr}");
+    assert!(!stderr.contains("layer-"), "{stderr}");
 }
 
 #[test]
@@ -144,14 +145,13 @@ fn non_tty_pull_reports_failure_once_and_preserves_diagnostics() {
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
-    assert!(
-        stderr.starts_with("Pulling postgres:18-missing... failed\n"),
-        "unexpected stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Docker stream error: manifest for postgres:18-missing not found"),
-        "missing Docker diagnostics: {stderr}"
-    );
+    // The progress line names the image once, then the daemon's own
+    // diagnostic follows verbatim, once.
+    let daemon_message = "manifest for postgres:18-missing not found";
+    let (progress, rest) = stderr.split_once('\n').expect("progress line");
+    assert!(progress.contains("postgres:18-missing"), "{stderr}");
+    assert!(!progress.contains(daemon_message), "{stderr}");
+    assert_eq!(rest.matches(daemon_message).count(), 1, "{stderr}");
     assert!(
         !stderr.contains("Pulling fs layer"),
         "progress leaked: {stderr}"

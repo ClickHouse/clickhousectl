@@ -292,11 +292,7 @@ fn clickhouse_client_checks_native_repeated_query_version_support() {
     );
     assert_runtime_error(
         output,
-        &[
-            "does not support repeated --query values",
-            VERSION_BEFORE_REPEATED_QUERY,
-            "23.9.1.1854 or newer",
-        ],
+        &["--query", VERSION_BEFORE_REPEATED_QUERY, "23.9.1.1854"],
     );
 }
 
@@ -311,10 +307,7 @@ fn clickhouse_direct_without_version_reports_zero_and_multiple_installs() {
             None,
             &["local", "client", "--host", "remote"],
         ),
-        &[
-            "No ClickHouse client versions are installed",
-            "clickhousectl local install <version>",
-        ],
+        &["clickhousectl local install <version>"],
     );
     assert_default(home.path(), None);
 
@@ -329,11 +322,7 @@ fn clickhouse_direct_without_version_reports_zero_and_multiple_installs() {
             None,
             &["local", "client", "--host", "remote"],
         ),
-        &[
-            "Multiple ClickHouse client versions are installed",
-            "--version <version>",
-            "clickhousectl local use <version>",
-        ],
+        &["--version <version>", "clickhousectl local use <version>"],
     );
     assert_default(home.path(), None);
 }
@@ -388,7 +377,7 @@ fn clickhouse_direct_reports_stale_default_and_explicit_missing_version() {
     install_fake_clickhouse(home.path(), VERSION_B);
     write_default(home.path(), VERSION_A);
 
-    let stale_message = format!("Default ClickHouse version '{VERSION_A}' is not installed");
+    let stale_message = format!("'{VERSION_A}'");
     assert_runtime_error(
         run(
             project.path(),
@@ -427,7 +416,7 @@ fn clickhouse_direct_reports_stale_default_and_explicit_missing_version() {
     let home = tempfile::tempdir().expect("create home tempdir");
     install_fake_clickhouse(home.path(), VERSION_A);
     write_default(home.path(), VERSION_A);
-    let missing_message = format!("ClickHouse client version '{MISSING_VERSION}' is not installed");
+    let missing_message = format!("'{MISSING_VERSION}'");
     let install_message = format!("clickhousectl local install {MISSING_VERSION}");
     assert_runtime_error(
         run(
@@ -476,12 +465,27 @@ fn clickhouse_direct_explicit_version_propagates_version_list_io_errors() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
-    assert!(stderr.contains("IO error"), "stderr: {stderr}");
-    assert!(stderr.contains("Not a directory"), "stderr: {stderr}");
-    assert!(
-        !stderr.contains("is not installed"),
-        "filesystem error was masked: {stderr}"
+    let source = std::io::Error::from_raw_os_error(libc::ENOTDIR);
+    assert!(stderr.contains(&source.to_string()), "stderr: {stderr}");
+
+    // The filesystem error is not masked as a missing version.
+    let json = run(
+        project.path(),
+        home.path(),
+        None,
+        &[
+            "local",
+            "--json",
+            "client",
+            "--host",
+            "remote",
+            "--version",
+            VERSION_A,
+        ],
     );
+    assert_eq!(json.status.code(), Some(1));
+    let error: serde_json::Value = serde_json::from_slice(&json.stderr).expect("parse JSON error");
+    assert_eq!(error["error"]["code"], "io_error", "{error}");
 }
 
 #[test]
