@@ -22,7 +22,7 @@ The API/analyzer crates share [crate-level instructions](../crates/clickhouse-cl
 Run the standard CLI gates from [Contributing](../CONTRIBUTING.md#build-and-test). Pick focused checks during development:
 
 - Clap parsing and request builders have tests beside command definitions.
-- `crates/clickhousectl/tests/cli_request_shape_test.rs` spawns the binary against wiremock for Cloud requests, authentication, errors, and output.
+- `crates/clickhousectl/tests/cli_request_shape_test.rs` spawns the binary against wiremock for Cloud handler behaviour that the unit tests can't reach: multi-call flows, error paths, auth wiring, and output contracts. [AGENTS.md](../AGENTS.md#tests) holds the rule for what belongs there.
 - Local subprocess tests use separate `local_*` binaries for each concern.
 - Pure version/auth/output logic uses inline tests.
 

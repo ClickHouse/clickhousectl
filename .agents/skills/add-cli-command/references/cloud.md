@@ -63,6 +63,9 @@ other endpoints.
      instead of printing them in full. Show lists with `tabled`, and short confirmations with `println!`.
    - Every response field is an `Option`. Never `unwrap()` one. Print a missing value with `output::or_absent`,
      which prints `-`. A `--filter` treats a missing value as not matching.
-8. **Tests.** Test runtime behaviour that the parse and builder tests don't reach in
-   `tests/cli_request_shape_test.rs`. This covers auth, multi-call flows, errors and output. Those tests run
-   the real binary against a wiremock server.
+8. **Tests.** Test each behaviour once, in the cheapest layer (root `AGENTS.md` → Tests). Validation belongs in
+   the parse tests and body fields in the builder tests. Add to `tests/cli_request_shape_test.rs`, which runs
+   the real binary against a wiremock server, only for what those can't reach: one wiring test for the command
+   family, plus any multi-call or read-modify-write flow, distinct error path (exit code, JSON error) or output
+   contract the handler owns. Don't repeat shared behaviour per command, such as `convert_error` or the OAuth
+   write check.
