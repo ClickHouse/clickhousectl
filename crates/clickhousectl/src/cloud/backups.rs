@@ -1374,82 +1374,94 @@ mod tests {
         assert!(contradictory_field.message.contains("bucketPath"));
     }
 
+    /// The exact PATCH body or error for each combination of period,
+    /// retention, start time and clear: an untouched start time is omitted,
+    /// a clear is an explicit `null` compatible with any period, and a start
+    /// time restricts an explicit period to 24 or 48.
     #[test]
-    fn build_backup_config_update_request_supports_minimal_and_maximal_inputs() {
-        let minimal =
-            build_backup_config_update_request(&BackupConfigUpdateOptions::default()).unwrap();
-        assert!(minimal.backup_period_in_hours.is_none());
-        assert!(minimal.backup_retention_period_in_hours.is_none());
-        assert!(minimal.backup_start_time.is_none());
-        assert_eq!(
-            serde_json::to_value(&minimal).unwrap(),
-            serde_json::json!({}),
-            "an untouched start time must not appear in the PATCH body"
-        );
-
-        let maximal = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_period_hours: Some(48),
+    fn build_backup_config_update_request_sends_exact_bodies_or_names_the_conflict() {
+        let options =
+            |period: Option<u32>, start: Option<&str>, clear: bool| BackupConfigUpdateOptions {
+                backup_period_hours: period,
+                backup_retention_period_hours: None,
+                backup_start_time: start.map(str::to_owned),
+                clear_backup_start_time: clear,
+            };
+        let maximal = BackupConfigUpdateOptions {
             backup_retention_period_hours: Some(336),
-            backup_start_time: Some("03:00".to_string()),
-            clear_backup_start_time: false,
-        })
-        .unwrap();
-        assert_eq!(maximal.backup_period_in_hours, Some(48.0));
-        assert_eq!(maximal.backup_retention_period_in_hours, Some(336.0));
-        assert_eq!(maximal.backup_start_time, Some(Some("03:00".to_string())));
-    }
-
-    #[test]
-    fn build_backup_config_update_request_preserves_start_time_without_period() {
-        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_start_time: Some("03:00".to_string()),
-            ..Default::default()
-        })
-        .unwrap();
-
-        assert!(request.backup_period_in_hours.is_none());
-        assert_eq!(request.backup_start_time, Some(Some("03:00".to_string())));
-    }
-
-    #[test]
-    fn build_backup_config_update_request_allows_compatible_explicit_periods() {
-        for period in [24, 48] {
-            let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
-                backup_period_hours: Some(period),
-                backup_start_time: Some("03:00".to_string()),
-                ..Default::default()
-            })
-            .unwrap();
-
-            assert_eq!(request.backup_period_in_hours, Some(f64::from(period)));
-            assert_eq!(request.backup_start_time, Some(Some("03:00".to_string())));
+            ..options(Some(48), Some("03:00"), false)
+        };
+        let cases: Vec<(BackupConfigUpdateOptions, Result<serde_json::Value, &str>)> = vec![
+            (options(None, None, false), Ok(serde_json::json!({}))),
+            (
+                maximal,
+                Ok(serde_json::json!({
+                    "backupPeriodInHours": 48.0,
+                    "backupRetentionPeriodInHours": 336.0,
+                    "backupStartTime": "03:00"
+                })),
+            ),
+            (
+                options(None, Some("03:00"), false),
+                Ok(serde_json::json!({"backupStartTime": "03:00"})),
+            ),
+            (
+                options(Some(24), Some("03:00"), false),
+                Ok(serde_json::json!({"backupPeriodInHours": 24.0, "backupStartTime": "03:00"})),
+            ),
+            (
+                options(Some(12), None, false),
+                Ok(serde_json::json!({"backupPeriodInHours": 12.0})),
+            ),
+            (
+                options(None, None, true),
+                Ok(serde_json::json!({"backupStartTime": null})),
+            ),
+            (
+                options(Some(12), None, true),
+                Ok(serde_json::json!({"backupPeriodInHours": 12.0, "backupStartTime": null})),
+            ),
+            (
+                options(Some(12), Some("03:00"), false),
+                Err("--backup-period-hours must be 24 or 48 when --backup-start-time is set"),
+            ),
+            (
+                options(None, Some("03:00"), true),
+                Err("--backup-start-time and --clear-backup-start-time cannot be used together"),
+            ),
+        ];
+        for (options, expected) in cases {
+            let actual = build_backup_config_update_request(&options)
+                .map(|request| serde_json::to_value(request).unwrap())
+                .map_err(|error| error.to_string());
+            assert_eq!(
+                actual,
+                expected.map_err(str::to_owned),
+                "period {:?}, start {:?}, clear {}",
+                options.backup_period_hours,
+                options.backup_start_time,
+                options.clear_backup_start_time
+            );
         }
     }
 
     #[test]
-    fn build_backup_config_update_request_allows_other_periods_without_start_time() {
-        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_period_hours: Some(12),
-            ..Default::default()
-        })
-        .unwrap();
-
-        assert_eq!(request.backup_period_in_hours, Some(12.0));
-        assert!(request.backup_start_time.is_none());
-    }
-
-    #[test]
-    fn build_backup_config_update_request_rejects_incompatible_explicit_period() {
-        let error = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_period_hours: Some(12),
-            backup_start_time: Some("03:00".to_string()),
-            ..Default::default()
-        })
-        .unwrap_err();
-
+    fn stored_period_check_allows_24_48_or_absent_and_names_the_flag_otherwise() {
+        for stored in [Some(24.0), Some(48.0), None] {
+            check_stored_period_allows_start_time(stored).unwrap();
+        }
+        let error = check_stored_period_allows_start_time(Some(12.0)).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "--backup-period-hours must be 24 or 48 when --backup-start-time is set"
+            "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+             Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
+        );
+        let fractional = check_stored_period_allows_start_time(Some(12.5)).unwrap_err();
+        assert!(
+            fractional
+                .to_string()
+                .starts_with("the stored backup period is 12.5 hours,"),
+            "{fractional}"
         );
     }
 
@@ -1507,80 +1519,5 @@ mod tests {
         .expect("conflicting flags should be rejected");
 
         assert!(error.to_string().contains("cannot be used with"), "{error}");
-    }
-
-    #[test]
-    fn build_backup_config_update_request_clears_the_start_time_with_an_explicit_null() {
-        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            clear_backup_start_time: true,
-            ..Default::default()
-        })
-        .unwrap();
-
-        assert_eq!(request.backup_start_time, Some(None));
-        assert_eq!(
-            serde_json::to_value(&request).unwrap(),
-            serde_json::json!({ "backupStartTime": null }),
-            "clearing must send an explicit null and nothing else"
-        );
-    }
-
-    #[test]
-    fn build_backup_config_update_request_clears_alongside_any_period() {
-        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_period_hours: Some(12),
-            clear_backup_start_time: true,
-            ..Default::default()
-        })
-        .unwrap();
-
-        assert_eq!(request.backup_period_in_hours, Some(12.0));
-        assert_eq!(request.backup_start_time, Some(None));
-    }
-
-    #[test]
-    fn build_backup_config_update_request_rejects_setting_and_clearing_together() {
-        let error = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_start_time: Some("03:00".to_string()),
-            clear_backup_start_time: true,
-            ..Default::default()
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "--backup-start-time and --clear-backup-start-time cannot be used together"
-        );
-    }
-
-    #[test]
-    fn stored_period_check_accepts_compatible_periods() {
-        for stored in [24.0, 48.0] {
-            check_stored_period_allows_start_time(Some(stored)).unwrap();
-        }
-    }
-
-    #[test]
-    fn stored_period_check_proceeds_when_the_stored_period_is_absent() {
-        check_stored_period_allows_start_time(None).unwrap();
-    }
-
-    #[test]
-    fn stored_period_check_rejects_incompatible_periods_and_names_the_flag() {
-        let error = check_stored_period_allows_start_time(Some(12.0)).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
-             Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
-        );
-
-        let fractional = check_stored_period_allows_start_time(Some(12.5)).unwrap_err();
-        assert!(
-            fractional
-                .to_string()
-                .starts_with("the stored backup period is 12.5 hours,"),
-            "{fractional}"
-        );
     }
 }

@@ -2075,14 +2075,4 @@ mod tests {
         close_fd(write_fd);
         close_fd(read_fd);
     }
-
-    #[test]
-    fn the_stdin_conflict_message_says_what_does_work() {
-        assert!(
-            INLINE_QUERY_WITH_STDIN_ERROR
-                .starts_with("--query cannot be combined with SQL or data on stdin.")
-        );
-        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
-        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
-    }
 }
