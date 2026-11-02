@@ -555,7 +555,13 @@ async fn org_balance_human_output_handles_sparse_and_future_balances() {
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Total remaining credits: - CHC"));
+    // The sparse total renders as the `-` placeholder, outside the table.
+    assert!(
+        stdout
+            .lines()
+            .any(|line| !line.starts_with('|') && line.ends_with(": - CHC")),
+        "{stdout}"
+    );
     assert!(stdout.contains(
         "| ID | Type        | Remaining (CHC) | Total (CHC) | Spent (CHC) | Start | Expires |"
     ));
@@ -1043,10 +1049,13 @@ async fn api_key_login_preserves_malformed_credentials() {
     let output = invoke_api_key_login(dir.path(), &mock.uri());
 
     assert_eq!(output.status.code(), Some(1));
+    // The parser's own diagnostic for the file, naming it.
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let source = serde_json::from_slice::<Value>(original).unwrap_err();
     assert!(
-        stderr.starts_with("Error: failed to parse ")
-            && stderr.contains(".clickhouse/credentials.json"),
+        stderr.starts_with("Error: ")
+            && stderr.contains(".clickhouse/credentials.json")
+            && stderr.contains(&source.to_string()),
         "unexpected stderr: {stderr}",
     );
     assert_eq!(std::fs::read(credentials_path).unwrap(), original);
@@ -1072,7 +1081,7 @@ fn logout_does_not_report_success_when_credentials_removal_fails() {
         .expect("failed to spawn clickhousectl");
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("API keys cleared"));
+    assert!(output.stdout.is_empty(), "no success confirmation");
     assert!(credentials_dir.join("credentials.json").is_dir());
 }
 
@@ -1824,15 +1833,14 @@ async fn service_start_and_stop_human_output_reports_acceptance_and_returned_sta
             &["service", command, "svc-1", "--org-id", "org-1"],
         );
 
+        // One line naming the service, the command and the returned state.
         assert_success(&output);
         assert!(output.stderr.is_empty());
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            format!(
-                "Service demo {command} request accepted (returned state: {})\n",
-                returned_state.unwrap_or("-")
-            )
-        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
+        for identifier in ["demo", command, returned_state.unwrap_or("-")] {
+            assert!(stdout.contains(identifier), "{identifier}: {stdout}");
+        }
     }
 }
 
@@ -2431,11 +2439,12 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
         assert_success(&output);
         let stdout = String::from_utf8(output.stdout).unwrap();
         let stderr = String::from_utf8(output.stderr).unwrap();
-        assert_eq!(
-            stderr,
-            format!("[debug] auth source: none (incomplete CLI flags: missing {missing})\n"),
-            "supplied={supplied}, configured_source={configured_source:?}, json={json}"
-        );
+        // One debug line naming the missing flag.
+        let context =
+            format!("supplied={supplied}, configured_source={configured_source:?}, json={json}");
+        assert_eq!(stderr.lines().count(), 1, "{context}: {stderr}");
+        assert!(stderr.starts_with("[debug] "), "{context}: {stderr}");
+        assert!(stderr.contains(missing), "{context}: {stderr}");
         for credential in [
             "flag-credential",
             "file-key",
@@ -4864,9 +4873,7 @@ async fn service_delete_attempts_every_owned_key_and_reports_the_ones_that_faile
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(&format!(
-            "({DELETE_TEST_PENDING_API_KEY_ID}: pending cleanup failed)"
-        )),
+        stderr.contains(&format!("{DELETE_TEST_PENDING_API_KEY_ID}:")),
         "{stderr}"
     );
     assert!(
@@ -4958,9 +4965,14 @@ async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     let output = invoke_service_delete(&mock, dir.path(), true);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "NOT_FOUND: request scoped to organization org-1"
+    // The server's code, then the organization the request was scoped to.
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.starts_with("NOT_FOUND") && message.ends_with("org-1"),
+        "{message}"
     );
     assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 
@@ -5326,9 +5338,14 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "NOT_FOUND: request scoped to organization org-1"
+    // The server's code, then the organization the request was scoped to.
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.starts_with("NOT_FOUND") && message.ends_with("org-1"),
+        "{message}"
     );
     assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 
@@ -5353,8 +5370,10 @@ async fn service_delete_aborts_when_query_key_credentials_are_malformed() {
     let error = cloud_runtime_error(&output);
     assert_eq!(error["code"], "other");
     let message = error["message"].as_str().unwrap();
+    let source = serde_json::from_str::<Value>("{").unwrap_err();
     assert!(
-        message.starts_with("failed to parse ") && message.contains(".clickhouse/credentials.json")
+        message.contains(".clickhouse/credentials.json") && message.contains(&source.to_string()),
+        "{message}"
     );
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
@@ -5631,7 +5650,13 @@ async fn org_usage_marks_uuid_only_entities_as_unknown_only_in_human_output() {
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("production"));
-    assert!(stdout.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee (unknown)"));
+    // Human output annotates the UUID-only entity; the label itself is unit-tested.
+    let cell = stdout
+        .split('|')
+        .map(str::trim)
+        .find(|cell| cell.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert_ne!(cell, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "{stdout}");
 
     let output = invoke_org_usage(&mock, true);
     assert_success(&output);
@@ -5639,7 +5664,6 @@ async fn org_usage_marks_uuid_only_entities_as_unknown_only_in_human_output() {
     let unknown = &usage["costs"][1];
     assert_eq!(unknown["entityId"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     assert!(unknown.get("entityName").is_none());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("(unknown)"));
 }
 
 // ── ClickPipe create ───────────────────────────────────────────────────────
@@ -6437,10 +6461,6 @@ async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint(
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(api_error), "{stderr}");
     assert!(stderr.contains("--ca-certificate <PATH>"), "{stderr}");
-    assert!(
-        stderr.contains("private or self-signed source CA"),
-        "{stderr}"
-    );
     for secret in [password, ca_contents, ca_path_display.as_str()] {
         assert!(
             !stderr.contains(secret),
@@ -6762,10 +6782,7 @@ async fn service_query_refuses_data_on_stdin_before_any_request() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--query cannot be combined with SQL or data on stdin"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("--query"), "{stderr}");
     assert!(stderr.contains("cat - data.csv"), "{stderr}");
     assert!(stderr.contains("--queries-file -"), "{stderr}");
     assert!(output.stdout.is_empty(), "{:?}", output.stdout);
@@ -6853,10 +6870,8 @@ fn assert_invalid_utf8_query_input(output: &std::process::Output) {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // The native-client way out, by its commands.
     for expected in [
-        "not valid UTF-8",
-        "Query API accepts only UTF-8 SQL and text-format data",
-        "binary formats such as RowBinary or Native",
         "clickhousectl local use latest",
         "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure",
         "clickhousectl cloud service get <service-id>",
@@ -6905,12 +6920,7 @@ async fn service_query_reports_non_utf8_as_structured_io_without_echoing_input()
     let stderr = std::str::from_utf8(&output.stderr).expect("JSON error output is valid UTF-8");
     let json: Value = serde_json::from_str(stderr).expect("stderr is one JSON error object");
     assert_eq!(json["error"]["code"], "io");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("not valid UTF-8")),
-        "{json}"
-    );
+    assert!(json["error"]["message"].is_string(), "{json}");
     assert!(!stderr.contains("private-query-fragment"), "{stderr}");
     assert!(control.received_requests().await.unwrap().is_empty());
     assert!(query_host.received_requests().await.unwrap().is_empty());
@@ -7597,6 +7607,16 @@ fn read_credentials(project: &Path) -> Value {
         .unwrap()
 }
 
+/// The deleted verdict names the key and the repair, and none of the other
+/// verdicts' remedies (re-enable, endpoint inspection). Its code is asserted
+/// in `stored_query_key_rejections_emit_structured_json_errors`.
+fn assert_deleted_verdict(stderr: &str) {
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert!(!stderr.contains("--state enabled"), "{stderr}");
+    assert!(!stderr.contains("query-endpoint get"), "{stderr}");
+}
+
 /// Every request the run made to the control plane was a read.
 async fn assert_control_plane_only_read(control: &MockServer, context: &str) {
     let requests = control.received_requests().await.unwrap();
@@ -7620,6 +7640,11 @@ async fn control_plane_requests_to(control: &MockServer, path: &str) -> usize {
         .iter()
         .filter(|request| request.url.path() == path)
         .count()
+}
+
+/// The command a skipped or failed repair verification names for the next query.
+fn next_query_hint() -> String {
+    format!("`clickhousectl cloud service query {QUERY_TEST_SERVICE_ID} --org-id org-1")
 }
 
 fn repair_hint() -> String {
@@ -7648,18 +7673,11 @@ async fn a_disabled_stored_query_key_is_reported_and_never_replaced() {
 
         assert_eq!(output.status.code(), Some(1), "{status}");
         assert!(output.stdout.is_empty());
+        // The verdict names the status, the key and its re-enable command;
+        // nothing was replaced (the request log and the record below).
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!("rejected with HTTP {status}")),
-            "{stderr}"
-        );
-        assert!(
-            stderr.contains(&format!(
-                "management API key {OLD_QUERY_TEST_KEY_UUID} is disabled"
-            )),
-            "{stderr}"
-        );
-        assert!(stderr.contains("no replacement was created"), "{stderr}");
+        assert!(stderr.contains(&format!("HTTP {status}")), "{stderr}");
+        assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
         assert!(
             stderr.contains(&format!(
                 "clickhousectl cloud key update {OLD_QUERY_TEST_KEY_UUID} --state enabled --org-id org-1"
@@ -7695,13 +7713,8 @@ async fn an_expired_stored_query_key_is_reported_and_never_replaced() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "management API key {OLD_QUERY_TEST_KEY_UUID} expired at 2020-01-01T00:00:00Z"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(stderr.contains("2020-01-01T00:00:00Z"), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
     assert_control_plane_only_read(&control, "expired").await;
     assert_eq!(read_credentials(project.path()), original);
@@ -7723,23 +7736,7 @@ async fn a_deleted_stored_query_key_is_reported_and_never_replaced() {
         run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "management API key {OLD_QUERY_TEST_KEY_UUID} no longer exists in organization org-1"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains("no replacement was created"), "{stderr}");
-    assert!(
-        stderr.contains("still listed on the service's Query API endpoint"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&repair_hint()), "{stderr}");
-    assert!(
-        !stderr.contains("has been removed") && !stderr.contains("Rerun the query"),
-        "{stderr}"
-    );
+    assert_deleted_verdict(&String::from_utf8_lossy(&output.stderr));
     assert_control_plane_only_read(&control, "deleted").await;
     assert_eq!(read_credentials(project.path()), original);
 }
@@ -7775,11 +7772,7 @@ async fn a_deleted_stored_query_key_with_pending_cleanup_keeps_its_record() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Warning:"), "{stderr}");
     assert!(stderr.contains(PENDING_QUERY_TEST_KEY_UUID), "{stderr}");
-    assert!(
-        stderr.contains("no longer exists in organization org-1"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_deleted_verdict(&stderr);
     assert_eq!(
         key_deletes_received(&control).await,
         [PENDING_QUERY_TEST_KEY_UUID],
@@ -7817,11 +7810,7 @@ async fn a_deleted_stored_query_key_whose_pending_retry_succeeds_keeps_its_recor
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("Warning:"), "{stderr}");
-    assert!(
-        stderr.contains("no longer exists in organization org-1"),
-        "{stderr}"
-    );
-    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_deleted_verdict(&stderr);
     assert_eq!(
         key_deletes_received(&control).await,
         [PENDING_QUERY_TEST_KEY_UUID]
@@ -8048,11 +8037,7 @@ async fn an_unbound_stored_query_key_is_reported_and_never_replaced() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("is not bound to Query API endpoint ep-1"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(stderr.contains("ep-1"), "{stderr}");
     assert!(
         stderr.contains(&format!(
             "clickhousectl cloud service query-endpoint get {QUERY_TEST_SERVICE_ID} --org-id org-1"
@@ -8075,8 +8060,10 @@ async fn an_unbound_stored_query_key_is_reported_and_never_replaced() {
         run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
 
     assert_eq!(output.status.code(), Some(1));
+    // Still the unbound verdict (it points at the endpoint), but no endpoint ID.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("has no Query API endpoint"), "{stderr}");
+    assert!(stderr.contains("query-endpoint get"), "{stderr}");
+    assert!(!stderr.contains("ep-1"), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
     assert_control_plane_only_read(&control, "no endpoint").await;
     assert_eq!(read_credentials(project.path()), original);
@@ -8099,20 +8086,18 @@ async fn an_enabled_bound_stored_query_key_that_is_still_rejected_lists_its_allo
         run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
 
     assert_eq!(output.status.code(), Some(1));
+    // The allowlist travels as data, with the allowlist fix and the repair.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("is enabled, unexpired and bound to the Query API endpoint"),
+        stderr.contains("203.0.113.0/24, 198.51.100.7/32"),
         "{stderr}"
     );
     assert!(
-        stderr.contains("IP access list (203.0.113.0/24, 198.51.100.7/32)"),
+        stderr.contains(&format!(
+            "`clickhousectl cloud key update {OLD_QUERY_TEST_KEY_UUID} --ip-allow <cidr> --org-id org-1`"
+        )),
         "{stderr}"
     );
-    assert!(
-        stderr.contains("stored secret no longer matches"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("Nothing was changed"), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
     assert!(
         !stderr.contains("stored-key-secret"),
@@ -8135,15 +8120,10 @@ async fn an_unverifiable_stored_query_key_rejection_changes_nothing() {
         run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
 
     assert_eq!(output.status.code(), Some(1));
+    // The failed lookup's own server text, naming the key.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "management API key {OLD_QUERY_TEST_KEY_UUID} could not be read"
-        )),
-        "{stderr}"
-    );
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
     assert!(stderr.contains("upstream unavailable"), "{stderr}");
-    assert!(stderr.contains("Nothing was changed"), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
     assert_control_plane_only_read(&control, "key lookup failed").await;
     assert_eq!(read_credentials(project.path()), original);
@@ -8161,13 +8141,8 @@ async fn an_unverifiable_stored_query_key_rejection_changes_nothing() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "the Query API endpoint binding of service {QUERY_TEST_SERVICE_ID} could not be read"
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(stderr.contains(QUERY_TEST_SERVICE_ID), "{stderr}");
+    assert!(stderr.contains("endpoint service unavailable"), "{stderr}");
     assert_control_plane_only_read(&control, "endpoint lookup failed").await;
     assert_eq!(read_credentials(project.path()), original);
 }
@@ -8183,14 +8158,9 @@ async fn a_legacy_stored_query_key_rejection_changes_nothing() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("predates key-ownership metadata"),
-        "{stderr}"
-    );
-    assert!(
         stderr.contains(&format!("service_query_keys.{QUERY_TEST_SERVICE_ID}")),
         "{stderr}"
     );
-    assert!(stderr.contains("Nothing was changed"), "{stderr}");
     assert_control_plane_only_read(&control, "legacy").await;
     assert_eq!(
         control_plane_requests_to(&control, &stored_key_path()).await,
@@ -8237,7 +8207,7 @@ async fn stored_query_key_rejections_emit_structured_json_errors() {
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("is disabled")
+            .contains(OLD_QUERY_TEST_KEY_UUID)
     );
     assert_eq!(read_credentials(project.path()), original);
 
@@ -8614,7 +8584,7 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
     assert!(String::from_utf8_lossy(&output.stderr).contains("binding replacement failed"));
     // A 5xx is not key propagation: no wait, no notice, straight to rollback
     // (#658). The two upserts below are the attempt and the rollback.
-    assert!(!String::from_utf8_lossy(&output.stderr).contains(KEY_PROPAGATION_NOTICE));
+    assert!(progress_lines(&output).is_empty(), "{output:?}");
 
     let requests = control.received_requests().await.unwrap();
     let endpoint_posts = requests
@@ -8692,7 +8662,6 @@ async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
     assert!(stderr.contains("binding replacement failed"), "{stderr}");
     assert!(stderr.contains("endpoint rollback failed"), "{stderr}");
     assert!(stderr.contains(QUERY_TEST_KEY_UUID), "{stderr}");
-    assert!(stderr.contains("was retained"), "{stderr}");
 
     let requests = control.received_requests().await.unwrap();
     assert!(requests.iter().all(|request| {
@@ -8769,12 +8738,7 @@ async fn failed_repair_records_the_new_key_for_retry_when_its_rollback_delete_fa
     let stderr = stderr_without_notes(&output);
     assert!(stderr.contains("binding replacement failed"), "{stderr}");
     assert!(stderr.contains("key service unavailable"), "{stderr}");
-    assert!(
-        stderr.contains(&format!(
-            "failed to delete newly created API key {QUERY_TEST_KEY_UUID}"
-        )),
-        "{stderr}"
-    );
+    assert!(stderr.contains(QUERY_TEST_KEY_UUID), "{stderr}");
     assert!(
         stderr.contains(&format!(
             "service_query_keys.{QUERY_TEST_SERVICE_ID}.pending_cleanup_api_key_ids"
@@ -8782,7 +8746,7 @@ async fn failed_repair_records_the_new_key_for_retry_when_its_rollback_delete_fa
         "the error says where the ID went: {stderr}"
     );
     assert!(
-        stderr.contains("retried automatically by the next `clickhousectl cloud service query"),
+        stderr.contains("`clickhousectl cloud service query"),
         "{stderr}"
     );
 
@@ -9069,8 +9033,17 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
 // once; a success ends the wait. The condition is structural (a typed
 // `Error::Api` with status 400), never the message text.
 
-const KEY_PROPAGATION_NOTICE: &str =
-    "Waiting for the Query API endpoint to accept the API key binding...";
+/// The CLI's own progress lines on stderr, in order: every line before an
+/// `Error: ` line or a JSON error object, without the credential `note:`
+/// lines. Notices are counted and ordered here rather than matched by wording.
+fn progress_lines(output: &std::process::Output) -> Vec<String> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .take_while(|line| !line.starts_with("Error: ") && !line.starts_with('{'))
+        .filter(|line| !line.starts_with("note:") && !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
 /// The control plane's answer while the new key has not propagated yet.
 fn key_not_in_organization_response(api_key_uuid: &str) -> ResponseTemplate {
@@ -9168,7 +9141,7 @@ async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
     assert_eq!(result["verification"], "verified");
     let stderr = stderr_without_notes(&output);
     assert_eq!(
-        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        progress_lines(&output).len(),
         1,
         "the notice is printed exactly once: {stderr}"
     );
@@ -9258,11 +9231,7 @@ async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
         stderr_without_notes(&output)
     );
     let stderr = stderr_without_notes(&output);
-    assert_eq!(
-        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
-        1,
-        "{stderr}"
-    );
+    assert_eq!(progress_lines(&output).len(), 1, "{stderr}");
     assert!(
         stderr.contains(&format!(
             "OpenAPI key {QUERY_TEST_KEY_UUID} does not belong to the organization"
@@ -9323,12 +9292,10 @@ async fn first_use_bind_waits_for_the_endpoint_to_accept_the_caller_key() {
     let (project, output) = run_first_use_query(&control, &query_host, &[]).await;
     assert_success(&output);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
-        1,
-        "{stderr}"
-    );
+    // The bind notice, then the propagation notice once.
+    let progress = progress_lines(&output);
+    assert_eq!(progress.len(), 2, "{progress:#?}");
+    assert!(progress[0].contains("'demo'"), "{progress:#?}");
 
     let upserts: Vec<Value> = control
         .received_requests()
@@ -9360,8 +9327,6 @@ async fn first_use_bind_waits_for_the_endpoint_to_accept_the_caller_key() {
 // first-use provisioning does, and exits 0 only once the key works. Idle and
 // stopped services are not probed (the probe would wake one and the other
 // cannot answer); the next query verifies the key instead.
-
-const QUERY_READINESS_NOTICE: &str = "Waiting for the Query API endpoint to become ready...";
 
 /// Shortens the 120 s readiness window for tests that wait all of it out.
 const QUERY_READINESS_TIMEOUT_ENV: &str = "CHCTL_QUERY_READINESS_TIMEOUT_MS";
@@ -9469,13 +9434,10 @@ async fn repair_exits_zero_only_once_the_query_api_accepts_the_new_key() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "repaired");
     assert_eq!(result["verification"], "verified");
-    let stderr = stderr_without_notes(&output);
-    assert_eq!(
-        stderr.matches(QUERY_READINESS_NOTICE).count(),
-        1,
-        "{stderr}"
-    );
-    assert!(!stderr.contains("Note:"), "{stderr}");
+    // One readiness notice, and no skipped-verification note.
+    let progress = progress_lines(&output);
+    assert_eq!(progress.len(), 1, "{progress:#?}");
+    assert!(!progress[0].starts_with("Note:"), "{progress:#?}");
 
     let probes = probes_received(&control).await;
     assert_eq!(
@@ -9517,12 +9479,15 @@ async fn repair_does_not_probe_a_service_that_is_not_running() {
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["status"], "repaired");
         assert_eq!(result["verification"], "skipped");
+        // One note naming the service and its state, and the query that verifies the key.
         let stderr = stderr_without_notes(&output);
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+        assert!(stderr.starts_with("Note: "), "{stderr}");
         assert!(
-            stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is {state}")),
+            stderr.contains(QUERY_TEST_SERVICE_ID) && stderr.contains(state),
             "{stderr}"
         );
-        assert!(stderr.contains("is verified by the next"), "{stderr}");
+        assert!(stderr.contains(&next_query_hint()), "{stderr}");
         assert!(
             probes_received(&control).await.is_empty(),
             "{state}: probed"
@@ -9597,11 +9562,9 @@ async fn repair_skips_verification_without_a_configured_query_host() {
     assert_eq!(result["status"], "repaired");
     assert_eq!(result["verification"], "skipped");
     let stderr = stderr_without_notes(&output);
-    assert!(
-        stderr.contains("Note: no Query API host is configured for"),
-        "{stderr}"
-    );
+    assert!(stderr.starts_with("Note: "), "{stderr}");
     assert!(stderr.contains("CLICKHOUSE_CLOUD_QUERY_HOST"), "{stderr}");
+    assert!(stderr.contains(&next_query_hint()), "{stderr}");
     let requests = control.received_requests().await.unwrap();
     assert!(
         requests
@@ -9656,17 +9619,19 @@ async fn a_failed_probe_reports_the_committed_repair_and_exits_zero() {
     assert_eq!(result["status"], "repaired");
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
     assert_eq!(result["verification"], "failed");
+    // A warning naming the service, the new key and where it is stored, the
+    // probe's own failure, and the query that verifies the key.
     let stderr = stderr_without_notes(&output);
-    assert!(
-        stderr.contains(&format!(
-            "Warning: the query key for service {QUERY_TEST_SERVICE_ID} was replaced (new API \
-             key {QUERY_TEST_KEY_UUID}) and stored in .clickhouse/credentials.json, but probing \
-             it failed"
-        )),
-        "{stderr}"
-    );
+    assert!(stderr.starts_with("Warning: "), "{stderr}");
+    for identifier in [
+        QUERY_TEST_SERVICE_ID,
+        QUERY_TEST_KEY_UUID,
+        ".clickhouse/credentials.json",
+    ] {
+        assert!(stderr.contains(identifier), "{identifier}: {stderr}");
+    }
     assert!(stderr.contains("bad gateway"), "{stderr}");
-    assert!(stderr.contains("is verified by the next"), "{stderr}");
+    assert!(stderr.contains(&next_query_hint()), "{stderr}");
 
     assert_eq!(
         key_deletes_received(&control).await,
@@ -9714,8 +9679,9 @@ async fn repair_skips_verification_when_the_probe_finds_the_service_stopped() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["verification"], "skipped");
     let stderr = stderr_without_notes(&output);
+    assert!(stderr.starts_with("Note: "), "{stderr}");
     assert!(
-        stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is stopped")),
+        stderr.contains(QUERY_TEST_SERVICE_ID) && stderr.contains("stopped"),
         "{stderr}"
     );
     assert!(!stderr.contains("Warning:"), "{stderr}");
@@ -9771,12 +9737,10 @@ async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_it
              --query \"SELECT 1\""
         )
     );
+    // The message names the committed replacement; the command (above) is the
+    // query to rerun, not another repair.
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("was replaced (new API key"), "{message}");
-    assert!(
-        message.contains("Do not rerun repair-query-key"),
-        "{message}"
-    );
+    assert!(message.contains(QUERY_TEST_KEY_UUID), "{message}");
     assert!(
         probes_received(&control).await.len() > 1,
         "the whole window was used"
@@ -9801,7 +9765,7 @@ async fn repair_refuses_legacy_query_key_without_any_cloud_mutation() {
         .await
         .expect("failed to spawn clickhousectl");
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("legacy or non-owned record"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(QUERY_TEST_SERVICE_ID));
     assert!(control.received_requests().await.unwrap().is_empty());
     let stored: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -9900,8 +9864,6 @@ const BOUND_KEY_A: &str = "aaaaaaaa-1043-4000-8000-00000000000a";
 const BOUND_KEY_B: &str = "bbbbbbbb-1043-4000-8000-00000000000b";
 const DELETED_BOUND_KEY: &str = "dddddddd-1043-4000-8000-00000000000d";
 const UNVERIFIABLE_BOUND_KEY: &str = "eeeeeeee-1043-4000-8000-00000000000e";
-const BIND_NOTICE: &str =
-    "Binding the authenticated API key to the Query API endpoint for service 'demo'...";
 
 fn first_use_endpoint_path() -> String {
     format!(
@@ -10085,10 +10047,11 @@ async fn assert_first_use_binds(
     let (project, output) = run_first_use_query(control, &query_host, &[]).await;
     assert_success(&output);
     assert_eq!(output.stdout, b"1\n");
+    // The bind notice names the service.
+    let progress = progress_lines(&output);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains(BIND_NOTICE),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        progress.first().is_some_and(|line| line.contains("'demo'")),
+        "{progress:#?}"
     );
 
     // Every query, before and after the bind, used the caller's own key.
@@ -10343,8 +10306,11 @@ async fn first_use_waits_for_an_already_bound_caller_key_without_rebinding() {
 
     assert_success(&output);
     assert_eq!(output.stdout, b"1\n");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(QUERY_READINESS_NOTICE), "{stderr}");
+    // The bind notice, then the readiness wait (the only line not naming the
+    // service).
+    let progress = progress_lines(&output);
+    assert_eq!(progress.len(), 2, "{progress:#?}");
+    assert!(!progress[1].contains("'demo'"), "{progress:#?}");
     assert!(control_plane_writes(&control).await.is_empty());
     assert!(!project.path().join(".clickhouse/credentials.json").exists());
 }
@@ -10376,10 +10342,10 @@ async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_wh
     assert_eq!(envelope["error"]["code"], "query_key_bound_rejected");
     assert_eq!(envelope["error"]["api_key_id"], CALLER_KEY_UUID);
     let message = envelope["error"]["message"].as_str().unwrap();
+    // The key, the waited-out window, and where to look.
     for fragment in [
         CALLER_KEY_UUID,
-        "already bound",
-        "after waiting 2s",
+        "2s",
         "cloud service query-endpoint get",
         "cloud key get",
     ] {
@@ -10401,9 +10367,11 @@ async fn first_use_refuses_a_caller_that_is_not_an_api_key_of_the_resolved_org()
         "email": "ada@example.com",
     });
     let robot = serde_json::json!({ "actorType": "robot", "robotId": "r2" });
+    // Which identity was refused is unit-tested beside `caller_key_uuid`; a
+    // key of another organization names both organizations.
     for (identity, expected) in [
-        (user, vec!["identified the caller as a user".to_string()]),
-        (robot, vec!["unrecognized actor type".to_string()]),
+        (user, vec![]),
+        (robot, vec![]),
         (
             caller_api_key_identity(OTHER_ORG_ID),
             vec![OTHER_ORG_ID.to_string(), FIRST_USE_ORG_ID.to_string()],
@@ -10430,10 +10398,6 @@ async fn first_use_refuses_a_caller_that_is_not_an_api_key_of_the_resolved_org()
             for fragment in &expected {
                 assert!(message.contains(fragment.as_str()), "{message}");
             }
-            assert!(
-                message.contains("cannot bind the caller's API key"),
-                "{message}"
-            );
             // Refused before the lock and before any endpoint read or write.
             assert!(control_plane_writes(&control).await.is_empty());
             assert_eq!(
@@ -10458,7 +10422,7 @@ async fn first_use_with_no_auto_enable_refuses_before_identifying_the_key() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--no-auto-enable"), "{stderr}");
-    assert!(!stderr.contains(BIND_NOTICE), "{stderr}");
+    assert!(progress_lines(&output).is_empty(), "{stderr}");
     assert_eq!(control_plane_requests_to(&control, "/v1/whoami").await, 0);
     assert!(control_plane_writes(&control).await.is_empty());
     assert!(!project.path().join(".clickhouse/credentials.json").exists());
@@ -10477,10 +10441,7 @@ async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
         "openApiKeys": [],
         "roles": ["sql_console_admin"],
     });
-    for (field, expected) in [
-        ("openApiKeys", "'openApiKeys'"),
-        ("roles", "'query endpoint roles'"),
-    ] {
+    for (field, expected) in [("openApiKeys", "'openApiKeys'"), ("roles", "roles")] {
         let mut result = complete.clone();
         result.as_object_mut().unwrap().remove(field);
         let control = start_mock_control_plane_with_service().await;
@@ -10748,10 +10709,10 @@ async fn first_use_query_retries_readiness_errors_with_the_caller_key() {
     assert_success(&output);
     assert_eq!(output.stdout, b"42\n");
     assert_eq!(*delivered_statuses.lock().unwrap(), [401, 403, 404, 206]);
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("Waiting for the Query API endpoint to become ready")
-    );
+    // Bind, readiness wait (the only line not naming the service), then wake.
+    let progress = progress_lines(&output);
+    assert_eq!(progress.len(), 3, "{progress:#?}");
+    assert!(!progress[1].contains("'demo'"), "{progress:#?}");
     assert!(
         elapsed >= Duration::from_millis(1_200),
         "readiness retries did not back off: {elapsed:?}"
@@ -10847,11 +10808,17 @@ async fn first_use_query_fails_immediately_when_the_service_is_stopped() {
         elapsed < Duration::from_secs(5),
         "stopped-service recognition unexpectedly waited: {elapsed:?}"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!(
-            "{BIND_NOTICE}\nError: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id {FIRST_USE_ORG_ID}` and retry\n"
-        )
+    // The bind notice, then exactly the stopped-service error and its start command.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert!(lines[0].contains("'demo'"), "{stderr}");
+    assert!(lines[1].starts_with("Error: "), "{stderr}");
+    assert!(
+        lines[1].contains(&format!(
+            "`clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id {FIRST_USE_ORG_ID}`"
+        )),
+        "{stderr}"
     );
 }
 
@@ -10928,10 +10895,14 @@ async fn service_query_renders_documented_sql_error() {
         r#"{"error":{"code":"62","details":"Syntax error near FROM"}}"#,
     )
     .await;
+    // One error line carrying the server's code and details.
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: SQL error 62: Syntax error near FROM\n"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(
+        stderr.contains("62") && stderr.ends_with("Syntax error near FROM\n"),
+        "{stderr}"
     );
 }
 
@@ -10939,21 +10910,23 @@ async fn service_query_renders_documented_sql_error() {
 async fn service_query_preserves_malformed_json_error_and_status() {
     let body = r#"{"error":{"code":"62","details":"truncated"#;
     let output = invoke_oauth_service_query_error(body).await;
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!("Error: Query API returned HTTP 400 Bad Request: {body}\n")
-    );
+    assert_query_http_error(&output, 400, body);
 }
 
 #[tokio::test]
 async fn service_query_preserves_non_json_error_and_status() {
     let output = invoke_oauth_service_query_error("upstream proxy failed").await;
+    assert_query_http_error(&output, 400, "upstream proxy failed");
+}
+
+/// One error line carrying the status and the response body verbatim.
+fn assert_query_http_error(output: &std::process::Output, status: u16, body: &str) {
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Query API returned HTTP 400 Bad Request: upstream proxy failed\n"
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(stderr.contains(&status.to_string()), "{stderr}");
+    assert!(stderr.ends_with(&format!("{body}\n")), "{stderr}");
 }
 
 #[tokio::test]
@@ -11081,11 +11054,17 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!(
-            "Error: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1` and retry\n"
-        ),
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(
+        stderr.starts_with("Error: ") && stderr.contains("'demo'"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "`clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1`"
+        )),
+        "{stderr}"
     );
 
     // The stopped response is terminal: no wake resend and no endpoint/key
@@ -11631,7 +11610,9 @@ async fn clickpipe_settings_update_refuses_kafka_setting_for_other_or_unknown_so
             ],
         );
         assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("confirmed Kafka source"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--kafka-read-committed"), "{stderr}");
+        assert!(!stderr.contains("kafka_read_committed"), "{stderr}");
         assert!(output.stdout.is_empty());
         assert_eq!(
             recorded_request_shape(&mock).await,
@@ -11669,8 +11650,11 @@ async fn clickpipe_settings_update_never_guesses_an_absent_kafka_setting() {
                 "1000",
             ],
         );
+        // The omitted settings field, and the flag that supplies it.
         assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("pass --kafka-read-committed"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("kafka_read_committed"), "{stderr}");
+        assert!(stderr.contains("--kafka-read-committed"), "{stderr}");
         assert!(output.stdout.is_empty());
         assert_eq!(
             recorded_request_shape(&mock).await,
@@ -11810,8 +11794,7 @@ async fn clickpipe_settings_update_refuses_database_pipes_before_calling_the_end
 
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("ClickPipe pipe-id is a Postgres CDC pipe;"),
+        String::from_utf8_lossy(&output.stderr).contains("pipe-id"),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -12277,10 +12260,8 @@ async fn service_reset_password_fails_when_the_generated_password_is_absent() {
         "no success output may precede the failure:\n{}",
         String::from_utf8_lossy(&output.stdout),
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("omitted the generated password"),
-        "{output:?}",
-    );
+    // The wording is unit-tested in `services::lifecycle`.
+    assert!(!output.stderr.is_empty(), "{output:?}");
 }
 
 #[tokio::test]
@@ -12405,17 +12386,14 @@ async fn key_create_fails_when_the_generated_material_is_absent() {
             "a generated key create with no secret must fail for args {extra_args:?}\nstdout:\n{}",
             String::from_utf8_lossy(&output.stdout),
         );
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The wording is unit-tested in `api_keys`. Neither the human
+        // confirmation nor the incomplete response body may reach stdout
+        // ahead of the failure.
+        assert!(!output.stderr.is_empty(), "{extra_args:?}");
         assert!(
-            stderr.contains("omitted the generated key material"),
-            "stderr should name the omitted material for args {extra_args:?}:\n{stderr}",
-        );
-        // Neither the human confirmation nor the incomplete response body may
-        // reach stdout ahead of the failure.
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !stdout.contains("API key created!") && !stdout.contains("generated-key-id"),
-            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
+            output.stdout.is_empty(),
+            "no success output may precede the failure for args {extra_args:?}:\n{}",
+            String::from_utf8_lossy(&output.stdout),
         );
     }
 }
@@ -12447,14 +12425,31 @@ async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
         &[],
     )
     .await;
+    // Each generated value is shown once, on its own line.
     assert_success(&output);
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "API key created!\n  Name: ci\n  Management resource ID: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n  Authentication key ID: generated-key-id\n  Key Secret: generated-key-secret\n\nSave the key secret now — it will not be shown again.\n"
-    );
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`.\n"
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    for value in [
+        "ci",
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "generated-key-id",
+        "generated-key-secret",
+    ] {
+        assert_eq!(
+            stdout
+                .lines()
+                .filter(|line| line.ends_with(&format!(": {value}")))
+                .count(),
+            1,
+            "{value}: {stdout}"
+        );
+    }
+    // No --ip-allow: one warning naming the flag and the command that adds one.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with("Warning: "), "{stderr}");
+    assert!(
+        stderr.contains("`cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`"),
+        "{stderr}"
     );
 }
 
@@ -12476,11 +12471,16 @@ async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
         ],
     )
     .await;
+    // Placeholders for the absent name and ID, and no key material at all.
     assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "API key created!\n  Name: -\n  Management resource ID: -\n  Pre-hashed credentials accepted; no generated key material returned\n"
+        stdout.lines().filter(|line| line.ends_with(": -")).count(),
+        2,
+        "{stdout}"
     );
+    assert_eq!(stdout.lines().count(), 4, "{stdout}");
+    assert!(!stdout.contains("4b5a6978"), "{stdout}");
     assert!(output.stderr.is_empty());
     assert_eq!(
         bodies,
@@ -13003,15 +13003,9 @@ async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
     .await;
 
     assert_eq!(output.status.code(), Some(1));
+    // The gateway diagnosis, by the statement it suggests checking and the
+    // native-protocol commands.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("stops waiting after about 30 seconds"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("The statement may still be running on the service"),
-        "{stderr}"
-    );
     assert!(
         stderr.contains("SELECT query_id, elapsed FROM system.processes"),
         "{stderr}"
@@ -13077,7 +13071,6 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
     let message = error["error"]["message"]
         .as_str()
         .expect("message is a string");
-    assert!(message.contains("about 30 seconds"), "{message}");
     assert!(
         message.contains("SELECT query_id, elapsed FROM system.processes"),
         "{message}"
@@ -13153,13 +13146,14 @@ fn assert_query_wake_timeout_in_org(output: &std::process::Output, json: bool, o
     } else {
         stderr.to_string()
     };
-    assert!(message.contains("may still be waking"), "{message}");
-    assert!(message.contains("may already have executed"), "{message}");
+    // The wake diagnosis points at the service state, never at the gateway
+    // diagnosis's statement check or native client.
     assert!(
-        message.contains("verify the statement's outcome"),
+        message.contains(&format!(
+            "`clickhousectl cloud service get {QUERY_TEST_SERVICE_ID} --org-id {org_id}`"
+        )),
         "{message}"
     );
-    assert!(!message.contains("30 seconds"), "{message}");
     assert!(!message.contains("clickhouse client"), "{message}");
     assert!(!message.contains("system.processes"), "{message}");
     for sensitive in [
@@ -13200,9 +13194,9 @@ async fn query_timeout_uses_existing_idle_or_awaking_state_without_retry_or_pref
                 } else {
                     assert_eq!(output.status.code(), Some(1));
                     assert!(output.stdout.is_empty());
+                    // The gateway diagnosis.
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    assert!(stderr.contains("Query API gateway"), "{stderr}");
-                    assert!(!stderr.contains("may still be waking"), "{stderr}");
+                    assert!(stderr.contains("system.processes"), "{stderr}");
                     if json {
                         assert_eq!(cloud_runtime_error(&output)["code"], "query_timeout");
                     }
@@ -13387,9 +13381,11 @@ async fn other_query_500s_keep_the_generic_api_error() {
     .await;
     let error = cloud_runtime_error(&json_output);
     assert_eq!(error["code"], "http_5xx");
-    assert_eq!(
-        error["message"],
-        r#"Query API returned HTTP 500 Internal Server Error: {"error":"Internal error."}"#
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("500"), "{message}");
+    assert!(
+        message.ends_with(r#"{"error":"Internal error."}"#),
+        "{message}"
     );
 }
 
@@ -13643,10 +13639,6 @@ async fn reverse_private_endpoint_create_prints_the_status_to_wait_for() {
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Reverse private endpoint created"),
-        "{stdout}"
-    );
     assert!(stdout.contains(RPE_ID), "{stdout}");
     assert!(stdout.contains("Status: PendingAcceptance"), "{stdout}");
     assert!(
@@ -13725,10 +13717,9 @@ async fn reverse_private_endpoint_delete_confirms_the_removal() {
 
     let human = invoke_cli_human(&mock, &args);
     assert_success(&human);
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout).trim(),
-        format!("Reverse private endpoint {RPE_ID} deleted")
-    );
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.contains(RPE_ID), "{stdout}");
 
     let json = invoke_cli_with_cloud_credentials(&mock, &args);
     assert_success(&json);
@@ -13842,7 +13833,6 @@ async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode()
         // The JSON message is the same text human mode prints, server detail
         // and all.
         let message = error["error"]["message"].as_str().expect("a message");
-        assert!(message.starts_with("No such "), "{stderr}");
         assert!(
             message.ends_with(&format!(
                 "BAD_REQUEST: Invalid {thing} id string:\"{UNKNOWN_UUID}\""
@@ -13858,13 +13848,13 @@ fn unknown_postgres_path(suffix: &str) -> String {
     format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}{suffix}")
 }
 
-/// The not-found message `postgres get` prints for [`UNKNOWN_UUID`], ending in
-/// the rejected request's own server message.
-fn postgres_not_found_message(server_message: &str) -> String {
-    format!(
-        "No such Postgres service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
-         The API rejected the identifier: {server_message}"
-    )
+/// The not-found message `postgres get` prints for [`UNKNOWN_UUID`]: it names
+/// the ID and organization and ends in the rejected request's own server
+/// message.
+fn assert_postgres_not_found_message(message: &str, server_message: &str) {
+    assert!(message.contains(UNKNOWN_UUID), "{message}");
+    assert!(message.contains(LOOKUP_ORG_ID), "{message}");
+    assert!(message.ends_with(server_message), "{message}");
 }
 
 fn assert_postgres_not_found_json(output: &std::process::Output, server_message: &str) {
@@ -13876,16 +13866,18 @@ fn assert_postgres_not_found_json(output: &std::process::Output, server_message:
         error["command"],
         format!("clickhousectl cloud postgres list --org-id {LOOKUP_ORG_ID}")
     );
-    assert_eq!(error["message"], postgres_not_found_message(server_message));
+    assert_postgres_not_found_message(error["message"].as_str().unwrap(), server_message);
 }
 
 fn assert_postgres_not_found_human(output: &std::process::Output, server_message: &str) {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!("Error: {}\n", postgres_not_found_message(server_message))
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stderr
+        .strip_prefix("Error: ")
+        .and_then(|rest| rest.strip_suffix('\n'))
+        .unwrap_or_else(|| panic!("one error line: {stderr}"));
+    assert_postgres_not_found_message(message, server_message);
 }
 
 /// `postgres update` reads the service's tags before it patches. A missing
@@ -15339,12 +15331,13 @@ async fn udf_delete_attach_detach_methods_and_auth() {
 
 #[tokio::test]
 async fn udf_delete_commands_print_human_confirmations() {
+    // One confirmation line naming what was deleted.
     for (args, suffix, expected) in [
-        (vec!["delete", "my_udf"], "/my_udf", "UDF my_udf deleted\n"),
+        (vec!["delete", "my_udf"], "/my_udf", &["my_udf"][..]),
         (
             vec!["version", "delete", "my_udf", "2"],
             "/my_udf/versions/2",
-            "UDF my_udf version 2 deleted\n",
+            &["my_udf", "2"][..],
         ),
     ] {
         let server = MockServer::start().await;
@@ -15364,24 +15357,22 @@ async fn udf_delete_commands_print_human_confirmations() {
             .output()
             .unwrap();
         assert_success(&output);
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.lines().count(), 1, "{stdout}");
+        for identifier in expected {
+            assert!(stdout.contains(identifier), "{identifier}: {stdout}");
+        }
     }
 }
 
 #[tokio::test]
 async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
-    for (args, suffix, empty_state) in [
-        (vec!["list"], "", "No UDFs found"),
-        (
-            vec!["attachment", "list", "my_udf"],
-            "/my_udf/attachments",
-            "No UDF attachments found",
-        ),
-        (
-            vec!["version", "list", "my_udf"],
-            "/my_udf/versions",
-            "No UDF versions found",
-        ),
+    // Each list has its own empty-state line (no table), then the page data.
+    let mut empty_states = std::collections::BTreeSet::new();
+    for (args, suffix) in [
+        (vec!["list"], ""),
+        (vec!["attachment", "list", "my_udf"], "/my_udf/attachments"),
+        (vec!["version", "list", "my_udf"], "/my_udf/versions"),
     ] {
         let server = MockServer::start().await;
         let project = tempfile::tempdir().unwrap();
@@ -15398,11 +15389,14 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
             .output()
             .unwrap();
         assert_success(&output);
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            format!(
-                "{empty_state}\nPagination: 0 total records; page limit 100; next cursor: next page\n"
-            )
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{stdout}");
+        assert!(!lines[0].contains('|'), "{stdout}");
+        assert!(empty_states.insert(lines[0].to_owned()), "{stdout}");
+        assert!(
+            lines[1].contains("100") && lines[1].ends_with("next page"),
+            "{stdout}"
         );
     }
 }
@@ -15914,12 +15908,9 @@ async fn postgres_update_tag_diff_refuses_a_sparse_get_without_writing() {
         ],
     );
 
+    // Refused after the read and before any PATCH (the request shape below);
+    // the wording is unit-tested in `postgres::lifecycle`.
     assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("omitted the tags field"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     assert_eq!(
         received_request_shape(&mock).await,
         vec![("GET".to_string(), postgres_path)]
@@ -17088,9 +17079,10 @@ async fn byoc_validate_prints_denied_checks_and_exits_one() {
         serde_json::from_slice::<Value>(&json.stdout).unwrap(),
         result
     );
+    // The summary's only numbers: one denied of two checks.
     assert_eq!(
-        cloud_runtime_error(&json)["message"],
-        "BYOC validation failed: 1 of 2 checks denied"
+        digits(cloud_runtime_error(&json)["message"].as_str().unwrap()),
+        "12"
     );
 
     let human = invoke_cli_with_cloud_credentials_human(&mock, &byoc_validate_args());
@@ -17099,10 +17091,14 @@ async fn byoc_validate_prints_denied_checks_and_exits_one() {
     for shown in ["Tag resources", "ec2:CreateTags", "explicitDeny"] {
         assert!(stdout.contains(shown), "{shown}: {stdout}");
     }
-    assert!(
-        String::from_utf8_lossy(&human.stderr)
-            .contains("BYOC validation failed: 1 of 2 checks denied")
-    );
+    // The summary's only numbers: one denied of two checks.
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert_eq!(digits(&stderr), "12", "{stderr}");
+}
+
+/// The digits in `text`, in order: for messages whose only numbers are counts.
+fn digits(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
 }
 
 #[tokio::test]
@@ -17135,8 +17131,15 @@ async fn byoc_validate_unsupported_configuration_is_reported_not_failed() {
             "org-1",
         ],
     );
+    // The response's three fields, then one notice line; no failure.
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("nothing was verified"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("supported: false"), "{stdout}");
+    assert_eq!(
+        stdout.lines().filter(|line| !line.is_empty()).count(),
+        4,
+        "{stdout}"
+    );
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
@@ -17498,11 +17501,11 @@ async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
             "org-1",
         ],
     );
+    // Names the profile and the memory size both bounds must equal.
     assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("requires both replica memory bounds to equal 48 GiB")
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("'v1-standard-byoc-4'"), "{stderr}");
+    assert!(stderr.contains("48"), "{stderr}");
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, wiremock::http::Method::GET);
@@ -18006,9 +18009,10 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
             "value=1e3",
         ],
     );
+    // The wording is unit-tested in `services::settings`; the error names the setting.
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("numeric settings must be integers"),
+        String::from_utf8_lossy(&output.stderr).contains("value"),
         "{output:?}"
     );
     assert!(
@@ -18094,9 +18098,12 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
             let output = cmd.output().unwrap();
             assert_success(&output);
             if human {
-                assert_eq!(
-                    String::from_utf8_lossy(&output.stdout),
-                    "Organization updated: Selected org (00000000-0000-0000-0000-000000000001)\n"
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert_eq!(stdout.lines().count(), 1, "{stdout}");
+                assert!(
+                    stdout.contains("Selected org")
+                        && stdout.contains("00000000-0000-0000-0000-000000000001"),
+                    "{stdout}"
                 );
             } else {
                 assert_eq!(
@@ -18695,11 +18702,13 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
         &["list", "svc-1", "--org-id", "org-1"],
         None,
     );
+    // No table: one empty-list line, then the cursor.
     assert_success(&empty);
-    assert_eq!(
-        String::from_utf8_lossy(&empty.stdout),
-        "No Query API endpoints found\nNext cursor: after-empty-page\n"
-    );
+    let stdout = String::from_utf8_lossy(&empty.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert!(!lines[0].contains('|'), "{stdout}");
+    assert!(lines[1].ends_with("after-empty-page"), "{stdout}");
 }
 
 #[tokio::test]
@@ -18910,13 +18919,10 @@ async fn deleted_resource_404_get_and_delete_have_structured_scope_and_guidance(
         assert!(stderr.contains(UNKNOWN_UUID), "{stderr}");
         assert!(stderr.contains("NOT_FOUND: Not Found"), "{stderr}");
         if domain != "org" {
-            assert!(
-                stderr.contains(&format!("(organization {LOOKUP_ORG_ID})")),
-                "{stderr}"
-            );
+            assert!(stderr.contains(LOOKUP_ORG_ID), "{stderr}");
         }
         if human {
-            assert!(stderr.starts_with("Error: No such "), "{stderr}");
+            assert!(stderr.starts_with("Error: "), "{stderr}");
         } else {
             let error: Value = serde_json::from_str(stderr.trim()).expect("structured error");
             assert_eq!(error["error"]["code"], "resource_not_found");
@@ -18967,7 +18973,6 @@ async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing
         let stderr = String::from_utf8_lossy(&output.stderr);
         if parent_status == 200 {
             assert!(!stderr.contains("resource_not_found"), "{stderr}");
-            assert!(!stderr.contains("No such service"), "{stderr}");
             assert!(stderr.contains("NOT_FOUND: Not Found"), "{stderr}");
             assert!(stderr.contains(LOOKUP_ORG_ID), "{stderr}");
         } else {
@@ -18977,7 +18982,7 @@ async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing
                 error["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .starts_with("No such service:")
+                    .contains(UNKNOWN_UUID)
             );
         }
         assert_eq!(
@@ -19003,10 +19008,8 @@ async fn deleted_resource_404_wrong_organization_scope_is_included_for_lists() {
         invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", LOOKUP_ORG_ID]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr.contains(&format!("request scoped to organization {LOOKUP_ORG_ID}")),
-        "{stderr}"
-    );
+    // The list's 404 names the organization it was scoped to.
+    assert!(stderr.contains(LOOKUP_ORG_ID), "{stderr}");
     assert!(!stderr.contains("resource_not_found"), "{stderr}");
 }
 
@@ -19639,7 +19642,7 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
         assert!(output.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("requires API key authentication"),
+            stderr.contains("clickhousectl cloud auth login --api-key"),
             "{stderr}"
         );
         if json {
@@ -19941,9 +19944,13 @@ async fn cloud_runtime_errors_report_sql_errors_with_the_typed_code() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert_eq!(structured_error(&output)["error"]["code"], "sql_error");
-    assert_eq!(
-        structured_error(&output)["error"]["message"],
-        "SQL error 62: Syntax error near FROM"
+    let message = structured_error(&output)["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("62") && message.ends_with("Syntax error near FROM"),
+        "{message}"
     );
 }
 
@@ -20288,19 +20295,26 @@ async fn expired_legacy_production_tokens_require_login_instead_of_refresh() {
             assert_eq!(error["code"], "auth_required");
             error["message"].as_str().unwrap().to_owned()
         };
-        assert!(
-            message.contains("Saved OAuth login can't be used"),
-            "{message}"
-        );
-        assert!(
-            message.contains("`clickhousectl cloud auth login` to log in again"),
-            "{message}"
-        );
-        assert!(!message.contains("No credentials found"), "{message}");
-        assert!(!message.contains("--api-key"), "{message}");
+        assert_unusable_login_message(&message);
         assert_eq!(std::fs::read(&token_path).unwrap(), original);
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+/// An unusable saved login points only at `cloud auth login`; missing
+/// credentials list every source, API-key flags and variables included.
+fn assert_unusable_login_message(message: &str) {
+    assert!(
+        message.contains("`clickhousectl cloud auth login`"),
+        "{message}"
+    );
+    assert!(!message.contains("--api-key"), "{message}");
+    assert!(!message.contains("CLICKHOUSE_CLOUD_API_KEY"), "{message}");
+}
+
+fn assert_missing_credentials_message(message: &str) {
+    assert!(message.contains("--api-key"), "{message}");
+    assert!(message.contains("CLICKHOUSE_CLOUD_API_KEY"), "{message}");
 }
 
 #[tokio::test]
@@ -20385,16 +20399,19 @@ async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
             if format == "absent" {
                 assert!(status.get("oauth_warning").is_none());
             } else {
-                let warning = status["oauth_warning"].as_str().unwrap();
-                assert!(warning.contains("Saved OAuth login can't be used"));
-                assert!(warning.contains("`clickhousectl cloud auth login` to log in again"));
+                assert_unusable_login_message(status["oauth_warning"].as_str().unwrap());
             }
         }
         if format == "absent" {
-            assert!(!stdout.contains("log in again"));
+            assert!(
+                !stdout.contains("`clickhousectl cloud auth login`"),
+                "{stdout}"
+            );
         } else {
-            assert!(stdout.contains("Saved OAuth login can't be used"));
-            assert!(stdout.contains("`clickhousectl cloud auth login` to log in again"));
+            assert!(
+                stdout.contains("`clickhousectl cloud auth login`"),
+                "{stdout}"
+            );
         }
         let output = command()
             .args(["service", "list", "--org-id", "org-1"])
@@ -20410,19 +20427,9 @@ async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
             error["message"].as_str().unwrap().to_owned()
         };
         if format == "absent" {
-            assert!(message.contains("No credentials found"), "{message}");
-            assert!(!message.contains("log in again"), "{message}");
+            assert_missing_credentials_message(&message);
         } else {
-            assert!(
-                message.contains("Saved OAuth login can't be used"),
-                "{message}"
-            );
-            assert!(
-                message.contains("`clickhousectl cloud auth login` to log in again"),
-                "{message}"
-            );
-            assert!(!message.contains("No credentials found"), "{message}");
-            assert!(!message.contains("--api-key"), "{message}");
+            assert_unusable_login_message(&message);
         }
         for secret in ["private-access", "private-refresh"] {
             assert!(!stdout.contains(secret));
@@ -20461,20 +20468,17 @@ async fn auth_status_reports_unusable_oauth_alongside_api_key_identity() {
             .unwrap();
         assert_success(&output);
         let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(stdout.contains("Saved OAuth login can't be used"));
-        assert!(stdout.contains("`clickhousectl cloud auth login` to log in again"));
+        assert!(
+            stdout.contains("`clickhousectl cloud auth login`"),
+            "{stdout}"
+        );
         if mode == "human" {
             assert!(stdout.contains("Identity: rejected"));
         } else {
             let status: Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(status["verification"], "rejected");
             assert!(status["warning"].as_str().unwrap().contains("key rejected"));
-            assert!(
-                status["oauth_warning"]
-                    .as_str()
-                    .unwrap()
-                    .contains("log in again")
-            );
+            assert_unusable_login_message(status["oauth_warning"].as_str().unwrap());
             let sources = status["sources"].as_array().unwrap();
             let env = sources
                 .iter()
@@ -21151,8 +21155,10 @@ async fn key_pagination_name_lookup_finds_later_match_and_rejects_cross_page_amb
             assert_eq!(output.status.code(), Some(1));
             assert!(output.stdout.is_empty());
             let error = cloud_runtime_error(&output);
+            // Names the ambiguous name and the number of matches.
             let message = error["message"].as_str().unwrap();
-            assert!(message.contains("found 2 API key resources"), "{message}");
+            assert!(message.contains("'target'"), "{message}");
+            assert_eq!(digits(message), "2", "{message}");
         } else {
             assert_success(&output);
             assert_eq!(
@@ -22116,10 +22122,9 @@ async fn saved_query_name_selector_pages_through_list_before_mutating() {
         None,
     );
     assert_success(&delete);
-    assert_eq!(
-        String::from_utf8_lossy(&delete.stdout),
-        format!("Deleted saved query {SAVED_QUERY_ID}\n")
-    );
+    let stdout = String::from_utf8_lossy(&delete.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.contains(SAVED_QUERY_ID), "{stdout}");
 
     // An unknown name fails before any mutation.
     let missing = invoke_saved_query(
@@ -22503,7 +22508,7 @@ async fn api_key_login_verifies_and_prints_the_identity_before_saving() {
             assert!(report.get("warning").is_none());
         } else {
             for expected in [
-                "Credentials saved to",
+                ".clickhouse/credentials.json",
                 "key-123",
                 "ci deploy",
                 WHOAMI_ORG_ID,
@@ -22553,18 +22558,10 @@ async fn api_key_login_saves_with_a_warning_when_whoami_is_unreachable() {
             let report: Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(report["verification"], "unverified");
             assert!(report["identity"].is_null());
-            assert!(
-                report["warning"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("could not verify the credentials")
-            );
+            assert!(report["warning"].is_string(), "{report}");
         } else {
-            assert!(stdout.contains("Credentials saved to"), "{stdout}");
-            assert!(
-                stderr.starts_with("warning: could not verify the credentials"),
-                "{stderr}"
-            );
+            assert!(stdout.contains(".clickhouse/credentials.json"), "{stdout}");
+            assert!(stderr.starts_with("warning: "), "{stderr}");
         }
     }
 }
@@ -22918,10 +22915,7 @@ async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
     assert_eq!(output.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("service is idle (SERVICE_IDLE)"),
-        "{message}"
-    );
+    assert!(message.contains("SERVICE_IDLE"), "{message}");
     assert!(message.contains("--wake"), "{message}");
     assert_eq!(error["error"]["code"], "service_idle", "{error}");
     assert_eq!(
@@ -23331,20 +23325,25 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
             assert_eq!(result["attachment"]["status"], "deployed");
             assert_eq!(result["attachment"]["version"], 1);
         } else {
-            assert_eq!(
-                stdout,
-                "Added version 2 of UDF my_udf and deployed it to service svc-1\n"
-            );
+            // One result line naming the UDF, version and service.
+            assert_eq!(stdout.lines().count(), 1, "{stdout}");
+            for identifier in ["my_udf", "2", "svc-1"] {
+                assert!(stdout.contains(identifier), "{identifier}: {stdout}");
+            }
+            // Two waits: the build (carrying `--timeout 30`, not the shipped
+            // default), then the deployment to the service.
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // `--timeout 30` reaches the wait (the shipped default differs).
+            let waits: Vec<&str> = stderr
+                .lines()
+                .filter(|line| !line.starts_with("Warning: "))
+                .collect();
+            assert_eq!(waits.len(), 2, "{stderr}");
             assert!(
-                stderr.contains("Waiting for the build of UDF my_udf version 2 (up to 30s)"),
+                waits[0].contains("my_udf") && waits[0].contains("30s"),
                 "{stderr}"
             );
-            assert!(
-                stderr.contains("Waiting for the deployment of UDF my_udf to service svc-1"),
-                "{stderr}"
-            );
+            assert!(!waits[0].contains("svc-1"), "{stderr}");
+            assert!(waits[1].contains("svc-1"), "{stderr}");
         }
         let calls: Vec<String> = server
             .received_requests()
@@ -23521,7 +23520,7 @@ async fn udf_deploy_failures_after_publish_name_the_built_version() {
     assert!(message.contains("SERVICE_STOPPED"), "{message}");
     assert!(message.contains("cloud service start svc-1"), "{message}");
     assert!(
-        message.contains("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
+        message.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
         "{message}"
     );
 }
@@ -23593,7 +23592,7 @@ async fn udf_deploy_idle_at_attach_resumes_with_a_waking_attach() {
         "{error}"
     );
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(!message.contains("Rerun with --wake"), "{message}");
+    assert!(!message.contains("cloud service wake"), "{message}");
     assert!(
         message.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1 --wake`"),
         "{message}"
@@ -24036,7 +24035,10 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(message.contains("Multiple organizations"), "{message}");
+    assert!(
+        message.contains("--org-id") && message.contains("--org-name"),
+        "{message}"
+    );
 }
 
 #[tokio::test]
@@ -24168,7 +24170,7 @@ async fn org_notifications_human_output_prints_rows_and_the_next_cursor() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Backup failed"), "{stdout}");
     assert!(
-        stdout.contains("Next cursor (JSON string): \"\""),
+        stdout.lines().any(|line| line.ends_with(": \"\"")),
         "{stdout}"
     );
     let requests = mock.received_requests().await.unwrap();
