@@ -13169,7 +13169,7 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
     assert!(String::from_utf8_lossy(&output.stderr).contains("binding replacement failed"));
     // A 5xx is not key propagation: no wait, no notice, straight to rollback
     // (#658). The two upserts below are the attempt and the rollback.
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("Waiting for the new API key"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(KEY_PROPAGATION_NOTICE));
 
     let requests = control.received_requests().await.unwrap();
     let endpoint_posts = requests
