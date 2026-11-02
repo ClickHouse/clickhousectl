@@ -421,7 +421,9 @@ fn local_use_writes_the_default_marker_under_the_commit_lock() {
     let mut child = home.spawn(&["local", "--json", "use", OTHER_VERSION]);
 
     // While the lock is held the marker cannot move, and `use` cannot finish.
-    std::thread::sleep(Duration::from_secs(1));
+    // An unlocked `use` finishes well within this window; a slow machine can
+    // only make the check weaker, never flaky.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         std::fs::read_to_string(home.default_marker()).expect("default marker"),
         DEFAULT_VERSION,

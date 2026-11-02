@@ -350,7 +350,10 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    // A paused clock makes the bound below exact rather than a race with a
+    // loaded machine: time only moves when every task waits, so it reaches
+    // the operation deadline long before the delayed responses arrive.
+    #[tokio::test(start_paused = true)]
     async fn build_list_scan_has_a_total_operation_deadline() {
         let server = MockServer::start().await;
         Mock::given(method("HEAD"))
