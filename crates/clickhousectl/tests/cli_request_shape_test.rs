@@ -19132,6 +19132,32 @@ async fn selectors_use_exact_scoped_names_and_ids_do_not_require_list_access() {
             "email",
             "id",
         ),
+        // Destructive commands resolve in their own dispatcher arm, so each
+        // has a run of its own.
+        (
+            &["org", "role", "delete"],
+            "roles",
+            "roles",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["member", "remove"],
+            "members",
+            "members",
+            "DELETE",
+            "email",
+            "userId",
+        ),
+        (
+            &["invitation", "delete"],
+            "invitations",
+            "invitations",
+            "DELETE",
+            "email",
+            "id",
+        ),
         (
             &["clickpipe", "get", "parent-service"],
             "services/parent-service/clickpipes",
@@ -20019,16 +20045,21 @@ async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
 
 #[tokio::test]
 async fn api_key_precedence_skips_oauth_refresh_and_preserves_tokens() {
-    // Every credential source once; the saved-token format rotates, since an
-    // API key must win over any of them (`client::credentials_file_overrides_env`
-    // and the other resolver unit tests own the ordering itself).
+    // Every credential source with a refreshable (current, expired) login: the
+    // skip in `cloud::run` is inline, and only a current record reaches the
+    // refresh. Old and malformed records never refresh, so they run once each
+    // to show an API key still wins over an unusable login
+    // (`client::credentials_file_overrides_env` and the other resolver unit
+    // tests own the ordering itself).
     for (format, source) in [
         ("current", "flags"),
+        ("current", "file"),
+        ("current", "env"),
+        ("current", "dotenv"),
+        ("current", "mixed"),
+        ("current", "partial-flags"),
         ("old", "file"),
         ("malformed", "env"),
-        ("current", "dotenv"),
-        ("old", "mixed"),
-        ("malformed", "partial-flags"),
     ] {
         let api = MockServer::start().await;
         let issuer = MockServer::start().await;
@@ -20482,13 +20513,13 @@ async fn oauth_login_and_refresh_never_follow_redirects() {
             .await;
         let dir = tempfile::tempdir().unwrap();
         let mut command = custom_oauth_command(dir.path(), &api.uri());
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
         if login {
             command
                 .env("CLICKHOUSECTL_AUTH_URL", issuer.uri())
                 .env("CLICKHOUSECTL_CLIENT_ID", "client")
                 .args(["auth", "login"]);
         } else {
-            let token_path = dir.path().join("home/.clickhouse/tokens.json");
             std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
             std::fs::write(
                 &token_path,
@@ -20509,6 +20540,10 @@ async fn oauth_login_and_refresh_never_follow_redirects() {
             "{status}: {output:?}"
         );
         assert!(destination.received_requests().await.unwrap().is_empty());
+        // A failed refresh clears the login, and in JSON mode its warning
+        // stays off stderr, which holds only the error object.
+        assert!(!token_path.exists());
+        cloud_runtime_error(&output);
     }
     assert!(api.received_requests().await.unwrap().is_empty());
 }

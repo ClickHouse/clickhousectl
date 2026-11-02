@@ -623,9 +623,64 @@ pub(crate) mod tests {
             (&["activity", "list"], false),
             (&["activity", "get", "act-1"], false),
             (&["postgres", "list"], false),
+            (&["postgres", "get", "pg-1"], false),
+            (&["postgres", "certs", "get", "pg-1"], false),
             (&["postgres", "config", "get", "pg-1"], false),
+            // Postgres has no exhaustive classification test of its own, so
+            // every write is listed here.
+            (
+                &[
+                    "postgres",
+                    "create",
+                    "--name",
+                    "pg",
+                    "--region",
+                    "us-east-1",
+                    "--size",
+                    "m7i.2xlarge",
+                ],
+                true,
+            ),
+            (
+                &["postgres", "update", "pg-1", "--size", "c6gd.large"],
+                true,
+            ),
             (&["postgres", "delete", "pg-1"], true),
+            (
+                &["postgres", "config", "replace", "pg-1", "--file", "c.json"],
+                true,
+            ),
+            (
+                &[
+                    "postgres",
+                    "config",
+                    "patch",
+                    "pg-1",
+                    "--set",
+                    "max_connections=500",
+                ],
+                true,
+            ),
+            (&["postgres", "reset-password", "pg-1", "--generate"], true),
+            (
+                &["postgres", "read-replica", "create", "pg-1", "--name", "r1"],
+                true,
+            ),
+            (
+                &[
+                    "postgres",
+                    "restore",
+                    "pg-1",
+                    "--name",
+                    "r",
+                    "--restore-target",
+                    "2026-04-16T12:00:00Z",
+                ],
+                true,
+            ),
             (&["postgres", "restart", "pg-1"], true),
+            (&["postgres", "promote", "pg-1"], true),
+            (&["postgres", "switchover", "pg-1"], true),
             (&["clickpipe", "list", "svc-1"], false),
             (
                 &["clickpipe", "reverse-private-endpoint", "list", "svc-1"],
