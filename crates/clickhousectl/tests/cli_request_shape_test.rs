@@ -1948,6 +1948,30 @@ async fn query_endpoint_create_preserves_existing_keys_and_default_origins() {
     );
 }
 
+/// The read-modify-write keeps existing keys unless the flag says otherwise;
+/// this is the only run where `--replace-open-api-keys` reaches the handler
+/// with an existing endpoint.
+#[tokio::test]
+async fn query_endpoint_create_key_replacement_is_explicit() {
+    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
+        "openApiKeys": ["existing-1", "existing-2"],
+        "allowedOrigins": "https://before.example.com",
+    })))
+    .await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &manual_query_endpoint_args(&["--open-api-key", "new-key", "--replace-open-api-keys"]),
+    )
+    .await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only"], "openApiKeys": ["new-key"],
+            "allowedOrigins": "https://before.example.com",
+        })
+    );
+}
+
 #[tokio::test]
 async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing() {
     let cases = [
@@ -13035,6 +13059,45 @@ async fn service_reset_password_json_prints_the_generated_password() {
     let body: Value =
         serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
     assert_eq!(body["password"], "s3cret");
+}
+
+/// Both hash flags reach the PATCH body under their own fields, and a hash
+/// reset succeeds without a password in the response.
+#[tokio::test]
+async fn service_reset_password_sends_both_hashes_and_accepts_no_password() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/password"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {}, "status": 200, "requestId": "stub-reset-password",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "reset-password",
+            "svc-1",
+            "--new-password-hash",
+            "e3b0c442",
+            "--new-double-sha1-hash",
+            "aabbccdd",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({})
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        requests[0].body_json::<Value>().unwrap(),
+        serde_json::json!({"newPasswordHash": "e3b0c442", "newDoubleSha1Hash": "aabbccdd"})
+    );
 }
 
 // ── Generated API key material is never silently dropped ───────────────────
