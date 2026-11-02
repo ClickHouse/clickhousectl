@@ -4871,9 +4871,12 @@ async fn service_delete_attempts_every_owned_key_and_reports_the_ones_that_faile
 
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
+    // The failed key, with the server's own error for it verbatim.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(&format!("{DELETE_TEST_PENDING_API_KEY_ID}:")),
+        stderr.contains(&format!(
+            "{DELETE_TEST_PENDING_API_KEY_ID}: pending cleanup failed"
+        )),
         "{stderr}"
     );
     assert!(
@@ -7608,13 +7611,14 @@ fn read_credentials(project: &Path) -> Value {
 }
 
 /// The deleted verdict names the key and the repair, and none of the other
-/// verdicts' remedies (re-enable, endpoint inspection). Its code is asserted
-/// in `stored_query_key_rejections_emit_structured_json_errors`.
+/// verdicts' remedies (re-enable, endpoint inspection, allowlist update). Its
+/// code is asserted in `stored_query_key_rejections_emit_structured_json_errors`.
 fn assert_deleted_verdict(stderr: &str) {
     assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
     assert!(!stderr.contains("--state enabled"), "{stderr}");
     assert!(!stderr.contains("query-endpoint get"), "{stderr}");
+    assert!(!stderr.contains("--ip-allow"), "{stderr}");
 }
 
 /// Every request the run made to the control plane was a read.
@@ -12425,23 +12429,25 @@ async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
         &[],
     )
     .await;
-    // Each generated value is shown once, on its own line.
+    // Each generated value is shown once, on its own line, under the label
+    // that tells the two IDs apart.
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    for value in [
-        "ci",
-        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        "generated-key-id",
-        "generated-key-secret",
+    for (label, value) in [
+        ("Name", "ci"),
+        (
+            "Management resource ID",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        ),
+        ("Authentication key ID", "generated-key-id"),
+        ("Key Secret", "generated-key-secret"),
     ] {
-        assert_eq!(
-            stdout
-                .lines()
-                .filter(|line| line.ends_with(&format!(": {value}")))
-                .count(),
-            1,
-            "{value}: {stdout}"
-        );
+        let lines: Vec<&str> = stdout
+            .lines()
+            .filter(|line| line.ends_with(&format!(": {value}")))
+            .collect();
+        assert_eq!(lines.len(), 1, "{value}: {stdout}");
+        assert_eq!(lines[0].trim(), format!("{label}: {value}"), "{stdout}");
     }
     // No --ip-allow: one warning naming the flag and the command that adds one.
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -18009,10 +18015,12 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
             "value=1e3",
         ],
     );
-    // The wording is unit-tested in `services::settings`; the error names the setting.
+    // The wording is unit-tested in `services::settings`; the error names the
+    // flag and the setting.
     assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("value"),
+        stderr.contains("--setting") && stderr.contains("'value'"),
         "{output:?}"
     );
     assert!(
