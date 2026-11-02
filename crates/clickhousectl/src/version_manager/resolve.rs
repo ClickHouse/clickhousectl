@@ -587,9 +587,10 @@ mod tests {
                 ..
             })
         ));
-        assert!(message.starts_with("build probe request"), "{message}");
-        assert!(message.contains("rate-limited"), "{message}");
-        assert!(message.contains("server-error"), "{message}");
+        // Both categories, the probe's first.
+        let probe_at = message.find("rate-limited").expect(&message);
+        let fallback_at = message.find("server-error").expect(&message);
+        assert!(probe_at < fallback_at, "{message}");
         assert!(!message.contains("secret"), "{message}");
     }
 

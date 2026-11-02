@@ -1133,9 +1133,11 @@ mod tests {
 
     #[test]
     fn rejects_non_hourly_or_out_of_range_backup_start_times() {
+        // The rejected value and the format to use instead.
         for value in ["2:00", "02:30", "24:00", "25:00", "02:000", "aa:00"] {
             let error = parse_backup_start_time(value).unwrap_err();
-            assert!(error.contains("expected HH:00"), "{value}: {error}");
+            assert!(error.contains(&format!("'{value}'")), "{value}: {error}");
+            assert!(error.contains("HH:00"), "{value}: {error}");
         }
 
         let result = Cli::try_parse_from([
@@ -1151,7 +1153,10 @@ mod tests {
 
         match result {
             Ok(_) => panic!("expected invalid backup start time to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected HH:00")),
+            Err(error) => {
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(error.to_string().contains("'02:30'"), "{error}");
+            }
         }
     }
 
@@ -1355,11 +1360,13 @@ mod tests {
             "test input",
         )
         .unwrap_err();
-        assert!(
-            unknown_provider
-                .message
-                .contains("expected AWS, GCP, or AZURE")
-        );
+        // The rejected provider, the field and every accepted provider.
+        for identifier in ["\"S3\"", "bucketProvider", "AWS", "GCP", "AZURE"] {
+            assert!(
+                unknown_provider.message.contains(identifier),
+                "{unknown_provider}"
+            );
+        }
 
         let contradictory_field = build_backup_bucket_update_request(
             serde_json::json!({
@@ -1377,7 +1384,8 @@ mod tests {
     /// The exact PATCH body or error for each combination of period,
     /// retention, start time and clear: an untouched start time is omitted,
     /// a clear is an explicit `null` compatible with any period, and a start
-    /// time restricts an explicit period to 24 or 48.
+    /// time restricts an explicit period to 24 or 48. Each error names
+    /// exactly the conflicting flags.
     #[test]
     fn build_backup_config_update_request_sends_exact_bodies_or_names_the_conflict() {
         let options =
@@ -1391,7 +1399,10 @@ mod tests {
             backup_retention_period_hours: Some(336),
             ..options(Some(48), Some("03:00"), false)
         };
-        let cases: Vec<(BackupConfigUpdateOptions, Result<serde_json::Value, &str>)> = vec![
+        let cases: Vec<(
+            BackupConfigUpdateOptions,
+            Result<serde_json::Value, Vec<&str>>,
+        )> = vec![
             (options(None, None, false), Ok(serde_json::json!({}))),
             (
                 maximal,
@@ -1423,20 +1434,35 @@ mod tests {
             ),
             (
                 options(Some(12), Some("03:00"), false),
-                Err("--backup-period-hours must be 24 or 48 when --backup-start-time is set"),
+                Err(vec!["--backup-period-hours", "--backup-start-time"]),
             ),
             (
                 options(None, Some("03:00"), true),
-                Err("--backup-start-time and --clear-backup-start-time cannot be used together"),
+                Err(vec!["--backup-start-time", "--clear-backup-start-time"]),
             ),
         ];
         for (options, expected) in cases {
             let actual = build_backup_config_update_request(&options)
                 .map(|request| serde_json::to_value(request).unwrap())
-                .map_err(|error| error.to_string());
+                .map_err(|error| {
+                    let flags = [
+                        "--backup-period-hours",
+                        "--backup-start-time",
+                        "--clear-backup-start-time",
+                    ];
+                    flags
+                        .into_iter()
+                        .filter(|flag| {
+                            error
+                                .message
+                                .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+                                .any(|token| token == *flag)
+                        })
+                        .collect::<Vec<_>>()
+                });
             assert_eq!(
                 actual,
-                expected.map_err(str::to_owned),
+                expected,
                 "period {:?}, start {:?}, clear {}",
                 options.backup_period_hours,
                 options.backup_start_time,
@@ -1450,19 +1476,18 @@ mod tests {
         for stored in [Some(24.0), Some(48.0), None] {
             check_stored_period_allows_start_time(stored).unwrap();
         }
-        let error = check_stored_period_allows_start_time(Some(12.0)).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
-             Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
-        );
-        let fractional = check_stored_period_allows_start_time(Some(12.5)).unwrap_err();
-        assert!(
-            fractional
-                .to_string()
-                .starts_with("the stored backup period is 12.5 hours,"),
-            "{fractional}"
-        );
+        // The stored period as stored, and both fixes as flags to pass.
+        for (stored, shown) in [(12.0, " 12 "), (12.5, " 12.5 ")] {
+            let error = check_stored_period_allows_start_time(Some(stored)).unwrap_err();
+            for identifier in [
+                shown,
+                "--backup-start-time",
+                "--backup-period-hours 24",
+                "--backup-period-hours 48",
+            ] {
+                assert!(error.message.contains(identifier), "{error}");
+            }
+        }
     }
 
     #[test]
@@ -1518,6 +1543,9 @@ mod tests {
         .err()
         .expect("conflicting flags should be rejected");
 
-        assert!(error.to_string().contains("cannot be used with"), "{error}");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = error.to_string();
+        assert!(message.contains("--clear-backup-start-time"), "{message}");
+        assert!(message.contains("--backup-start-time <"), "{message}");
     }
 }

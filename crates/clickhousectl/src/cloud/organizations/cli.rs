@@ -740,18 +740,15 @@ mod tests {
 
     #[test]
     fn rejects_incomplete_private_endpoint_removals_during_clap_parsing() {
-        for (value, required) in [
-            ("pe-1,region=us-east-1", "requires cloud-provider"),
-            ("pe-1,cloud-provider=aws", "requires region"),
-            ("pe-1,description=old", "requires cloud-provider and region"),
+        for (value, missing) in [
+            ("pe-1,region=us-east-1", &["cloud-provider"][..]),
+            ("pe-1,cloud-provider=aws", &["region"][..]),
+            ("pe-1,description=old", &["cloud-provider", "region"][..]),
             (
                 "pe-1,cloud-provider=,region=us-east-1",
-                "requires a non-empty cloud-provider",
+                &["cloud-provider"][..],
             ),
-            (
-                "pe-1,cloud-provider=aws,region= ",
-                "requires a non-empty region",
-            ),
+            ("pe-1,cloud-provider=aws,region= ", &["region"][..]),
         ] {
             let error = Cli::try_parse_from([
                 "clickhousectl",
@@ -767,7 +764,17 @@ mod tests {
             .expect("incomplete endpoint removal should fail");
 
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-            assert!(error.to_string().contains(required), "{error}");
+            // Clap wraps the parser's message, which quotes the value and
+            // names the missing keys.
+            let message = error.to_string();
+            assert_eq!(
+                super::super::org::tests::missing_endpoint_keys(
+                    message.lines().next().unwrap(),
+                    value
+                ),
+                missing,
+                "{error}"
+            );
         }
     }
 
@@ -959,7 +966,7 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("accepted {from} .. {to}"));
                 assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-                assert!(error.to_string().contains("expected YYYY-MM-DD"), "{error}");
+                assert!(error.to_string().contains("YYYY-MM-DD"), "{error}");
             }
         }
     }

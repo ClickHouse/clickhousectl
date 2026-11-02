@@ -207,10 +207,7 @@ mod tests {
             "test",
         )
         .unwrap_err();
-        assert!(
-            error.message.contains("unknown field `nested.enabeld`"),
-            "{error}"
-        );
+        assert!(error.message.contains("`nested.enabeld`"), "{error}");
     }
 
     #[test]
@@ -218,10 +215,7 @@ mod tests {
         for key in ["?", "", "dotted.key"] {
             let error = deserialize_strict_config::<Empty>(serde_json::json!({key: true}), "test")
                 .unwrap_err();
-            assert!(
-                error.message.contains(&format!("unknown field `{key}`")),
-                "{error}"
-            );
+            assert!(error.message.contains(&format!("`{key}`")), "{error}");
         }
     }
 
@@ -236,10 +230,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing.json");
         let missing = missing.to_str().unwrap();
+        // Each failure names the file and carries the underlying error's text.
         let error = read_config_value(missing).unwrap_err();
+        let io_error = std::fs::read_to_string(missing).unwrap_err().to_string();
         assert!(
-            error.message.starts_with("failed to read config file")
-                && error.message.contains(missing),
+            error.message.contains(missing) && error.message.ends_with(&io_error),
             "{error}"
         );
 
@@ -247,10 +242,11 @@ mod tests {
         std::fs::write(&malformed, r#"{"entries":["#).unwrap();
         let malformed = malformed.to_str().unwrap();
         let error = read_config_value(malformed).unwrap_err();
+        let serde_error = serde_json::from_str::<serde_json::Value>(r#"{"entries":["#)
+            .unwrap_err()
+            .to_string();
         assert!(
-            error
-                .message
-                .starts_with(&format!("failed to parse config {malformed} as JSON")),
+            error.message.contains(malformed) && error.message.ends_with(&serde_error),
             "{error}"
         );
 

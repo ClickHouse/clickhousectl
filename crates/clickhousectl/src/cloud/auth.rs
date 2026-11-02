@@ -1607,18 +1607,25 @@ mod tests {
         }
     }
 
+    /// Neither override is set: the error names both variables.
+    fn assert_missing_both_env_vars(error: &AuthConfigError) {
+        let AuthConfigError::MissingEnvVars(missing) = error else {
+            panic!("expected MissingEnvVars, got {error:?}");
+        };
+        assert!(
+            missing.contains("CLICKHOUSECTL_AUTH_URL")
+                && missing.contains("CLICKHOUSECTL_CLIENT_ID"),
+            "{missing}"
+        );
+    }
+
     #[test]
     fn test_auth_config_lookup() {
         let lookup = |url: &str| auth_config_for_url_with(url, &|_| None);
         assert!(lookup("https://api.clickhouse.cloud/v1").is_ok());
         assert!(lookup("https://api.control-plane.clickhouse-staging.com/v1").is_ok());
         assert!(lookup("https://api.control-plane.clickhouse-dev.com/v1").is_ok());
-        assert_eq!(
-            lookup("https://api.unknown.com/v1"),
-            Err(AuthConfigError::MissingEnvVars(
-                "CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID"
-            ))
-        );
+        assert_missing_both_env_vars(&lookup("https://api.unknown.com/v1").unwrap_err());
 
         // Verify distinct configs without reading the process environment.
         let prod = lookup("https://api.clickhouse.cloud/v1").unwrap();
@@ -1641,10 +1648,7 @@ mod tests {
         // Env vars simply not set: the error names the variables and never
         // carries the URL-format advice.
         let error = auth_config_for_url_with(api_url, &|_| None).unwrap_err();
-        assert_eq!(
-            error,
-            AuthConfigError::MissingEnvVars("CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID")
-        );
+        assert_missing_both_env_vars(&error);
         assert!(!error.to_string().contains(INVALID_AUTH_URL), "{error}");
 
         // Set but invalid: the error carries the validation reason.
@@ -1895,11 +1899,9 @@ mod tests {
             let report = oauth_login_report(&tokens_for(&server), "tokens.json".into()).await;
             assert_eq!(report.verification, "unverified", "{status}");
             assert!(report.identity.is_none());
+            // The warning relays the API's own error.
             let warning = report.warning.unwrap();
-            assert!(
-                warning.starts_with("could not fetch your identity: "),
-                "{warning}"
-            );
+            assert!(warning.contains("whoami failed"), "{warning}");
         }
     }
 }

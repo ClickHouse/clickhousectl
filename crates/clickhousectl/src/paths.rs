@@ -84,13 +84,12 @@ mod tests {
 
         assert_eq!(path, &directory);
         assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "Failed to create directory '{}': {}",
-                directory.display(),
-                source
-            )
+        // The message carries the path and the io error's own text.
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("'{}'", directory.display())),
+            "{message}"
         );
+        assert!(message.ends_with(&source.to_string()), "{message}");
     }
 }

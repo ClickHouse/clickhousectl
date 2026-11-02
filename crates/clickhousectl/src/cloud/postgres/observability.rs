@@ -794,26 +794,33 @@ mod tests {
 
     #[test]
     fn rejects_invalid_postgres_logs_time_windows() {
-        for (from, to, message) in [
+        // An unordered window names both bounds; a long one names the limit.
+        for (from, to, named, not_named) in [
             (
                 "2026-08-02T00:00:00Z",
                 "2026-08-01T00:00:00Z",
-                "to-date must be after from-date",
+                &["to-date", "from-date"][..],
+                "30",
             ),
             (
                 "2026-08-01T00:00:00Z",
                 "2026-08-01T00:00:00Z",
-                "to-date must be after from-date",
+                &["to-date", "from-date"][..],
+                "30",
             ),
             (
                 "2026-08-01T00:00:00Z",
                 "2026-09-01T00:00:01Z",
-                "must not exceed 30 days",
+                &["30"][..],
+                "from-date",
             ),
         ] {
             let error =
                 build_postgres_logs_query(from, to, None, None, None, None, None).unwrap_err();
-            assert!(error.to_string().contains(message), "{error}");
+            for identifier in named {
+                assert!(error.message.contains(identifier), "{error}");
+            }
+            assert!(!error.message.contains(not_named), "{error}");
         }
     }
 
@@ -830,7 +837,7 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("invalid sort order 'future'"));
+        assert!(error.to_string().contains("'future'"), "{error}");
     }
 
     #[test]
@@ -860,25 +867,19 @@ mod tests {
 
     #[test]
     fn postgres_window_datetimes_reject_malformed_and_submillisecond_values() {
-        for (input, expected) in [
-            ("yesterday", "expected ISO 8601 / RFC 3339"),
-            ("2026-04-16T12:00:00", "expected ISO 8601 / RFC 3339"),
-            ("2026-04-16T12:00:00.1234Z", "at most millisecond precision"),
-            (
-                "2026-04-16T12:00:00.123456Z",
-                "at most millisecond precision",
-            ),
-            (
-                "2026-04-16T12:00:00.123456789Z",
-                "at most millisecond precision",
-            ),
-            (
-                "2026-04-16T12:00:00.0000000001Z",
-                "at most millisecond precision",
-            ),
+        // Each error quotes the input; only a malformed one names the format,
+        // since a sub-millisecond value is valid RFC 3339.
+        for (input, malformed) in [
+            ("yesterday", true),
+            ("2026-04-16T12:00:00", true),
+            ("2026-04-16T12:00:00.1234Z", false),
+            ("2026-04-16T12:00:00.123456Z", false),
+            ("2026-04-16T12:00:00.123456789Z", false),
+            ("2026-04-16T12:00:00.0000000001Z", false),
         ] {
             let error = parse_postgres_window_datetime(input).unwrap_err();
-            assert!(error.contains(expected), "{input}: {error}");
+            assert!(error.contains(&format!("'{input}'")), "{input}: {error}");
+            assert_eq!(error.contains("RFC 3339"), malformed, "{input}: {error}");
         }
     }
 
@@ -889,10 +890,17 @@ mod tests {
         );
         let error =
             validate_datetime_range("2026-04-16T12:00:01Z", "2026-04-16T12:00:00Z").unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "invalid date range: --from-date must not be after --to-date"
+        assert_range_error(&error);
+    }
+
+    /// An unordered range names both flags, unlike a malformed timestamp.
+    fn assert_range_error(error: &CloudError) {
+        let message = &error.message;
+        assert!(
+            message.contains("--from-date") && message.contains("--to-date"),
+            "{message}"
         );
+        assert!(!message.contains("RFC 3339"), "{message}");
     }
 
     #[test]
@@ -949,22 +957,17 @@ mod tests {
             limit: None,
             offset: None,
         };
+        assert_range_error(&build_slow_query_list_query(input).unwrap_err());
+        let error = build_slow_query_list_query(SlowQueryListInput {
+            from_date: "2026-04-16T12:00:00Z",
+            to_date: "2026-04-16T13:00:00Z",
+            sort_by: Some("future_sort"),
+            ..input
+        })
+        .unwrap_err();
         assert!(
-            build_slow_query_list_query(input)
-                .unwrap_err()
-                .to_string()
-                .contains("--from-date must not be after --to-date")
-        );
-        assert!(
-            build_slow_query_list_query(SlowQueryListInput {
-                from_date: "2026-04-16T12:00:00Z",
-                to_date: "2026-04-16T13:00:00Z",
-                sort_by: Some("future_sort"),
-                ..input
-            })
-            .unwrap_err()
-            .to_string()
-            .contains("invalid sort_by")
+            error.message.contains("sort_by") && error.message.contains("'future_sort'"),
+            "{error}"
         );
         assert!(
             build_slow_query_list_query(SlowQueryListInput {

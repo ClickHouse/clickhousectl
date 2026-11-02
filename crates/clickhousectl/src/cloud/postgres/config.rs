@@ -312,35 +312,60 @@ mod tests {
         assert!(parse_pg_config_overrides(&["no_equals".into()]).is_err());
         assert!(parse_pg_config_overrides(&["=value".into()]).is_err());
 
+        // An unknown key is quoted, and the valid keys are listed.
         let err = parse_pg_config_overrides(&["max_conections=500".into()])
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("unknown pgConfig key 'max_conections'"),
-            "{err}"
-        );
-        assert!(err.contains("max_connections"), "{err}");
+        assert!(err.contains("'max_conections'"), "{err}");
+        assert!(err.contains(&PG_CONFIG_KEYS.join(", ")), "{err}");
 
-        for entry in [
-            "default_transaction_isolation=read uncommitted",
-            "ssl_min_protocol_version=SSLv3",
-            "wal_compression=gzip",
-            "default_toast_compression=zstd",
-            "enable_parallel_hash=true",
-            "io_method=posix_aio",
-            "log_lock_waits=1",
+        // An invalid enum value names its key and lists the allowed values.
+        for (entry, key, allowed) in [
+            (
+                "default_transaction_isolation=read uncommitted",
+                "default_transaction_isolation",
+                PgConfigDefaultTransactionIsolation::VALUES,
+            ),
+            (
+                "ssl_min_protocol_version=SSLv3",
+                "ssl_min_protocol_version",
+                PgConfigSslMinProtocolVersion::VALUES,
+            ),
+            (
+                "wal_compression=gzip",
+                "wal_compression",
+                PgConfigWalCompression::VALUES,
+            ),
+            (
+                "default_toast_compression=zstd",
+                "default_toast_compression",
+                PgConfigDefaultToastCompression::VALUES,
+            ),
+            (
+                "enable_parallel_hash=true",
+                "enable_parallel_hash",
+                PgConfigEnableParallelHash::VALUES,
+            ),
+            ("io_method=posix_aio", "io_method", PgConfigIoMethod::VALUES),
+            (
+                "log_lock_waits=1",
+                "log_lock_waits",
+                PgConfigLogLockWaits::VALUES,
+            ),
         ] {
             let err = parse_pg_config_overrides(&[entry.into()])
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("invalid pgConfig value"), "{entry}: {err}");
-            assert!(err.contains("expected one of"), "{entry}: {err}");
+            assert!(err.contains(&format!("'{key}'")), "{entry}: {err}");
+            assert!(err.ends_with(&allowed.join(", ")), "{entry}: {err}");
         }
 
+        // A null names its key and lists nothing.
         let err = parse_pg_config_overrides(&["work_mem=null".into()])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("null is not supported"), "{err}");
+        assert!(err.contains("'work_mem'") && err.contains("null"), "{err}");
+        assert!(!err.contains(&PG_CONFIG_KEYS.join(", ")), "{err}");
     }
 
     #[test]
@@ -356,12 +381,12 @@ mod tests {
                 "pgConfig",
             ),
         ] {
+            // The missing section, and the explicit empty value to use.
             let err = instance_config_from_json(&document)
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("missing required"), "{err}");
-            assert!(err.contains(missing), "{err}");
-            assert!(err.contains("explicitly empty"), "{err}");
+            assert!(err.contains(&format!("'{missing}'")), "{err}");
+            assert!(err.contains("{}"), "{err}");
         }
 
         let empty = instance_config_from_json(
@@ -381,28 +406,41 @@ mod tests {
     fn pg_config_files_reject_unknown_null_enum_and_non_object_values() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("pg.json");
+        let parse_error = serde_json::from_str::<serde_json::Value>("{")
+            .unwrap_err()
+            .to_string();
+        // Every failure names the file, and what in it was rejected.
         for (contents, expected) in [
-            (
-                r#"{"max_conections": 500}"#,
-                "unknown pgConfig key 'max_conections'",
-            ),
-            (r#"{"work_mem": null}"#, "null is not supported"),
+            (r#"{"max_conections": 500}"#, &["'max_conections'"][..]),
+            (r#"{"work_mem": null}"#, &["'work_mem'", "null"][..]),
             (
                 r#"{"wal_compression": "gzip"}"#,
-                "invalid pgConfig value 'gzip'",
+                &["'gzip'", "'wal_compression'"][..],
             ),
-            (r#"{"enable_parallel_hash": true}"#, "expected one of"),
-            ("[]", "pgConfig must be a JSON object"),
-            ("{", "failed to parse"),
+            (
+                r#"{"enable_parallel_hash": true}"#,
+                &["'enable_parallel_hash'"][..],
+            ),
+            ("[]", &[][..]),
+            ("{", &[parse_error.as_str()][..]),
         ] {
             std::fs::write(&file, contents).unwrap();
             let error = load_pg_config_file(&file).unwrap_err().to_string();
-            assert!(error.contains(expected), "{contents}: {error}");
+            assert!(
+                error.contains(&file.display().to_string()),
+                "{contents}: {error}"
+            );
+            for identifier in expected {
+                assert!(error.contains(identifier), "{contents}: {error}");
+            }
         }
-        let error = load_pg_config_file(&directory.path().join("missing.json"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("failed to read"), "{error}");
+        let missing = directory.path().join("missing.json");
+        let error = load_pg_config_file(&missing).unwrap_err().to_string();
+        let io_error = std::fs::read_to_string(&missing).unwrap_err().to_string();
+        assert!(
+            error.contains(&missing.display().to_string()) && error.ends_with(&io_error),
+            "{error}"
+        );
     }
 
     #[test]
@@ -416,22 +454,23 @@ mod tests {
         ] {
             let parameters = serde_json::json!({ "default_pool_size": value });
             std::fs::write(&file, parameters.to_string()).unwrap();
+            // Both paths relay serde's own diagnostic for the value.
+            let serde_error = serde_json::from_value::<PgBouncerConfig>(parameters.clone())
+                .unwrap_err()
+                .to_string();
             let error = load_json_file::<PgBouncerConfig>(&file)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("pgbouncer.json"), "{value}: {error}");
-            assert!(error.contains("string"), "{value}: {error}");
+            assert!(error.contains(&serde_error), "{value}: {error}");
 
             let error = instance_config_from_json(
                 &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": parameters }),
             )
             .unwrap_err()
             .to_string();
-            assert!(
-                error.contains("invalid pgBouncerConfig"),
-                "{value}: {error}"
-            );
-            assert!(error.contains("string"), "{value}: {error}");
+            assert!(error.contains("pgBouncerConfig"), "{value}: {error}");
+            assert!(error.contains(&serde_error), "{value}: {error}");
         }
     }
 
@@ -452,6 +491,10 @@ mod tests {
     /// `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
     #[test]
     fn instance_config_from_json_refuses_non_object_roots_and_invalid_or_unknown_sections() {
+        // A non-object root has its own error, not a missing-section one.
+        let missing_section = instance_config_from_json(&serde_json::json!({}))
+            .unwrap_err()
+            .to_string();
         for root in [
             serde_json::Value::Null,
             serde_json::json!([{ "pgConfig": {} }]),
@@ -460,17 +503,21 @@ mod tests {
             serde_json::json!(true),
         ] {
             let err = instance_config_from_json(&root).unwrap_err().to_string();
-            assert_eq!(err, "configuration document must be a JSON object");
+            assert_ne!(err, missing_section, "{root}");
+            assert!(!err.contains("pgConfig"), "{root}: {err}");
         }
 
-        for (document, expected) in [
+        // Each error names the offending section, and only that one.
+        for (document, expected, other) in [
             (
                 serde_json::json!({ "pgConfig": 7, "pgBouncerConfig": {} }),
-                "invalid pgConfig",
+                "pgConfig",
+                "pgBouncerConfig",
             ),
             (
                 serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": [] }),
-                "invalid pgBouncerConfig",
+                "pgBouncerConfig",
+                "pgConfig",
             ),
             (
                 serde_json::json!({
@@ -478,13 +525,15 @@ mod tests {
                     "pgBouncerConfig": {},
                     "pgBouncerConfigs": {}
                 }),
-                "unknown configuration section 'pgBouncerConfigs'",
+                "'pgBouncerConfigs'",
+                "'pgConfig'",
             ),
         ] {
             let err = instance_config_from_json(&document)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(expected), "unexpected error: {err}");
+            assert!(!err.contains(other), "unexpected error: {err}");
         }
     }
 

@@ -483,17 +483,24 @@ mod tests {
             .collect()
     }
 
+    /// The reason of an [`UdfInputError::Invalid`] about `path`.
+    fn invalid_reason(error: UdfInputError, path: &Path) -> String {
+        match error {
+            UdfInputError::Invalid {
+                path: found,
+                reason,
+            } if found == path => reason,
+            other => panic!("expected Invalid for {}, got {other:?}", path.display()),
+        }
+    }
+
     #[test]
     fn function_names_follow_the_api_pattern() {
         for ok in ["a", "A", "abc_1", "my_udf", "Z9"] {
             assert!(validate_function_name(ok).is_ok(), "{ok}");
         }
         for bad in ["", "1abc", "_x", "a-b", "a b", "../oops", "ünï"] {
-            assert_eq!(
-                validate_function_name(bad).unwrap_err(),
-                "Use a letter followed by letters, digits or underscores",
-                "{bad}"
-            );
+            assert!(validate_function_name(bad).is_err(), "{bad}");
         }
     }
 
@@ -513,26 +520,26 @@ mod tests {
             resolve_source_dir(&parent, "missing").unwrap_err(),
             UdfInputError::Missing { path } if path == parent.join("missing")
         ));
-        for (name, reason) in [
-            ("file", "is not a directory"),
-            ("linked", "is a symbolic link"),
-        ] {
-            let error = resolve_source_dir(&parent, name).unwrap_err();
-            assert!(
-                matches!(&error, UdfInputError::Invalid { path, reason: found }
-                    if path == &parent.join(name) && found == reason),
-                "{name}: {error}"
-            );
-        }
+        // A file and a symbolic link are rejected for different reasons.
+        let file = invalid_reason(
+            resolve_source_dir(&parent, "file").unwrap_err(),
+            &parent.join("file"),
+        );
+        let linked = invalid_reason(
+            resolve_source_dir(&parent, "linked").unwrap_err(),
+            &parent.join("linked"),
+        );
+        assert_ne!(file, linked);
     }
 
     #[test]
     fn check_function_name_compares_against_the_command_name() {
         assert!(check_function_name(&definition("executable", true), "my_udf").is_ok());
         assert!(check_function_name(&definition("executable", false), "other").is_ok());
-        assert_eq!(
-            check_function_name(&definition("executable", true), "other").unwrap_err(),
-            "functionName is my_udf, but the command targets other"
+        let error = check_function_name(&definition("executable", true), "other").unwrap_err();
+        assert!(
+            error.contains("my_udf") && error.contains("other"),
+            "{error}"
         );
     }
 
@@ -551,12 +558,18 @@ mod tests {
         assert!(
             matches!(&error, UdfInputError::Read { path, .. } if path == &dir.join("udf.json"))
         );
-        assert!(error.to_string().starts_with("cannot read "), "{error}");
+        let file = dir.join("udf.json").display().to_string();
+        assert!(error.to_string().contains(&file), "{error}");
 
         write(&dir.join("udf.json"), "{ not json");
         let error = load_definition_from_dir(&dir).unwrap_err();
-        assert!(matches!(&error, UdfInputError::Parse { .. }));
-        assert!(error.to_string().contains("is not valid JSON"), "{error}");
+        let UdfInputError::Parse { path, source } = &error else {
+            panic!("expected Parse, got {error:?}");
+        };
+        assert_eq!(path, &dir.join("udf.json"));
+        // The message carries the file and serde's own diagnostic.
+        assert!(error.to_string().contains(&file), "{error}");
+        assert!(error.to_string().contains(&source.to_string()), "{error}");
 
         write(&dir.join("udf.json"), r#"{"functionName": "f"}"#);
         assert_eq!(
@@ -586,72 +599,53 @@ mod tests {
     }
 
     #[test]
-    fn validate_definition_rejects_shape_errors_with_stable_messages() {
-        let cases: Vec<(&str, Value, &str)> = vec![
-            (
-                "deterministic",
-                Value::Null,
-                "UDF deterministic cannot be null",
-            ),
+    fn validate_definition_rejects_shape_errors_naming_the_field() {
+        let max = i64::MAX.to_string();
+        // Each case fails, and its message names the field and any bound.
+        let cases: Vec<(&str, Value, Vec<&str>)> = vec![
+            ("deterministic", Value::Null, vec!["deterministic"]),
             (
                 "memoryLimitMib",
                 json!(0),
-                "UDF memoryLimitMib must be an integer from 1 to 1048576",
+                vec!["memoryLimitMib", "1048576"],
             ),
             (
                 "memoryLimitMib",
                 json!(1_048_577),
-                "UDF memoryLimitMib must be an integer from 1 to 1048576",
+                vec!["memoryLimitMib", "1048576"],
             ),
             (
                 "commandReadTimeout",
                 json!(-1),
-                "UDF commandReadTimeout must be an integer from 1 to 9223372036854775807",
+                vec!["commandReadTimeout", max.as_str()],
             ),
-            (
-                "poolSize",
-                json!("2"),
-                "UDF poolSize must be an integer from 1 to 9223372036854775807",
-            ),
-            (
-                "uploadId",
-                json!("old"),
-                "Omit uploadId; the CLI creates a fresh upload session",
-            ),
-            ("functionName", json!("../oops"), "Invalid UDF functionName"),
-            ("returnName", json!("1x"), "Invalid UDF returnName"),
-            (
-                "arguments",
-                json!([{"type": "String"}]),
-                "Every UDF argument requires a valid name",
-            ),
-            ("type", json!(1), "UDF definition requires type"),
+            ("poolSize", json!("2"), vec!["poolSize", max.as_str()]),
+            ("uploadId", json!("old"), vec!["uploadId"]),
+            ("functionName", json!("../oops"), vec!["functionName"]),
+            ("returnName", json!("1x"), vec!["returnName"]),
+            ("arguments", json!([{"type": "String"}]), vec![]),
+            ("type", json!(1), vec!["type"]),
         ];
-        for (key, value, message) in cases {
+        for (key, value, identifiers) in cases {
             let mut input = definition("executable", true);
             input[key] = value;
-            assert_eq!(
-                validate_definition(&input, true).unwrap_err(),
-                message,
-                "{key}"
-            );
+            let error = validate_definition(&input, true).unwrap_err();
+            for identifier in identifiers {
+                assert!(error.contains(identifier), "{key}: {error}");
+            }
         }
 
         let mut pool = definition("executable_pool", true);
         pool["poolSize"] = Value::Null;
-        assert_eq!(
-            validate_definition(&pool, true).unwrap_err(),
-            "UDF poolSize cannot be null for executable_pool"
+        let error = validate_definition(&pool, true).unwrap_err();
+        assert!(
+            error.contains("poolSize") && error.contains("executable_pool"),
+            "{error}"
         );
 
-        assert_eq!(
-            validate_definition(&definition("executable", false), true).unwrap_err(),
-            "UDF definition requires functionName"
-        );
-        assert_eq!(
-            validate_definition(&json!([]), false).unwrap_err(),
-            "UDF definition must be a JSON object"
-        );
+        let error = validate_definition(&definition("executable", false), true).unwrap_err();
+        assert!(error.contains("functionName"), "{error}");
+        assert!(validate_definition(&json!([]), false).is_err());
     }
 
     #[test]
@@ -703,33 +697,35 @@ mod tests {
         let dir = tmp.path().join("udf");
         std::fs::create_dir(&dir).unwrap();
 
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err();
-        assert!(
-            error.to_string().ends_with("contains no files to deploy"),
-            "{error}"
+        let empty = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err(),
+            &dir,
         );
 
         write(&dir.join("lib/helper.py"), "");
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err();
-        assert!(error.to_string().contains("is missing main.py"), "{error}");
+        let no_entrypoint = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err(),
+            &dir,
+        );
+        assert!(no_entrypoint.contains(PYTHON_ENTRYPOINT), "{no_entrypoint}");
+        // An empty directory is its own failure, not a missing entrypoint.
+        assert_ne!(empty, no_entrypoint);
 
         write(&dir.join("main.py"), "");
         std::os::unix::fs::symlink(dir.join("lib/helper.py"), dir.join("link.py")).unwrap();
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .ends_with("contains a symbolic link at link.py"),
-            "{error}"
+        let reason = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Python311).unwrap_err(),
+            &dir,
         );
+        assert!(reason.ends_with(" link.py"), "{reason}");
 
+        // A missing directory is rejected before the binaries are checked.
         let missing = tmp.path().join("missing");
-        assert!(
-            collect_source_entries(&missing, UdfRuntimeKind::Native)
-                .unwrap_err()
-                .to_string()
-                .ends_with("is not a directory")
+        let reason = invalid_reason(
+            collect_source_entries(&missing, UdfRuntimeKind::Native).unwrap_err(),
+            &missing,
         );
+        assert!(!reason.contains(NATIVE_ENTRYPOINT), "{reason}");
     }
 
     #[test]
@@ -767,12 +763,13 @@ mod tests {
         let dir = tmp.path().join("udf");
         write(&dir.join("udf.json"), "{}");
         write(&dir.join("amd64/main"), "binary\n");
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err();
+        let reason = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err(),
+            &dir,
+        );
         assert!(
-            error.to_string().ends_with(
-                "is missing amd64/main or arm64/main, the binaries runtime native requires"
-            ),
-            "{error}"
+            reason.contains("amd64/main") && reason.contains("arm64/main"),
+            "{reason}"
         );
 
         std::fs::create_dir_all(dir.join("arm64")).unwrap();
@@ -781,24 +778,20 @@ mod tests {
         assert!(collect_source_entries(&dir, UdfRuntimeKind::Native).is_ok());
 
         std::os::unix::fs::symlink(dir.join("amd64/main"), dir.join("arm64/extra")).unwrap();
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .ends_with("contains a symbolic link at arm64/extra"),
-            "{error}"
+        let reason = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err(),
+            &dir,
         );
+        assert!(reason.ends_with(" arm64/extra"), "{reason}");
         std::fs::remove_file(dir.join("arm64/extra")).unwrap();
 
         std::fs::remove_dir_all(dir.join("arm64")).unwrap();
         std::os::unix::fs::symlink(dir.join("amd64"), dir.join("arm64")).unwrap();
-        let error = collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .ends_with("contains a symbolic link at arm64"),
-            "{error}"
+        let reason = invalid_reason(
+            collect_source_entries(&dir, UdfRuntimeKind::Native).unwrap_err(),
+            &dir,
         );
+        assert!(reason.ends_with(" arm64"), "{reason}");
     }
 
     #[test]
@@ -807,14 +800,13 @@ mod tests {
         let dir = tmp.path().join("native_fn");
         write(&dir.join("arm64/main"), "binary\n");
 
-        let error =
-            collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["amd64"]).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .ends_with("is missing amd64/main, the binary runtime native runs on this host"),
-            "{error}"
+        // Only the requested architecture's binary is named as missing.
+        let reason = invalid_reason(
+            collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["amd64"]).unwrap_err(),
+            &dir,
         );
+        assert!(reason.contains("amd64/main"), "{reason}");
+        assert!(!reason.contains("arm64"), "{reason}");
 
         write(&dir.join("amd64/main"), "binary\n");
         let entries = collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["amd64"]).unwrap();

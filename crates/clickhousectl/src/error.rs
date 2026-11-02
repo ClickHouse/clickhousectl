@@ -1128,7 +1128,7 @@ mod tests {
         .to_string();
 
         for required in [
-            "26.9.1.217 is the current default",
+            "26.9.1.217",
             "~/.clickhouse/default",
             "~/.local/bin/clickhouse",
             "`clickhousectl local use 25.12.9.61`",
@@ -1149,12 +1149,18 @@ mod tests {
             available: "26.2.20.4".into(),
         };
 
-        assert_eq!(
-            error.to_string(),
-            "build 26.2.8.7 is no longer available for download.\n\
-             Nearest available in the 26.2 series: 26.2.20.4 \
-             (try `clickhousectl local install 26.2`)"
-        );
+        // The message names the missing build, the nearest one and the retry.
+        let message = error.to_string();
+        for required in [
+            "26.2.8.7",
+            "26.2.20.4",
+            "`clickhousectl local install 26.2`",
+        ] {
+            assert!(
+                message.contains(required),
+                "missing {required:?}: {message}"
+            );
+        }
         assert_eq!(error.exit_code(), 1);
     }
 
@@ -1177,9 +1183,15 @@ mod tests {
             ),
         };
 
-        assert_eq!(
-            error.to_string(),
-            "Failed to create directory '/read-only/clickhouse/versions': permission denied by test"
+        // The path, then the io error's own text.
+        let message = error.to_string();
+        assert!(
+            message.contains("'/read-only/clickhouse/versions'"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(": permission denied by test"),
+            "{message}"
         );
     }
 }

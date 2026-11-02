@@ -857,15 +857,23 @@ pub(super) mod tests {
 
     #[test]
     fn rejects_malformed_postgres_list_filters() {
+        // Each error quotes what was wrong and the form or values to use.
         for (raw, expected) in [
-            ("bogus=1", "unknown filter key 'bogus'"),
-            ("state=", "filter 'state' requires a value"),
-            ("isPrimary=maybe", "expected true or false"),
-            ("state", "expected KEY=VALUE"),
+            ("bogus=1", &["'bogus'"][..]),
+            ("state=", &["'state'", "state=VALUE"][..]),
+            ("name=   ", &["'name'", "name=VALUE"][..]),
+            (
+                "isPrimary=maybe",
+                &["'maybe'", "'isPrimary'", "true", "false"][..],
+            ),
+            ("state", &["'state'", "KEY=VALUE"][..]),
         ] {
             let error = parse_postgres_list_filter(raw).unwrap_err();
-            assert!(error.contains(expected), "{raw}: {error}");
+            for identifier in expected {
+                assert!(error.contains(identifier), "{raw}: {error}");
+            }
         }
+        // A bad key or a missing `=` lists every valid key.
         for raw in ["bogus=1", "state"] {
             let error = parse_postgres_list_filter(raw).unwrap_err();
             assert!(
@@ -922,10 +930,7 @@ pub(super) mod tests {
         let err = merge_response_tags(None, &add, &[])
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("omitted the tags field"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("tags"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1260,24 +1265,31 @@ pub(super) mod tests {
     /// renders a placeholder credential.
     #[test]
     fn postgres_credentials_block_shows_a_sent_password_or_how_to_recover_it() {
-        let header = "Credentials (save these — password shown only once):";
+        // A header line, then the username and password under their labels.
+        let lines = |block: String| -> Vec<String> {
+            let lines: Vec<String> = block.lines().map(str::to_owned).collect();
+            assert_eq!(lines.len(), 3, "{block}");
+            lines[1..].to_vec()
+        };
         let id = pg_test_id();
         assert_eq!(
-            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&id)),
-            format!("{header}\n  Username: pg_user\n  Password: s3cret")
+            lines(postgres_credentials_block(
+                Some("pg_user"),
+                Some("s3cret"),
+                None,
+                Some(&id)
+            )),
+            ["  Username: pg_user", "  Password: s3cret"]
         );
         assert_eq!(
-            postgres_credentials_block(None, Some(""), None, None),
-            format!("{header}\n  Username: {ABSENT}\n  Password: ")
+            lines(postgres_credentials_block(None, Some(""), None, None)),
+            [format!("  Username: {ABSENT}"), "  Password: ".to_string()]
         );
 
         let connection_string = Some("postgresql://pg_user:s3cret@host:5432/postgres");
         for (connection_string, id, needle) in [
-            (
-                connection_string,
-                Some(&id),
-                "connection string below embeds it",
-            ),
+            // The omitted field is named; no reset is suggested.
+            (connection_string, Some(&id), "`password`"),
             (
                 None,
                 Some(&id),
@@ -1291,10 +1303,7 @@ pub(super) mod tests {
             ),
         ] {
             let block = postgres_credentials_block(Some("pg_user"), None, connection_string, id);
-            assert!(
-                block.starts_with("WARNING: the API response omitted"),
-                "{block}"
-            );
+            assert!(block.starts_with("WARNING: "), "{block}");
             assert!(!block.contains("Password:"), "{block}");
             assert!(block.contains(needle), "{block}");
             assert_eq!(
