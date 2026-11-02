@@ -1207,19 +1207,18 @@ mod tests {
 
     #[test]
     fn rejects_invalid_key_expires_at_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "update",
-            "key-1",
-            "--expires-at",
-            "2025-12-31",
-        ]);
+        for command in [&["create", "--name", "k"][..], &["update", "key-1"]] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "key"]
+                    .into_iter()
+                    .chain(command.iter().copied())
+                    .chain(["--expires-at", "2025-12-31"]),
+            );
 
-        match result {
-            Ok(_) => panic!("expected invalid expires-at input to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected ISO 8601 / RFC 3339")),
+            match result {
+                Ok(_) => panic!("{command:?}: expected invalid expires-at input to be rejected"),
+                Err(error) => assert!(error.to_string().contains("expected ISO 8601 / RFC 3339")),
+            }
         }
     }
 

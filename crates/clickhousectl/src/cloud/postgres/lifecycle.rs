@@ -1397,6 +1397,7 @@ pub(super) mod tests {
             (state(hibernating()), "state=hibernating", true),
             (state(hibernating()), "state=running", false),
             (provider(PgProvider::Gcp), "provider=gcp", true),
+            (provider(PgProvider::Gcp), "provider=GCP", true),
             (provider(PgProvider::Gcp), "provider=aws", false),
             (
                 provider(PgProvider::Unknown("azure".to_string())),

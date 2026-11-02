@@ -288,6 +288,25 @@ mod tests {
     use super::*;
     use clickhouse_cloud_api::models::PgBouncerConfig;
 
+    /// Values parse as JSON first and fall back to a string; the last value
+    /// wins on a duplicate key.
+    #[test]
+    fn parse_pg_config_overrides_reads_json_then_strings_and_keeps_the_last_duplicate() {
+        let m = parse_pg_config_overrides(&[
+            "max_connections=100".into(),
+            "random_page_cost=1.1".into(),
+            "statement_timeout=5s".into(),
+            "max_connections=500".into(),
+        ])
+        .unwrap();
+        assert_eq!(m.get("max_connections"), Some(&serde_json::json!(500)));
+        assert_eq!(m.get("random_page_cost"), Some(&serde_json::json!(1.1)));
+        assert_eq!(
+            m.get("statement_timeout"),
+            Some(&serde_json::Value::String("5s".to_string()))
+        );
+    }
+
     #[test]
     fn parse_pg_config_overrides_rejects_malformed_unknown_null_and_invalid_enum_values() {
         assert!(parse_pg_config_overrides(&["no_equals".into()]).is_err());

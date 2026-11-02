@@ -940,41 +940,27 @@ mod tests {
         }
     }
 
+    /// Both date flags go through `parse_date_only`: timestamps and impossible
+    /// calendar dates are usage errors on either one.
     #[test]
-    fn rejects_org_usage_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01T00:00:00Z",
-            "--to-date",
-            "2025-01-31",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected timestamp input to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_org_usage_calendar_dates() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-02-31",
-            "--to-date",
-            "2025-03-01",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid calendar date to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+    fn rejects_org_usage_timestamps_and_invalid_calendar_dates_on_either_flag() {
+        for bad in ["2025-01-01T00:00:00Z", "2025-02-31"] {
+            for (from, to) in [(bad, "2025-01-31"), ("2025-01-01", bad)] {
+                let error = Cli::try_parse_from([
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "usage",
+                    "--from-date",
+                    from,
+                    "--to-date",
+                    to,
+                ])
+                .err()
+                .unwrap_or_else(|| panic!("accepted {from} .. {to}"));
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(error.to_string().contains("expected YYYY-MM-DD"), "{error}");
+            }
         }
     }
 
