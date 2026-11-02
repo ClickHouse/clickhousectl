@@ -7138,7 +7138,10 @@ fn append_sample_validation(args: &mut Vec<String>) {
     args.extend(["--validate-samples".into(), "true".into()]);
 }
 
-fn append_streaming_create_controls(args: &mut Vec<String>) {
+/// The controls every streaming create shares. The destination flags go
+/// through each streaming handler, which assembles its own request rather than
+/// calling a `build_*_request` builder, so only this test sees them on the wire.
+fn append_streaming_create_controls(args: &mut Vec<String>, table_definition_file: &str) {
     append_initial_scaling_and_validation(args);
     args.extend([
         "--start-paused".into(),
@@ -7148,6 +7151,12 @@ fn append_streaming_create_controls(args: &mut Vec<String>) {
         "0".into(),
         "--clickhouse-parallel-view-processing".into(),
         "false".into(),
+        "--role".into(),
+        "analytics_reader".into(),
+        "--managed-table".into(),
+        "false".into(),
+        "--table-definition-file".into(),
+        table_definition_file.into(),
     ]);
 }
 
@@ -7157,6 +7166,23 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
     let service_account = directory.path().join("service-account.json");
     std::fs::write(&service_account, "{}").unwrap();
     let service_account = service_account.to_str().unwrap();
+    let table_definition = directory.path().join("table-definition.json");
+    std::fs::write(
+        &table_definition,
+        serde_json::json!({
+            "engine": {
+                "columnIds": ["amount"],
+                "type": "SummingMergeTree",
+                "versionColumnId": null
+            },
+            "partitionBy": "toYYYYMM(created_at)",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id", "created_at"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let table_definition = table_definition.to_str().unwrap();
 
     let mut object_storage = [
         "clickpipe",
@@ -7180,7 +7206,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
     ]
     .map(str::to_string)
     .to_vec();
-    append_streaming_create_controls(&mut object_storage);
+    append_streaming_create_controls(&mut object_storage, table_definition);
     object_storage.extend([
         "--object-storage-concurrency".into(),
         "1".into(),
@@ -7198,12 +7224,14 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    append_streaming_create_controls(&mut kafka);
+    append_streaming_create_controls(&mut kafka, table_definition);
     kafka.extend([
         "--streaming-max-insert-wait-ms".into(),
         "500".into(),
         "--kafka-read-committed".into(),
         "false".into(),
+        "--exactly-once".into(),
+        "true".into(),
     ]);
 
     let mut kinesis = [
@@ -7230,7 +7258,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
     ]
     .map(str::to_string)
     .to_vec();
-    append_streaming_create_controls(&mut kinesis);
+    append_streaming_create_controls(&mut kinesis, table_definition);
     kinesis.extend(["--streaming-max-insert-wait-ms".into(), "500".into()]);
 
     let mut postgres = postgres_args_minimal();
@@ -7285,7 +7313,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
     append_sample_validation(&mut bigquery);
 
     let mut pubsub = pubsub_create_args(service_account);
-    append_streaming_create_controls(&mut pubsub);
+    append_streaming_create_controls(&mut pubsub, table_definition);
     pubsub.extend(["--streaming-max-insert-wait-ms".into(), "500".into()]);
 
     for (source, args, has_streaming_controls) in [
@@ -7326,8 +7354,25 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
                 body["settings"]["clickhouse_parallel_view_processing"], false,
                 "{source}"
             );
+            assert_eq!(
+                body["destination"]["roles"],
+                serde_json::json!(["analytics_reader"]),
+                "{source}"
+            );
+            assert_eq!(body["destination"]["managedTable"], false, "{source}");
+            assert_eq!(
+                body["destination"]["tableDefinition"],
+                serde_json::json!({
+                    "engine": {"columnIds": ["amount"], "type": "SummingMergeTree"},
+                    "partitionBy": "toYYYYMM(created_at)",
+                    "primaryKey": "event_id",
+                    "sortingKey": ["event_id", "created_at"]
+                }),
+                "{source}"
+            );
             if source == "kafka" {
                 assert_eq!(body["settings"]["kafka_read_committed"], false, "{source}");
+                assert_eq!(body["source"]["kafka"]["exactlyOnce"], true);
             } else {
                 assert!(
                     body["settings"].get("kafka_read_committed").is_none(),
@@ -13450,6 +13495,44 @@ async fn schema_discover_kinesis_posts_source_body() {
     );
 }
 
+/// The Kafka arm assembles its discovery request in the handler, so this is
+/// the only check that it sends the shared source without create's
+/// `exactlyOnce`.
+#[tokio::test]
+async fn schema_discover_kafka_posts_the_source_without_create_only_fields() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "--org-id",
+            "org",
+            "kafka",
+            "svc-id",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ],
+    )
+    .await;
+    assert_eq!(
+        body,
+        serde_json::json!({"source": {"kafka": {
+            "brokers": "broker:9092",
+            "credentials": null,
+            "format": "JSONEachRow",
+            "offset": {"strategy": "from_beginning"},
+            "reversePrivateEndpointIds": [],
+            "topics": "topic",
+            "type": "kafka",
+        }}})
+    );
+}
+
 // ── Google Cloud Pub/Sub source (issue #587) ───────────────────────────────
 //
 // `clickpipe create pubsub` and `clickpipe schema-discover pubsub <SERVICE_ID>`
@@ -14481,6 +14564,39 @@ async fn clickpipe_cdc_scaling_get_supports_oauth_and_preserves_sparse_json() {
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         serde_json::json!({ "replicaCpuMillicores": 2000 })
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_update_patches_the_built_body() {
+    let mock = MockServer::start().await;
+    let scaling = serde_json::json!({ "replicaCpuMillicores": 1000 });
+    Mock::given(method("PATCH"))
+        .and(path(CDC_SCALING_PATH))
+        .and(body_json(scaling.clone()))
+        .respond_with(cdc_scaling_envelope(scaling.clone()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "cdc-scaling",
+            "update",
+            "svc-1",
+            "--cpu-millicores",
+            "1000",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        scaling
     );
 }
 
