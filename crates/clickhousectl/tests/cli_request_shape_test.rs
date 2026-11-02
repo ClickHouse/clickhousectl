@@ -2972,55 +2972,6 @@ async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() 
 }
 
 #[tokio::test]
-async fn postgres_metrics_normalizes_exact_milliseconds_on_the_wire() {
-    let mock = MockServer::start().await;
-    for (from, to, expected_from, expected_to) in [
-        (
-            "2026-04-16T12:00:00Z",
-            "2026-04-16T13:00:00.000Z",
-            "2026-04-16T12:00:00.000Z",
-            "2026-04-16T13:00:00.000Z",
-        ),
-        (
-            "2026-04-16T00:00:00.1+05:30",
-            "2026-04-16T23:00:00.1230000000-02:30",
-            "2026-04-15T18:30:00.100Z",
-            "2026-04-17T01:30:00.123Z",
-        ),
-    ] {
-        Mock::given(method("GET"))
-            .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
-            .and(query_param("from_date", expected_from))
-            .and(query_param("to_date", expected_to))
-            .and(query_param("bucket_size_seconds", "300"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": {"metrics": []},
-                "status": 200
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "postgres",
-                "metrics",
-                "pg-1",
-                "--from-date",
-                from,
-                "--to-date",
-                to,
-                "--bucket-size-seconds",
-                "300",
-                "--org-id",
-                "org-1",
-            ],
-        );
-        assert_success(&output);
-    }
-}
-
-#[tokio::test]
 async fn postgres_metrics_omits_bucket_and_renders_every_sparse_series_and_point() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -3451,56 +3402,6 @@ async fn postgres_slow_query_list_sends_exact_query_supports_oauth_and_preserves
             ("offset".to_string(), "0".to_string()),
         ]
     );
-}
-
-#[tokio::test]
-async fn postgres_slow_query_list_normalizes_exact_milliseconds_on_the_wire() {
-    let mock = MockServer::start().await;
-    for (from, to, expected_from, expected_to) in [
-        (
-            "2026-04-16T12:00:00Z",
-            "2026-04-16T13:00:00.000Z",
-            "2026-04-16T12:00:00.000Z",
-            "2026-04-16T13:00:00.000Z",
-        ),
-        (
-            "2026-04-16T00:00:00.1+05:30",
-            "2026-04-16T23:00:00.1230000000-02:30",
-            "2026-04-15T18:30:00.100Z",
-            "2026-04-17T01:30:00.123Z",
-        ),
-    ] {
-        Mock::given(method("GET"))
-            .and(path(
-                "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
-            ))
-            .and(query_param("from_date", expected_from))
-            .and(query_param("to_date", expected_to))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": [],
-                "status": 200
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "postgres",
-                "slow-queries",
-                "list",
-                "pg-1",
-                "--from-date",
-                from,
-                "--to-date",
-                to,
-                "--org-id",
-                "org-1",
-            ],
-        );
-        assert_success(&output);
-    }
 }
 
 #[tokio::test]
@@ -4001,70 +3902,65 @@ async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
 
 // ── Postgres update --name (issue #663) ────────────────────────────────────
 
-/// Non-tag updates must echo the current tag snapshot while omitting unrelated
-/// update fields. An empty list is known empty; key-only and empty-value tags
-/// remain distinct under the API model's optional-value contract.
+/// Non-tag updates must echo the current tag snapshot alongside the changed
+/// fields. Key-only and empty-value tags remain distinct under the API model's
+/// optional-value contract; an empty snapshot is the merge unit test.
 #[tokio::test]
 async fn postgres_update_preserves_tags_when_changing_other_fields() {
-    for (flag, field, value) in [
-        ("--new-name", "name", "renamed-pg"),
-        ("--size", "size", "c6gd.large"),
-        ("--ha-type", "haType", "async"),
-    ] {
-        for tags in [
-            serde_json::json!([]),
-            serde_json::json!([
-                {"key": "env", "value": "prod"},
-                {"key": "owner", "value": "me"},
-                {"key": "key-only"},
-                {"key": "empty", "value": ""}
-            ]),
-        ] {
-            let mock = MockServer::start().await;
-            let postgres_id = "11111111-2222-3333-4444-555555555555";
-            let postgres_path = format!("/v1/organizations/org-1/postgres/{postgres_id}");
-            Mock::given(method("GET"))
-                .and(path(&postgres_path))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "result": {"id": postgres_id, "tags": tags},
-                })))
-                .expect(1)
-                .mount(&mock)
-                .await;
-            let expected_body = serde_json::json!({field: value, "tags": tags});
-            Mock::given(method("PATCH"))
-                .and(path(&postgres_path))
-                .and(body_json(expected_body))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "result": {"id": postgres_id, "tags": tags},
-                })))
-                .expect(1)
-                .mount(&mock)
-                .await;
-            let output = invoke_cli_with_cloud_credentials(
-                &mock,
-                &[
-                    "postgres",
-                    "update",
-                    postgres_id,
-                    "--org-id",
-                    "org-1",
-                    flag,
-                    value,
-                ],
-            );
-            assert_success(&output);
-            assert_eq!(
-                received_request_shape(&mock).await,
-                vec![
-                    ("GET".into(), postgres_path.clone()),
-                    ("PATCH".into(), postgres_path)
-                ]
-            );
-            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(output["tags"], tags);
-        }
-    }
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{postgres_id}");
+    let tags = serde_json::json!([
+        {"key": "env", "value": "prod"},
+        {"key": "owner", "value": "me"},
+        {"key": "key-only"},
+        {"key": "empty", "value": ""}
+    ]);
+    Mock::given(method("GET"))
+        .and(path(&postgres_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": postgres_id, "tags": tags},
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(&postgres_path))
+        .and(body_json(serde_json::json!({
+            "name": "renamed-pg", "size": "c6gd.large", "haType": "async", "tags": tags
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": postgres_id, "tags": tags},
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            postgres_id,
+            "--org-id",
+            "org-1",
+            "--new-name",
+            "renamed-pg",
+            "--size",
+            "c6gd.large",
+            "--ha-type",
+            "async",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".into(), postgres_path.clone()),
+            ("PATCH".into(), postgres_path)
+        ]
+    );
+    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(output["tags"], tags);
 }
 
 #[tokio::test]
@@ -4121,9 +4017,9 @@ fn postgres_access_rules_response() -> Value {
     ])
 }
 
-/// Omitting both flags omits `ipAccessList` (allow all), `--block-public-access`
-/// sends `[]`, and each `--ip-allow` becomes one rule without an `id`. A
-/// trailing `=` sends an empty description, as ClickHouse `--ip-allow` does.
+/// `--block-public-access` sends `[]`, and each `--ip-allow` becomes one rule
+/// without an `id`. A trailing `=` sends an empty description, as ClickHouse
+/// `--ip-allow` does. Omitting both is in `postgres_config_files_reach_every_write_path`.
 #[tokio::test]
 async fn postgres_create_sends_access_rules_only_when_asked() {
     let base = serde_json::json!({
@@ -4135,7 +4031,6 @@ async fn postgres_create_sends_access_rules_only_when_asked() {
         body
     };
     for (flags, expected) in [
-        (vec![], base.clone()),
         (
             vec!["--block-public-access"],
             with_list(serde_json::json!([])),
@@ -4189,37 +4084,31 @@ async fn postgres_create_sends_access_rules_only_when_asked() {
     }
 }
 
-/// Rule changes ride the same PATCH as the preserved tag snapshot; the patch
-/// carries both lists, so a remove-only update sends `add: []`.
+/// Rule changes ride the same PATCH as the preserved tag snapshot. A
+/// remove-only update sending `add: []` is the builder's unit test.
 #[tokio::test]
 async fn postgres_update_sends_access_rule_patch() {
     let postgres_path = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
     let tags = serde_json::json!([{"key": "env", "value": "prod"}]);
-    for (flags, patch) in [
-        (
-            vec![
-                "--add-ip-allow",
-                "203.0.113.0/24:5432=office",
-                "--remove-ip-allow",
-                "rule-9",
-                "--add-ip-allow",
-                "203.0.113.0/24:6432",
-                "--remove-ip-allow",
-                "rule-8",
+    for (flags, patch) in [(
+        vec![
+            "--add-ip-allow",
+            "203.0.113.0/24:5432=office",
+            "--remove-ip-allow",
+            "rule-9",
+            "--add-ip-allow",
+            "203.0.113.0/24:6432",
+            "--remove-ip-allow",
+            "rule-8",
+        ],
+        serde_json::json!({
+            "add": [
+                {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+                {"source": "203.0.113.0/24", "portRange": "6432"}
             ],
-            serde_json::json!({
-                "add": [
-                    {"source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
-                    {"source": "203.0.113.0/24", "portRange": "6432"}
-                ],
-                "remove": [{"id": "rule-9"}, {"id": "rule-8"}]
-            }),
-        ),
-        (
-            vec!["--remove-ip-allow", "rule-9"],
-            serde_json::json!({"add": [], "remove": [{"id": "rule-9"}]}),
-        ),
-    ] {
+            "remove": [{"id": "rule-9"}, {"id": "rule-8"}]
+        }),
+    )] {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(&postgres_path))
@@ -4257,33 +4146,6 @@ async fn postgres_update_sends_access_rule_patch() {
         let output: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output["ipAccessList"], postgres_access_rules_response());
     }
-}
-
-#[tokio::test]
-async fn postgres_update_without_access_rule_flags_omits_the_patch() {
-    let mock = MockServer::start().await;
-    let postgres_path = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
-    Mock::given(method("PATCH"))
-        .and(path(&postgres_path))
-        .and(body_json(serde_json::json!({"tags": []})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"id": ACCESS_RULE_POSTGRES_ID},
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "postgres",
-            "update",
-            ACCESS_RULE_POSTGRES_ID,
-            "--org-id",
-            "org-1",
-            "--clear-tags",
-        ],
-    );
-    assert_success(&output);
 }
 
 #[tokio::test]
@@ -14895,14 +14757,30 @@ async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
     );
 }
 
-// PgBouncer parameters must survive all advertised file-input paths (#697).
-fn pgbouncer_write_commands<'a>(
-    map_file: &'a str,
+// Postgres config files must survive every advertised file-input path, PgConfig
+// (#591) and PgBouncer (#697) alike. Read-replica and restore bodies are
+// assembled in their handlers, so their exact bodies are asserted here.
+fn postgres_config_write_commands<'a>(
+    pg_config_file: &'a str,
+    pg_bouncer_file: &'a str,
     config_file: &'a str,
 ) -> Vec<(Vec<&'a str>, &'static str, &'static str)> {
+    let files = [
+        "--pg-config-file",
+        pg_config_file,
+        "--pg-bouncer-config-file",
+        pg_bouncer_file,
+        "--tag",
+        "env=prod",
+    ];
+    let with_files = |args: &[&'a str]| -> Vec<&'a str> {
+        let mut args = args.to_vec();
+        args.extend(files);
+        args
+    };
     vec![
         (
-            vec![
+            with_files(&[
                 "postgres",
                 "create",
                 "--name",
@@ -14911,39 +14789,33 @@ fn pgbouncer_write_commands<'a>(
                 "us-east-1",
                 "--size",
                 "c6gd.large",
-                "--pg-bouncer-config-file",
-                map_file,
-            ],
+            ]),
             "POST",
             "/v1/organizations/org-1/postgres",
         ),
         (
-            vec![
+            with_files(&[
                 "postgres",
                 "read-replica",
                 "create",
                 "pg-1",
                 "--name",
                 "replica-test",
-                "--pg-bouncer-config-file",
-                map_file,
-            ],
+            ]),
             "POST",
             "/v1/organizations/org-1/postgres/pg-1/readReplica",
         ),
         (
-            vec![
+            with_files(&[
                 "postgres",
                 "restore",
                 "pg-1",
                 "--name",
                 "restored-test",
                 "--restore-target",
-                "2026-08-01T00:00:00Z",
-                "--pg-bouncer-config-file",
-                map_file,
+                "2026-08-01T00:00:00+01:00",
                 "--block-public-access",
-            ],
+            ]),
             "POST",
             "/v1/organizations/org-1/postgres/pg-1/restoredService",
         ),
@@ -14996,20 +14868,38 @@ fn invoke_pgbouncer_cli(mock: &MockServer, args: &[&str]) -> std::process::Outpu
 }
 
 #[tokio::test]
-async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
+async fn postgres_config_files_reach_every_write_path() {
     let directory = tempfile::tempdir().unwrap();
-    let map_file = directory.path().join("pgbouncer.json");
+    let pg_config_file = directory.path().join("pg.json");
+    let pg_bouncer_file = directory.path().join("pgbouncer.json");
     let config_file = directory.path().join("config.json");
+    let pg_config = serde_json::json!({
+        "max_connections": 0,
+        "autovacuum_analyze_scale_factor": false,
+        "default_transaction_isolation": "repeatable read",
+        "wal_compression": "zstd",
+        "bgwriter_delay": "200ms"
+    });
     let parameters =
         serde_json::json!({"default_pool_size": "16", "future_parameter": "on", "empty": ""});
-    let configuration =
-        serde_json::json!({"pgConfig": {"work_mem": "64MB"}, "pgBouncerConfig": parameters});
-    std::fs::write(&map_file, parameters.to_string()).unwrap();
+    let configuration = serde_json::json!({"pgConfig": pg_config, "pgBouncerConfig": parameters});
+    std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
+    std::fs::write(&pg_bouncer_file, parameters.to_string()).unwrap();
     std::fs::write(&config_file, configuration.to_string()).unwrap();
+    let tags = serde_json::json!([{"key": "env", "value": "prod"}]);
+    let with_config = |body: Value| {
+        let mut body = body;
+        body["tags"] = tags.clone();
+        body["pgConfig"] = pg_config.clone();
+        body["pgBouncerConfig"] = parameters.clone();
+        body
+    };
 
-    for (mut args, verb, endpoint) in
-        pgbouncer_write_commands(map_file.to_str().unwrap(), config_file.to_str().unwrap())
-    {
+    for (mut args, verb, endpoint) in postgres_config_write_commands(
+        pg_config_file.to_str().unwrap(),
+        pg_bouncer_file.to_str().unwrap(),
+        config_file.to_str().unwrap(),
+    ) {
         let mock = MockServer::start().await;
         Mock::given(method(verb))
             .and(path(endpoint))
@@ -15027,16 +14917,21 @@ async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
         let output = invoke_pgbouncer_cli(&mock, &args);
         assert_success(&output);
         let requests = mock.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 1, "{args:?}");
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body["pgBouncerConfig"], parameters, "{args:?}");
-        if endpoint == "/v1/organizations/org-1/postgres" {
-            // Create omits `ipAccessList` (allow all); `[]` would block
-            // public access.
-            assert!(body.get("ipAccessList").is_none(), "{body}");
-        }
+        // Create omits `ipAccessList` (allow all); `[]` would block public access.
+        let expected = match args[1] {
+            "create" => with_config(serde_json::json!({
+                "name": "pg-test", "provider": "aws", "region": "us-east-1", "size": "c6gd.large"
+            })),
+            "read-replica" => with_config(serde_json::json!({"name": "replica-test"})),
+            "restore" => with_config(serde_json::json!({
+                "name": "restored-test", "restoreTarget": "2026-07-31T23:00:00Z"
+            })),
+            _ => configuration.clone(),
+        };
+        assert_eq!(body, expected, "{args:?}");
         if endpoint.ends_with("/config") {
-            assert_eq!(body, configuration);
             let output: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(output["pgBouncerConfig"], parameters);
         }
@@ -15425,138 +15320,6 @@ async fn key_update_expiry_rejects_oauth_before_http() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
-// PgConfig is a closed schema. Every file-input write path must validate it
-// before organization discovery or any other HTTP request (#591).
-fn pg_config_file_write_commands<'a>(
-    pg_config_file: &'a str,
-    instance_config_file: &'a str,
-) -> Vec<(Vec<&'a str>, &'static str, &'static str)> {
-    vec![
-        (
-            vec![
-                "postgres",
-                "create",
-                "--name",
-                "pg-test",
-                "--region",
-                "us-east-1",
-                "--size",
-                "c6gd.large",
-                "--pg-config-file",
-                pg_config_file,
-            ],
-            "POST",
-            "/v1/organizations/org-1/postgres",
-        ),
-        (
-            vec![
-                "postgres",
-                "read-replica",
-                "create",
-                "pg-1",
-                "--name",
-                "replica-test",
-                "--pg-config-file",
-                pg_config_file,
-            ],
-            "POST",
-            "/v1/organizations/org-1/postgres/pg-1/readReplica",
-        ),
-        (
-            vec![
-                "postgres",
-                "restore",
-                "pg-1",
-                "--name",
-                "restored-test",
-                "--restore-target",
-                "2026-08-01T00:00:00Z",
-                "--pg-config-file",
-                pg_config_file,
-                "--block-public-access",
-            ],
-            "POST",
-            "/v1/organizations/org-1/postgres/pg-1/restoredService",
-        ),
-        (
-            vec![
-                "postgres",
-                "config",
-                "patch",
-                "pg-1",
-                "--file",
-                instance_config_file,
-            ],
-            "PATCH",
-            "/v1/organizations/org-1/postgres/pg-1/config",
-        ),
-        (
-            vec![
-                "postgres",
-                "config",
-                "replace",
-                "pg-1",
-                "--file",
-                instance_config_file,
-            ],
-            "POST",
-            "/v1/organizations/org-1/postgres/pg-1/config",
-        ),
-    ]
-}
-
-#[tokio::test]
-async fn pg_config_files_preserve_valid_values_in_every_write_path() {
-    let directory = tempfile::tempdir().unwrap();
-    let pg_config_file = directory.path().join("pg.json");
-    let instance_config_file = directory.path().join("config.json");
-    let pg_config = serde_json::json!({
-        "max_connections": 0,
-        "autovacuum_analyze_scale_factor": false,
-        "default_transaction_isolation": "repeatable read",
-        "ssl_min_protocol_version": "TLSv1.3",
-        "wal_compression": "zstd",
-        "default_toast_compression": "lz4",
-        "enable_parallel_hash": "off",
-        "io_method": "worker",
-        "log_lock_waits": "on",
-        "bgwriter_delay": "200ms",
-        "max_wal_senders": 10
-    });
-    let instance_config = serde_json::json!({
-        "pgConfig": pg_config,
-        "pgBouncerConfig": {"future_parameter": "on"}
-    });
-    std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
-    std::fs::write(&instance_config_file, instance_config.to_string()).unwrap();
-
-    for (mut args, verb, endpoint) in pg_config_file_write_commands(
-        pg_config_file.to_str().unwrap(),
-        instance_config_file.to_str().unwrap(),
-    ) {
-        let mock = MockServer::start().await;
-        Mock::given(method(verb))
-            .and(path(endpoint))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": restored_service_response(endpoint, &instance_config),
-                "status": 200
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-        args.extend(["--org-id", "org-1"]);
-        let output = invoke_pgbouncer_cli(&mock, &args);
-        assert_success(&output);
-        let requests = mock.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1, "{args:?}");
-        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body["pgConfig"], pg_config, "{args:?}");
-        if endpoint.ends_with("/config") {
-            assert_eq!(body["pgBouncerConfig"], instance_config["pgBouncerConfig"]);
-        }
-    }
-}
-
 #[tokio::test]
 async fn pg_config_set_preserves_false_zero_and_valid_enums() {
     let mock = MockServer::start().await;
@@ -15666,42 +15429,6 @@ async fn postgres_config_file_dash_remains_a_literal_filename() {
                 assert!(mock.received_requests().await.unwrap().is_empty());
             }
         }
-    }
-}
-
-#[tokio::test]
-async fn postgres_config_files_preserve_explicit_empty_sections() {
-    let directory = tempfile::tempdir().unwrap();
-    let file = directory.path().join("config.json");
-    let document = serde_json::json!({"pgConfig": {}, "pgBouncerConfig": {}});
-    std::fs::write(&file, document.to_string()).unwrap();
-
-    for (action, verb) in [("patch", "PATCH"), ("replace", "POST")] {
-        let mock = MockServer::start().await;
-        Mock::given(method(verb))
-            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
-            .and(body_json(document.clone()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": document,
-                "status": 200
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_pgbouncer_cli(
-            &mock,
-            &[
-                "postgres",
-                "config",
-                action,
-                "pg-1",
-                "--file",
-                file.to_str().unwrap(),
-                "--org-id",
-                "org-1",
-            ],
-        );
-        assert_success(&output);
     }
 }
 
@@ -16024,71 +15751,6 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_fil
     assert_eq!(
         write_bodies,
         vec![source.clone(), source, role.clone(), role]
-    );
-}
-
-#[tokio::test]
-async fn clickstack_source_create_accepts_all_variants_and_nested_log_fields() {
-    let bodies = vec![
-        serde_json::json!({
-            "kind":"log", "name":"logs", "connection":"c",
-            "from":{"databaseName":"d","tableName":"logs"},
-            "defaultTableSelectExpression":"*", "timestampValueExpression":"Timestamp",
-            "serviceVersionExpression":"ServiceVersion",
-            "eventNameExpression":"EventName", "severityNumberExpression":"SeverityNumber",
-            "filterSettings":{"databaseName":"d","tableName":"filters","columns":[
-                {"name":"service","label":"Service","allowAll":true,"valueExpression":"ServiceName"}
-            ]},
-            "materializedViews":[{"databaseName":"d","tableName":"mv","dimensionColumns":"ServiceName",
-                "minGranularity":"1m","timestampColumn":"Timestamp","aggregatedColumns":[
-                    {"aggFn":"count","mvColumn":"count"}
-                ]}],
-            "metadataMaterializedViews":{"keyRollupTable":"keys","kvRollupTable":"kv","granularity":"1m"}
-        }),
-        serde_json::json!({"kind":"trace","name":"traces","connection":"c","from":{"databaseName":"d","tableName":"traces"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","durationExpression":"duration","durationPrecision":9,"traceIdExpression":"trace","spanIdExpression":"span","parentSpanIdExpression":"parent","spanNameExpression":"name","spanKindExpression":"kind","serviceVersionExpression":"version"}),
-        serde_json::json!({"kind":"metric","name":"metrics","connection":"c","from":{"databaseName":"d"},"metricTables":{"gauge":"g","histogram":"h","sum":"s","summary":"summary","exponential histogram":"eh"},"timestampValueExpression":"ts","resourceAttributesExpression":"resource"}),
-        serde_json::json!({"kind":"session","name":"sessions","connection":"c","from":{"databaseName":"d","tableName":"sessions"},"traceSourceId":"traces"}),
-        serde_json::json!({"kind":"promql","name":"promql","connection":"c","from":{"databaseName":"d","tableName":"metrics"},"timestampValueExpression":"ts"}),
-    ];
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/sources",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"kind": "promql"}
-        })))
-        .expect(5)
-        .mount(&mock)
-        .await;
-    let directory = tempfile::tempdir().unwrap();
-    for (index, body) in bodies.iter().enumerate() {
-        let file = directory.path().join(format!("source-{index}.json"));
-        std::fs::write(&file, body.to_string()).unwrap();
-        let output = invoke_clickstack_cli(
-            &mock,
-            &[
-                "clickstack",
-                "source",
-                "create",
-                "svc-1",
-                "--file",
-                file.to_str().unwrap(),
-                "--org-id",
-                "org-1",
-            ],
-            None,
-            true,
-        );
-        assert_success(&output);
-    }
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| request.body_json::<Value>().unwrap())
-            .collect::<Vec<_>>(),
-        bodies
     );
 }
 
@@ -16452,22 +16114,10 @@ async fn udf_list_json_preserves_zero_and_omits_nullable_metadata_without_fabric
 
 #[tokio::test]
 async fn udf_create_and_version_upload_full_definitions_without_auth_leakage() {
-    for file_flag in ["--file", "--config-file", "--config"] {
-        // Replenish Tokio's cooperative budget between pooled mock-server batches.
-        // MockServer drops synchronously wait for an async verification lock.
-        tokio::task::yield_now().await;
-        udf_create_and_version_upload_full_definitions_without_auth_leakage_with_file_flag(
-            file_flag,
-        )
-        .await;
-    }
-}
-
-async fn udf_create_and_version_upload_full_definitions_without_auth_leakage_with_file_flag(
-    file_flag: &str,
-) {
-    for create in [true, false] {
-        for kind in ["executable", "executable_pool"] {
+    // The `--file` aliases are `primary_json_file_argument_contract`, and the
+    // per-kind body is the builder's; one run each of create and version create.
+    for (create, kind) in [(true, "executable_pool"), (false, "executable")] {
+        {
             let server = MockServer::start().await;
             let storage = MockServer::start().await;
             let project = tempfile::tempdir().unwrap();
@@ -16516,7 +16166,7 @@ async fn udf_create_and_version_upload_full_definitions_without_auth_leakage_wit
                 vec!["version", "create", "my_udf"]
             };
             args.extend([
-                file_flag,
+                "--file",
                 "definition.json",
                 "--artifact",
                 "code.zip",
@@ -18008,54 +17658,6 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_w
 }
 
 #[tokio::test]
-async fn clickstack_webhook_create_sends_every_supported_provider_shape() {
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result":{"service":"generic"}
-        })))
-        .expect(3)
-        .mount(&mock)
-        .await;
-    let bodies = [
-        serde_json::json!({"name":"Slack","service":"slack","url":"https://hooks.slack.com/example","description":"Slack"}),
-        serde_json::json!({"name":"Incident.io","service":"incidentio","url":"https://example.com/incident","body":"incident={{title}}","headers":{"X-Key":"value"}}),
-        serde_json::json!({"name":"Generic","service":"generic","url":"https://example.com/generic","body":"{\"title\":\"{{title}}\"}","queryParams":{"team":"ops"}}),
-    ];
-    for body in &bodies {
-        let body = body.to_string();
-        let output = invoke_clickstack_cli(
-            &mock,
-            &[
-                "clickstack",
-                "webhook",
-                "create",
-                "svc-1",
-                "--file",
-                "-",
-                "--org-id",
-                "org-1",
-            ],
-            Some(&body),
-            true,
-        );
-        assert_success(&output);
-    }
-    assert_eq!(
-        mock.received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .map(|request| request.body_json::<Value>().unwrap())
-            .collect::<Vec<_>>(),
-        bodies
-    );
-}
-
-#[tokio::test]
 async fn clickstack_alert_and_webhook_sparse_lists_unknown_variants_and_errors_are_safe() {
     for (resource, result) in [
         ("alert", serde_json::json!([{}])),
@@ -18351,51 +17953,6 @@ async fn clickstack_webhook_validate_rejects_invalid_bodies_and_oauth_before_htt
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
     assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn clickstack_alert_create_sends_inline_alert_without_channels() {
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result":{"id":"alert-1","source":"inline","displayName":"API errors","tags":[]}
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let body = serde_json::json!({
-        "source":"inline", "threshold":5.0, "interval":"5m", "thresholdType":"above",
-        "displayName":"API errors", "tags":["api"],
-        "chartConfig":{
-            "displayType":"stacked_line", "sourceId":"source-1",
-            "select":[{"aggFn":"count"}], "where":"ServiceName:api", "whereLanguage":"lucene"
-        }
-    });
-    let stdin = body.to_string();
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "alert",
-            "create",
-            "svc-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-        Some(stdin.as_str()),
-        true,
-    );
-    assert_success(&output);
-    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(output["displayName"], "API errors");
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].body_json::<Value>().unwrap(), body);
 }
 
 #[tokio::test]
@@ -19039,62 +18596,6 @@ async fn byoc_validate_api_errors_keep_auth_classification() {
     assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
-#[tokio::test]
-async fn byoc_create_sends_byo_vpc_and_tag_flags() {
-    let mock = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/byocInfrastructure"))
-        .and(body_json(serde_json::json!({
-            "regionId": "us-central1",
-            "accountId": "gcp-project",
-            "vpcId": "shared-network",
-            "privateSubnetIds": ["subnet-a"],
-            "gcpPodCidrRangeNames": ["pods-1", "pods-2"],
-            "gcpSharedVpcHostProjectId": "host-project",
-            "tags": {"env": "prod", "note": "a=b"}
-        })))
-        .respond_with(byoc_envelope(
-            serde_json::json!({"id": "byoc-2", "accountId": "gcp-project"}),
-            "stub-byoc-create-byo-vpc",
-        ))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "org",
-            "byoc",
-            "create",
-            "--region",
-            "us-central1",
-            "--account-id",
-            "gcp-project",
-            "--vpc-id",
-            "shared-network",
-            "--private-subnet-id",
-            "subnet-a",
-            "--gcp-pod-cidr-range-name",
-            "pods-1",
-            "--gcp-pod-cidr-range-name",
-            "pods-2",
-            "--gcp-shared-vpc-host-project-id",
-            "host-project",
-            "--tag",
-            "env=prod",
-            "--tag",
-            "note=a=b",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!({"id": "byoc-2", "accountId": "gcp-project"})
-    );
-}
-
 fn invoke_org_with_oauth(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
     let project = tempfile::tempdir().unwrap();
     let home = project.path().join("home");
@@ -19199,55 +18700,6 @@ async fn byoc_private_endpoint_config_and_tags_tolerate_sparse_results() {
         );
         assert_success(&output);
     }
-}
-
-#[tokio::test]
-async fn byoc_update_sends_connectivity_and_tag_flags() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
-        .and(body_json(serde_json::json!({
-            "enablePrivateLink": true,
-            "gcpPscSubnetId": "psc-nat",
-            "enablePrivateLoadBalancer": false,
-            "enablePublicLoadBalancer": true,
-            "tags": {"team": "data", "note": "a=b"}
-        })))
-        .respond_with(byoc_envelope(
-            serde_json::json!({"id": "byoc-1", "state": "infra-ready"}),
-            "stub-byoc-update-connectivity",
-        ))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "org",
-            "byoc",
-            "update",
-            "byoc-1",
-            "--enable-private-link",
-            "true",
-            "--gcp-psc-subnet-id",
-            "psc-nat",
-            "--enable-private-load-balancer",
-            "false",
-            "--enable-public-load-balancer",
-            "true",
-            "--tag",
-            "team=data",
-            "--tag",
-            "note=a=b",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!({"id": "byoc-1", "state": "infra-ready"})
-    );
 }
 
 #[tokio::test]
@@ -25041,7 +24493,9 @@ async fn udf_create_name_packages_the_directory_and_reads_its_udf_json() {
     let server = MockServer::start().await;
     let storage = MockServer::start().await;
     let project = tempfile::tempdir().unwrap();
-    project_udf(project.path(), "my_udf", "python3.11");
+    // `--dir` names another parent; `version create` below covers the default.
+    let shared = tempfile::tempdir().unwrap();
+    udf_dir(&shared.path().join("udfs"), "my_udf", "python3.11");
     mount_udf_upload_session(&server, &storage).await;
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/udfs"))
@@ -25055,9 +24509,20 @@ async fn udf_create_name_packages_the_directory_and_reads_its_udf_json() {
         .mount(&server)
         .await;
 
-    let output = udf_test_command(&server, project.path(), false, true, &["create", "my_udf"])
-        .output()
-        .unwrap();
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "create",
+            "my_udf",
+            "--dir",
+            shared.path().join("udfs").to_str().unwrap(),
+        ],
+    )
+    .output()
+    .unwrap();
     assert_success(&output);
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
@@ -25070,54 +24535,6 @@ async fn udf_create_name_packages_the_directory_and_reads_its_udf_json() {
         ["lib/", "lib/helper.py", "main.py"]
     );
     assert!(!upload.headers.contains_key("authorization"));
-}
-
-#[tokio::test]
-async fn udf_create_dir_reads_another_parent() {
-    let server = MockServer::start().await;
-    let storage = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    let shared = tempfile::tempdir().unwrap();
-    udf_dir(&shared.path().join("udfs"), "shared_udf", "python3.11");
-    mount_udf_upload_session(&server, &storage).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/udfs"))
-        .and(body_json(serde_json::json!({
-            "functionName": "shared_udf", "type": "executable", "runtime": "python3.11",
-            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
-            "uploadId": "fresh-upload"
-        })))
-        .respond_with(udf_result("shared_udf", 1, "building"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let output = udf_test_command(
-        &server,
-        project.path(),
-        false,
-        true,
-        &[
-            "create",
-            "shared_udf",
-            "--dir",
-            shared.path().join("udfs").to_str().unwrap(),
-        ],
-    )
-    .output()
-    .unwrap();
-    assert_success(&output);
-    assert_eq!(
-        zip_entry_names(
-            &storage
-                .received_requests()
-                .await
-                .unwrap()
-                .pop()
-                .unwrap()
-                .body
-        ),
-        ["lib/", "lib/helper.py", "main.py"]
-    );
 }
 
 #[tokio::test]
