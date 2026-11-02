@@ -588,8 +588,15 @@ mod tests {
                 );
             }
         }
-        // Every client lists the same options in the same order, in short and long help.
-        assert!(orders[0].len() > 2, "{orders:?}");
+        // Every client lists the same options in the same order, in short and long help,
+        // and the common ones keep the order the help standard sets (NAME is checked above).
+        let common = ["host", "port", "version", "query", "queries-file"];
+        let listed: Vec<&str> = orders[0]
+            .iter()
+            .map(String::as_str)
+            .filter(|option| common.contains(option))
+            .collect();
+        assert_eq!(listed, common, "{orders:?}");
         for order in &orders[1..] {
             assert_eq!(order, &orders[0]);
         }

@@ -3520,6 +3520,87 @@ mod tests {
     }
 
     #[test]
+    fn human_outputs_show_every_value_they_carry() {
+        let configs_dir = "/home/user/.clickhouse/configs";
+        for (text, values) in [
+            (
+                ServerStartOutput {
+                    name: "analytics".to_string(),
+                    pid: 4242,
+                    http_port: 18123,
+                    tcp_port: 19000,
+                    version: "25.12.5.44".to_string(),
+                }
+                .to_string(),
+                &["analytics", "4242", "18123", "19000", "25.12.5.44"][..],
+            ),
+            (
+                WhichOutput {
+                    version: "25.12.5.44".to_string(),
+                    binary_path: "/home/user/.clickhouse/versions/25.12.5.44/clickhouse"
+                        .to_string(),
+                }
+                .to_string(),
+                &[
+                    "25.12.5.44",
+                    "/home/user/.clickhouse/versions/25.12.5.44/clickhouse",
+                ],
+            ),
+            (
+                UseOutput {
+                    version: "25.12.5.44".to_string(),
+                }
+                .to_string(),
+                &["25.12.5.44"],
+            ),
+            (
+                InstallOutput {
+                    version: "25.12.5.44".to_string(),
+                    set_as_default: false,
+                }
+                .to_string(),
+                &["25.12.5.44"],
+            ),
+            (
+                ServerConfigsOutput {
+                    dir: configs_dir.to_string(),
+                    configs: vec!["dev.xml".to_string(), "prod.yaml".to_string()],
+                }
+                .to_string(),
+                &[configs_dir, "dev.xml", "prod.yaml"],
+            ),
+            (
+                ServerConfigsOutput {
+                    dir: configs_dir.to_string(),
+                    configs: vec![],
+                }
+                .to_string(),
+                &[configs_dir],
+            ),
+        ] {
+            for value in values {
+                assert!(text.contains(value), "missing {value:?}: {text}");
+            }
+        }
+
+        // Empty lists say so instead of printing a header-only table.
+        for empty in [
+            ListAvailableOutput { versions: vec![] }.to_string(),
+            ServerListOutput {
+                servers: vec![],
+                total_servers: 0,
+                total_running_servers: 0,
+                project_scope: None,
+                guidance: Vec::new(),
+                list: ProjectList::Clickhouse,
+            }
+            .to_string(),
+        ] {
+            assert!(!empty.is_empty() && !empty.contains('|'), "{empty}");
+        }
+    }
+
+    #[test]
     fn server_list_display_with_entries() {
         let output = ServerListOutput {
             servers: vec![

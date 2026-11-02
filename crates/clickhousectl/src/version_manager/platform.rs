@@ -181,9 +181,11 @@ mod tests {
 
     #[test]
     fn test_detect_platform() {
+        // Each variant displays as the `std::env::consts` name it is detected
+        // from, so this fails if detection maps a host to the wrong variant.
         let p = Platform::detect().unwrap();
-        assert!(p.os == Os::MacOS || p.os == Os::Linux);
-        assert!(p.arch == Arch::X86_64 || p.arch == Arch::Aarch64);
+        assert_eq!(p.os.to_string(), std::env::consts::OS);
+        assert_eq!(p.arch.to_string(), std::env::consts::ARCH);
     }
 
     const LINUX_AMD64: Platform = Platform {
