@@ -7003,6 +7003,29 @@ mod tests {
         for value in ["3", "6", "132", "NaN"] {
             assert_rejected(&["cdc-scaling", "update", "svc-1", "--memory-gb", value]);
         }
+        // Both ends of each range are accepted.
+        for (cpu, memory) in [(1000, 4.0), (32000, 128.0)] {
+            let ClickPipeCommands::CdcScaling {
+                command:
+                    ClickPipeCdcScalingCommands::Update {
+                        cpu_millicores,
+                        memory_gb,
+                        ..
+                    },
+            } = parse_clickpipe(&[
+                "cdc-scaling",
+                "update",
+                "svc-1",
+                "--cpu-millicores",
+                &cpu.to_string(),
+                "--memory-gb",
+                &memory.to_string(),
+            ])
+            else {
+                panic!("expected CDC scaling update");
+            };
+            assert_eq!((cpu_millicores, memory_gb), (Some(cpu), Some(memory)));
+        }
     }
 
     #[test]

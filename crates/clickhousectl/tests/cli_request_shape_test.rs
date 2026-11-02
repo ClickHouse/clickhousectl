@@ -21703,6 +21703,16 @@ async fn postgres_query_reports_truncated_stream_as_failure() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(cloud_runtime_error(&output)["code"], "transport");
     assert!(control.received_requests().await.unwrap().is_empty());
+    // A transport failure that never reached the host (a refused connection,
+    // say) passes the asserts above; the child has exited, so wait boundedly.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !server.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child never reached the query host"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     server.join().unwrap();
 }
 

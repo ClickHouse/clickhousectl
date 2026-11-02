@@ -150,20 +150,25 @@ mod tests {
 
     #[test]
     fn rejects_activity_list_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "activity",
-            "list",
-            "--from-date",
-            "2025-01-01T00:00:00Z",
-            "--to-date",
-            "2025-01-31",
-        ]);
+        for (from, to) in [
+            ("2025-01-01T00:00:00Z", "2025-01-31"),
+            ("2025-01-01", "2025-01-31T00:00:00Z"),
+        ] {
+            let result = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "activity",
+                "list",
+                "--from-date",
+                from,
+                "--to-date",
+                to,
+            ]);
 
-        match result {
-            Ok(_) => panic!("expected timestamp input to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+            match result {
+                Ok(_) => panic!("expected timestamp input to be rejected: {from} {to}"),
+                Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+            }
         }
     }
 
