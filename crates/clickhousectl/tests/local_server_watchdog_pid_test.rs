@@ -254,7 +254,8 @@ exit "$found"
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(clickhousectl_binary())
+        let mut command = Command::new(clickhousectl_binary());
+        command
             // `env_clear` keeps coding-agent detection from switching the
             // subprocess to JSON when a human-output assertion is made.
             .env_clear()
@@ -279,9 +280,13 @@ exit "$found"
                 },
             )
             .current_dir(&self.project)
-            .args(args)
-            .output()
-            .expect("run shipped clickhousectl binary")
+            .args(args);
+        if self.supervision.ignores_sigterm() {
+            // The SIGTERM is ignored, so `stop` always escalates; do not wait
+            // out the shipped grace period first.
+            command.env("CHCTL_TERM_TIMEOUT_MS", "200");
+        }
+        command.output().expect("run shipped clickhousectl binary")
     }
 
     /// Start the fake server and return the PID `start` reported, which is the

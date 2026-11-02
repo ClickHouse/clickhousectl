@@ -22,6 +22,17 @@ const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness 
     max_backoff: Duration::from_secs(5),
 };
 
+/// [`QUERY_ENDPOINT_READINESS`], with the hidden test override of its timeout.
+fn query_endpoint_readiness() -> QueryEndpointReadiness {
+    QueryEndpointReadiness {
+        timeout: crate::timing::duration_override(
+            crate::timing::QUERY_READINESS_TIMEOUT_ENV,
+            QUERY_ENDPOINT_READINESS.timeout,
+        ),
+        ..QUERY_ENDPOINT_READINESS
+    }
+}
+
 /// Resolve a service by name or ID within the given org.
 /// Exactly one of `name` or `id` must be provided.
 async fn resolve_service(
@@ -89,7 +100,7 @@ pub(super) async fn service_query_key_repair(
             &org_id,
             service_id,
             &result.api_key_id,
-            QUERY_ENDPOINT_READINESS,
+            query_endpoint_readiness(),
         )
         .await
         {
@@ -791,7 +802,7 @@ pub(super) async fn service_query(
                                 options.database.as_deref(),
                                 &format,
                                 target,
-                                QUERY_ENDPOINT_READINESS,
+                                query_endpoint_readiness(),
                             )
                             .await
                         }
@@ -810,7 +821,7 @@ pub(super) async fn service_query(
                                 options.database.as_deref(),
                                 &format,
                                 target,
-                                QUERY_ENDPOINT_READINESS,
+                                query_endpoint_readiness(),
                                 |waited| {
                                     crate::cloud::services::query_key::bound_caller_key_rejected_error(
                                         &service_id,

@@ -147,6 +147,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/src/local/udf.rs",
                     "crates/clickhousectl/src/skills.rs",
                     "crates/clickhousectl/src/telemetry.rs",
+                    "crates/clickhousectl/src/timing.rs",
                     "crates/clickhousectl/src/udf.rs",
                     "crates/clickhousectl/src/update.rs",
                     "crates/clickhousectl/tests/cli_request_shape_test.rs",

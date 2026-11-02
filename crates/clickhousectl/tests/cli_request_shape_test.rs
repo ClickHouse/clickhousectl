@@ -5895,6 +5895,9 @@ fn spawn_service_delete(
         .env("HOME", project_dir.join("home"))
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        // A forced delete of a running service polls the stop; keep the
+        // test from waiting out the shipped 5 s interval.
+        .env("CHCTL_SERVICE_STOP_POLL_INTERVAL_MS", "100")
         .current_dir(project_dir)
         .args(args)
         .stdin(Stdio::null())
@@ -13947,6 +13950,10 @@ async fn first_use_bind_waits_for_the_endpoint_to_accept_the_caller_key() {
 
 const QUERY_READINESS_NOTICE: &str = "Waiting for the Query API endpoint to become ready...";
 
+/// Shortens the 120 s readiness window for tests that wait all of it out.
+const QUERY_READINESS_TIMEOUT_ENV: &str = "CHCTL_QUERY_READINESS_TIMEOUT_MS";
+const SHORT_QUERY_READINESS_MS: &str = "2000";
+
 async fn mount_repair_service_state(control: &MockServer, state: &str) {
     Mock::given(method("GET"))
         .and(path(format!(
@@ -14302,7 +14309,6 @@ async fn repair_skips_verification_when_the_probe_finds_the_service_stopped() {
 }
 
 #[tokio::test]
-#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
 async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_its_own_code() {
     // The probe is rejected for the whole readiness window. The repair is
     // committed and printed first, with `verification: failed`; then the
@@ -14328,6 +14334,7 @@ async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_it
         &[],
     );
     let output = service_query_key_repair_process(project.path(), &control)
+        .env(QUERY_READINESS_TIMEOUT_ENV, SHORT_QUERY_READINESS_MS)
         .output()
         .await
         .expect("failed to spawn clickhousectl");
@@ -14930,7 +14937,6 @@ async fn first_use_waits_for_an_already_bound_caller_key_without_rebinding() {
 }
 
 #[tokio::test]
-#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
 async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_whole_window() {
     // Rebinding a key the endpoint already lists changes nothing, so the run
     // makes no upsert, waits out the readiness window, and says where to look.
@@ -14941,7 +14947,14 @@ async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_wh
         .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
         .mount(&query_host)
         .await;
-    let (project, output) = run_first_use_query(&control, &query_host, &["--json"]).await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let output = first_use_query_process(project.path(), &control, &query_host, "SELECT 1")
+        .arg("--json")
+        .env(QUERY_READINESS_TIMEOUT_ENV, SHORT_QUERY_READINESS_MS)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stdout.is_empty());
@@ -14953,7 +14966,7 @@ async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_wh
     for fragment in [
         CALLER_KEY_UUID,
         "already bound",
-        "after waiting 120s",
+        "after waiting 2s",
         "cloud service query-endpoint get",
         "cloud key get",
     ] {
@@ -22463,6 +22476,8 @@ fn udf_test_command(
     clear_inherited_env(&mut cmd);
     cmd.env("HOME", home)
         .env("DO_NOT_TRACK", "1")
+        // Waits poll the service; skip the shipped 5 s gap between polls.
+        .env("CHCTL_UDF_POLL_INTERVAL_MS", "100")
         .current_dir(project)
         .args(["cloud", "--url", &server.uri()]);
     if !oauth {

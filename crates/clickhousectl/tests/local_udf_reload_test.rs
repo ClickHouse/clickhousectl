@@ -124,6 +124,9 @@ fn command(env: &Env) -> Command {
         .env("FAKE_CLICKHOUSE_FAIL_RETRY", &env.fail_retry_marker)
         .env("FAKE_CLICKHOUSE_FAILED_FUNCTIONS", &env.failed_functions)
         .env("FAKE_CLICKHOUSE_DROP_HTTP", &env.drop_http_marker)
+        // A function the fake never loads waits out the whole reload window;
+        // a second is still several reload attempts.
+        .env("CHCTL_UDF_LOAD_TIMEOUT_MS", "1000")
         .current_dir(env.project.path());
     command
 }

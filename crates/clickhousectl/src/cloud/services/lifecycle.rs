@@ -982,8 +982,12 @@ pub(super) async fn service_delete(
             let verbose_polling =
                 std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
             let mut progress = PollProgress::default();
+            let interval = crate::timing::duration_override(
+                crate::timing::SERVICE_STOP_POLL_INTERVAL_ENV,
+                STOP_POLL_INTERVAL,
+            );
             loop {
-                tokio::time::sleep(STOP_POLL_INTERVAL).await;
+                tokio::time::sleep(interval).await;
                 let service = client.get_service(&org_id, service_id).await?;
                 let state = or_absent(service.state.as_ref());
                 if let Some(line) = progress.render(&state, verbose_polling) {

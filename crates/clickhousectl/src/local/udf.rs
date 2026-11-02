@@ -1313,7 +1313,8 @@ async fn reload_until_loaded(
     server: &str,
     probe: &LoadProbe<'_>,
 ) -> Result<LoadOutcome> {
-    let deadline = Instant::now() + LOAD_POLL_TIMEOUT;
+    let deadline = Instant::now()
+        + crate::timing::duration_override(crate::timing::UDF_LOAD_TIMEOUT_ENV, LOAD_POLL_TIMEOUT);
     let mut pending_rejection = None;
     loop {
         let rejection = match send_query(info, RELOAD_FUNCTIONS_SQL).await {
