@@ -124,13 +124,7 @@ impl Sandbox {
     /// Assert the mock saw no requests, giving a hypothetical stray child a
     /// moment to fire first.
     async fn assert_no_requests(&self) {
-        tokio::time::sleep(Duration::from_millis(750)).await;
-        let requests = self.received_requests().await;
-        assert!(
-            requests.is_empty(),
-            "expected no telemetry, saw: {:?}",
-            requests.iter().map(|r| &r.body).collect::<Vec<_>>()
-        );
+        assert_no_requests_in(&[self]).await;
     }
 
     async fn received_requests(&self) -> Vec<wiremock::Request> {
@@ -141,6 +135,25 @@ impl Sandbox {
             .into_iter()
             .filter(|request| request.url.path() == self.endpoint_path.as_str())
             .collect()
+    }
+}
+
+/// How long a hypothetical stray send child is given to fire before a test
+/// concludes it never will. The child is detached, so only waiting can show
+/// it stayed silent.
+const STRAY_EVENT_GRACE: Duration = Duration::from_millis(750);
+
+/// [`Sandbox::assert_no_requests`] for several sandboxes behind one wait, so
+/// a test that runs many commands sleeps once, not once per command.
+async fn assert_no_requests_in(sandboxes: &[&Sandbox]) {
+    tokio::time::sleep(STRAY_EVENT_GRACE).await;
+    for sandbox in sandboxes {
+        let requests = sandbox.received_requests().await;
+        assert!(
+            requests.is_empty(),
+            "expected no telemetry, saw: {:?}",
+            requests.iter().map(|r| &r.body).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -592,10 +605,12 @@ fn run_local_client(sandbox: &Sandbox, project: &std::path::Path) -> Output {
 
 /// Wait for the event, then give a hypothetical second one time to arrive and
 /// fail if it does: exactly one event per invocation is the contract, and the
-/// handoff hook shares its guard with `main`'s tail.
+/// handoff hook shares its guard with `main`'s tail. That guard is shared by
+/// every handoff path, so one test waits for a second event; the others take
+/// [`the_event`].
 async fn exactly_one_event(sandbox: &Sandbox) -> Value {
     let payloads = sandbox.wait_for_requests(1).await;
-    tokio::time::sleep(Duration::from_millis(750)).await;
+    tokio::time::sleep(STRAY_EVENT_GRACE).await;
     let requests = sandbox.received_requests().await;
     assert_eq!(
         requests.len(),
@@ -605,6 +620,17 @@ async fn exactly_one_event(sandbox: &Sandbox) -> Value {
             .iter()
             .map(|r| String::from_utf8_lossy(&r.body).into_owned())
             .collect::<Vec<_>>()
+    );
+    payloads.into_iter().next().unwrap()
+}
+
+/// The invocation's event, as soon as it arrives, and the only one so far.
+async fn the_event(sandbox: &Sandbox) -> Value {
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(
+        payloads.len(),
+        1,
+        "expected one telemetry event: {payloads:?}"
     );
     payloads.into_iter().next().unwrap()
 }
@@ -657,7 +683,7 @@ async fn child_exit_status_is_preserved_and_the_event_stays_censored() {
 
     // And the event does not claim to know it: `exec_attempt` with a fixed 0
     // is the documented censored reading, never `ok` and never the child's 23.
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
@@ -719,7 +745,7 @@ async fn the_native_client_keeps_this_process_and_its_stdio() {
     );
     assert!(stdout.contains("stdin:hello"), "{stdout}");
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
 }
@@ -742,7 +768,7 @@ async fn signal_terminated_child_reaches_the_shell_as_a_signal() {
     assert_eq!(output.status.signal(), Some(15));
 
     // And telemetry says only that the handoff was reached.
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
@@ -767,7 +793,7 @@ async fn non_executable_binary_is_an_error_event_not_a_handoff() {
     );
 
     // A launch that never happened is a failure, not an accepted handoff.
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "error");
     assert_eq!(event["exit_code"], 1);
@@ -796,7 +822,7 @@ async fn directory_in_place_of_the_binary_is_an_error_event() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("not a regular file"), "{stderr}");
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["outcome"], "error");
     assert_eq!(event["exit_code"], 1);
 }
@@ -818,7 +844,7 @@ async fn binary_removed_before_the_pre_flight_is_an_error_event() {
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "error");
     assert_eq!(event["exit_code"], 1);
@@ -851,7 +877,7 @@ async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
         "the OS launch failure must still reach the shell: {stderr}"
     );
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
@@ -879,7 +905,7 @@ async fn bad_executable_format_is_censored_never_successful() {
         "a file that is not an executable format must fail: {stderr}"
     );
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
 }
@@ -909,7 +935,7 @@ async fn missing_psql_is_an_error_event_not_a_handoff() {
 
     // The other `exec()` handoff: a program that cannot be launched is an
     // error, not a censored attempt.
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local postgres client");
     assert_eq!(event["outcome"], "error");
     assert_eq!(event["exit_code"], 1);
@@ -1358,6 +1384,7 @@ async fn status_is_read_only_when_telemetry_is_enabled() {
 
 #[tokio::test]
 async fn json_status_is_read_only_with_explicit_and_agent_output_selection() {
+    let mut sandboxes = Vec::new();
     for agent_mode in [false, true] {
         for (disabled, preference, enabled, reason) in [
             (None, "unconfigured", false, "unconfigured"),
@@ -1392,13 +1419,15 @@ async fn json_status_is_read_only_with_explicit_and_agent_output_selection() {
                     .join(".clickhouse/last_update_check")
                     .exists()
             );
-            sandbox.assert_no_requests().await;
+            sandboxes.push(sandbox);
         }
     }
+    assert_no_requests_in(&sandboxes.iter().collect::<Vec<_>>()).await;
 }
 
 #[tokio::test]
 async fn json_telemetry_changes_report_saved_preference_and_effective_consent() {
+    let mut sandboxes = Vec::new();
     for agent_mode in [false, true] {
         let sandbox = Sandbox::new().await;
         for (action, preference, disabled) in
@@ -1429,8 +1458,9 @@ async fn json_telemetry_changes_report_saved_preference_and_effective_consent() 
             assert_eq!(value["enabled"], !disabled);
             assert_eq!(value["preference"], preference);
         }
-        sandbox.assert_no_requests().await;
+        sandboxes.push(sandbox);
     }
+    assert_no_requests_in(&sandboxes.iter().collect::<Vec<_>>()).await;
 }
 
 #[tokio::test]
