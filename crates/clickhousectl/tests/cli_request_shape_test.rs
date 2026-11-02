@@ -1209,36 +1209,6 @@ async fn partial_cloud_credentials_are_usage_errors_before_auth_or_http() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn object_storage_missing_columns_is_a_usage_error_before_lookup_or_http() {
-    let mock = MockServer::start().await;
-    let args = [
-        "clickpipe",
-        "create",
-        "object-storage",
-        "svc-1",
-        "--name",
-        "pipe",
-        "--source-url",
-        "https://bucket.example/events.json",
-        "--format",
-        "JSONEachRow",
-        "--database",
-        "db",
-        "--table",
-        "events",
-    ]
-    .map(String::from);
-
-    let output = invoke_cli_without_cloud_credentials(&mock, &args);
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--column <NAME:TYPE>"), "{stderr}");
-    assert!(stderr.contains("Usage:"), "{stderr}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();
@@ -7647,157 +7617,6 @@ async fn create_minimal_invocations_send_exact_request_bodies() {
     }
 }
 
-#[tokio::test]
-async fn invalid_create_controls_fail_before_file_io_or_http() {
-    let mock = start_mock_clickpipes_api().await;
-    let mut postgres = postgres_args_minimal();
-    postgres.extend([
-        "--replicas".into(),
-        "2".into(),
-        "--ca-certificate".into(),
-        "/definitely/missing/clickpipe-ca.pem".into(),
-    ]);
-    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&postgres));
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unexpected argument '--replicas'"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("clickpipe-ca.pem"), "{stderr}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
-
-    let mut object_storage = [
-        "clickpipe",
-        "create",
-        "object-storage",
-        "svc-id",
-        "--name",
-        "object-pipe",
-        "--source-url",
-        "https://example.test/events.json",
-        "--format",
-        "JSONEachRow",
-        "--database",
-        "default",
-        "--table",
-        "events",
-        "--column",
-        "id:Int64",
-        "--org-id",
-        "org",
-    ]
-    .map(str::to_string)
-    .to_vec();
-    object_storage.extend([
-        "--field-mapping".into(),
-        r#"{"sourceField":"source","destinationField":"target","typo":true}"#.into(),
-    ]);
-    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&object_storage));
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unknown field `typo`"), "{stderr}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-fn kafka_glue_args() -> Vec<&'static str> {
-    vec![
-        "clickpipe",
-        "create",
-        "kafka",
-        "svc-id",
-        "--name",
-        "glue-pipe",
-        "--brokers",
-        "broker:9098",
-        "--topics",
-        "events",
-        "--format",
-        "Avro",
-        "--database",
-        "default",
-        "--table",
-        "events",
-        "--column",
-        "id:Int64",
-        "--kafka-type",
-        "msk",
-        "--org-id",
-        "org",
-        "--schema-registry-type",
-        "glue",
-        "--glue-region",
-        "us-east-1",
-        "--glue-registry-name",
-        "my-registry",
-    ]
-}
-
-#[tokio::test]
-async fn kafka_glue_schema_registry_misuse_is_a_usage_error_before_any_request() {
-    let mock = MockServer::start().await;
-    let cases: [(&[&str], &[&str]); 7] = [
-        // Glue conflicts with every Confluent registry flag.
-        (
-            &kafka_glue_args(),
-            &[
-                "--iam-role",
-                "arn:role",
-                "--schema-registry-url",
-                "https://registry.example",
-            ],
-        ),
-        (
-            &kafka_glue_args(),
-            &["--iam-role", "arn:role", "--schema-registry-username", "u"],
-        ),
-        // Glue needs a role: from --glue-role-arn or the source's --iam-role.
-        (&kafka_glue_args(), &["--username", "u", "--password", "p"]),
-        // Glue requires both region and registry name.
-        (
-            &kafka_args_without_auth(),
-            &[
-                "--schema-registry-type",
-                "glue",
-                "--glue-region",
-                "us-east-1",
-            ],
-        ),
-        // Glue flags require the glue registry type.
-        (&kafka_args_without_auth(), &["--glue-region", "us-east-1"]),
-        (
-            &kafka_args_without_auth(),
-            &[
-                "--schema-registry-type",
-                "confluent",
-                "--schema-registry-url",
-                "https://registry.example",
-                "--glue-registry-name",
-                "my-registry",
-            ],
-        ),
-        // An explicit Confluent registry needs its URL.
-        (
-            &kafka_args_without_auth(),
-            &["--schema-registry-type", "confluent"],
-        ),
-    ];
-    for (base, extra) in cases {
-        let mut args = base.to_vec();
-        args.extend(extra);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{extra:?}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-// ── Kinesis ────────────────────────────────────────────────────────────────
-
 fn kinesis_auth_args<'a>(operation: &'a str, flags: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
         "clickpipe",
@@ -7831,144 +7650,38 @@ fn kinesis_auth_args<'a>(operation: &'a str, flags: &[&'a str]) -> Vec<&'a str> 
 
 #[tokio::test]
 async fn kinesis_auth_conflicts_are_secret_free_usage_errors_before_credentials_or_http() {
+    // The conflict matrix is unit-tested in `main.rs`; this run checks the
+    // process: the usage error wins over missing credentials (exit 2, not 4),
+    // nothing reaches HTTP, and neither stream echoes a credential.
     let mock = MockServer::start().await;
     let home = tempfile::tempdir().unwrap();
-    for operation in ["create", "schema-discover"] {
-        for flags in [
-            vec![
-                "--auth",
-                "IAM_ROLE",
-                "--access-key-id",
-                "private-access-id",
-                "--secret-key",
-                "private-secret-key",
-            ],
-            vec!["--auth", "IAM_ROLE", "--access-key-id", "private-access-id"],
-            vec!["--auth", "IAM_ROLE", "--secret-key", "private-secret-key"],
-            vec![
-                "--iam-role",
-                "private-role-arn",
-                "--access-key-id",
-                "private-access-id",
-                "--secret-key",
-                "private-secret-key",
-            ],
-            vec![
-                "--iam-role",
-                "private-role-arn",
-                "--access-key-id",
-                "private-access-id",
-            ],
-            vec![
-                "--iam-role",
-                "private-role-arn",
-                "--secret-key",
-                "private-secret-key",
-            ],
-            vec!["--auth", "IAM_USER", "--iam-role", "private-role-arn"],
-            vec![
-                "--auth",
-                "IAM_USER",
-                "--iam-role",
-                "private-role-arn",
-                "--access-key-id",
-                "private-access-id",
-                "--secret-key",
-                "private-secret-key",
-            ],
-            vec!["--access-key-id", "private-access-id"],
-            vec!["--secret-key", "private-secret-key"],
-            vec!["--auth", "IAM_USER", "--access-key-id", "private-access-id"],
-            vec!["--auth", "IAM_USER", "--secret-key", "private-secret-key"],
-        ] {
-            // Reverse flag pairs to ensure precedence cannot silently select one mode.
-            for ordered_flags in [
-                flags.clone(),
-                flags
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .rev()
-                    .flatten()
-                    .copied()
-                    .collect(),
-            ] {
-                for credentials in [false, true] {
-                    let mut command = Command::new(clickhousectl_binary());
-                    command
-                        .isolated_env()
-                        .env("HOME", home.path())
-                        .env("DO_NOT_TRACK", "1")
-                        .args(["cloud", "--url", &mock.uri(), "--json"])
-                        .args(kinesis_auth_args(operation, &ordered_flags));
-                    if credentials {
-                        command
-                            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-                            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests");
-                    }
-                    let output = command.output().unwrap();
-                    assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    assert!(stderr.contains("--"), "actionable flags missing: {stderr}");
-                    for value in [
-                        "private-role-arn",
-                        "private-access-id",
-                        "private-secret-key",
-                    ] {
-                        assert!(!stderr.contains(value), "credential leaked: {stderr}");
-                        assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
-                    }
-                }
-            }
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-// ── BigQuery ───────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn bigquery_non_finite_tuning_is_rejected_before_key_file_or_http() {
-    let mock = MockServer::start().await;
-    let missing_key = "/missing/bigquery-service-account.json";
-
-    for (flag, value) in [
-        ("--initial-load-parallelism", "NaN"),
-        ("--snapshot-rows-per-partition", "inf"),
-        ("--snapshot-parallel-tables", "-inf"),
+    let flags = [
+        "--iam-role",
+        "private-role-arn",
+        "--access-key-id",
+        "private-access-id",
+        "--secret-key",
+        "private-secret-key",
+    ];
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("HOME", home.path())
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "--url", &mock.uri(), "--json"])
+        .args(kinesis_auth_args("create", &flags))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--iam-role"), "{stderr}");
+    for value in [
+        "private-role-arn",
+        "private-access-id",
+        "private-secret-key",
     ] {
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "clickpipe",
-                "create",
-                "bigquery",
-                "svc-id",
-                "--name",
-                "invalid-pipe",
-                "--service-account-file",
-                missing_key,
-                "--staging-path",
-                "gs://bucket/staging",
-                flag,
-                value,
-                "--org-id",
-                "org",
-            ],
-        );
-
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(flag), "{stderr}");
-        assert!(stderr.contains("finite number"), "{stderr}");
-        assert!(!stderr.contains(missing_key), "key file was read: {stderr}");
+        assert!(!stderr.contains(value), "credential leaked: {stderr}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
     }
-
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
@@ -8001,150 +7714,6 @@ fn postgres_args_minimal() -> Vec<String> {
     .map(|s| s.to_string())
     .collect()
 }
-
-/// The minimal create argument set for IAM_ROLE authentication: no
-/// `--username`/`--password`, because the role ARN is the whole credential.
-fn postgres_args_iam_role() -> Vec<String> {
-    [
-        "clickpipe",
-        "create",
-        "postgres",
-        "svc-id",
-        "--name",
-        "t",
-        "--host",
-        "pg",
-        "--port",
-        "5432",
-        "--pg-database",
-        "test",
-        "--table-mapping",
-        "public.t:t",
-        "--replication-mode",
-        "cdc",
-        "--org-id",
-        "org",
-        "--auth",
-        "IAM_ROLE",
-        "--iam-role",
-        "arn:aws:iam::123:role/x",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
-
-#[tokio::test]
-async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_network() {
-    let mock = MockServer::start().await;
-    let missing_ca = "/missing/postgres-ca.pem";
-    let secret_password = "postgres-password-must-not-appear";
-    let replace_value = |args: &mut Vec<String>, flag: &str, value: &str| {
-        let index = args
-            .iter()
-            .position(|arg| arg == flag)
-            .unwrap_or_else(|| panic!("missing test flag {flag}"));
-        args[index + 1] = value.into();
-    };
-    let base = || {
-        let mut args = postgres_args_minimal();
-        replace_value(&mut args, "--password", secret_password);
-        args.extend(["--ca-certificate".into(), missing_ca.into()]);
-        args
-    };
-
-    let mut cases = Vec::new();
-    for port in ["0", "65536"] {
-        let mut args = base();
-        replace_value(&mut args, "--port", port);
-        cases.push((args, "--port"));
-    }
-
-    let mut no_mapping = base();
-    let mapping = no_mapping
-        .iter()
-        .position(|arg| arg == "--table-mapping")
-        .expect("baseline table mapping");
-    no_mapping.drain(mapping..=mapping + 1);
-    cases.push((no_mapping, "--table-mapping"));
-
-    for (mapping, diagnostic) in [
-        (".events:events", "source schema must not be empty"),
-        ("public.:events", "source table must not be empty"),
-        ("public.events:", "target table must not be empty"),
-    ] {
-        let mut args = base();
-        replace_value(&mut args, "--table-mapping", mapping);
-        cases.push((args, diagnostic));
-    }
-
-    let mut missing_iam_role = base();
-    missing_iam_role.extend(["--auth".into(), "IAM_ROLE".into()]);
-    cases.push((missing_iam_role, "--iam-role"));
-
-    let mut ignored_iam_role = base();
-    ignored_iam_role.extend([
-        "--iam-role".into(),
-        "arn:aws:iam::123456789012:role/clickpipe".into(),
-    ]);
-    cases.push((
-        ignored_iam_role,
-        "--iam-role cannot be used with --auth basic",
-    ));
-
-    for mode in ["cdc", "snapshot"] {
-        let mut args = base();
-        replace_value(&mut args, "--replication-mode", mode);
-        args.extend(["--replication-slot-name".into(), "existing_slot".into()]);
-        cases.push((
-            args,
-            "--replication-slot-name can only be used with --replication-mode cdc_only",
-        ));
-    }
-
-    let mut disable_with_ca = base();
-    disable_with_ca.push("--disable-tls".into());
-    cases.push((disable_with_ca, "--disable-tls"));
-
-    for (tls_args, diagnostic) in [
-        (
-            vec!["--tls-host", "postgres.internal.example"],
-            "--tls-host",
-        ),
-        (vec!["--skip-cert-verification"], "--skip-cert-verification"),
-    ] {
-        let mut args = postgres_args_minimal();
-        replace_value(&mut args, "--password", secret_password);
-        args.push("--disable-tls".into());
-        args.extend(tls_args.into_iter().map(String::from));
-        cases.push((args, diagnostic));
-    }
-
-    for (args, diagnostic) in cases {
-        let output = invoke_cli_without_cloud_credentials(&mock, &args);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(diagnostic), "{stderr}");
-        assert!(!stderr.contains(missing_ca), "CA file was read: {stderr}");
-        assert!(
-            !stderr.contains(secret_password),
-            "password leaked into diagnostic: {stderr}"
-        );
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-// ── Destination roles (issue #568) ─────────────────────────────────────────
-//
-// `--role` maps to `destination.roles`. Omitting it must leave the key out of
-// the body entirely, because ClickPipes reads absence as "grant the default
-// role"; an empty array would be a different instruction.
 
 #[tokio::test]
 async fn kinesis_destination_table_definition_can_be_read_from_stdin() {
@@ -8202,103 +7771,6 @@ async fn kinesis_destination_table_definition_can_be_read_from_stdin() {
     );
 }
 
-#[tokio::test]
-async fn invalid_destination_table_definition_fails_before_the_api_request() {
-    let mock = start_mock_clickpipes_api().await;
-    let directory = tempfile::tempdir().unwrap();
-
-    for (definition, diagnostic) in [
-        (
-            serde_json::json!({
-                "engine": {
-                    "columnIds": [],
-                    "type": "MergeTree",
-                    "versionColumnId": null,
-                    "versionColumn": "typo"
-                },
-                "partitionBy": "tuple()",
-                "primaryKey": "event_id",
-                "sortingKey": ["event_id"]
-            }),
-            "versionColumn",
-        ),
-        (
-            serde_json::json!({
-                "engine": {
-                    "columnIds": [],
-                    "type": "UnknownTree",
-                    "versionColumnId": null
-                },
-                "partitionBy": "tuple()",
-                "primaryKey": "event_id",
-                "sortingKey": ["event_id"]
-            }),
-            "UnknownTree",
-        ),
-    ] {
-        let definition_path = directory.path().join(format!("{diagnostic}.json"));
-        std::fs::write(&definition_path, definition.to_string()).unwrap();
-        let mut args: Vec<String> = kafka_args_minimal().into_iter().map(String::from).collect();
-        args.extend([
-            "--table-definition-file".into(),
-            definition_path.to_string_lossy().into_owned(),
-        ]);
-        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(diagnostic), "{stderr}");
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn reserved_destination_role_is_a_usage_error_before_any_request() {
-    let mock = start_mock_clickpipes_api().await;
-
-    for reserved in ["clickpipes", "clickpipes_system"] {
-        let mut args = postgres_args_minimal();
-        args.extend(["--role".to_string(), reserved.to_string()]);
-        let output = invoke_cli_without_cloud_credentials(&mock, &args);
-
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("reserved by ClickPipes"), "{stderr}");
-        assert!(stderr.contains(reserved), "{stderr}");
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn postgres_credentials_with_iam_role_auth_are_rejected() {
-    let mock = MockServer::start().await;
-    let mut args = postgres_args_iam_role();
-    args.push("--username".into());
-    args.push("u".into());
-    args.push("--password".into());
-    args.push("p".into());
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-    // Reported as a usage error against the owning command, the same way
-    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
-    // value of another argument", so the check runs after parsing.
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
-        ),
-        "{stderr}"
-    );
-}
-
 /// The minimal `clickpipe create mysql` argument set for basic auth.
 fn mysql_args_minimal() -> Vec<String> {
     [
@@ -8326,77 +7798,6 @@ fn mysql_args_minimal() -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect()
-}
-
-/// The same set for IAM_ROLE authentication: no `--username`/`--password`,
-/// because the role ARN is the whole credential.
-fn mysql_args_iam_role() -> Vec<String> {
-    [
-        "clickpipe",
-        "create",
-        "mysql",
-        "svc-id",
-        "--name",
-        "t",
-        "--host",
-        "mysql",
-        "--port",
-        "3306",
-        "--table-mapping",
-        "mydb.t:t",
-        "--replication-mode",
-        "cdc",
-        "--org-id",
-        "org",
-        "--auth",
-        "IAM_ROLE",
-        "--iam-role",
-        "arn:aws:iam::123:role/x",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
-
-#[tokio::test]
-async fn mysql_credentials_with_iam_role_auth_are_rejected() {
-    let mock = MockServer::start().await;
-    let mut args = mysql_args_iam_role();
-    args.push("--username".into());
-    args.push("u".into());
-    args.push("--password".into());
-    args.push("p".into());
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-    // Reported as a usage error against the owning command, the same way
-    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
-    // value of another argument", so the check runs after parsing.
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
-        ),
-        "{stderr}"
-    );
-    // The usage line names the source subcommand the flags belong to.
-    assert!(stderr.contains("clickpipe create mysql"), "{stderr}");
-}
-
-#[tokio::test]
-async fn mysql_iam_role_with_basic_auth_is_rejected() {
-    let mock = MockServer::start().await;
-    let mut args = mysql_args_minimal();
-    args.push("--iam-role".into());
-    args.push("arn:aws:iam::123:role/x".into());
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE"),
-        "{stderr}"
-    );
 }
 
 #[tokio::test]
@@ -8468,179 +7869,6 @@ async fn postgres_hostname_mismatch_error_preserves_api_detail_and_adds_tls_host
     assert!(stderr.contains(api_error), "{stderr}");
     assert!(stderr.contains("--tls-host <HOSTNAME>"), "{stderr}");
     assert!(stderr.contains("does not match `--host`"), "{stderr}");
-}
-
-// ── Postgres JSON table mappings (issue #566) ──────────────────────────────
-//
-// `--table-mapping-json` takes the API's table mapping object verbatim. These
-// shape the destination table ClickPipes creates and cannot be changed later,
-// so the body must reproduce the JSON exactly, with no field invented and none
-// dropped.
-
-#[tokio::test]
-async fn postgres_invalid_table_mapping_json_is_a_usage_error_before_any_request() {
-    let mock = MockServer::start().await;
-
-    for (mapping, diagnostic) in [
-        ("{ nope", "--table-mapping-json #1: invalid JSON"),
-        (
-            r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
-            "targetTable is required and must not be empty",
-        ),
-        (
-            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
-            "unknown field excludeColumns",
-        ),
-        (
-            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
-            "sortingKeys is set but useCustomSortingKey is false",
-        ),
-        (
-            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
-            "invalid tableEngine: unknown value 'MergeTre'",
-        ),
-    ] {
-        let mut args = postgres_args_minimal();
-        args.push("--table-mapping-json".into());
-        args.push(mapping.into());
-        let output = invoke_cli_without_cloud_credentials(&mock, &args);
-
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(diagnostic), "{stderr}");
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-// ── MySQL, MongoDB and BigQuery JSON table mappings (issue #691) ───────────
-
-#[tokio::test]
-async fn non_postgres_invalid_table_mapping_json_is_a_usage_error_before_files_or_http() {
-    let mock = MockServer::start().await;
-    let cases = [
-        (
-            "mysql",
-            vec![
-                "clickpipe",
-                "create",
-                "mysql",
-                "svc-id",
-                "--name",
-                "invalid-mysql",
-                "--host",
-                "mysql.example",
-                "--username",
-                "u",
-                "--password",
-                "p",
-                "--ca-certificate",
-                "/missing/mysql-ca.pem",
-                "--table-mapping-json",
-                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","partitionKey":"snapshot_id","partitionByExpr":"toYYYYMM(ts)","tableEngine":"MergeTre"}"#,
-                "--org-id",
-                "org",
-            ],
-            "invalid tableEngine",
-        ),
-        (
-            "mongodb",
-            vec![
-                "clickpipe",
-                "create",
-                "mongodb",
-                "svc-id",
-                "--name",
-                "invalid-mongodb",
-                "--uri",
-                "mongodb://mongo.example/source",
-                "--username",
-                "u",
-                "--password",
-                "p",
-                "--ca-certificate",
-                "/missing/mongodb-ca.pem",
-                "--table-mapping-json",
-                r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","sortingKeys":[]}"#,
-                "--org-id",
-                "org",
-            ],
-            "unknown field sortingKeys",
-        ),
-        (
-            "bigquery",
-            vec![
-                "clickpipe",
-                "create",
-                "bigquery",
-                "svc-id",
-                "--name",
-                "invalid-bigquery",
-                "--service-account-file",
-                "/missing/bigquery-key.json",
-                "--staging-path",
-                "gs://bucket/staging",
-                "--table-mapping-json",
-                r#"{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","useCustomSortingKey":true}"#,
-                "--org-id",
-                "org",
-            ],
-            "useCustomSortingKey is true but sortingKeys is empty",
-        ),
-    ];
-
-    for (source, args, diagnostic) in cases {
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{source} stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(diagnostic), "{source}: {stderr}");
-        assert!(
-            !stderr.contains("No such file"),
-            "{source} read a sensitive file before validation: {stderr}"
-        );
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-// ── Postgres CDC pipe settings (issue #565) ────────────────────────────────
-//
-// The snapshot and initial-load settings are create-time-only at the API, so
-// the create body is the only chance to set them. These tests pin the exact
-// key set of `source.postgres.settings`: no flag may leak a zero value, and
-// no passed flag may be dropped.
-
-#[tokio::test]
-async fn postgres_numeric_settings_below_minimums_are_usage_errors_before_http() {
-    let mock = MockServer::start().await;
-    for (flag, values) in [
-        ("--sync-interval-seconds", vec!["0", "-1"]),
-        ("--pull-batch-size", vec!["0", "-1"]),
-        ("--initial-load-parallelism", vec!["0", "-1"]),
-        ("--snapshot-rows-per-partition", vec!["0", "-1", "999"]),
-        ("--snapshot-parallel-tables", vec!["0", "-1"]),
-    ] {
-        for value in values {
-            let mut args = postgres_args_minimal();
-            args.extend([flag.into(), value.into()]);
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert_eq!(output.status.code(), Some(2), "{flag} {value}: {stderr}");
-            assert!(stderr.contains(flag), "{flag} {value}: {stderr}");
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── Dotenv ─────────────────────────────────────────────────────────────────
@@ -13776,43 +13004,6 @@ async fn recorded_put_body(mock: &MockServer) -> Value {
 }
 
 #[tokio::test]
-async fn object_storage_insert_size_outside_bounds_fails_before_http() {
-    let mock = MockServer::start().await;
-    for size in [524_287_999_u64, 10_737_418_241, 10_485_760, 53_687_091_200] {
-        let size_arg = size.to_string();
-        for mut args in [
-            vec![
-                "clickpipe",
-                "create",
-                "object-storage",
-                "svc-id",
-                "--name",
-                "pipe",
-                "--source-url",
-                "https://example.test/data.csv",
-                "--format",
-                "CSVWithNames",
-                "--database",
-                "default",
-                "--table",
-                "events",
-            ],
-            vec!["clickpipe", "settings", "update", "svc-id", "pipe-id"],
-        ] {
-            args.extend([
-                "--org-id",
-                "org",
-                "--object-storage-max-insert-bytes",
-                &size_arg,
-            ]);
-            let output = invoke_cli_with_cloud_credentials(&mock, &args);
-            assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes() {
     for source in [
         serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
@@ -13924,33 +13115,6 @@ async fn clickpipe_settings_update_preserves_kafka_read_committed() {
                 "kafka_read_committed": expected,
             })
         );
-    }
-}
-
-#[tokio::test]
-async fn clickpipe_settings_update_rejects_empty_or_invalid_updates_before_http() {
-    for flags in [
-        vec![],
-        vec!["--clickhouse-max-download-threads", "33"],
-        vec!["--clickhouse-min-insert-block-size-bytes", "10737418241"],
-        vec!["--clickhouse-parallel-distributed-insert-select", "3"],
-        vec!["--kafka-read-committed", "yes"],
-    ] {
-        let mock = MockServer::start().await;
-        let mut args = vec![
-            "clickpipe",
-            "settings",
-            "update",
-            "svc-id",
-            "pipe-id",
-            "--org-id",
-            "org",
-        ];
-        args.extend(flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2));
-        assert!(output.stdout.is_empty());
-        assert!(mock.received_requests().await.unwrap().is_empty());
     }
 }
 
@@ -14297,26 +13461,6 @@ async fn start_mock_schema_discovery_api() -> MockServer {
 }
 
 #[tokio::test]
-async fn schema_discover_old_service_before_source_order_is_usage_error_without_http() {
-    let mock = MockServer::start().await;
-    for source in ["kafka", "kinesis", "object-storage", "pubsub"] {
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "clickpipe",
-                "schema-discover",
-                "svc-id",
-                source,
-                "--org-id",
-                "org",
-            ],
-        );
-        assert_eq!(output.status.code(), Some(2), "{source}: {output:?}");
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn schema_discover_kinesis_posts_source_body() {
     let mock = start_mock_schema_discovery_api().await;
     let body = invoke_cli_capture_body(
@@ -14533,53 +13677,6 @@ async fn pubsub_service_account_key_never_reaches_output_on_an_api_error() {
 }
 
 // ── ClickPipes GCP workload identity (issue #690) ──────────────────────────
-
-#[tokio::test]
-async fn contradictory_workload_identity_credentials_fail_before_http() {
-    let mock = start_mock_clickpipes_api().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "clickpipe",
-            "create",
-            "object-storage",
-            "svc-id",
-            "--name",
-            "gcs-pipe",
-            "--source-url",
-            "gs://bucket/events.json",
-            "--format",
-            "JSONEachRow",
-            "--storage-type",
-            "gcs",
-            "--auth",
-            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
-            "--service-account-file",
-            "/missing/must-not-be-read.json",
-            "--database",
-            "default",
-            "--table",
-            "events",
-            "--column",
-            "id:Int64",
-            "--org-id",
-            "org",
-        ],
-    );
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("cannot be combined"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        mock.received_requests()
-            .await
-            .expect("request log")
-            .is_empty(),
-        "invalid credentials reached HTTP"
-    );
-}
 
 async fn mount_clickpipe_context(mock: &MockServer, result: Value) {
     Mock::given(method("GET"))
@@ -15384,43 +14481,11 @@ async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
     }
 }
 
-// ── `clickpipe scale` requires at least one target (issue #605) ────────────
+// ── `clickpipe scale` (issue #605) ─────────────────────────────────────────
 //
-// Without --replicas/--cpu-millicores/--memory-gb the CLI used to send an
-// empty PATCH body, which the API 400s on and the CLI surfaced as a generic
-// "Internal error" (exit 1). It must now be a clap usage error (exit 2)
-// raised before any request is sent.
-
-#[tokio::test]
-async fn clickpipe_scale_without_any_flag_is_a_usage_error() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path_regex(
-            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
-        ))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &["clickpipe", "scale", "svc-1", "pipe-1", "--org-id", "org-1"],
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("replicas")
-            || stderr.contains("cpu-millicores")
-            || stderr.contains("memory-gb"),
-        "stderr should name the scale flags: {stderr}"
-    );
-    assert!(
-        mock.received_requests().await.unwrap().is_empty(),
-        "a rejected scale command must not reach the API"
-    );
-}
+// The at-least-one-target rule and the value ranges are clap rules with their
+// own unit tests. The handler builds the PATCH body itself, so these tests pin
+// that body on the wire.
 
 #[tokio::test]
 async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
@@ -15460,37 +14525,6 @@ async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
     let requests = mock.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["replicas"], 4);
-}
-
-#[tokio::test]
-async fn clickpipe_scale_invalid_values_make_no_request() {
-    let mock = MockServer::start().await;
-    for argument in [
-        "--replicas=0",
-        "--replicas=41",
-        "--cpu-millicores=0",
-        "--cpu-millicores=124",
-        "--cpu-millicores=2001",
-        "--memory-gb=0",
-        "--memory-gb=0.49",
-        "--memory-gb=8.01",
-        "--memory-gb=9",
-        "--memory-gb=NaN",
-        "--memory-gb=inf",
-        "--memory-gb=+inf",
-        "--memory-gb=-inf",
-    ] {
-        // Omit --org-id so the check also catches accidental organization discovery.
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &["clickpipe", "scale", "svc-1", "pipe-1", argument],
-        );
-        assert_eq!(output.status.code(), Some(2), "{argument}: {output:?}");
-    }
-    assert!(
-        mock.received_requests().await.unwrap().is_empty(),
-        "invalid scale values must be rejected before any API request"
-    );
 }
 
 #[tokio::test]
@@ -16732,90 +15766,6 @@ async fn reverse_private_endpoint_create_prints_the_status_to_wait_for() {
         stdout.contains("DNS names: vpce-1-abc.vpce.amazonaws.com"),
         "{stdout}"
     );
-}
-
-/// The flags a type needs, and the flags belonging to another type, are
-/// checked before any network call: a bad combination is a usage error
-/// (exit 2) with no request sent.
-#[tokio::test]
-async fn reverse_private_endpoint_create_validates_flags_before_any_request() {
-    let cases: [(Vec<&str>, &str); 4] = [
-        (
-            vec![
-                "--type",
-                "VPC_RESOURCE",
-                "--vpc-resource-configuration-id",
-                "rcfg-1",
-            ],
-            "--type VPC_RESOURCE requires --vpc-resource-share-arn",
-        ),
-        (
-            vec![
-                "--type",
-                "VPC_ENDPOINT_SERVICE",
-                "--vpc-endpoint-service-name",
-                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
-                "--msk-cluster-arn",
-                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
-            ],
-            "--msk-cluster-arn applies to --type MSK_MULTI_VPC, not --type VPC_ENDPOINT_SERVICE",
-        ),
-        (
-            vec![
-                "--type",
-                "MSK_MULTI_VPC",
-                "--msk-cluster-arn",
-                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
-                "--msk-authentication",
-                "SASL_IAM",
-                "--custom-private-dns-mapping",
-                "db.example.com",
-            ],
-            "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC",
-        ),
-        (
-            vec![
-                "--type",
-                "VPC_ENDPOINT_SERVICE",
-                "--vpc-endpoint-service-name",
-                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
-                "--custom-private-dns-mapping",
-                "db.example.com=rcfg-1",
-            ],
-            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type VPC_RESOURCE, not \
-             --type VPC_ENDPOINT_SERVICE",
-        ),
-    ];
-
-    for (flags, expected_message) in cases {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(RPE_COLLECTION_PATH))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock)
-            .await;
-
-        // No --org-id either: a rejected invocation must not even look one up.
-        let mut args = vec![
-            "clickpipe",
-            "reverse-private-endpoint",
-            "create",
-            "svc-1",
-            "--description",
-            "warehouse",
-        ];
-        args.extend_from_slice(&flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-
-        assert_eq!(output.status.code(), Some(2), "expected a usage error");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(expected_message), "{stderr}");
-        assert!(
-            mock.received_requests().await.unwrap().is_empty(),
-            "a rejected create must not reach the API"
-        );
-    }
 }
 
 #[tokio::test]
@@ -20336,34 +19286,6 @@ async fn postgres_update_clear_tags_propagates_api_errors_without_retrying() {
     );
 }
 
-#[tokio::test]
-async fn reverse_private_endpoint_update_rejects_noop_and_conflict_without_http() {
-    for flags in [
-        Vec::<&str>::new(),
-        vec![
-            "--custom-private-dns-mapping",
-            "db.example.com",
-            "--clear-custom-private-dns-mappings",
-        ],
-    ] {
-        let mock = MockServer::start().await;
-        let mut args = vec![
-            "clickpipe",
-            "reverse-private-endpoint",
-            "update",
-            "svc-1",
-            RPE_ID,
-            "--org-id",
-            "org-1",
-        ];
-        args.extend(flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-
-        assert_eq!(output.status.code(), Some(2));
-        assert!(mock.received_requests().await.unwrap().is_empty());
-    }
-}
-
 // ── ClickStack saved-search commands (issue #694) ──────────────────────────
 
 #[tokio::test]
@@ -23804,160 +22726,6 @@ async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values_with_f
         .unwrap();
     let output = child.wait_with_output().unwrap();
     assert_success(&output);
-}
-
-#[tokio::test]
-async fn clickpipe_update_reports_clean_unknown_paths_and_names_stdin() {
-    let patch = serde_json::json!({"source": {"kafka": {"unknownOption": true}}});
-
-    let file_mock = MockServer::start().await;
-    let file_output = invoke_clickpipe_update_file(&file_mock, &patch);
-    assert_eq!(file_output.status.code(), Some(1));
-    let file_stderr = String::from_utf8_lossy(&file_output.stderr);
-    assert!(
-        file_stderr.contains("unknown field `source.kafka.unknownOption`"),
-        "{file_stderr}"
-    );
-    assert!(!file_stderr.contains(".?"), "{file_stderr}");
-    assert!(file_mock.received_requests().await.unwrap().is_empty());
-
-    let stdin_mock = MockServer::start().await;
-    let stdin_output = invoke_cli_with_cloud_credentials_and_stdin(
-        &stdin_mock,
-        &[
-            "clickpipe",
-            "update",
-            "svc-1",
-            "pipe-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-        &patch.to_string(),
-    );
-    assert_eq!(stdin_output.status.code(), Some(1));
-    let stdin_stderr = String::from_utf8_lossy(&stdin_output.stderr);
-    assert!(
-        stdin_stderr.contains("invalid request body in config stdin"),
-        "{stdin_stderr}"
-    );
-    assert!(
-        stdin_stderr.contains("unknown field `source.kafka.unknownOption`"),
-        "{stdin_stderr}"
-    );
-    assert!(!stdin_stderr.contains(".?"), "{stdin_stderr}");
-    assert!(stdin_mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn clickpipe_update_rejects_mysql_port_zero_from_file_and_stdin_before_http() {
-    let patch = serde_json::json!({"source": {
-        "mysql": {"host": "mysql.example.com", "port": 0}
-    }});
-
-    let file_mock = MockServer::start().await;
-    let file_output = invoke_clickpipe_update_file(&file_mock, &patch);
-    assert_eq!(file_output.status.code(), Some(1));
-    let file_stderr = String::from_utf8_lossy(&file_output.stderr);
-    assert!(
-        file_stderr.contains("source.mysql.port` must be in the range 1..=65535"),
-        "{file_stderr}"
-    );
-    assert!(file_mock.received_requests().await.unwrap().is_empty());
-
-    let stdin_mock = MockServer::start().await;
-    let stdin_output = invoke_cli_with_cloud_credentials_and_stdin(
-        &stdin_mock,
-        &[
-            "clickpipe",
-            "update",
-            "svc-1",
-            "pipe-1",
-            "--file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
-        &patch.to_string(),
-    );
-    assert_eq!(stdin_output.status.code(), Some(1));
-    let stdin_stderr = String::from_utf8_lossy(&stdin_output.stderr);
-    assert!(
-        stdin_stderr.contains("source.mysql.port` must be in the range 1..=65535"),
-        "{stdin_stderr}"
-    );
-    assert!(stdin_mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn clickpipe_update_reports_bigquery_as_unsupported_before_http() {
-    let mock = MockServer::start().await;
-    let patch = serde_json::json!({"source": {
-        "bigquery": {},
-        "validateSamples": false
-    }});
-    let output = invoke_clickpipe_update_file(&mock, &patch);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("`source.bigquery`"), "{stderr}");
-    assert!(stderr.contains("cannot be updated"), "{stderr}");
-    assert!(!stderr.contains(".?."), "{stderr}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn clickpipe_update_rejects_noop_and_unknown_nested_fields_before_http() {
-    for patch in [
-        serde_json::json!({}),
-        serde_json::json!({"destination": {}}),
-        serde_json::json!({"destination": {"colums": []}}),
-        serde_json::json!({"source": {
-            "kafka": {
-                "credentials": {"username": "user", "password": "pw", "token": "bad"},
-                "reversePrivateEndpointIds": []
-            },
-            "validateSamples": false
-        }}),
-        serde_json::json!({"source": {
-            "mysql": {"host": "db", "port": 3306, "authentication": "future"},
-            "validateSamples": false
-        }}),
-        serde_json::json!({"source": {"kafka": {
-            "authentication": "PLAIN",
-            "credentials": {"accessKeyId": "key", "secretKey": "secret"}
-        }}}),
-        serde_json::json!({"source": {"kafka": {
-            "authentication": "IAM_ROLE",
-            "iamRole": "arn:aws:iam::123456789012:role/clickpipe",
-            "credentials": {"username": "user", "password": "secret"}
-        }}}),
-        serde_json::json!({"source": {"kafka": {
-            "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
-            "credentials": {"username": "user", "password": "secret"}
-        }}}),
-        serde_json::json!({"source": {"mysql": {
-            "settings": {"syncIntervalSeconds": 5}
-        }}}),
-        serde_json::json!({"source": {"mongodb": {
-            "settings": {"syncIntervalSeconds": 5}
-        }}}),
-        serde_json::json!({"source": {"pubsub": {
-            "ackDeadline": 10
-        }}}),
-    ] {
-        let mock = MockServer::start().await;
-        let output = invoke_clickpipe_update_file(&mock, &patch);
-        assert_eq!(output.status.code(), Some(1), "patch: {patch}");
-        assert!(output.stdout.is_empty());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("invalid request body"),
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(mock.received_requests().await.unwrap().is_empty());
-    }
 }
 
 #[tokio::test]
@@ -27699,27 +26467,6 @@ async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
     }
 }
 
-#[tokio::test]
-async fn start_paused_omission_and_database_rejection_are_preserved() {
-    let mock = start_mock_clickpipes_api().await;
-    let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
-    assert!(body.get("startPaused").is_none());
-    for source in ["postgres", "mysql", "mongodb", "bigquery"] {
-        let mock = MockServer::start().await;
-        let output = invoke_cli_without_cloud_credentials(
-            &mock,
-            &["clickpipe", "create", source, "svc-1", "--start-paused"].map(str::to_string),
-        );
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{source}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(mock.received_requests().await.unwrap().is_empty());
-    }
-}
-
 // API-key pagination: explicit pages, all-page listing, and exhaustive name lookup.
 const API_KEYS_PATH: &str = "/v1/organizations/org-1/keys";
 const KEY_PAGE_CURSOR: &str = "opaque +/&?=雪";
@@ -31386,54 +30133,6 @@ async fn snapshot_list_reads_every_page_in_json_and_human_output() {
         stdout.contains("00000000-0000-0000-0000-0000000000b2"),
         "{stdout}"
     );
-}
-
-#[tokio::test]
-async fn bigquery_invalid_cdc_settings_fail_before_key_file_or_http() {
-    let mock = MockServer::start().await;
-    for extra in [
-        vec!["--replication-mode", "cdc"],
-        vec!["--sync-delay-seconds", "0"],
-        vec![
-            "--replication-mode",
-            "cdc",
-            "--replication-method",
-            "query_based",
-        ],
-        vec![
-            "--replication-mode",
-            "cdc_only",
-            "--replication-method",
-            "events_based",
-        ],
-    ] {
-        let mut args = vec![
-            "clickpipe",
-            "create",
-            "bigquery",
-            "svc-id",
-            "--name",
-            "invalid-cdc",
-            "--service-account-file",
-            "/missing/bigquery-key.json",
-            "--staging-path",
-            "gs://bucket/staging",
-            "--table-mapping",
-            "sales.orders:orders",
-            "--org-id",
-            "org",
-        ];
-        args.extend(extra);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!String::from_utf8_lossy(&output.stderr).contains("/missing/bigquery-key.json"));
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

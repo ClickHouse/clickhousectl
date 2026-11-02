@@ -11068,12 +11068,26 @@ mod tests {
         assert!(error.message.contains("cannot be updated"), "{error}");
         assert!(!error.message.contains(".?."), "{error}");
 
+        // The error names the config source and the full field path, with no
+        // serde path placeholders.
         let unknown = build_clickpipe_update_request(
             serde_json::json!({"source": {"kafka": {"unknownOption": true}}}),
-            "test",
+            crate::cloud::config::config_source_label("-"),
         )
         .unwrap_err();
-        assert!(unknown.message.contains("unknownOption"), "{unknown}");
+        assert!(
+            unknown
+                .message
+                .contains("invalid request body in config stdin"),
+            "{unknown}"
+        );
+        assert!(
+            unknown
+                .message
+                .contains("unknown field `source.kafka.unknownOption`"),
+            "{unknown}"
+        );
+        assert!(!unknown.message.contains(".?"), "{unknown}");
     }
 
     #[test]
@@ -11131,10 +11145,24 @@ mod tests {
                 "objectStorage": {},
                 "validateSamples": false
             }}),
+            serde_json::json!({"destination": {"colums": []}}),
+            serde_json::json!({"source": {
+                "kafka": {
+                    "credentials": {"username": "user", "password": "pw", "token": "bad"},
+                    "reversePrivateEndpointIds": []
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "mysql": {"host": "db", "port": 3306, "authentication": "future"},
+                "validateSamples": false
+            }}),
         ] {
+            let error = build_clickpipe_update_request(invalid.clone(), "test")
+                .expect_err(&format!("accepted invalid patch: {invalid}"));
             assert!(
-                build_clickpipe_update_request(invalid.clone(), "test").is_err(),
-                "accepted invalid patch: {invalid}"
+                error.message.contains("invalid request body"),
+                "{invalid}: {error}"
             );
         }
     }
