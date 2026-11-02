@@ -186,304 +186,118 @@ mod tests {
         assert!(p.arch == Arch::X86_64 || p.arch == Arch::Aarch64);
     }
 
-    // -- builds.clickhouse.com paths --
+    const LINUX_AMD64: Platform = Platform {
+        os: Os::Linux,
+        arch: Arch::X86_64,
+    };
+    const LINUX_ARM64: Platform = Platform {
+        os: Os::Linux,
+        arch: Arch::Aarch64,
+    };
+    const MACOS_X86: Platform = Platform {
+        os: Os::MacOS,
+        arch: Arch::X86_64,
+    };
+    const MACOS_ARM64: Platform = Platform {
+        os: Os::MacOS,
+        arch: Arch::Aarch64,
+    };
 
     #[test]
-    fn test_builds_path_linux_amd64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.builds_path(), "amd64");
+    fn every_platform_maps_to_its_builds_packages_and_github_segments() {
+        for (platform, builds, packages, github) in [
+            (LINUX_AMD64, "amd64", Some("amd64"), "amd64"),
+            (LINUX_ARM64, "aarch64", Some("arm64"), "arm64"),
+            // macOS packages are not published.
+            (MACOS_X86, "macos", None, "x86_64"),
+            (MACOS_ARM64, "macos-aarch64", None, "aarch64"),
+        ] {
+            assert_eq!(platform.builds_path(), builds, "{platform:?}");
+            assert_eq!(platform.packages_arch(), packages, "{platform:?}");
+            assert_eq!(platform.github_suffix(), github, "{platform:?}");
+        }
     }
 
     #[test]
-    fn test_builds_path_linux_aarch64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::Aarch64,
+    fn download_urls_and_tarball_shape_follow_the_source_and_platform() {
+        let builds = |version_path: &str| DownloadSource::Builds {
+            version_path: version_path.to_string(),
         };
-        assert_eq!(p.builds_path(), "aarch64");
-    }
-
-    #[test]
-    fn test_builds_path_macos_x86() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::X86_64,
+        let packages = |channel, version: &str| DownloadSource::Packages {
+            channel,
+            version: version.to_string(),
         };
-        assert_eq!(p.builds_path(), "macos");
-    }
-
-    #[test]
-    fn test_builds_path_macos_aarch64() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
+        let github = |version: &str, channel| DownloadSource::GitHub {
+            version: version.to_string(),
+            channel,
         };
-        assert_eq!(p.builds_path(), "macos-aarch64");
-    }
-
-    // -- packages.clickhouse.com arch --
-
-    #[test]
-    fn test_packages_arch_linux() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.packages_arch(), Some("amd64"));
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::Aarch64,
-        };
-        assert_eq!(p.packages_arch(), Some("arm64"));
-    }
-
-    #[test]
-    fn test_packages_arch_macos_none() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::X86_64,
-        };
-        assert_eq!(p.packages_arch(), None);
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        assert_eq!(p.packages_arch(), None);
-    }
-
-    // -- GitHub suffix --
-
-    #[test]
-    fn test_github_suffix() {
-        assert_eq!(
-            Platform {
-                os: Os::Linux,
-                arch: Arch::X86_64
+        for (source, platform, url, tarball) in [
+            (
+                builds("master"),
+                LINUX_AMD64,
+                "https://builds.clickhouse.com/master/amd64/clickhouse",
+                false,
+            ),
+            (
+                builds("master"),
+                MACOS_ARM64,
+                "https://builds.clickhouse.com/master/macos-aarch64/clickhouse",
+                false,
+            ),
+            (
+                builds("25.12"),
+                MACOS_ARM64,
+                "https://builds.clickhouse.com/25.12/macos-aarch64/clickhouse",
+                false,
+            ),
+            (
+                builds("25.8"),
+                LINUX_ARM64,
+                "https://builds.clickhouse.com/25.8/aarch64/clickhouse",
+                false,
+            ),
+            (
+                packages(Channel::Stable, "25.12.9.61"),
+                LINUX_AMD64,
+                "https://packages.clickhouse.com/tgz/stable/clickhouse-common-static-25.12.9.61-amd64.tgz",
+                true,
+            ),
+            (
+                packages(Channel::Lts, "24.8.6.70"),
+                LINUX_ARM64,
+                "https://packages.clickhouse.com/tgz/lts/clickhouse-common-static-24.8.6.70-arm64.tgz",
+                true,
+            ),
+            // GitHub ships a tarball on Linux and a bare binary on macOS.
+            (
+                github("25.12.5.44", Channel::Stable),
+                LINUX_AMD64,
+                "https://github.com/ClickHouse/ClickHouse/releases/download/v25.12.5.44-stable/clickhouse-common-static-25.12.5.44-amd64.tgz",
+                true,
+            ),
+            (
+                github("25.12.5.44", Channel::Stable),
+                MACOS_ARM64,
+                "https://github.com/ClickHouse/ClickHouse/releases/download/v25.12.5.44-stable/clickhouse-macos-aarch64",
+                false,
+            ),
+            (
+                github("24.8.6.70", Channel::Lts),
+                MACOS_X86,
+                "https://github.com/ClickHouse/ClickHouse/releases/download/v24.8.6.70-lts/clickhouse-macos-x86_64",
+                false,
+            ),
+        ] {
+            assert_eq!(source.url(&platform), url, "{source:?} {platform:?}");
+            assert_eq!(
+                source.is_tarball(&platform),
+                tarball,
+                "{source:?} {platform:?}"
+            );
+            // The availability probe checks exactly the URL a builds download fetches.
+            if let DownloadSource::Builds { version_path } = &source {
+                assert_eq!(builds_probe_url(version_path, &platform), url);
             }
-            .github_suffix(),
-            "amd64"
-        );
-        assert_eq!(
-            Platform {
-                os: Os::Linux,
-                arch: Arch::Aarch64
-            }
-            .github_suffix(),
-            "arm64"
-        );
-        assert_eq!(
-            Platform {
-                os: Os::MacOS,
-                arch: Arch::X86_64
-            }
-            .github_suffix(),
-            "x86_64"
-        );
-        assert_eq!(
-            Platform {
-                os: Os::MacOS,
-                arch: Arch::Aarch64
-            }
-            .github_suffix(),
-            "aarch64"
-        );
-    }
-
-    // -- URL construction: builds.clickhouse.com --
-
-    #[test]
-    fn test_builds_url_master_linux_amd64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let src = DownloadSource::Builds {
-            version_path: "master".to_string(),
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://builds.clickhouse.com/master/amd64/clickhouse"
-        );
-    }
-
-    #[test]
-    fn test_builds_url_minor_macos_aarch64() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::Builds {
-            version_path: "25.12".to_string(),
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://builds.clickhouse.com/25.12/macos-aarch64/clickhouse"
-        );
-    }
-
-    #[test]
-    fn test_builds_url_minor_linux_aarch64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::Builds {
-            version_path: "25.8".to_string(),
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://builds.clickhouse.com/25.8/aarch64/clickhouse"
-        );
-    }
-
-    // -- URL construction: packages.clickhouse.com --
-
-    #[test]
-    fn test_packages_url_stable_linux_amd64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let src = DownloadSource::Packages {
-            channel: Channel::Stable,
-            version: "25.12.9.61".to_string(),
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://packages.clickhouse.com/tgz/stable/clickhouse-common-static-25.12.9.61-amd64.tgz"
-        );
-    }
-
-    #[test]
-    fn test_packages_url_lts_linux_arm64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::Packages {
-            channel: Channel::Lts,
-            version: "24.8.6.70".to_string(),
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://packages.clickhouse.com/tgz/lts/clickhouse-common-static-24.8.6.70-arm64.tgz"
-        );
-    }
-
-    // -- URL construction: GitHub releases --
-
-    #[test]
-    fn test_github_url_linux_amd64() {
-        let p = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let src = DownloadSource::GitHub {
-            version: "25.12.5.44".to_string(),
-            channel: Channel::Stable,
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://github.com/ClickHouse/ClickHouse/releases/download/v25.12.5.44-stable/clickhouse-common-static-25.12.5.44-amd64.tgz"
-        );
-    }
-
-    #[test]
-    fn test_github_url_macos_aarch64() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::GitHub {
-            version: "25.12.5.44".to_string(),
-            channel: Channel::Stable,
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://github.com/ClickHouse/ClickHouse/releases/download/v25.12.5.44-stable/clickhouse-macos-aarch64"
-        );
-    }
-
-    #[test]
-    fn test_github_url_macos_x86() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::X86_64,
-        };
-        let src = DownloadSource::GitHub {
-            version: "24.8.6.70".to_string(),
-            channel: Channel::Lts,
-        };
-        assert_eq!(
-            src.url(&p),
-            "https://github.com/ClickHouse/ClickHouse/releases/download/v24.8.6.70-lts/clickhouse-macos-x86_64"
-        );
-    }
-
-    // -- Tarball detection --
-
-    #[test]
-    fn test_builds_never_tarball() {
-        let linux = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let macos = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::Builds {
-            version_path: "master".to_string(),
-        };
-        assert!(!src.is_tarball(&linux));
-        assert!(!src.is_tarball(&macos));
-    }
-
-    #[test]
-    fn test_packages_always_tarball() {
-        let linux = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let src = DownloadSource::Packages {
-            channel: Channel::Stable,
-            version: "25.12.9.61".to_string(),
-        };
-        assert!(src.is_tarball(&linux));
-    }
-
-    #[test]
-    fn test_github_tarball_linux_only() {
-        let linux = Platform {
-            os: Os::Linux,
-            arch: Arch::X86_64,
-        };
-        let macos = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        let src = DownloadSource::GitHub {
-            version: "25.12.5.44".to_string(),
-            channel: Channel::Stable,
-        };
-        assert!(src.is_tarball(&linux));
-        assert!(!src.is_tarball(&macos));
-    }
-
-    // -- Probe URL --
-
-    #[test]
-    fn test_builds_probe_url() {
-        let p = Platform {
-            os: Os::MacOS,
-            arch: Arch::Aarch64,
-        };
-        assert_eq!(
-            builds_probe_url("25.12", &p),
-            "https://builds.clickhouse.com/25.12/macos-aarch64/clickhouse"
-        );
+        }
     }
 }

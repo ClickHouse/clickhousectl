@@ -276,22 +276,20 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn default_marker_is_trimmed() {
-        assert_eq!(
-            parse_default_marker("25.12.9.61\n").as_deref(),
-            Some("25.12.9.61")
-        );
-        assert_eq!(
-            parse_default_marker("  25.12.9.61  ").as_deref(),
-            Some("25.12.9.61")
-        );
-    }
-
-    #[test]
-    fn blank_default_marker_is_no_default() {
-        assert_eq!(parse_default_marker(""), None);
-        assert_eq!(parse_default_marker("\n"), None);
-        assert_eq!(parse_default_marker("   \t\n"), None);
+    fn default_marker_is_trimmed_and_blank_means_no_default() {
+        for (marker, expected) in [
+            ("25.12.9.61\n", Some("25.12.9.61")),
+            ("  25.12.9.61  ", Some("25.12.9.61")),
+            ("", None),
+            ("\n", None),
+            ("   \t\n", None),
+        ] {
+            assert_eq!(
+                parse_default_marker(marker).as_deref(),
+                expected,
+                "{marker:?}"
+            );
+        }
     }
 
     async fn mount_head(server: &MockServer, endpoint: &str, status: u16) {
@@ -382,57 +380,24 @@ mod tests {
     }
 
     #[test]
-    fn test_equal_versions() {
-        assert_eq!(
-            compare_versions("25.12.5.44", "25.12.5.44"),
-            Ordering::Equal
-        );
-    }
-
-    #[test]
-    fn test_different_versions() {
-        assert_eq!(
-            compare_versions("25.12.5.44", "25.12.5.43"),
-            Ordering::Greater
-        );
-        assert_eq!(compare_versions("25.12.5.43", "25.12.5.44"), Ordering::Less);
-    }
-
-    #[test]
-    fn test_major_minor_difference() {
-        assert_eq!(
-            compare_versions("25.12.5.44", "24.12.5.44"),
-            Ordering::Greater
-        );
-        assert_eq!(compare_versions("25.11.5.44", "25.12.5.44"), Ordering::Less);
-    }
-
-    #[test]
-    fn test_missing_parts_treated_as_zero() {
-        // 20.3 should be less than 20.3.1 (missing part = 0)
-        assert_eq!(compare_versions("20.3", "20.3.1"), Ordering::Less);
-        assert_eq!(compare_versions("20.3.1", "20.3"), Ordering::Greater);
-    }
-
-    #[test]
-    fn test_trailing_zero_equals_shorter() {
-        // 20.3.0 should equal 20.3 (missing part = 0)
-        assert_eq!(compare_versions("20.3.0", "20.3"), Ordering::Equal);
-        assert_eq!(compare_versions("20.3", "20.3.0"), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_non_numeric_suffix() {
-        // 20.3.2-alpha1 should be greater than 20.3.1 (compare_part "2-alpha1" vs "1": lexicographic, "2" > "1")
-        assert_eq!(
-            compare_versions("20.3.2-alpha1", "20.3.1"),
-            Ordering::Greater
-        );
-    }
-
-    #[test]
-    fn test_single_component() {
-        assert_eq!(compare_versions("8", "8.0.1"), Ordering::Less);
-        assert_eq!(compare_versions("8.0.1", "8"), Ordering::Greater);
+    fn compare_versions_orders_numeric_parts_and_pads_missing_ones_with_zero() {
+        for (a, b, expected) in [
+            ("25.12.5.44", "25.12.5.44", Ordering::Equal),
+            ("25.12.5.44", "25.12.5.43", Ordering::Greater),
+            ("25.12.5.43", "25.12.5.44", Ordering::Less),
+            ("25.12.5.44", "24.12.5.44", Ordering::Greater),
+            ("25.11.5.44", "25.12.5.44", Ordering::Less),
+            // A missing part counts as 0.
+            ("20.3", "20.3.1", Ordering::Less),
+            ("20.3.1", "20.3", Ordering::Greater),
+            ("20.3.0", "20.3", Ordering::Equal),
+            ("20.3", "20.3.0", Ordering::Equal),
+            ("8", "8.0.1", Ordering::Less),
+            ("8.0.1", "8", Ordering::Greater),
+            // A non-numeric part compares lexicographically: "2-alpha1" > "1".
+            ("20.3.2-alpha1", "20.3.1", Ordering::Greater),
+        ] {
+            assert_eq!(compare_versions(a, b), expected, "{a} vs {b}");
+        }
     }
 }

@@ -1310,32 +1310,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_version_output_client() {
-        let output = "ClickHouse client version 25.12.9.61 (official build).";
-        assert_eq!(parse_version_output(output).unwrap(), "25.12.9.61");
-    }
-
-    #[test]
-    fn test_parse_version_output_server() {
-        let output = "ClickHouse server version 26.3.1.100 (official build).";
-        assert_eq!(parse_version_output(output).unwrap(), "26.3.1.100");
-    }
-
-    #[test]
-    fn test_parse_version_output_multiline() {
-        let output = "ClickHouse client version 25.5.2.1 (official build).\nSome other info.";
-        assert_eq!(parse_version_output(output).unwrap(), "25.5.2.1");
-    }
-
-    #[test]
-    fn test_parse_version_output_no_version() {
-        let output = "Some random output without a version.";
-        assert!(parse_version_output(output).is_err());
-    }
-
-    #[test]
-    fn test_parse_version_output_empty() {
-        assert!(parse_version_output("").is_err());
+    fn parse_version_output_takes_the_first_four_part_numeric_word() {
+        for (output, expected) in [
+            (
+                "ClickHouse client version 25.12.9.61 (official build).",
+                "25.12.9.61",
+            ),
+            (
+                "ClickHouse server version 26.3.1.100 (official build).",
+                "26.3.1.100",
+            ),
+            (
+                "ClickHouse client version 25.5.2.1 (official build).\nSome other info.",
+                "25.5.2.1",
+            ),
+        ] {
+            assert_eq!(
+                parse_version_output(output).unwrap(),
+                expected,
+                "{output:?}"
+            );
+        }
+        for output in ["Some random output without a version.", ""] {
+            assert!(parse_version_output(output).is_err(), "{output:?}");
+        }
     }
 
     #[test]

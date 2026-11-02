@@ -666,174 +666,151 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_minor() {
-        assert_eq!(extract_minor("25.12.9.61").unwrap(), "25.12");
-        assert_eq!(extract_minor("24.8.6.70").unwrap(), "24.8");
-        assert_eq!(extract_minor("25.12").unwrap(), "25.12");
-    }
-
-    #[test]
-    fn test_extract_minor_invalid() {
+    fn extract_minor_keeps_major_and_minor_or_rejects_a_bare_major() {
+        for (version, expected) in [
+            ("25.12.9.61", "25.12"),
+            ("24.8.6.70", "24.8"),
+            ("25.12", "25.12"),
+        ] {
+            assert_eq!(extract_minor(version).unwrap(), expected, "{version}");
+        }
         assert!(extract_minor("25").is_err());
     }
 
     #[test]
-    fn test_fallback_source_linux() {
-        let platform = Platform {
-            os: Os::Linux,
-            arch: crate::version_manager::platform::Arch::X86_64,
-        };
-        let resolved = fallback_source("25.12.9.61", Channel::Stable, &platform);
-        assert!(matches!(resolved.source, DownloadSource::Packages { .. }));
-        assert_eq!(resolved.exact_version, Some("25.12.9.61".to_string()));
-        assert!(resolved.exact_version_known);
+    fn fallback_source_uses_packages_on_linux_and_github_on_macos() {
+        use crate::version_manager::platform::Arch;
+        for (platform, expected) in [
+            (
+                Platform {
+                    os: Os::Linux,
+                    arch: Arch::X86_64,
+                },
+                DownloadSource::Packages {
+                    channel: Channel::Stable,
+                    version: "25.12.9.61".to_string(),
+                },
+            ),
+            (
+                Platform {
+                    os: Os::MacOS,
+                    arch: Arch::Aarch64,
+                },
+                DownloadSource::GitHub {
+                    version: "25.12.9.61".to_string(),
+                    channel: Channel::Stable,
+                },
+            ),
+        ] {
+            let resolved = fallback_source("25.12.9.61", Channel::Stable, &platform);
+            assert_eq!(resolved.source, expected, "{platform:?}");
+            assert_eq!(resolved.exact_version.as_deref(), Some("25.12.9.61"));
+            assert!(resolved.exact_version_known);
+            assert_eq!(resolved.channel, Some(Channel::Stable));
+        }
     }
 
     #[test]
-    fn test_fallback_source_macos() {
-        let platform = Platform {
-            os: Os::MacOS,
-            arch: crate::version_manager::platform::Arch::Aarch64,
-        };
-        let resolved = fallback_source("25.12.9.61", Channel::Stable, &platform);
-        assert!(matches!(resolved.source, DownloadSource::GitHub { .. }));
-        assert_eq!(resolved.exact_version, Some("25.12.9.61".to_string()));
-        assert!(resolved.exact_version_known);
-    }
-
-    // -- parse_version_refs tests --
-
-    #[test]
-    fn test_parse_version_refs_stable_tag() {
-        let refs = vec![make_ref("refs/tags/v25.12.9.61-stable")];
-        let entry = parse_version_refs(&refs, "25.12").unwrap();
-        assert_eq!(entry.version, "25.12.9.61");
-        assert_eq!(entry.channel, Channel::Stable);
-    }
-
-    #[test]
-    fn test_parse_version_refs_lts_tag() {
-        let refs = vec![make_ref("refs/tags/v24.8.10.6-lts")];
-        let entry = parse_version_refs(&refs, "24.8").unwrap();
-        assert_eq!(entry.version, "24.8.10.6");
-        assert_eq!(entry.channel, Channel::Lts);
-    }
-
-    #[test]
-    fn test_parse_version_refs_prefers_stable_over_unknown() {
-        let refs = vec![
-            make_ref("refs/tags/v26.4.1.1-new"),
-            make_ref("refs/tags/v26.4.2.5-stable"),
-        ];
-        let entry = parse_version_refs(&refs, "26.4").unwrap();
-        assert_eq!(entry.version, "26.4.2.5");
-        assert_eq!(entry.channel, Channel::Stable);
-    }
-
-    #[test]
-    fn test_parse_version_refs_falls_back_to_unknown_suffix() {
-        let refs = vec![make_ref("refs/tags/v26.4.1.1-new")];
-        let entry = parse_version_refs(&refs, "26.4").unwrap();
-        assert_eq!(entry.version, "26.4.1.1");
-        assert_eq!(entry.channel, Channel::Stable);
-    }
-
-    #[test]
-    fn test_parse_version_refs_empty_refs() {
-        let refs: Vec<GitRef> = vec![];
-        assert!(parse_version_refs(&refs, "99.99").is_err());
-    }
-
-    #[test]
-    fn test_parse_version_refs_no_matching_tags() {
-        let refs = vec![make_ref("refs/heads/main"), make_ref("something/else")];
-        assert!(parse_version_refs(&refs, "25.12").is_err());
-    }
-
-    #[test]
-    fn test_parse_version_refs_no_dash_in_tag() {
-        // A tag without a channel suffix at all should be skipped
-        let refs = vec![make_ref("refs/tags/v25.12.9.61")];
-        assert!(parse_version_refs(&refs, "25.12").is_err());
-    }
-
-    #[test]
-    fn test_parse_version_refs_picks_highest_stable() {
-        // Multiple stable tags — picks the semantically highest version
-        let refs = vec![
-            make_ref("refs/tags/v25.12.1.10-stable"),
-            make_ref("refs/tags/v25.12.9.61-stable"),
-        ];
-        let entry = parse_version_refs(&refs, "25.12").unwrap();
-        assert_eq!(entry.version, "25.12.9.61");
-    }
-
-    #[test]
-    fn test_parse_version_refs_unordered_picks_highest() {
-        // Higher patch version appears before lower — must still pick the higher one
-        let refs = vec![
-            make_ref("refs/tags/v25.12.10.5-stable"),
-            make_ref("refs/tags/v25.12.9.61-stable"),
-        ];
-        let entry = parse_version_refs(&refs, "25.12").unwrap();
-        assert_eq!(entry.version, "25.12.10.5");
-    }
-
-    #[test]
-    fn test_parse_version_refs_stable_beats_later_unknown() {
-        // Even if an unknown-suffix tag appears after a stable one, stable wins
-        let refs = vec![
-            make_ref("refs/tags/v26.4.2.5-stable"),
-            make_ref("refs/tags/v26.4.3.1-beta"),
-        ];
-        let entry = parse_version_refs(&refs, "26.4").unwrap();
-        // stable is overwritten by the second stable-eligible tag, but "beta" is not stable
-        // so the last stable still wins
-        assert_eq!(entry.version, "26.4.2.5");
-        assert_eq!(entry.channel, Channel::Stable);
-    }
-
-    // -- parse_exact_channel tests --
-
-    #[test]
-    fn test_parse_exact_channel_stable() {
-        let refs = vec![make_ref("refs/tags/v25.12.9.61-stable")];
-        assert_eq!(
-            parse_exact_channel(&refs, "25.12.9.61").unwrap(),
-            Channel::Stable
+    fn parse_version_refs_prefers_the_highest_known_channel_then_any_tagged_build() {
+        type RefsCase = (
+            &'static [&'static str],
+            &'static str,
+            Option<(&'static str, Channel)>,
         );
+        let cases: &[RefsCase] = &[
+            (
+                &["refs/tags/v25.12.9.61-stable"],
+                "25.12",
+                Some(("25.12.9.61", Channel::Stable)),
+            ),
+            (
+                &["refs/tags/v24.8.10.6-lts"],
+                "24.8",
+                Some(("24.8.10.6", Channel::Lts)),
+            ),
+            // A known channel beats an unknown suffix, wherever it appears.
+            (
+                &["refs/tags/v26.4.1.1-new", "refs/tags/v26.4.2.5-stable"],
+                "26.4",
+                Some(("26.4.2.5", Channel::Stable)),
+            ),
+            (
+                &["refs/tags/v26.4.2.5-stable", "refs/tags/v26.4.3.1-beta"],
+                "26.4",
+                Some(("26.4.2.5", Channel::Stable)),
+            ),
+            // With no known channel, any tagged build is used (as stable).
+            (
+                &["refs/tags/v26.4.1.1-new"],
+                "26.4",
+                Some(("26.4.1.1", Channel::Stable)),
+            ),
+            // The semantically highest version wins, in either order.
+            (
+                &[
+                    "refs/tags/v25.12.1.10-stable",
+                    "refs/tags/v25.12.9.61-stable",
+                ],
+                "25.12",
+                Some(("25.12.9.61", Channel::Stable)),
+            ),
+            (
+                &[
+                    "refs/tags/v25.12.10.5-stable",
+                    "refs/tags/v25.12.9.61-stable",
+                ],
+                "25.12",
+                Some(("25.12.10.5", Channel::Stable)),
+            ),
+            (&[], "99.99", None),
+            (&["refs/heads/main", "something/else"], "25.12", None),
+            // A tag without a channel suffix at all is skipped.
+            (&["refs/tags/v25.12.9.61"], "25.12", None),
+        ];
+        for (names, prefix, expected) in cases {
+            let refs: Vec<GitRef> = names.iter().map(|name| make_ref(name)).collect();
+            match (parse_version_refs(&refs, prefix), expected) {
+                (Ok(entry), Some((version, channel))) => {
+                    assert_eq!(entry.version, *version, "{names:?}");
+                    assert_eq!(entry.channel, *channel, "{names:?}");
+                }
+                (Err(Error::NoMatchingVersion(missing)), None) => {
+                    assert_eq!(missing, *prefix, "{names:?}");
+                }
+                (Ok(entry), None) => panic!("{names:?}: unexpected {}", entry.version),
+                (Err(error), _) => panic!("{names:?}: unexpected {error:?}"),
+            }
+        }
     }
 
     #[test]
-    fn test_parse_exact_channel_lts() {
-        let refs = vec![make_ref("refs/tags/v24.8.10.6-lts")];
-        assert_eq!(
-            parse_exact_channel(&refs, "24.8.10.6").unwrap(),
-            Channel::Lts
-        );
-    }
+    fn parse_exact_channel_needs_a_known_suffix_on_the_exact_tag() {
+        // `None` is an unknown suffix on the exact tag; `parse_exact_channel`,
+        // unlike `parse_version_refs`, never falls back to it.
+        for (name, version, expected) in [
+            (
+                Some("refs/tags/v25.12.9.61-stable"),
+                "25.12.9.61",
+                Some(Channel::Stable),
+            ),
+            (
+                Some("refs/tags/v24.8.10.6-lts"),
+                "24.8.10.6",
+                Some(Channel::Lts),
+            ),
+            (Some("refs/tags/v26.4.1.1-new"), "26.4.1.1", None),
+        ] {
+            let refs: Vec<GitRef> = name.into_iter().map(make_ref).collect();
+            match (parse_exact_channel(&refs, version), expected) {
+                (Ok(channel), Some(expected)) => assert_eq!(channel, expected, "{version}"),
+                (Err(Error::UnknownVersionChannel(unknown)), None) => {
+                    assert_eq!(unknown, version)
+                }
+                (result, _) => panic!("{version}: unexpected {result:?}"),
+            }
+        }
 
-    #[test]
-    fn test_parse_exact_channel_unknown_suffix_errors() {
-        // parse_exact_channel does NOT fall back to unknown suffixes
-        let refs = vec![make_ref("refs/tags/v26.4.1.1-new")];
-        let error = parse_exact_channel(&refs, "26.4.1.1").unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "build 26.4.1.1 exists, but its release channel could not be determined"
-        );
-        assert!(matches!(
-            error,
-            Error::UnknownVersionChannel(ref version) if version == "26.4.1.1"
-        ));
-    }
-
-    #[test]
-    fn test_parse_exact_channel_empty_refs() {
-        let refs: Vec<GitRef> = vec![];
-        let error = parse_exact_channel(&refs, "25.12.9.61").unwrap_err();
-
+        let error = parse_exact_channel(&[], "25.12.9.61").unwrap_err();
         assert!(matches!(
             error,
             Error::NoMatchingVersion(ref version) if version == "25.12.9.61"
@@ -841,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exact_version_no_match_hints_highest_series_version() {
+    fn exact_version_no_match_hints_the_highest_series_version_when_one_exists() {
         let refs = vec![
             make_ref("refs/tags/v26.2.19.43-stable"),
             make_ref("refs/tags/v26.2.9.9-stable"),
@@ -861,10 +838,7 @@ mod tests {
                 && series == "26.2"
                 && available == "26.2.20.4"
         ));
-    }
 
-    #[test]
-    fn test_exact_version_no_match_without_series_preserves_generic_error() {
         let error = exact_version_no_match("99.99.1.1", "99.99", None);
 
         assert!(matches!(
@@ -873,118 +847,45 @@ mod tests {
         ));
     }
 
-    // -- find_local_match tests --
-
-    fn installed(versions: &[&str]) -> Vec<String> {
-        versions.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
-    fn test_find_local_match_latest_returns_none() {
-        assert_eq!(
-            find_local_match(&VersionSpec::Latest, &installed(&["25.12.9.61"])),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_channel_returns_none() {
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Channel(Channel::Stable),
-                &installed(&["25.12.9.61"])
+    fn find_local_match_takes_the_first_installed_version_on_component_boundaries() {
+        // `installed` is newest-first, as `list_installed_versions` returns it.
+        let exact = || VersionSpec::Exact("25.12.9.61".to_string());
+        let cases: [(VersionSpec, &[&str], Option<&str>); 11] = [
+            // Floating specs always need the remote.
+            (VersionSpec::Latest, &["25.12.9.61"], None),
+            (VersionSpec::Channel(Channel::Stable), &["25.12.9.61"], None),
+            (VersionSpec::Channel(Channel::Lts), &["25.12.9.61"], None),
+            (
+                VersionSpec::Major(25),
+                &["25.12.9.61", "24.8.6.70"],
+                Some("25.12.9.61"),
             ),
-            None
-        );
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Channel(Channel::Lts),
-                &installed(&["25.12.9.61"])
+            (
+                VersionSpec::Major(25),
+                &["25.12.9.61", "25.5.2.1"],
+                Some("25.12.9.61"),
             ),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_major_picks_first() {
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Major(25),
-                &installed(&["25.12.9.61", "24.8.6.70"])
+            // The trailing "." is the boundary guard.
+            (VersionSpec::Major(25), &["250.1.2.3"], None),
+            (VersionSpec::Major(25), &["24.12.9.61"], None),
+            (
+                VersionSpec::Minor(25, 12),
+                &["25.120.1.1", "25.12.9.61"],
+                Some("25.12.9.61"),
             ),
-            Some("25.12.9.61".to_string())
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_major_rejects_numeric_prefix() {
-        // "250.1.2.3" must not match Major(25) — the trailing "." is the boundary guard
-        assert_eq!(
-            find_local_match(&VersionSpec::Major(25), &installed(&["250.1.2.3"])),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_major_no_match() {
-        assert_eq!(
-            find_local_match(&VersionSpec::Major(25), &installed(&["24.12.9.61"])),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_minor_component_boundary() {
-        // Minor(25, 12) must match 25.12.9.61 but not 25.120.1.1
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Minor(25, 12),
-                &installed(&["25.120.1.1", "25.12.9.61"])
-            ),
-            Some("25.12.9.61".to_string())
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_minor_no_match() {
-        assert_eq!(
-            find_local_match(&VersionSpec::Minor(25, 12), &installed(&["25.11.9.61"])),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_exact_matches() {
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Exact("25.12.9.61".to_string()),
-                &installed(&["25.12.9.61"])
-            ),
-            Some("25.12.9.61".to_string())
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_exact_rejects_partial() {
-        // Exact match must not accept shorter or longer strings
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Exact("25.12.9.61".to_string()),
-                &installed(&["25.12.9.6", "25.12.9.611"])
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn test_find_local_match_newest_wins() {
-        // list_installed_versions returns descending order — first match wins
-        assert_eq!(
-            find_local_match(
-                &VersionSpec::Major(25),
-                &installed(&["25.12.9.61", "25.5.2.1"])
-            ),
-            Some("25.12.9.61".to_string())
-        );
+            (VersionSpec::Minor(25, 12), &["25.11.9.61"], None),
+            (exact(), &["25.12.9.61"], Some("25.12.9.61")),
+            // Exact match accepts neither a shorter nor a longer string.
+            (exact(), &["25.12.9.6", "25.12.9.611"], None),
+        ];
+        for (spec, installed, expected) in cases {
+            let installed: Vec<String> = installed.iter().map(|v| v.to_string()).collect();
+            assert_eq!(
+                find_local_match(&spec, &installed).as_deref(),
+                expected,
+                "{spec:?} in {installed:?}"
+            );
+        }
     }
 }
