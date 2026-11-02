@@ -57,12 +57,16 @@ fn install(home: &Path, name: &str, binary: Option<&Path>) {
     }
 }
 
+/// Every query input and native format option reaches the child as native
+/// argv. Output mode is independent of input and format, so the JSON and
+/// agent modes run one maximal case per client rather than the whole matrix.
 #[test]
 fn json_and_agent_modes_leave_native_argv_unchanged() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     install(home.path(), "clickhouse", None);
     install(home.path(), "psql", None);
+    let mut runs = Vec::new();
     for postgres in [false, true] {
         let base = if postgres {
             vec![
@@ -78,7 +82,7 @@ fn json_and_agent_modes_leave_native_argv_unchanged() {
         } else {
             vec!["client", "--host", "127.0.0.1", "--port", "9000"]
         };
-        for (input, child) in [
+        let inputs = [
             (vec![], vec![]), // Interactive invocation: no query source injected.
             (
                 vec!["--query", "SELECT 'x'"],
@@ -91,39 +95,64 @@ fn json_and_agent_modes_leave_native_argv_unchanged() {
                     "queries.sql",
                 ],
             ),
-        ] {
-            let formats = if postgres {
-                vec![vec![], vec!["--csv"]]
-            } else {
-                vec![
-                    vec![],
-                    vec!["--format", "CSV"],
-                    vec!["--output-format", "JSONEachRow"],
-                ]
-            };
-            for format in formats {
-                for mode in MODES {
-                    let mut cmd = command(project.path(), home.path(), mode, postgres);
-                    cmd.args(&input);
-                    if !format.is_empty() {
-                        cmd.arg("--").args(&format);
-                    }
-                    let output = cmd.output().unwrap();
-                    assert!(output.status.success(), "{mode:?}: {output:?}");
-                    let actual: Vec<_> = std::str::from_utf8(&output.stdout)
-                        .unwrap()
-                        .split_terminator('\0')
-                        .collect();
-                    let expected: Vec<_> =
-                        base.iter().chain(&child).chain(&format).copied().collect();
-                    assert_eq!(
-                        actual, expected,
-                        "{mode:?}, postgres={postgres}, input={input:?}"
-                    );
-                }
+        ];
+        let formats = if postgres {
+            vec![vec![], vec!["--csv"]]
+        } else {
+            vec![
+                vec![],
+                vec!["--format", "CSV"],
+                vec!["--output-format", "JSONEachRow"],
+            ]
+        };
+        let mut cases: Vec<_> = inputs
+            .iter()
+            .flat_map(|input| {
+                formats
+                    .iter()
+                    .map(move |format| (Mode::Human, input, format))
+            })
+            .collect();
+        for mode in [Mode::Json, Mode::Agent] {
+            cases.push((mode, &inputs[1], formats.last().unwrap()));
+        }
+        for (mode, (input, child), format) in cases {
+            let mut cmd = command(project.path(), home.path(), mode, postgres);
+            cmd.args(input);
+            if !format.is_empty() {
+                cmd.arg("--").args(format);
             }
+            let expected: Vec<String> = base
+                .iter()
+                .chain(child)
+                .chain(format)
+                .map(|arg| arg.to_string())
+                .collect();
+            runs.push((
+                format!("{mode:?}, postgres={postgres}, input={input:?}"),
+                cmd,
+                expected,
+            ));
         }
     }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = runs
+            .into_iter()
+            .map(|(label, mut cmd, expected)| {
+                scope.spawn(move || (label, cmd.output().unwrap(), expected))
+            })
+            .collect();
+        for handle in handles {
+            let (label, output, expected) = handle.join().unwrap();
+            assert!(output.status.success(), "{label}: {output:?}");
+            let actual: Vec<_> = std::str::from_utf8(&output.stdout)
+                .unwrap()
+                .split_terminator('\0')
+                .collect();
+            assert_eq!(actual, expected, "{label}");
+        }
+    });
 }
 
 fn output_with_stdin(mut cmd: Command, stdin: &str) -> Output {

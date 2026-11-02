@@ -339,13 +339,7 @@ fn password_env_override_reports_stored_settings_on_resume() {
 
 #[test]
 fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
-    for (name, selector) in [
-        ("default", &[][..]),
-        ("default", &["default"][..]),
-        ("default", &["--name", "default"][..]),
-        ("dev", &["dev"][..]),
-        ("dev", &["--name", "dev"][..]),
-    ] {
+    let check = |name: &str, selector: &[&str]| {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let servers = project.path().join(".clickhouse/servers");
@@ -404,5 +398,17 @@ fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
         }
         assert!(!selected.exists());
         assert!(!selected_data.exists());
-    }
+    };
+    // Each row has its own project, home and fake daemon, so they run at once.
+    std::thread::scope(|scope| {
+        for (name, selector) in [
+            ("default", &[][..]),
+            ("default", &["default"][..]),
+            ("default", &["--name", "default"][..]),
+            ("dev", &["dev"][..]),
+            ("dev", &["--name", "dev"][..]),
+        ] {
+            scope.spawn(move || check(name, selector));
+        }
+    });
 }
