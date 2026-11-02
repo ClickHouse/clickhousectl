@@ -38,16 +38,26 @@ fn install_with_existing_version(installed_version: &str, requested_spec: &str) 
     perms.set_mode(0o755);
     std::fs::set_permissions(&binary, perms).unwrap();
 
-    let mut command = Command::new(clickhousectl_binary());
-    command
+    let output = Command::new(clickhousectl_binary())
         // Prevent coding-agent detection from switching the subprocess to JSON
         // so this exercises the human output reported in issue #328.
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", tempdir.path())
         .args(["local", "install", requested_spec])
         .output()
-        .expect("run clickhousectl")
+        .expect("run clickhousectl");
+    // A zero timeout skips the background update request, so nothing writes
+    // the update cache. Any attempt, even a failed one, would leave it behind.
+    assert!(
+        !tempdir
+            .path()
+            .join(".clickhouse/last_update_check")
+            .exists(),
+        "a zero update-check timeout must skip the background request"
+    );
+    output
 }
 
 #[test]

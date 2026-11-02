@@ -80,7 +80,8 @@ impl Sandbox {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.home.path())
-            .env("CHCTL_TELEMETRY_URL", self.telemetry_url());
+            .env("CHCTL_TELEMETRY_URL", self.telemetry_url())
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0");
         cmd
     }
 
@@ -1229,6 +1230,9 @@ async fn status_is_read_only_in_every_state_and_output_mode() {
             }
             let original = std::fs::read(sandbox.state_path()).ok();
             let mut command = sandbox.command(&["telemetry", "status"]);
+            // Allow the background update check, so the absent cache below
+            // shows that `status` skips it rather than that the timeout did.
+            command.env_remove("CHCTL_UPDATE_CHECK_TIMEOUT_MS");
             match mode {
                 "json" => {
                     command.arg("--json");
