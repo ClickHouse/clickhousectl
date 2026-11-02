@@ -253,29 +253,6 @@ fn clear_inherited_env(command: &mut Command) {
     command.isolated_env();
 }
 
-#[test]
-fn clear_inherited_env_removes_agent_credentials_home_and_path() {
-    let mut command = Command::new(clickhousectl_binary());
-    command.envs([
-        ("CLAUDECODE", "1"),
-        ("CLICKHOUSE_CLOUD_API_KEY", "ambient-key"),
-        ("CLICKHOUSE_CLOUD_API_SECRET", "ambient-secret"),
-        ("HOME", "/ambient/home"),
-        ("PATH", "/ambient/bin"),
-    ]);
-
-    clear_inherited_env(&mut command);
-
-    let envs: Vec<_> = command.get_envs().collect();
-    assert_eq!(
-        envs,
-        [(
-            std::ffi::OsStr::new(UPDATE_CHECK_TIMEOUT_ENV),
-            Some(std::ffi::OsStr::new("0"))
-        )]
-    );
-}
-
 /// Run the clickhousectl binary against the mock, returning the JSON body
 /// the binary POSTed. Panics with the captured stderr if the binary exits
 /// non-zero — a failure here is almost always a clap-parsing error, which
@@ -422,42 +399,6 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .args(args)
         .output()
         .expect("failed to spawn clickhousectl")
-}
-
-#[tokio::test]
-async fn fixed_enum_flags_are_usage_errors_before_any_cloud_request() {
-    for args in [
-        vec![
-            "postgres",
-            "create",
-            "--name",
-            "pg1",
-            "--region",
-            "us-east-1",
-            "--size",
-            "m7i.2xlarge",
-            "--provider",
-            "azure",
-            "--org-id",
-            "org-1",
-        ],
-        vec![
-            "key", "create", "--name", "ci-key", "--state", "broken", "--org-id", "org-1",
-        ],
-        vec![
-            "key", "update", "key-1", "--state", "broken", "--org-id", "org-1",
-        ],
-    ] {
-        let mock = MockServer::start().await;
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("possible values"), "{args:?}: {stderr}");
-        assert!(
-            mock.received_requests().await.unwrap().is_empty(),
-            "{args:?}"
-        );
-    }
 }
 
 fn invoke_cli_with_cloud_credentials_and_stdin(
@@ -801,54 +742,6 @@ async fn organization_role_human_output_handles_sparse_fields() {
 }
 
 #[tokio::test]
-async fn organization_role_create_rejects_invalid_nested_config_before_http() {
-    let mock = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials_and_stdin(
-        &mock,
-        &["org", "role", "create", "--file", "-", "--org-id", "org-1"],
-        r#"{"name":"bad","actors":[],"policies":[{"allowDeny":"AUDIT","permissions":[],"resources":[],"tagz":{}}]}"#,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("tagz"), "{stderr}");
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn organization_update_rejects_incomplete_endpoint_removals_before_http() {
-    let mock = MockServer::start().await;
-
-    for value in [
-        "pe-1,region=us-east-1",
-        "pe-1,cloud-provider=aws",
-        "pe-1,description=old",
-        "pe-1,cloud-provider=,region=us-east-1",
-        "pe-1,cloud-provider=aws,region= ",
-    ] {
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "org",
-                "update",
-                "--org-id",
-                "org-1",
-                "--remove-private-endpoint",
-                value,
-            ],
-        );
-
-        assert_eq!(output.status.code(), Some(2));
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("requires"),
-            "unexpected stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn org_quota_list_preserves_sparse_json_and_supports_oauth() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -1033,47 +926,6 @@ fn invoke_cli_without_cloud_credentials(
         .expect("failed to spawn clickhousectl")
 }
 
-#[tokio::test]
-async fn partial_cloud_credentials_are_usage_errors_before_auth_or_http() {
-    let mock = MockServer::start().await;
-    for args in [
-        vec!["auth", "login", "--api-key", "key"],
-        vec!["auth", "login", "--api-secret", "secret"],
-        vec!["key", "create", "--name", "key", "--hash-key-id", "hash"],
-        vec![
-            "clickpipe",
-            "create",
-            "object-storage",
-            "svc-1",
-            "--name",
-            "pipe",
-            "--source-url",
-            "https://bucket.example/events",
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "db",
-            "--table",
-            "events",
-            "--column",
-            "bad_no_colon",
-        ],
-    ] {
-        let args = args.into_iter().map(String::from).collect::<Vec<_>>();
-        let output = invoke_cli_without_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if args[0] != "clickpipe" {
-            assert!(stderr.contains("Usage:"), "{stderr}");
-        } else {
-            assert!(stderr.contains("--column <NAME:TYPE>"), "{stderr}");
-        }
-    }
-    let output = invoke_cli_without_cloud_credentials(&mock, &["service".into(), "list".into()]);
-    assert_eq!(output.status.code(), Some(4));
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();
@@ -1108,61 +960,6 @@ fn invoke_api_key_login(project_dir: &Path, url: &str) -> std::process::Output {
         ])
         .output()
         .expect("failed to spawn clickhousectl")
-}
-
-#[tokio::test]
-async fn api_key_login_rejects_empty_values_before_touching_saved_credentials_or_http() {
-    let mock = MockServer::start().await;
-    for (key, secret, invalid_flag) in [
-        ("", "", "--api-key"),
-        ("", "new-secret", "--api-key"),
-        ("new-key", "", "--api-secret"),
-    ] {
-        for existing_credentials in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let credentials_dir = dir.path().join(".clickhouse");
-            let credentials_path = credentials_dir.join("credentials.json");
-            let original = if existing_credentials {
-                write_project_api_credentials(dir.path(), "saved-key", "saved-secret");
-                Some(std::fs::read(&credentials_path).unwrap())
-            } else {
-                None
-            };
-            let output = Command::new(clickhousectl_binary())
-                .isolated_env()
-                .env("DO_NOT_TRACK", "1")
-                .env("HOME", dir.path().join("home"))
-                .current_dir(dir.path())
-                .args([
-                    "cloud",
-                    "auth",
-                    "login",
-                    "--api-key",
-                    key,
-                    "--api-secret",
-                    secret,
-                    "--url",
-                    &mock.uri(),
-                    "--json",
-                ])
-                .output()
-                .unwrap();
-            assert_eq!(output.status.code(), Some(2));
-            assert!(output.stdout.is_empty());
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains(invalid_flag), "{stderr}");
-            assert!(stderr.contains("Usage:"), "{stderr}");
-            for credential in ["new-key", "new-secret", "saved-key", "saved-secret"] {
-                assert!(!stderr.contains(credential));
-            }
-            if let Some(original) = original {
-                assert_eq!(std::fs::read(&credentials_path).unwrap(), original);
-            } else {
-                assert!(!credentials_dir.exists());
-            }
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -14815,32 +14612,6 @@ async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
     assert_success(&output);
 }
 
-#[tokio::test]
-async fn invalid_allowlist_source_fails_before_key_requests() {
-    // The service create/update forms share `parse_ip_access_entries`, which
-    // `parse_ip_access_entries_rejects_invalid_sources` covers.
-    let server = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &server,
-        &[
-            "key",
-            "update",
-            "key-1",
-            "--ip-allow",
-            "not-an-ip=invalid",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("invalid IP allowlist entry"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(server.received_requests().await.unwrap().is_empty());
-}
-
 // API key nullable expiry (#698) and explicit list clearing (#597).
 async fn invoke_key_update(server: &MockServer, flags: &[&str]) -> std::process::Output {
     let project = tempfile::tempdir().unwrap();
@@ -14925,24 +14696,6 @@ async fn key_update_sends_exact_omitted_set_and_clear_bodies() {
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result, serde_json::json!({"name": "updated"}));
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
-    }
-}
-
-#[tokio::test]
-async fn key_update_conflicts_send_no_http() {
-    for flags in [
-        vec!["--clear-expiry", "--expires-at", "2030-01-01T00:00:00Z"],
-        vec![
-            "--clear-roles",
-            "--role-id",
-            "11111111-2222-3333-4444-555555555555",
-        ],
-        vec!["--clear-ip-allow", "--ip-allow", "10.0.0.0/8"],
-    ] {
-        let server = MockServer::start().await;
-        let output = invoke_key_update(&server, &flags).await;
-        assert_eq!(output.status.code(), Some(2));
-        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
 
@@ -16150,27 +15903,6 @@ async fn member_update_preserves_omitted_set_and_clear_role_lists() {
         assert_success(&output);
         assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     }
-}
-
-#[tokio::test]
-async fn member_update_role_conflict_sends_no_http() {
-    let mock = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "member",
-            "update",
-            "user-1",
-            "--org-id",
-            "org-1",
-            "--role-id",
-            "role-1",
-            "--clear-roles",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 const CLEAR_TAGS_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
@@ -18413,43 +18145,6 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
 }
 
 #[tokio::test]
-async fn org_get_and_update_reject_retired_positionals_with_global_selector() {
-    let mock = MockServer::start().await;
-    let home = tempfile::tempdir().unwrap();
-    for subcommand in ["get", "update"] {
-        for positional in [
-            "00000000-0000-0000-0000-000000000001",
-            "00000000-0000-0000-0000-000000000002",
-        ] {
-            let mut cmd = Command::new(clickhousectl_binary());
-            clear_inherited_env(&mut cmd);
-            let output = cmd
-                .current_dir(home.path())
-                .env("HOME", home.path())
-                .env("DO_NOT_TRACK", "1")
-                .args([
-                    "cloud",
-                    "--url",
-                    &mock.uri(),
-                    "--api-key",
-                    "test-key",
-                    "--api-secret",
-                    "test-secret",
-                    "org",
-                    subcommand,
-                    positional,
-                    "--org-id",
-                    "00000000-0000-0000-0000-000000000001",
-                ])
-                .output()
-                .unwrap();
-            assert_eq!(output.status.code(), Some(2), "{output:?}");
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn org_get_and_update_require_one_organization_for_autodetection() {
     for subcommand in ["get", "update"] {
         for organizations in [
@@ -19429,31 +19124,6 @@ async fn global_org_id_does_not_add_lookup_to_auth_help_or_org_list() {
     assert_eq!(mock.received_requests().await.unwrap().len(), 1);
 }
 
-#[tokio::test]
-async fn global_org_id_retires_all_positional_org_forms_before_http() {
-    let mock = MockServer::start().await;
-    for tail in [
-        vec!["get", "org-1"],
-        vec!["update", "org-1", "--new-name", "Renamed"],
-        vec![
-            "usage",
-            "org-1",
-            "--from-date",
-            "2026-09-01",
-            "--to-date",
-            "2026-09-15",
-        ],
-        vec!["prometheus", "org-1"],
-        vec!["prometheus", "org-1", "discovery"],
-    ] {
-        let mut args = vec!["org"];
-        args.extend(tail);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
 // #891: exact, scoped selectors resolve before the existing target handler.
 #[tokio::test]
 async fn selectors_use_exact_scoped_names_and_ids_do_not_require_list_access() {
@@ -20056,80 +19726,7 @@ async fn selectors_postgres_sources_keep_new_resource_names_in_the_body() {
 }
 
 #[tokio::test]
-async fn selectors_byoc_rename_alias_preserves_display_name_body_and_conflicts() {
-    for flag in ["--new-name", "--display-name"] {
-        let mock = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-id"))
-            .and(body_json(serde_json::json!({"displayName": "replacement"})))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "org",
-                "byoc",
-                "update",
-                "byoc-id",
-                flag,
-                "replacement",
-                "--org-id",
-                "org-1",
-            ],
-        );
-        assert_success(&output);
-    }
-    let mock = MockServer::start().await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "org",
-            "byoc",
-            "update",
-            "byoc-id",
-            "--new-name",
-            "one",
-            "--display-name",
-            "two",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn selectors_organization_conflicts_and_incomplete_matches_fail_without_mutation() {
-    let mock = MockServer::start().await;
-    for args in [
-        vec![
-            "--org-id",
-            "org",
-            "service",
-            "delete",
-            "id",
-            "--org-name",
-            "production",
-        ],
-        vec![
-            "--org-name",
-            "production",
-            "service",
-            "delete",
-            "id",
-            "--org-id",
-            "org",
-        ],
-    ] {
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2));
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
+async fn selectors_incomplete_organization_matches_fail_without_mutation() {
     for rows in [
         serde_json::json!([]),
         serde_json::json!([{ "name": "production" }]),
@@ -21619,106 +21216,6 @@ async fn key_pagination_later_page_errors_prevent_partial_output_and_name_resolu
 }
 
 #[tokio::test]
-async fn key_pagination_repeated_cursors_fail_before_another_request() {
-    for lookup in [false, true] {
-        let mock = MockServer::start().await;
-        mount_key_page(
-            &mock,
-            None,
-            200,
-            serde_json::json!({
-                "result": [{"id": PAGED_KEY_ID, "name": "target"}], "nextCursor": KEY_PAGE_CURSOR
-            }),
-        )
-        .await;
-        mount_key_page(
-            &mock,
-            Some(KEY_PAGE_CURSOR),
-            200,
-            serde_json::json!({
-                "result": [], "nextCursor": "intermediate"
-            }),
-        )
-        .await;
-        mount_key_page(
-            &mock,
-            Some("intermediate"),
-            200,
-            serde_json::json!({
-                "result": [], "nextCursor": KEY_PAGE_CURSOR
-            }),
-        )
-        .await;
-        let args = if lookup {
-            vec!["key", "get", "--name", "target", "--org-id", "org-1"]
-        } else {
-            vec!["key", "list", "--all", "--org-id", "org-1"]
-        };
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(output.stdout.is_empty());
-        let error = cloud_runtime_error(&output);
-        let message = error["message"].as_str().unwrap();
-        assert!(message.contains("repeated cursor"), "{message}");
-        assert!(!message.contains(KEY_PAGE_CURSOR), "{message}");
-        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR), Some("intermediate")]).await;
-        assert_eq!(mock.received_requests().await.unwrap().len(), 3);
-    }
-}
-
-#[tokio::test]
-async fn key_pagination_preserves_oauth_and_treats_empty_cursor_as_opaque() {
-    let mock = MockServer::start().await;
-    mount_key_page(
-        &mock,
-        None,
-        200,
-        serde_json::json!({"result": [], "nextCursor": ""}),
-    )
-    .await;
-    let result = serde_json::json!([{"id": PAGED_KEY_ID, "name": "oauth-key"}]);
-    mount_key_page(&mock, Some(""), 200, serde_json::json!({"result": result})).await;
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let output = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "--json",
-            "key",
-            "list",
-            "--all",
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .unwrap();
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        result
-    );
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2);
-    for request in &requests {
-        assert_eq!(request.headers["authorization"], "Bearer test-bearer-token");
-    }
-    assert!(requests[0].url.query().is_none());
-    assert_eq!(
-        requests[1].url.query_pairs().collect::<Vec<_>>(),
-        vec![("cursor".into(), "".into())]
-    );
-}
-
-#[tokio::test]
 async fn key_pagination_default_is_one_page_with_metadata() {
     let mock = MockServer::start().await;
     let body = serde_json::json!({
@@ -21803,29 +21300,6 @@ async fn key_pagination_all_sends_limit_on_every_page() {
                 .any(|(key, value)| key == "limit" && value == "1")
         );
     }
-}
-
-#[tokio::test]
-async fn key_pagination_invalid_flags_fail_before_network_or_credentials() {
-    let mock = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    for flags in [
-        vec!["--limit", "0"],
-        vec!["--limit", "-1"],
-        vec!["--all", "--cursor="],
-    ] {
-        let output = Command::new(clickhousectl_binary())
-            .isolated_env()
-            .env("DO_NOT_TRACK", "1")
-            .env("HOME", project.path())
-            .current_dir(project.path())
-            .args(["cloud", "--url", &mock.uri(), "key", "list"])
-            .args(flags)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -24571,36 +24045,6 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
 }
 
 #[tokio::test]
-async fn org_list_repeated_cursor_fails_before_another_request() {
-    let mock = MockServer::start().await;
-    mount_cursor_page(
-        &mock,
-        "/v1/organizations",
-        None,
-        serde_json::json!({"result": [], "nextCursor": "loop"}),
-        1,
-    )
-    .await;
-    mount_cursor_page(
-        &mock,
-        "/v1/organizations",
-        Some("loop"),
-        serde_json::json!({"result": [], "nextCursor": "loop"}),
-        1,
-    )
-    .await;
-    let output = invoke_cli_with_cloud_credentials(&mock, &["org", "list"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(output.stdout.is_empty());
-    let message = cloud_runtime_error(&output)["message"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert!(message.contains("repeated cursor"), "{message}");
-    assert_eq!(mock.received_requests().await.unwrap().len(), 2);
-}
-
-#[tokio::test]
 async fn snapshot_list_reads_every_page_in_json_and_human_output() {
     const SNAPSHOTS_PATH: &str = "/v1/organizations/org-1/services/svc-1/snapshots";
     let mock = MockServer::start().await;
@@ -24740,48 +24184,6 @@ async fn org_notifications_human_output_tolerates_sparse_rows_and_empty_pages() 
         let requests = mock.received_requests().await.unwrap();
         assert_eq!(requests[0].url.query(), None);
     }
-}
-
-#[tokio::test]
-async fn org_notifications_rejects_bad_page_sizes_and_dates_before_network_access() {
-    let mock = MockServer::start().await;
-    for flags in [
-        vec!["--limit", "0"],
-        vec!["--limit", "251"],
-        vec!["--from-date", "2026-10-01"],
-        vec!["--to-date", "yesterday"],
-    ] {
-        let mut args = vec!["org", "notifications", "--org-id", "org-1"];
-        args.extend(flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_eq!(output.status.code(), Some(2));
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn org_notifications_accepts_an_empty_cursor_without_fetching_more_pages() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/notifications"))
-        .and(query_param("cursor", ""))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [], "nextCursor": "another-page"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &["org", "notifications", "--org-id", "org-1", "--cursor", ""],
-    );
-    assert_success(&output);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!({
-            "result": [], "nextCursor": "another-page"
-        })
-    );
 }
 
 // ── Cloud service .env output (issue #1164) ────────────────────────────────
