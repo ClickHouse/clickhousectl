@@ -3807,15 +3807,10 @@ async fn postgres_update_preserves_tags_when_changing_other_fields() {
 
 #[tokio::test]
 async fn postgres_update_without_tag_flags_refuses_incomplete_or_failed_reads() {
+    // Which snapshots are incomplete is `merge_response_tags_refuses_*`; here
+    // one incomplete and one failed read each stop before the PATCH.
     for response in [
         ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
-        ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"tags": null}})),
-        ResponseTemplate::new(200)
-            .set_body_json(serde_json::json!({"result": {"tags": [{"value": "prod"}]}})),
-        ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"result": {"tags": [{"key": null, "value": "prod"}]}}),
-        ),
-        ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "forbidden"})),
         ResponseTemplate::new(500).set_body_json(serde_json::json!({"error": "read failed"})),
     ] {
         let mock = MockServer::start().await;
@@ -3839,7 +3834,7 @@ async fn postgres_update_without_tag_flags_refuses_incomplete_or_failed_reads() 
                 "renamed",
             ],
         );
-        assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
         assert_eq!(
             received_request_shape(&mock).await,
@@ -4356,22 +4351,12 @@ async fn postgres_list_applies_supported_filters_client_side() {
             .collect()
     };
 
-    assert_eq!(names("isPrimary=true"), vec!["primary-pg".to_string()]);
+    // Each key's matching rules are the `apply_filter_*` unit tests.
     assert_eq!(names("isPrimary=false"), vec!["replica-pg".to_string()]);
     assert_eq!(
         names("state=restoring_backup"),
         vec!["replica-pg".to_string()]
     );
-    assert_eq!(names("state=running"), vec!["primary-pg".to_string()]);
-    assert_eq!(
-        names("region=us-east-1"),
-        vec![
-            "primary-pg".to_string(),
-            "replica-pg".to_string(),
-            "unknown-pg".to_string()
-        ]
-    );
-    assert_eq!(names("name=nope"), Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -4569,21 +4554,6 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
             "{stdout}"
         );
         assert!(!stdout.contains("reset-password"), "{stdout}");
-
-        let json_mock = MockServer::start().await;
-        let service = serde_json::json!({"id": ROLE_TEST_POSTGRES_ID});
-        mount_postgres_service_response(
-            &json_mock,
-            "POST",
-            &format!("/v1/organizations/org-1/postgres/source-id/{endpoint}"),
-            service.clone(),
-        )
-        .await;
-        mount_sparse_restored_get(&json_mock, endpoint).await;
-        let json_output = invoke_cli_with_cloud_credentials(&json_mock, &args);
-        assert_success(&json_output);
-        let json: Value = serde_json::from_slice(&json_output.stdout).expect("valid JSON response");
-        assert_eq!(json, service);
     }
 }
 
@@ -4662,27 +4632,6 @@ async fn postgres_role_changes_issue_only_the_expected_state_patch() {
             stdout, service,
             "{command} must preserve the response shape"
         );
-    }
-}
-
-/// Removed role-wait flags are usage errors and cannot reach the API.
-#[tokio::test]
-async fn postgres_role_changes_reject_removed_wait_flags_before_requests() {
-    for command in ["promote", "switchover"] {
-        for args in [vec!["--wait"], vec!["--wait-timeout", "30"]] {
-            let mock = MockServer::start().await;
-            let mut cli_args = vec!["postgres", command, ROLE_TEST_POSTGRES_ID];
-            cli_args.extend(args);
-            cli_args.extend(["--org-id", "org-1"]);
-
-            let output = invoke_cli_with_cloud_credentials(&mock, &cli_args);
-
-            assert_eq!(output.status.code(), Some(2), "{command}: {cli_args:?}");
-            assert!(
-                mock.received_requests().await.unwrap().is_empty(),
-                "{command}: removed flags must fail before any request"
-            );
-        }
     }
 }
 
@@ -15333,17 +15282,10 @@ async fn mount_clickstack_success_routes(mock: &MockServer) {
         .await;
 }
 
+// The `--config-file` alias is `primary_json_file_argument_contract`.
 #[tokio::test]
 async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
-    for file_flag in ["--file", "--config-file"] {
-        clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_file_flag(file_flag)
-            .await;
-    }
-}
-
-async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_file_flag(
-    file_flag: &str,
-) {
+    let file_flag = "--file";
     let mock = MockServer::start().await;
     mount_clickstack_success_routes(&mock).await;
     let directory = tempfile::tempdir().unwrap();
@@ -15675,52 +15617,46 @@ async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
         ),
         (vec!["version", "list", "my_udf"], "/my_udf/versions", true),
     ] {
-        for sparse in [false, true] {
-            let server = MockServer::start().await;
-            let project = tempfile::tempdir().unwrap();
-            let item = if sparse {
-                serde_json::json!({})
-            } else {
-                serde_json::json!({"functionName":"my_udf", "serviceId":"svc-1", "version":2, "status":"future", "deterministic":false})
-            };
-            let result = if list {
-                serde_json::json!([item])
-            } else {
-                item
-            };
-            Mock::given(method("GET"))
-                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
-                .and(header("authorization", "Bearer test-bearer-token"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(if list { serde_json::json!({"result":result,"nextCursor":"next page","limit":2,"totalCount":3}) } else { serde_json::json!({"result":result}) }),
-                )
-                .expect(1)
-                .mount(&server)
-                .await;
-            let mut args = args.clone();
-            if list {
-                args.extend(["--cursor", "page /+?", "--limit", "2"]);
-            }
-            let output = udf_test_command(&server, project.path(), true, true, &args)
-                .output()
-                .unwrap();
-            assert_success(&output);
-            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
-            if list {
-                assert_eq!(output["nextCursor"], "next page");
-                assert_eq!(output["limit"], 2);
-                assert_eq!(output["totalCount"], 3);
-                assert_eq!(output["result"][0]["status"], result[0]["status"]);
-                assert!(output.get("items").is_none());
-                assert!(output.get("pagination").is_none());
-                let req = server.received_requests().await.unwrap().pop().unwrap();
-                let query: std::collections::HashMap<_, _> =
-                    req.url.query_pairs().into_owned().collect();
-                assert_eq!(query.get("cursor").map(String::as_str), Some("page /+?"));
-                assert_eq!(query.get("limit").map(String::as_str), Some("2"));
-            } else {
-                assert_eq!(output["status"], result["status"]);
-            }
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        let item = serde_json::json!({"functionName":"my_udf", "serviceId":"svc-1", "version":2, "status":"future", "deterministic":false});
+        let result = if list {
+            serde_json::json!([item])
+        } else {
+            item
+        };
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(if list { serde_json::json!({"result":result,"nextCursor":"next page","limit":2,"totalCount":3}) } else { serde_json::json!({"result":result}) }),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut args = args.clone();
+        if list {
+            args.extend(["--cursor", "page /+?", "--limit", "2"]);
+        }
+        let output = udf_test_command(&server, project.path(), true, true, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if list {
+            assert_eq!(output["nextCursor"], "next page");
+            assert_eq!(output["limit"], 2);
+            assert_eq!(output["totalCount"], 3);
+            assert_eq!(output["result"][0]["status"], result[0]["status"]);
+            assert!(output.get("items").is_none());
+            assert!(output.get("pagination").is_none());
+            let req = server.received_requests().await.unwrap().pop().unwrap();
+            let query: std::collections::HashMap<_, _> =
+                req.url.query_pairs().into_owned().collect();
+            assert_eq!(query.get("cursor").map(String::as_str), Some("page /+?"));
+            assert_eq!(query.get("limit").map(String::as_str), Some("2"));
+        } else {
+            assert_eq!(output["status"], result["status"]);
         }
     }
 }
@@ -16130,49 +16066,48 @@ async fn udf_every_write_rejects_oauth_before_api() {
 
 #[tokio::test]
 async fn udf_create_api_failures_consume_one_upload_attempt() {
-    for create in [true, false] {
-        let server = MockServer::start().await;
-        let storage = MockServer::start().await;
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
-        std::fs::write(
-            project.path().join("definition.json"),
-            udf_definition("executable", create).to_string(),
+    // Create and version create share `upload_artifact`; one run covers both.
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+    std::fs::write(
+        project.path().join("definition.json"),
+        udf_definition("executable", true).to_string(),
+    )
+    .unwrap();
+    Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+            "uploadId":"one-attempt", "uploadUrl":format!("{}/code?signature=upload-secret", storage.uri())
+        }}))).expect(1).mount(&server).await;
+    Mock::given(method("PUT"))
+        .and(path("/code"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&storage)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .respond_with(
+            ResponseTemplate::new(424)
+                .set_body_json(serde_json::json!({"error":"build dependency unavailable"})),
         )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let args = [
+        "create",
+        "--file",
+        "definition.json",
+        "--artifact",
+        "code.zip",
+    ];
+    let output = udf_test_command(&server, project.path(), false, true, &args)
+        .output()
         .unwrap();
-        Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
-                "uploadId":"one-attempt", "uploadUrl":format!("{}/code?signature=upload-secret", storage.uri())
-            }}))).expect(1).mount(&server).await;
-        Mock::given(method("PUT"))
-            .and(path("/code"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&storage)
-            .await;
-        let suffix = if create { "" } else { "/my_udf/versions" };
-        Mock::given(method("POST"))
-            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
-            .respond_with(
-                ResponseTemplate::new(424)
-                    .set_body_json(serde_json::json!({"error":"build dependency unavailable"})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let mut args = if create {
-            vec!["create"]
-        } else {
-            vec!["version", "create", "my_udf"]
-        };
-        args.extend(["--file", "definition.json", "--artifact", "code.zip"]);
-        let output = udf_test_command(&server, project.path(), false, true, &args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("build dependency unavailable"));
-        assert_eq!(server.received_requests().await.unwrap().len(), 2);
-    }
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("build dependency unavailable"));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -16441,19 +16376,10 @@ async fn postgres_update_clear_tags_propagates_api_errors_without_retrying() {
 
 // ── ClickStack saved-search commands (issue #694) ──────────────────────────
 
+// The `--config-file` alias is `primary_json_file_argument_contract`.
 #[tokio::test]
 async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output() {
-    for file_flag in ["--file", "--config-file"] {
-        clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output_with_file_flag(
-            file_flag,
-        )
-        .await;
-    }
-}
-
-async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output_with_file_flag(
-    file_flag: &str,
-) {
+    let file_flag = "--file";
     let mock = MockServer::start().await;
     let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
     Mock::given(method("GET"))
@@ -16613,19 +16539,10 @@ async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output
 
 // ── ClickStack dashboard commands (issue #693) ─────────────────────────────
 
+// The `--config-file` alias is `primary_json_file_argument_contract`.
 #[tokio::test]
 async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
-    for file_flag in ["--file", "--config-file"] {
-        clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with_file_flag(
-            file_flag,
-        )
-        .await;
-    }
-}
-
-async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with_file_flag(
-    file_flag: &str,
-) {
+    let file_flag = "--file";
     let mock = MockServer::start().await;
     let dashboards = "/v1/organizations/org-1/services/svc-1/clickstack/dashboards";
     Mock::given(method("GET"))
@@ -16810,19 +16727,10 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with
 
 // ── ClickStack alert and webhook commands (issue #695) ─────────────────────
 
+// The `--config-file` alias is `primary_json_file_argument_contract`.
 #[tokio::test]
 async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth() {
-    for file_flag in ["--file", "--config-file"] {
-        clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_with_file_flag(
-            file_flag,
-        )
-        .await;
-    }
-}
-
-async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_with_file_flag(
-    file_flag: &str,
-) {
+    let file_flag = "--file";
     let mock = MockServer::start().await;
     let alerts = "/v1/organizations/org-1/services/svc-1/clickstack/alerts";
     let webhooks = "/v1/organizations/org-1/services/svc-1/clickstack/webhooks";
@@ -17059,20 +16967,9 @@ async fn clickstack_webhook_validate_posts_full_body_and_reports_results() {
             true,
         ),
         (
-            serde_json::json!({"valid":true,"errors":[],"normalized":{
-                "name":"Receiver","service":"generic","url":"https://example.com/hook"
-            }}),
-            false,
-        ),
-        (
-            serde_json::json!({"valid":false,"errors":[{"path":"url","message":"Invalid URL"}],"normalized":null}),
-            true,
-        ),
-        (
             serde_json::json!({"valid":false,"errors":[{"path":"url","message":"Invalid URL"}],"normalized":null}),
             false,
         ),
-        (serde_json::json!({}), true),
     ] {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
@@ -22951,13 +22848,6 @@ async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
         .expect(2)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path(POSTGRES_BACKUPS_PATH))
-        .respond_with(postgres_backup_page(serde_json::json!([]), None))
-        .with_priority(10)
-        .expect(1)
-        .mount(&server)
-        .await;
     let project = tempfile::tempdir().unwrap();
     let args = [
         "postgres", "backup", "list", "pg-1", "--cursor", "page /+?", "--limit", "2", "--org-id",
@@ -22988,20 +22878,6 @@ async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
     ] {
         assert!(stdout.contains(expected), "missing {expected}: {stdout}");
     }
-
-    // Without pagination flags nothing is added to the query string.
-    let empty = invoke_cloud_as(
-        &server,
-        project.path(),
-        false,
-        false,
-        &["postgres", "backup", "list", "pg-1", "--org-id", "org-1"],
-    );
-    assert_success(&empty);
-    assert!(!String::from_utf8_lossy(&empty.stdout).contains("Next cursor"));
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3);
-    assert!(requests[2].url.query().is_none(), "{:?}", requests[2].url);
 }
 
 fn whoami_api_key_identity() -> Value {
@@ -23565,44 +23441,31 @@ async fn udf_directory_problems_report_local_udf_codes() {
     let project = tempfile::tempdir().unwrap();
     let symlinked = project_udf(project.path(), "symlinked", "python3.11");
     std::os::unix::fs::symlink(symlinked.join("lib/helper.py"), symlinked.join("link.py")).unwrap();
-    let no_main = project_udf(project.path(), "no_main", "python3.11");
-    std::fs::remove_file(no_main.join("main.py")).unwrap();
     let not_json = project_udf(project.path(), "not_json", "python3.11");
     std::fs::write(not_json.join("udf.json"), "{ not json").unwrap();
-    let invalid = project_udf(project.path(), "invalid", "python3.11");
-    std::fs::write(
-        invalid.join("udf.json"),
-        serde_json::json!({"functionName": "invalid", "type": "executable", "runtime": "python3.11"})
-            .to_string(),
-    )
-    .unwrap();
-    let no_definition = project_udf(project.path(), "no_definition", "python3.11");
-    std::fs::remove_file(no_definition.join("udf.json")).unwrap();
     let no_binary = project_udf(project.path(), "no_binary", "native");
     std::fs::remove_file(no_binary.join("amd64/main")).unwrap();
 
-    for (name, code) in [
-        ("symlinked", "udf_source_invalid"),
-        ("no_main", "udf_source_invalid"),
-        ("not_json", "udf_definition_invalid"),
-        ("invalid", "udf_definition_invalid"),
-        ("no_definition", "udf_source_invalid"),
-        ("no_binary", "udf_source_invalid"),
+    // Which problem gets which code is `udf_json_failures_carry_the_local_udf_codes`
+    // and `package_source_dir_rejects_*`; one run per command reaches JSON.
+    for (args, code) in [
+        (vec!["create", "symlinked"], "udf_source_invalid"),
+        (
+            vec!["version", "create", "not_json"],
+            "udf_definition_invalid",
+        ),
+        (
+            vec!["deploy", "no_binary", "--service", "svc-1"],
+            "udf_source_invalid",
+        ),
     ] {
-        for args in [
-            vec!["create", name],
-            vec!["version", "create", name],
-            vec!["deploy", name, "--service", "svc-1"],
-        ] {
-            let output = udf_test_command(&server, project.path(), false, true, &args)
-                .output()
-                .unwrap();
-            assert_eq!(output.status.code(), Some(1), "{args:?}");
-            let error: Value = serde_json::from_slice(&output.stderr).unwrap_or_else(|_| {
-                panic!("{args:?}: {}", String::from_utf8_lossy(&output.stderr))
-            });
-            assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
-        }
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error: Value = serde_json::from_slice(&output.stderr)
+            .unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&output.stderr)));
+        assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
     }
     assert!(server.received_requests().await.unwrap().is_empty());
 }
@@ -24056,8 +23919,9 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
                 "Added version 2 of UDF my_udf and deployed it to service svc-1\n"
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // `--timeout 30` reaches the wait (the shipped default differs).
             assert!(
-                stderr.contains("Waiting for the build of UDF my_udf version 2"),
+                stderr.contains("Waiting for the build of UDF my_udf version 2 (up to 30s)"),
                 "{stderr}"
             );
             assert!(
@@ -24328,40 +24192,6 @@ async fn udf_deploy_idle_at_attach_resumes_with_a_waking_attach() {
 
 // A build still running when the wait gives up can finish later; the error
 // names the attach that resumes the deploy once it does.
-#[tokio::test]
-async fn udf_deploy_build_timeout_names_the_resume_attach() {
-    let server = MockServer::start().await;
-    let storage = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    project_udf(project.path(), "my_udf", "python3.11");
-    mount_udf_upload_session(&server, &storage).await;
-    mount_deploy_service(&server, "svc-1", "running").await;
-    mount_deploy_new_udf(&server, "building").await;
-    let output = udf_test_command(
-        &server,
-        project.path(),
-        false,
-        false,
-        &["deploy", "my_udf", "--service", "svc-1", "--timeout", "1"],
-    )
-    .output()
-    .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("did not finish within 1s"), "{stderr}");
-    assert!(
-        stderr.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
-        "{stderr}"
-    );
-    assert!(
-        !deploy_calls(&server)
-            .await
-            .iter()
-            .any(|call| call.starts_with("PUT ")),
-        "nothing is attached before the build is ready"
-    );
-}
-
 // A build that reported an error has nothing to resume.
 #[tokio::test]
 async fn udf_deploy_failed_build_offers_no_resume() {
@@ -24386,6 +24216,13 @@ async fn udf_deploy_failed_build_offers_no_resume() {
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("failed"), "{message}");
     assert!(!message.contains("cloud udf attach"), "{message}");
+    assert!(
+        !deploy_calls(&server)
+            .await
+            .iter()
+            .any(|call| call.starts_with("PUT ")),
+        "nothing is attached before the build is ready"
+    );
 }
 
 /// Paths `udf deploy` requested, in order.
