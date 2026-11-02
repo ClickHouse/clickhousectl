@@ -20426,6 +20426,45 @@ async fn service_settings_read_routes_support_oauth_and_sparse_responses() {
     );
 }
 
+/// `settings get` renders the setting in human mode rather than passing the
+/// JSON through; the JSON branch is in the OAuth read-routes test above.
+#[tokio::test]
+async fn service_settings_get_renders_the_setting_in_human_mode() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings/compatibility",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "compatibility", "value": "26.2"}, "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "get",
+            "svc-1",
+            "compatibility",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert!(
+        serde_json::from_slice::<Value>(&output.stdout).is_err(),
+        "human mode must not print JSON: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"name: compatibility"), "{stdout}");
+    assert!(lines.contains(&"value: 26.2"), "{stdout}");
+}
+
 #[tokio::test]
 async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() {
     let mock = MockServer::start().await;
