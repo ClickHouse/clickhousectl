@@ -2971,6 +2971,29 @@ async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() 
     );
 }
 
+/// The metrics handler, not clap, checks the range order
+/// (`validate_datetime_range`), so a reverse range must stop before any request.
+#[tokio::test]
+async fn postgres_metrics_handler_rejects_a_reverse_range_before_any_request() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T13:00:00Z",
+            "--to-date",
+            "2026-04-16T12:00:00Z",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn postgres_metrics_omits_bucket_and_renders_every_sparse_series_and_point() {
     let mock = MockServer::start().await;
@@ -4575,6 +4598,26 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
             "{stdout}"
         );
         assert!(!stdout.contains("reset-password"), "{stdout}");
+
+        // Read replica `--json` prints the returned service (restore's JSON
+        // output is asserted by the `postgres_restore_*` tests).
+        if endpoint == "readReplica" {
+            let service = serde_json::json!({"id": ROLE_TEST_POSTGRES_ID});
+            let json_mock = MockServer::start().await;
+            mount_postgres_service_response(
+                &json_mock,
+                "POST",
+                &format!("/v1/organizations/org-1/postgres/source-id/{endpoint}"),
+                service.clone(),
+            )
+            .await;
+            let output = invoke_cli_with_cloud_credentials(&json_mock, &args);
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                service
+            );
+        }
     }
 }
 
@@ -23612,6 +23655,28 @@ async fn udf_directory_problems_report_local_udf_codes() {
         let error: Value = serde_json::from_slice(&output.stderr)
             .unwrap_or_else(|_| panic!("{args:?}: {}", String::from_utf8_lossy(&output.stderr)));
         assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+    }
+
+    // The functionName check runs in each handler (version create: its own
+    // test); a mismatch is a usage error before anything is uploaded.
+    let renamed = project_udf(project.path(), "renamed", "python3.11");
+    std::fs::write(
+        renamed.join("udf.json"),
+        serde_json::json!({
+            "functionName": "my_udf", "type": "executable", "runtime": "python3.11",
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for args in [
+        vec!["create", "renamed"],
+        vec!["deploy", "renamed", "--service", "svc-1"],
+    ] {
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
     assert!(server.received_requests().await.unwrap().is_empty());
 }
