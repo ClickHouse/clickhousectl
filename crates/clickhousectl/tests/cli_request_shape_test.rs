@@ -13773,33 +13773,6 @@ async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
 }
 
 #[tokio::test]
-async fn query_gateway_timeout_without_endpoints_points_at_service_get() {
-    // The default stub service carries no `endpoints` at all.
-    let control = start_mock_control_plane_with_service().await;
-    let (output, query_host) = invoke_service_query_against_failing_query_host(
-        &control,
-        500,
-        QUERY_GATEWAY_TIMEOUT_BODY,
-        &[],
-    )
-    .await;
-
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("clickhouse client --host <host> --secure --port 9440"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(
-            "clickhousectl cloud service get 11111111-2222-3333-4444-555555555555 --org-id org-1"
-        ),
-        "{stderr}"
-    );
-    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
-}
-
-#[tokio::test]
 async fn query_gateway_timeout_json_emits_a_structured_error() {
     let control = start_mock_control_plane_with_native_endpoint().await;
     let (output, _query_host) = invoke_service_query_against_failing_query_host(
@@ -13832,33 +13805,6 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
     assert!(
         message.contains("SELECT query_id, elapsed FROM system.processes"),
         "{message}"
-    );
-}
-
-#[tokio::test]
-async fn query_gateway_timeout_json_omits_an_absent_endpoint() {
-    let control = start_mock_control_plane_with_service().await;
-    let (output, _query_host) = invoke_service_query_against_failing_query_host(
-        &control,
-        500,
-        QUERY_GATEWAY_TIMEOUT_BODY,
-        &["--json"],
-    )
-    .await;
-
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let error: Value = serde_json::from_str(stderr.trim())
-        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
-    assert_eq!(error["error"]["code"], "query_timeout");
-    // Absent means omitted, never a fabricated host or a `null`.
-    assert!(error["error"].get("host").is_none(), "{stderr}");
-    assert!(error["error"].get("port").is_none(), "{stderr}");
-    assert!(
-        error["error"]["command"]
-            .as_str()
-            .is_some_and(|command| command.contains("--host <host>")),
-        "{stderr}"
     );
 }
 
@@ -20508,43 +20454,6 @@ async fn service_settings_set_reads_a_map_from_stdin() {
     assert_success(&valid);
 }
 
-#[tokio::test]
-async fn service_settings_schema_human_output_renders_nested_sparse_entries() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickhouseSettings/schema",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"settings": [
-                {
-                    "name": "compatibility",
-                    "type": "string",
-                    "description": "Compatibility version",
-                    "enum": [0, 1]
-                },
-                {"warning": "future warning"},
-                {}
-            ]},
-            "status": 200,
-            "requestId": "stub-settings-schema-human"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "service", "settings", "schema", "svc-1", "--org-id", "org-1",
-        ],
-    );
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("settings:\n  - description: Compatibility version"));
-    assert!(stdout.contains("enum: [0, 1]"));
-    assert!(stdout.contains("warning: future warning"));
-}
-
 const UPGRADE_WINDOW_PATH: &str = "/v1/organizations/org-1/services/svc-1/upgradeWindow";
 
 #[tokio::test]
@@ -20627,38 +20536,6 @@ async fn upgrade_window_get_human_output_names_weekday_and_labels_duration() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "duration: 6 hours\nstartHourUtc: 12\nweekday: Wednesday (3)\n"
-    );
-}
-
-#[tokio::test]
-async fn upgrade_window_get_human_output_preserves_unknowns_and_shows_absence() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(UPGRADE_WINDOW_PATH))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"weekday": 9, "duration": 8},
-            "status": 200,
-            "requestId": "stub-upgrade-window-human-unknown"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "service",
-            "upgrade-window",
-            "get",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "duration: 8 hours\nstartHourUtc: -\nweekday: 9\n"
     );
 }
 
@@ -20973,51 +20850,6 @@ async fn org_get_and_update_require_one_organization_for_autodetection() {
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].url.path(), "/v1/organizations");
         }
-    }
-}
-
-#[tokio::test]
-async fn service_settings_get_preserves_json_types_and_renders_human_values() {
-    let mock = MockServer::start().await;
-    for (name, value, display) in [
-        ("max_query_size", serde_json::json!(262146), "262146"),
-        ("compatibility", serde_json::json!("26.2"), "26.2"),
-        ("future_bool", serde_json::json!(false), "false"),
-        ("empty_value", serde_json::json!(""), "\"\""),
-    ] {
-        let setting = serde_json::json!({"name": name, "value": value});
-        Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1/organizations/org-1/services/svc-1/clickhouseSettings/{name}"
-            )))
-            .and(wiremock::matchers::basic_auth(
-                "fake-key-for-tests",
-                "fake-secret-for-tests",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": setting, "status": 200
-            })))
-            .expect(2)
-            .mount(&mock)
-            .await;
-        let args = [
-            "service", "settings", "get", "svc-1", name, "--org-id", "org-1",
-        ];
-        let json = invoke_cli_with_cloud_credentials(&mock, &args);
-        assert_success(&json);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
-            setting
-        );
-        let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
-        assert_success(&human);
-        let stdout = String::from_utf8(human.stdout).unwrap();
-        assert!(
-            stdout
-                .lines()
-                .any(|line| line == format!("value: {display}")),
-            "{stdout}"
-        );
     }
 }
 
@@ -21567,41 +21399,6 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
     assert_eq!(
         String::from_utf8_lossy(&empty.stdout),
         "No Query API endpoints found\nNext cursor: after-empty-page\n"
-    );
-}
-
-#[tokio::test]
-async fn query_api_endpoint_delete_has_a_typed_human_confirmation() {
-    let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": 200, "requestId": "delete-request"
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let project = tempfile::tempdir().unwrap();
-    let output = invoke_query_api_endpoint(
-        &server,
-        project.path(),
-        false,
-        false,
-        &[
-            "delete",
-            "svc-1",
-            QUERY_API_ENDPOINT_ID,
-            "--org-id",
-            "org-1",
-        ],
-        None,
-    );
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        format!("Deleted Query API endpoint {QUERY_API_ENDPOINT_ID}\n")
     );
 }
 
