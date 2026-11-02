@@ -418,7 +418,7 @@ mod tests {
     );
 
     #[test]
-    fn ps_rows_parse_from_macos_output() {
+    fn ps_rows_parse_from_macos_and_linux_output() {
         let rows = parse_ps_process_rows(MACOS_PS_OUTPUT);
 
         assert_eq!(rows.len(), 2);
@@ -435,10 +435,7 @@ mod tests {
             rows[1].command, "clickhouse-watchdog",
             "the padding `ps` prints after the rewritten name is not an argument"
         );
-    }
 
-    #[test]
-    fn ps_rows_parse_from_linux_output() {
         let rows = parse_ps_process_rows(LINUX_PS_OUTPUT);
 
         assert_eq!(rows.len(), 2);
@@ -464,90 +461,69 @@ mod tests {
     }
 
     #[test]
-    fn a_server_supervised_by_a_watchdog_reports_the_watchdog_pid() {
-        let macos = resolve_watchdog_pids(&[95194], &parse_ps_process_rows(MACOS_PS_OUTPUT));
-        assert_eq!(macos.get(&95194).copied(), Some(95193));
-
-        let linux = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(LINUX_PS_OUTPUT));
-        assert_eq!(linux.get(&4211).copied(), Some(4210));
-    }
-
-    #[test]
-    fn a_server_whose_parent_is_not_a_watchdog_reports_itself() {
-        // CLICKHOUSE_WATCHDOG_ENABLE=0, so the CLI's own child is the server
-        // and its parent is a shell.
-        let output = concat!(
-            "4211 4210 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
-            "4210 1 /bin/zsh\n",
-        );
-
-        let resolved = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(output));
-
-        assert_eq!(resolved.get(&4211).copied(), Some(4211));
-    }
-
-    #[test]
-    fn a_server_whose_parent_line_is_missing_reports_itself() {
-        // The parent exited between the two `ps` calls, so only the server's
-        // own row is available.
-        let output = "4211 4210 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n";
-
-        let resolved = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(output));
-
-        assert_eq!(resolved.get(&4211).copied(), Some(4211));
-    }
-
-    #[test]
-    fn a_server_with_no_row_at_all_reports_itself() {
-        let resolved = resolve_watchdog_pids(&[4211], &[]);
-
-        assert_eq!(resolved.get(&4211).copied(), Some(4211));
-    }
-
-    #[test]
-    fn every_scanned_pid_is_resolved_independently() {
-        let output = concat!(
-            "10 9 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
-            "9 1 clickhouse-watchdog server\n",
-            "20 1 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
-        );
-
-        let resolved = resolve_watchdog_pids(&[10, 20], &parse_ps_process_rows(output));
-
-        assert_eq!(resolved.get(&10).copied(), Some(9));
-        assert_eq!(resolved.get(&20).copied(), Some(20));
+    fn each_server_reports_its_watchdog_parent_or_else_itself() {
+        let server = "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server";
+        for (case, output, expected) in [
+            ("macOS watchdog", MACOS_PS_OUTPUT, vec![(95194, 95193)]),
+            ("Linux watchdog", LINUX_PS_OUTPUT, vec![(4211, 4210)]),
+            // CLICKHOUSE_WATCHDOG_ENABLE=0, so the CLI's own child is the
+            // server and its parent is a shell.
+            (
+                "parent is not a watchdog",
+                &format!("4211 4210 {server}\n4210 1 /bin/zsh\n"),
+                vec![(4211, 4211)],
+            ),
+            // The parent exited between the two `ps` calls, so only the
+            // server's own row is available.
+            (
+                "parent row missing",
+                &format!("4211 4210 {server}\n"),
+                vec![(4211, 4211)],
+            ),
+            ("no row at all", "", vec![(4211, 4211)]),
+            (
+                "each PID resolved independently",
+                &format!("10 9 {server}\n9 1 clickhouse-watchdog server\n20 1 {server}\n"),
+                vec![(10, 9), (20, 20)],
+            ),
+        ] {
+            let pids: Vec<u32> = expected.iter().map(|(pid, _)| *pid).collect();
+            let resolved = resolve_watchdog_pids(&pids, &parse_ps_process_rows(output));
+            for (pid, reported) in expected {
+                assert_eq!(resolved.get(&pid).copied(), Some(reported), "{case}");
+            }
+        }
     }
 
     #[test]
     fn watchdog_commands_are_recognised_by_their_rewritten_argv0() {
-        // The real row: the rewritten name and the padding of the zeroed
-        // `argv` region behind it, with no arguments.
-        assert!(is_watchdog_command("clickhouse-watchdog     "));
-        assert!(is_watchdog_command(
-            "clickhouse-watchdog server -- --path=./"
-        ));
-        assert!(is_watchdog_command("/usr/bin/clickhouse-watchdog server"));
-        // The rewrite is truncated to the length of the spawn path, so a
-        // prefix counts as long as it is longer than "clickhouse" itself.
-        assert!(is_watchdog_command("clickhouse-watc server"));
-        assert!(is_watchdog_command("clickhouse- server"));
-    }
-
-    #[test]
-    fn a_plain_clickhouse_command_is_not_a_watchdog() {
-        // "clickhouse" is a prefix of "clickhouse-watchdog", so a name no
-        // longer than the server's own basename must not count.
-        assert!(!is_watchdog_command("clickhouse server"));
-        assert!(!is_watchdog_command("clickhouse local --query 'SELECT 1'"));
-        assert!(!is_watchdog_command(
-            "/Users/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./"
-        ));
-        // Long enough, but not a prefix of the watchdog's name.
-        assert!(!is_watchdog_command("clickhouse-client --host localhost"));
-        assert!(!is_watchdog_command("clickhouse-watchdog-wrapper server"));
-        assert!(!is_watchdog_command("/bin/zsh"));
-        assert!(!is_watchdog_command("/sbin/launchd"));
-        assert!(!is_watchdog_command(""));
+        for (command, watchdog) in [
+            // The real row: the rewritten name and the padding of the zeroed
+            // `argv` region behind it, with no arguments.
+            ("clickhouse-watchdog     ", true),
+            ("clickhouse-watchdog server -- --path=./", true),
+            ("/usr/bin/clickhouse-watchdog server", true),
+            // The rewrite is truncated to the length of the spawn path, so a
+            // prefix counts as long as it is longer than "clickhouse" itself.
+            ("clickhouse-watc server", true),
+            ("clickhouse- server", true),
+            // "clickhouse" is a prefix of "clickhouse-watchdog", so a name no
+            // longer than the server's own basename must not count.
+            ("clickhouse server", false),
+            ("clickhouse local --query 'SELECT 1'", false),
+            (
+                "/Users/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./",
+                false,
+            ),
+            // Long enough, but not a prefix of the watchdog's name.
+            ("clickhouse-client --host localhost", false),
+            ("clickhouse-watchdog-wrapper server", false),
+            ("/bin/zsh", false),
+            ("/sbin/launchd", false),
+            ("", false),
+        ] {
+            assert_eq!(is_watchdog_command(command), watchdog, "{command:?}");
+        }
     }
 
     // ── inspect_process over an already-scanned `ps` row ───────────────
@@ -584,37 +560,23 @@ mod tests {
     }
 
     #[test]
-    fn ports_come_from_the_managed_config_when_the_command_line_has_none() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("app/.clickhouse/servers/dev/data");
-        crate::local::config::write_managed_config(&data_dir, 18123, 19000).unwrap();
-
-        let proc = inspect_process(
-            4211,
-            data_dir.to_str().unwrap(),
-            "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server",
-        )
-        .expect("a CLI-managed cwd is a discovered server");
-
-        assert_eq!(proc.http_port, Some(18123));
-        assert_eq!(proc.tcp_port, Some(19000));
-    }
-
-    #[test]
     fn command_line_ports_from_older_releases_win_over_the_managed_config() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("app/.clickhouse/servers/dev/data");
         crate::local::config::write_managed_config(&data_dir, 18123, 19000).unwrap();
+        let binary = "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server";
 
-        let proc = inspect_process(
-            4211,
-            data_dir.to_str().unwrap(),
-            "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./ --http_port=8123 --tcp_port=9000",
-        )
-        .expect("a CLI-managed cwd is a discovered server");
-
-        assert_eq!(proc.http_port, Some(8123));
-        assert_eq!(proc.tcp_port, Some(9000));
+        for (cmdline, expected) in [
+            (binary.to_string(), (Some(18123), Some(19000))),
+            (
+                format!("{binary} -- --path=./ --http_port=8123 --tcp_port=9000"),
+                (Some(8123), Some(9000)),
+            ),
+        ] {
+            let proc = inspect_process(4211, data_dir.to_str().unwrap(), &cmdline)
+                .expect("a CLI-managed cwd is a discovered server");
+            assert_eq!((proc.http_port, proc.tcp_port), expected, "{cmdline}");
+        }
     }
 
     #[test]
@@ -624,127 +586,100 @@ mod tests {
         );
     }
 
-    // ── parse_server_cwd tests ─────────────────────────────────────────
+    // ── cwd, port and version parsers ──────────────────────────────────
 
     #[test]
-    fn parse_cwd_standard_path() {
-        let cwd = "/Users/al/project-a/.clickhouse/servers/default/data";
-        let (root, name) = parse_server_cwd(cwd).unwrap();
-        assert_eq!(root, "/Users/al/project-a");
-        assert_eq!(name, "default");
+    fn parse_server_cwd_splits_project_root_and_name_or_rejects_unmanaged_paths() {
+        for (cwd, expected) in [
+            (
+                "/Users/al/project-a/.clickhouse/servers/default/data",
+                Some(("/Users/al/project-a", "default")),
+            ),
+            (
+                "/Users/al/project-a/.clickhouse/servers/default/data/",
+                Some(("/Users/al/project-a", "default")),
+            ),
+            (
+                "/home/user/myapp/.clickhouse/servers/bold-crane/data",
+                Some(("/home/user/myapp", "bold-crane")),
+            ),
+            (
+                "/Users/al/code/projects/web/.clickhouse/servers/test/data",
+                Some(("/Users/al/code/projects/web", "test")),
+            ),
+            // The server dir itself, without `/data`: the suffix is only
+            // stripped when present, and "default" is still a valid name.
+            (
+                "/Users/al/project/.clickhouse/servers/default",
+                Some(("/Users/al/project", "default")),
+            ),
+            // Not started by the CLI.
+            ("/var/lib/clickhouse", None),
+            ("/Users/al/project/.clickhouse/servers/", None),
+        ] {
+            let expected = expected.map(|(root, name)| (root.to_string(), name.to_string()));
+            assert_eq!(parse_server_cwd(cwd), expected, "{cwd}");
+        }
     }
 
     #[test]
-    fn parse_cwd_trailing_slash() {
-        let cwd = "/Users/al/project-a/.clickhouse/servers/default/data/";
-        let (root, name) = parse_server_cwd(cwd).unwrap();
-        assert_eq!(root, "/Users/al/project-a");
-        assert_eq!(name, "default");
+    fn parse_port_flag_reads_the_named_flag_value() {
+        let managed = "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server";
+        for (cmdline, flag, expected) in [
+            (
+                format!("{managed} --http_port=8123 --tcp_port=9000"),
+                "--http_port",
+                Some(8123),
+            ),
+            (
+                format!("{managed} --http_port=8124 --tcp_port=9001"),
+                "--tcp_port",
+                Some(9001),
+            ),
+            (
+                "clickhouse server --http_port=18123 --tcp_port=19000".to_string(),
+                "--http_port",
+                Some(18123),
+            ),
+            (
+                "clickhouse server --http_port=18123 --tcp_port=19000".to_string(),
+                "--tcp_port",
+                Some(19000),
+            ),
+            ("clickhouse server".to_string(), "--http_port", None),
+            (
+                "clickhouse server --http_port=abc".to_string(),
+                "--http_port",
+                None,
+            ),
+        ] {
+            assert_eq!(
+                parse_port_flag(&cmdline, flag),
+                expected,
+                "{cmdline} {flag}"
+            );
+        }
     }
 
     #[test]
-    fn parse_cwd_custom_name() {
-        let cwd = "/home/user/myapp/.clickhouse/servers/bold-crane/data";
-        let (root, name) = parse_server_cwd(cwd).unwrap();
-        assert_eq!(root, "/home/user/myapp");
-        assert_eq!(name, "bold-crane");
-    }
-
-    #[test]
-    fn parse_cwd_deep_project_root() {
-        let cwd = "/Users/al/code/projects/web/.clickhouse/servers/test/data";
-        let (root, name) = parse_server_cwd(cwd).unwrap();
-        assert_eq!(root, "/Users/al/code/projects/web");
-        assert_eq!(name, "test");
-    }
-
-    #[test]
-    fn parse_cwd_not_cli_managed() {
-        // Process not started by the CLI — no matching pattern
-        assert!(parse_server_cwd("/var/lib/clickhouse").is_none());
-    }
-
-    #[test]
-    fn parse_cwd_missing_data_suffix() {
-        // cwd is the server dir but not the data subdir — ambiguous, still works
-        // because we strip /data suffix only if present
-        let cwd = "/Users/al/project/.clickhouse/servers/default";
-        // This doesn't end in /data, so "default" is treated as the rest
-        // Since "default" doesn't contain '/' and isn't empty, it's accepted
-        let (root, name) = parse_server_cwd(cwd).unwrap();
-        assert_eq!(root, "/Users/al/project");
-        assert_eq!(name, "default");
-    }
-
-    #[test]
-    fn parse_cwd_empty_name() {
-        let cwd = "/Users/al/project/.clickhouse/servers/";
-        assert!(parse_server_cwd(cwd).is_none());
-    }
-
-    // ── parse_port_flag tests ──────────────────────────────────────────
-
-    #[test]
-    fn parse_http_port() {
-        let cmdline = "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8123 --tcp_port=9000";
-        assert_eq!(parse_port_flag(cmdline, "--http_port"), Some(8123));
-    }
-
-    #[test]
-    fn parse_tcp_port() {
-        let cmdline = "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8124 --tcp_port=9001";
-        assert_eq!(parse_port_flag(cmdline, "--tcp_port"), Some(9001));
-    }
-
-    #[test]
-    fn parse_port_custom() {
-        let cmdline = "clickhouse server --http_port=18123 --tcp_port=19000";
-        assert_eq!(parse_port_flag(cmdline, "--http_port"), Some(18123));
-        assert_eq!(parse_port_flag(cmdline, "--tcp_port"), Some(19000));
-    }
-
-    #[test]
-    fn parse_port_missing() {
-        let cmdline = "clickhouse server";
-        assert_eq!(parse_port_flag(cmdline, "--http_port"), None);
-    }
-
-    #[test]
-    fn parse_port_invalid_value() {
-        let cmdline = "clickhouse server --http_port=abc";
-        assert_eq!(parse_port_flag(cmdline, "--http_port"), None);
-    }
-
-    // ── parse_version_from_cmdline tests ───────────────────────────────
-
-    #[test]
-    fn parse_version_standard() {
-        let cmdline =
-            "/Users/al/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8123";
-        assert_eq!(
-            parse_version_from_cmdline(cmdline),
-            Some("25.12.5.44".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_version_linux_path() {
-        let cmdline = "/home/user/.clickhouse/versions/24.8.1.1/clickhouse server";
-        assert_eq!(
-            parse_version_from_cmdline(cmdline),
-            Some("24.8.1.1".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_version_not_managed() {
-        let cmdline = "/usr/bin/clickhouse server";
-        assert_eq!(parse_version_from_cmdline(cmdline), None);
-    }
-
-    #[test]
-    fn parse_version_empty_version() {
-        let cmdline = "/home/user/.clickhouse/versions//clickhouse server";
-        assert_eq!(parse_version_from_cmdline(cmdline), None);
+    fn parse_version_from_cmdline_reads_the_managed_versions_directory() {
+        for (cmdline, expected) in [
+            (
+                "/Users/al/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8123",
+                Some("25.12.5.44"),
+            ),
+            (
+                "/home/user/.clickhouse/versions/24.8.1.1/clickhouse server",
+                Some("24.8.1.1"),
+            ),
+            ("/usr/bin/clickhouse server", None),
+            ("/home/user/.clickhouse/versions//clickhouse server", None),
+        ] {
+            assert_eq!(
+                parse_version_from_cmdline(cmdline).as_deref(),
+                expected,
+                "{cmdline}"
+            );
+        }
     }
 }
