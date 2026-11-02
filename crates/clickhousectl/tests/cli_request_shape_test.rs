@@ -13575,13 +13575,17 @@ async fn private_endpoint_create_sends_well_formed_endpoint_id() {
             "org-1",
             "--endpoint-id",
             "vpce-0123456789abcdef0",
+            "--description",
+            "prod",
         ],
     );
 
     assert_success(&output);
     let requests = mock.received_requests().await.unwrap();
-    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert_eq!(body["id"], "vpce-0123456789abcdef0");
+    assert_eq!(
+        requests[0].body_json::<Value>().unwrap(),
+        serde_json::json!({"id": "vpce-0123456789abcdef0", "description": "prod"})
+    );
 }
 
 // ── `clickpipe scale` (issue #605) ─────────────────────────────────────────
@@ -20182,7 +20186,9 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
             "minReplicaMemoryGb": 48.0,
             "maxReplicaMemoryGb": 48.0,
             "profile": "v1-standard-byoc-4",
-            "byocId": "byoc-1"
+            "byocId": "byoc-1",
+            "tags": [{"key": "env", "value": "prod"}],
+            "endpoints": [{"protocol": "mysql", "enabled": true}]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
@@ -20211,6 +20217,10 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
             "48",
             "--max-replica-memory-gb",
             "48",
+            "--tag",
+            "env=prod",
+            "--enable-endpoint",
+            "mysql",
             "--org-id",
             "org-1",
         ],
