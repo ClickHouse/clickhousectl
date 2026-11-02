@@ -3427,41 +3427,6 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
 }
 
 #[tokio::test]
-async fn postgres_slow_query_list_renders_useful_empty_human_output() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [],
-            "status": 200
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "postgres",
-            "slow-queries",
-            "list",
-            "pg-1",
-            "--from-date",
-            "2026-04-16T12:00:00Z",
-            "--to-date",
-            "2026-04-16T13:00:00Z",
-            "--org-id",
-            "org-1",
-        ],
-    );
-
-    assert_success(&output);
-    assert_eq!(output.stdout, b"No Postgres slow query patterns found\n");
-}
-
-#[tokio::test]
 async fn postgres_slow_query_get_has_distinct_query_and_preserves_recent_executions() {
     let mock = MockServer::start().await;
     let result = serde_json::json!({
@@ -3623,44 +3588,6 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
             .all(|(key, _)| key != "app" && key != "timestamp"),
         "optional detail filters must be omitted: {query:?}"
     );
-}
-
-#[tokio::test]
-async fn postgres_slow_query_get_renders_an_explicit_empty_execution_list() {
-    let mock = MockServer::start().await;
-    let result = serde_json::json!({"recentExecutions": []});
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns/query-1",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": result,
-            "status": 200
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "postgres",
-            "slow-queries",
-            "get",
-            "pg-1",
-            "query-1",
-            "--db-name",
-            "app",
-            "--db-user",
-            "reader",
-            "--db-operation",
-            "SELECT",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert_eq!(output.stdout, b"recentExecutions: []\n");
 }
 
 // ── Postgres Prometheus metrics (issue #584) ──────────────────────────────
@@ -14912,64 +14839,6 @@ async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
     }
 }
 
-#[tokio::test]
-async fn postgres_config_get_shows_empty_sections_in_human_output() {
-    let mock = MockServer::start().await;
-    let config = serde_json::json!({"pgConfig": {}, "pgBouncerConfig": {}});
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": config
-        })))
-        .expect(2)
-        .mount(&mock)
-        .await;
-    let args = ["postgres", "config", "get", "pg-1", "--org-id", "org-1"];
-    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
-    assert_success(&human);
-    assert_eq!(
-        String::from_utf8(human.stdout).unwrap(),
-        "pgBouncerConfig: {}\npgConfig: {}\n"
-    );
-    let json = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&json);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
-        config
-    );
-}
-
-#[tokio::test]
-async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_sections() {
-    for result in [
-        serde_json::json!({"pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
-        serde_json::json!({"pgBouncerConfig": {}}),
-        serde_json::json!({"pgBouncerConfig": null}),
-        serde_json::json!({}),
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_pgbouncer_cli(
-            &mock,
-            &["postgres", "config", "get", "pg-1", "--org-id", "org-1"],
-        );
-        assert_success(&output);
-        let actual: Value = serde_json::from_slice(&output.stdout).unwrap();
-        if result.get("pgBouncerConfig").is_none_or(Value::is_null) {
-            assert!(actual.get("pgBouncerConfig").is_none());
-        } else {
-            assert_eq!(actual["pgBouncerConfig"], result["pgBouncerConfig"]);
-        }
-    }
-}
-
 // IP allowlist descriptions (#589).
 
 #[tokio::test]
@@ -15659,16 +15528,62 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_fil
     );
 }
 
+/// Each ClickStack list renders its own table in human mode. A sparse `{}`
+/// row shows every column as `-`, and an unknown webhook variant still shows
+/// the fields it carries.
 #[tokio::test]
-async fn clickstack_human_lists_render_sparse_fields_and_api_errors_include_org() {
-    for (resource, result) in [
-        ("source", serde_json::json!([{}])),
-        ("role", serde_json::json!([{}])),
+async fn clickstack_human_lists_render_every_resource_table() {
+    for (resource, route, result, header, rows) in [
+        (
+            "source",
+            "sources",
+            serde_json::json!([{}]),
+            vec!["Name", "ID", "Kind"],
+            vec![vec!["-", "-", "-"]],
+        ),
+        (
+            "role",
+            "roles",
+            serde_json::json!([{}]),
+            vec!["Name", "ID", "Predefined", "Description"],
+            vec![vec!["-", "-", "-", "-"]],
+        ),
+        (
+            "dashboard",
+            "dashboards",
+            serde_json::json!([{}]),
+            vec!["Name", "ID", "Tiles", "Tags"],
+            vec![vec!["-", "-", "-", "-"]],
+        ),
+        (
+            "alert",
+            "alerts",
+            serde_json::json!([{}]),
+            vec!["Name", "ID", "Source", "State", "Interval"],
+            vec![vec!["-", "-", "-", "-", "-"]],
+        ),
+        (
+            "webhook",
+            "webhooks",
+            serde_json::json!([
+                {"service": "future", "name": "hook", "futureField": true},
+                {}
+            ]),
+            vec!["Name", "ID", "Service", "URL"],
+            vec![vec!["hook", "-", "future", "-"], vec!["-", "-", "-", "-"]],
+        ),
+        (
+            "saved-search",
+            "saved-searches",
+            serde_json::json!([{}]),
+            vec!["Name", "ID", "Source ID", "Language"],
+            vec![vec!["-", "-", "-", "-"]],
+        ),
     ] {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(format!(
-                "/v1/organizations/org-1/services/svc-1/clickstack/{resource}s"
+                "/v1/organizations/org-1/services/svc-1/clickstack/{route}"
             )))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
@@ -15683,40 +15598,21 @@ async fn clickstack_human_lists_render_sparse_fields_and_api_errors_include_org(
             false,
         );
         assert_success(&output);
-        assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let table: Vec<Vec<&str>> = stdout
+            .lines()
+            .filter(|line| line.starts_with('\u{2502}'))
+            .map(|line| {
+                line.trim_matches('\u{2502}')
+                    .split('\u{2502}')
+                    .map(str::trim)
+                    .collect()
+            })
+            .collect();
+        let mut expected = vec![header];
+        expected.extend(rows);
+        assert_eq!(table, expected, "{resource}:\n{stdout}");
     }
-
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-sensitive/services/svc-1/clickstack/roles/role-1",
-        ))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error":"NOT_FOUND"})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "role",
-            "get",
-            "svc-1",
-            "role-1",
-            "--org-id",
-            "org-sensitive",
-        ],
-        None,
-        false,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("org-sensitive") && error.contains("NOT_FOUND"),
-        "{error}"
-    );
 }
 
 // UDF operations and artifact uploads run against separate hosts so auth and
@@ -15961,59 +15857,6 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
                 "{empty_state}\nPagination: 0 total records; page limit 100; next cursor: next page\n"
             )
         );
-    }
-}
-
-#[tokio::test]
-async fn udf_list_json_preserves_zero_and_omits_nullable_metadata_without_fabricating_results() {
-    for (args, suffix) in [
-        (vec!["list"], ""),
-        (vec!["version", "list", "my_udf"], "/my_udf/versions"),
-        (vec!["attachment", "list", "my_udf"], "/my_udf/attachments"),
-    ] {
-        for (wire, expected) in [
-            (
-                serde_json::json!({"result":[],"limit":25,"totalCount":0,"nextCursor":null}),
-                Some(serde_json::json!({"result":[],"limit":25,"totalCount":0})),
-            ),
-            (
-                serde_json::json!({"result":[],"limit":null,"totalCount":null,"nextCursor":null}),
-                Some(serde_json::json!({"result":[]})),
-            ),
-            (
-                serde_json::json!({"result":[{}]}),
-                Some(serde_json::json!({"result":[{}]})),
-            ),
-            (serde_json::json!({"result":null}), None),
-            (serde_json::json!({}), None),
-        ] {
-            let server = MockServer::start().await;
-            let project = tempfile::tempdir().unwrap();
-            Mock::given(method("GET"))
-                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(wire))
-                .expect(1)
-                .mount(&server)
-                .await;
-            let output = udf_test_command(&server, project.path(), false, true, &args)
-                .output()
-                .unwrap();
-            if let Some(expected) = expected {
-                assert_success(&output);
-                assert_eq!(
-                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-                    expected
-                );
-            } else {
-                assert_eq!(output.status.code(), Some(1));
-                assert!(
-                    serde_json::from_slice::<Value>(&output.stderr)
-                        .unwrap()
-                        .get("error")
-                        .is_some()
-                );
-            }
-        }
     }
 }
 
@@ -16768,90 +16611,6 @@ async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output
     assert_eq!(write_bodies, vec![body.clone(), body]);
 }
 
-#[tokio::test]
-async fn clickstack_saved_search_sparse_human_output_and_errors_are_safe() {
-    let mock = MockServer::start().await;
-    let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
-    Mock::given(method("GET"))
-        .and(path(searches))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{}]
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("{searches}/sparse")))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {}
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "saved-search",
-            "list",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-        None,
-        false,
-    );
-    assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "saved-search",
-            "get",
-            "svc-1",
-            "sparse",
-            "--org-id",
-            "org-1",
-        ],
-        None,
-        false,
-    );
-    assert_success(&output);
-
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-sensitive/services/svc-1/clickstack/saved-searches/search-1",
-        ))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error":"NOT_FOUND"})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "saved-search",
-            "get",
-            "svc-1",
-            "search-1",
-            "--org-id",
-            "org-sensitive",
-        ],
-        None,
-        false,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("org-sensitive") && error.contains("NOT_FOUND"),
-        "{error}"
-    );
-}
-
 // ── ClickStack dashboard commands (issue #693) ─────────────────────────────
 
 #[tokio::test]
@@ -17047,108 +16806,6 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with
         writes[2].1,
         serde_json::json!({"name":"minimal","tiles":[]})
     );
-}
-
-#[tokio::test]
-async fn clickstack_dashboard_validation_surfaces_invalid_and_sparse_results() {
-    for (result, expected) in [
-        (
-            serde_json::json!({"valid":false,"errors":[{"path":"tiles.0.config","message":"Required"}],"normalized":null}),
-            Some(false),
-        ),
-        (serde_json::json!({}), None),
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(
-                "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/validate",
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_clickstack_cli(
-            &mock,
-            &[
-                "clickstack",
-                "dashboard",
-                "validate",
-                "svc-1",
-                "--file",
-                "-",
-                "--org-id",
-                "org-1",
-            ],
-            Some(r#"{"name":"dashboard","tiles":[]}"#),
-            true,
-        );
-        assert_success(&output);
-        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(output.get("valid").and_then(Value::as_bool), expected);
-        if expected == Some(false) {
-            assert_eq!(output["errors"][0]["path"], "tiles.0.config");
-        }
-    }
-}
-
-#[tokio::test]
-async fn clickstack_dashboard_sparse_human_list_and_errors_are_safe() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":[{}]})))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "dashboard",
-            "list",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-        None,
-        false,
-    );
-    assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
-
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-sensitive/services/svc-1/clickstack/dashboards/missing",
-        ))
-        .respond_with(
-            ResponseTemplate::new(404)
-                .set_body_json(serde_json::json!({"error":"DASHBOARD_NOT_FOUND"})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "dashboard",
-            "get",
-            "svc-1",
-            "missing",
-            "--org-id",
-            "org-sensitive",
-        ],
-        None,
-        false,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("DASHBOARD_NOT_FOUND"), "{error}");
 }
 
 // ── ClickStack alert and webhook commands (issue #695) ─────────────────────
@@ -17381,106 +17038,6 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_w
         .map(|request| request.body_json::<Value>().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(bodies, vec![alert.clone(), alert, webhook.clone(), webhook]);
-}
-
-#[tokio::test]
-async fn clickstack_alert_and_webhook_sparse_lists_unknown_variants_and_errors_are_safe() {
-    for (resource, result) in [
-        ("alert", serde_json::json!([{}])),
-        (
-            "webhook",
-            serde_json::json!([{"service":"future","futureField":true},{}]),
-        ),
-    ] {
-        let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(format!(
-                "/v1/organizations/org-1/services/svc-1/clickstack/{resource}s"
-            )))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
-            )
-            .expect(1)
-            .mount(&mock)
-            .await;
-        let output = invoke_clickstack_cli(
-            &mock,
-            &["clickstack", resource, "list", "svc-1", "--org-id", "org-1"],
-            None,
-            false,
-        );
-        assert_success(&output);
-        assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
-    }
-
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-sensitive/services/svc-1/clickstack/alerts/missing",
-        ))
-        .respond_with(
-            ResponseTemplate::new(404)
-                .set_body_json(serde_json::json!({"error":"ALERT_NOT_FOUND"})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "alert",
-            "get",
-            "svc-1",
-            "missing",
-            "--org-id",
-            "org-sensitive",
-        ],
-        None,
-        false,
-    );
-    assert_eq!(output.status.code(), Some(1));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("ALERT_NOT_FOUND"), "{error}");
-}
-
-#[tokio::test]
-async fn clickstack_alert_detail_preserves_state_channels_and_query_timeout() {
-    let mock = MockServer::start().await;
-    let result = serde_json::json!({
-        "id":"alert-1", "state":"ALERT", "channel":{"type":"future","data":true},
-        "channels":[{"type":"email","emailRecipients":null}],
-        "executionErrors":[{"type":"QUERY_TIMEOUT","message":"query timed out","timestamp":null}]
-    });
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_clickstack_cli(
-        &mock,
-        &[
-            "clickstack",
-            "alert",
-            "get",
-            "svc-1",
-            "alert-1",
-            "--org-id",
-            "org-1",
-        ],
-        None,
-        true,
-    );
-    assert_success(&output);
-    let output: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(output["state"], "ALERT");
-    assert_eq!(output["executionErrors"][0]["type"], "QUERY_TIMEOUT");
-    assert_eq!(output["channel"]["type"], "future");
 }
 
 // ── ClickStack webhook validation and inline alerts (issue #1127) ──────────
@@ -17818,7 +17375,8 @@ async fn byoc_infrastructure_commands_send_exact_paths_and_bodies() {
         serde_json::json!({"id": "byoc-1", "displayName": "production"})
     );
 
-    let update = invoke_cli_with_cloud_credentials(
+    // Human mode: the handler renders the returned infrastructure.
+    let update = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
             "org",
@@ -17832,6 +17390,12 @@ async fn byoc_infrastructure_commands_send_exact_paths_and_bodies() {
         ],
     );
     assert_success(&update);
+    let stdout = String::from_utf8(update.stdout).unwrap();
+    assert!(serde_json::from_str::<Value>(&stdout).is_err(), "{stdout}");
+    assert!(
+        stdout.lines().any(|line| line == "displayName: renamed"),
+        "{stdout}"
+    );
 
     let delete = invoke_cli_with_cloud_credentials(
         &mock,
@@ -17842,36 +17406,6 @@ async fn byoc_infrastructure_commands_send_exact_paths_and_bodies() {
         serde_json::from_slice::<Value>(&delete.stdout).unwrap(),
         serde_json::json!({"status": 200, "requestId": "stub-byoc-delete"})
     );
-}
-
-#[tokio::test]
-async fn byoc_update_human_output_tolerates_sparse_fields() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"state": "infra-provisioning"},
-            "status": 200,
-            "requestId": "stub-sparse-byoc-update"
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "org",
-            "byoc",
-            "update",
-            "byoc-1",
-            "--display-name",
-            "renamed",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("infra-provisioning"));
 }
 
 fn byoc_envelope(result: Value, request_id: &str) -> ResponseTemplate {
@@ -17963,27 +17497,6 @@ async fn byoc_get_and_progress_send_exact_paths_and_print_results() {
         assert_eq!(request.method.as_str(), "GET");
         assert!(request.body.is_empty());
     }
-}
-
-#[tokio::test]
-async fn byoc_progress_human_output_tolerates_sparse_stages() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/byocInfrastructure/byoc-1/progress",
-        ))
-        .respond_with(byoc_envelope(
-            serde_json::json!({"stages": [{"subStages": [{}]}]}),
-            "stub-sparse-progress",
-        ))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &["org", "byoc", "progress", "byoc-1", "--org-id", "org-1"],
-    );
-    assert_success(&output);
 }
 
 fn byoc_validate_args<'a>() -> Vec<&'a str> {
@@ -18222,27 +17735,6 @@ async fn byoc_private_endpoint_config_and_tags_are_oauth_reads_with_exact_paths(
     for request in requests {
         assert_eq!(request.method.as_str(), "GET");
         assert!(request.body.is_empty());
-    }
-}
-
-#[tokio::test]
-async fn byoc_private_endpoint_config_and_tags_tolerate_sparse_results() {
-    let mock = MockServer::start().await;
-    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
-    for suffix in ["privateEndpointConfig", "tags"] {
-        Mock::given(method("GET"))
-            .and(path(format!("{item}/{suffix}")))
-            .respond_with(byoc_envelope(serde_json::json!({}), "stub-sparse"))
-            .expect(1)
-            .mount(&mock)
-            .await;
-    }
-    for subcommand in ["private-endpoint-config", "tags"] {
-        let output = invoke_cli_with_cloud_credentials_human(
-            &mock,
-            &["org", "byoc", subcommand, "byoc-1", "--org-id", "org-1"],
-        );
-        assert_success(&output);
     }
 }
 
@@ -22845,29 +22337,6 @@ async fn postgres_query_preserves_structured_failures_without_retries_or_provisi
         }
         assert_eq!(query.received_requests().await.unwrap().len(), 1);
         assert!(control.received_requests().await.unwrap().is_empty());
-    }
-}
-
-#[tokio::test]
-async fn postgres_query_accepts_empty_success_and_empty_rowsets() {
-    for body in ["", "[\"answer\"]\n[\"Int32\"]\n"] {
-        let control = MockServer::start().await;
-        let query = MockServer::start().await;
-        mount_postgres_query(&query, ResponseTemplate::new(200).set_body_string(body)).await;
-        let root = tempfile::tempdir().unwrap();
-        let output = postgres_query_command(root.path(), &control, &query.uri())
-            .args([
-                POSTGRES_QUERY_ID,
-                "--org-id",
-                "org-1",
-                "--query",
-                "SELECT 1 WHERE false",
-                "--json",
-            ])
-            .output()
-            .unwrap();
-        assert_success(&output);
-        assert_eq!(output.stdout, body.as_bytes());
     }
 }
 
