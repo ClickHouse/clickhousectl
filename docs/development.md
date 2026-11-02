@@ -48,7 +48,7 @@ cargo test -p clickhousectl --no-default-features --bin clickhousectl cli::tests
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ```
 
-Never pin help or README wording. Verify commands with `cargo run -q -p clickhousectl -- <command> --help` and inspect the parent screen too.
+Never pin wording in help, README, error messages or human output; assert codes, fields and identifiers instead ([AGENTS.md](../AGENTS.md#tests)). Verify commands with `cargo run -q -p clickhousectl -- <command> --help` and inspect the parent screen too.
 
 The Cloud and local-install classifiers fail closed for unclassified source/test files. Update both when adding or renaming one. Documentation paths alone do not select live suites. See `scripts/classify-cloud-integration.py` and `scripts/classify-install-integration.py`.
 

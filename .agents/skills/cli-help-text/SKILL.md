@@ -108,7 +108,7 @@ Irreversible. Running service must be stopped first (--force or `cloud service s
 ## Tests
 
 NEVER add tests that pin help or README wording, such as `help.contains("some sentence")` or whole-screen
-equality.
+equality. The same goes for error messages and human output (root `AGENTS.md` → Tests).
 
 ## Checklist
 

@@ -97,7 +97,10 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
   growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
-- **Help and README text** — structural assertions only (see the `cli-help-text` skill). No wording pins.
+- **No wording pins** — anywhere: help, README, error messages or human output. Assert the exit code, error code
+  or kind, stream, JSON fields, and the identifiers a message must carry (the offending flag or value, an ID, a
+  suggested command, re-parsed through clap). Asserting that a secret is absent is fine. Help structure: see the
+  `cli-help-text` skill.
 - **Not worth a test** — clap, serde or std behaviour on its own (a derive parsing, a `PossibleValuesParser`
   rejecting); flags that don't exist; assertions that cannot fail. Subprocess tests never wait out a production
   timeout; use the overrides in `src/timing.rs` (`docs/development.md`).
