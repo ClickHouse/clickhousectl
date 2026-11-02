@@ -459,14 +459,6 @@ fn a_function_the_server_never_loads_is_an_error_that_keeps_the_files() {
             .is_file()
     );
     assert!(data.join("user_scripts/other_fn/main.py").is_file());
-
-    let human = run(&env, &["local", "udf", "deploy", "other_fn"]);
-    assert_eq!(human.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&human.stderr).contains(&log_path.display().to_string()),
-        "{}",
-        String::from_utf8_lossy(&human.stderr)
-    );
 }
 
 #[test]

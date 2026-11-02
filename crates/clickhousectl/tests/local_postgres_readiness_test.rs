@@ -793,63 +793,6 @@ fn resumed_start_also_waits_for_postgres_readiness() {
 }
 
 #[test]
-fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
-    let (output, requests, project) = run_start(
-        DockerScenario {
-            existing: false,
-            outcome: ContainerOutcome::Running,
-            start_statuses: vec![204],
-            remove_statuses: vec![204],
-            readiness_exit_codes: vec![],
-            readiness_create_errors: 0,
-            logs: vec![],
-            write_partial_data: false,
-            create_metadata_directory_on_start: false,
-        },
-        false,
-        false,
-        1,
-        false,
-    );
-
-    assert_eq!(output.status.code(), Some(1));
-    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "startup_timeout");
-    assert_eq!(
-        error["error"]["message"],
-        "Postgres server 'default' did not become ready within 1 seconds"
-    );
-    // The fake daemon always reports a running container and never reports
-    // readiness. The timeout must therefore trigger rollback, regardless of
-    // how many polls the scheduler permits before the deadline.
-    let start = request_index(&requests, "POST", "/containers/pg-id/start");
-    let inspect = request_index(&requests, "GET", "/containers/pg-id/json");
-    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
-    assert!(start < inspect && inspect < remove);
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "DELETE")
-            .count(),
-        1,
-    );
-    assert!(
-        !project
-            .path()
-            .join(".clickhouse/servers/default-pg18")
-            .exists(),
-        "wall-clock timeout retained PGDATA created by this attempt"
-    );
-    assert!(
-        !project
-            .path()
-            .join(".clickhouse/servers/default-pg18.json")
-            .exists(),
-        "wall-clock timeout retained success metadata"
-    );
-}
-
-#[test]
 fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise() {
     let mut logs: Vec<String> = (0..80)
         .map(|index| format!("startup line {index}: {}", "x".repeat(300)))
@@ -1109,9 +1052,28 @@ fn initialization_timeout_removes_partial_pgdata() {
         "Postgres server 'default' did not become ready within 1 seconds"
     );
     assert!(!stderr.contains("database system is starting up"));
-    request_index(&requests, "DELETE", "/containers/pg-id?");
-    assert!(!fresh_instance_dir(project.path()).exists());
-    assert!(!metadata_path(project.path()).exists());
+    // The fake daemon reports a running container that never becomes ready.
+    // The wall-clock timeout must therefore trigger rollback, regardless of
+    // how many polls the scheduler permits before the deadline.
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    let inspect = request_index(&requests, "GET", "/containers/pg-id/json");
+    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(start < inspect && inspect < remove);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .count(),
+        1,
+    );
+    assert!(
+        !fresh_instance_dir(project.path()).exists(),
+        "the timeout retained PGDATA created by this attempt"
+    );
+    assert!(
+        !metadata_path(project.path()).exists(),
+        "the timeout retained success metadata"
+    );
 }
 
 #[test]
