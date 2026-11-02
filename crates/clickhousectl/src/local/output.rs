@@ -2327,6 +2327,34 @@ mod tests {
         assert!(columns.windows(2).all(|pair| pair[0] == pair[1]), "{text}");
     }
 
+    /// A deploy to a stopped server ends differently from a reloaded one and
+    /// names the server that loads the function later.
+    #[test]
+    fn udf_deploy_human_last_line_follows_the_reload() {
+        let last_line = |reloaded| {
+            let text = UdfDeployOutput {
+                name: "my_fn".into(),
+                server: "dev".into(),
+                r#type: "executable".into(),
+                runtime: "python3.11".into(),
+                reloaded,
+                loaded: reloaded.then_some(true),
+                interpreter: None,
+                ignored_fields: vec![],
+                ignored_files: vec![],
+                warnings: vec![],
+                function_config: "fn.xml".into(),
+                scripts_dir: "scripts/my_fn".into(),
+            }
+            .to_string();
+            text.lines().last().unwrap().to_string()
+        };
+        let (reloaded, deferred) = (last_line(true), last_line(false));
+        assert_ne!(reloaded, deferred);
+        assert!(reloaded.contains("my_fn"), "{reloaded}");
+        assert!(deferred.contains("'dev'"), "{deferred}");
+    }
+
     /// Each local UDF failure's recovery command is one that helps: none
     /// where no command adds to the message.
     #[test]

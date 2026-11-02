@@ -1253,6 +1253,16 @@ async fn status_is_read_only_in_every_state_and_output_mode() {
                     sandbox.state_path().to_str().unwrap(),
                     "{label}"
                 );
+            } else {
+                // The human line names the saved state, as `preference` does.
+                let stdout = stdout_of(&output);
+                for state in ["enabled", "disabled"] {
+                    assert_eq!(
+                        stdout.contains(state),
+                        preference == state,
+                        "{label}: {stdout}"
+                    );
+                }
             }
             assert_eq!(
                 std::fs::read(sandbox.state_path()).ok(),

@@ -80,6 +80,35 @@ fn init_json_reports_runtime_gitignore_repair() {
     );
 }
 
+/// Without `--json` the dispatcher renders the same result as text on stdout,
+/// one line per created path.
+#[test]
+fn init_human_output_is_text_on_stdout_naming_each_created_path() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+
+    let output = run(project.path(), home.path(), &["local", "init"]);
+    assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stdout).is_err(),
+        "{stdout}"
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    for (line, path) in lines
+        .iter()
+        .zip([".clickhouse/", "clickhouse/", "postgres/"])
+    {
+        assert!(line.ends_with(&format!(" {path}")), "{stdout}");
+    }
+}
+
 #[test]
 fn init_after_server_list_creates_runtime_gitignore() {
     let project = tempfile::tempdir().expect("create project");
