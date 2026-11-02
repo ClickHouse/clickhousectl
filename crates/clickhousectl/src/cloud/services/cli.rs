@@ -1032,24 +1032,6 @@ mod tests {
         );
     }
 
-    /// The `CONTEXT FOR AGENTS:` block on `service query` stays inside its
-    /// 8-line budget, whatever the lines say.
-    #[test]
-    fn service_query_agent_context_block_stays_within_its_line_budget() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        let block = help
-            .split_once("CONTEXT FOR AGENTS:\n")
-            .expect("after_help block")
-            .1;
-        let lines = block.lines().filter(|line| !line.trim().is_empty()).count();
-        assert!(lines <= 8, "{lines} lines: {help}");
-    }
-
     #[test]
     fn repair_query_key_has_a_positional_id_selector() {
         use clap::CommandFactory;

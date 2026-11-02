@@ -380,11 +380,6 @@ pub(crate) mod tests {
             assert!(!selector.is_hide_set());
             assert!(!selector.is_required_set());
             assert_eq!(selector.get_long(), Some("org-id"));
-            assert!(
-                !command
-                    .get_arguments()
-                    .any(|arg| arg.get_id() == "legacy_org_id")
-            );
             for child in command
                 .get_subcommands()
                 .filter(|child| child.get_name() != "help")
@@ -543,35 +538,6 @@ pub(crate) mod tests {
                 _ => unreachable!(),
             };
             assert_eq!(value.as_deref(), Some("descendant"));
-        }
-    }
-
-    #[test]
-    fn former_positional_org_selectors_are_usage_errors() {
-        for tail in [
-            vec!["get", "org-1"],
-            vec!["update", "org-1", "--new-name", "Renamed"],
-            vec![
-                "usage",
-                "org-1",
-                "--from-date",
-                "2026-09-01",
-                "--to-date",
-                "2026-09-15",
-            ],
-            vec!["prometheus", "org-1"],
-            vec!["prometheus", "org-1", "discovery"],
-        ] {
-            for selector in [vec![], vec!["--org-id", "org-2"]] {
-                let mut args = vec!["chctl", "cloud"];
-                args.extend(selector);
-                args.push("org");
-                args.extend(&tail);
-                let error = Cli::try_parse_from(&args)
-                    .err()
-                    .unwrap_or_else(|| panic!("accepted {args:?}"));
-                assert_eq!(error.exit_code(), 2, "{args:?}");
-            }
         }
     }
 

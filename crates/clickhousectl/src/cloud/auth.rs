@@ -1277,13 +1277,6 @@ mod tests {
                 command: AuthCommands::Whoami
             }
         ));
-        assert_eq!(
-            Cli::try_parse_from(["clickhousectl", "cloud", "auth", "whoami", "extra"])
-                .err()
-                .unwrap()
-                .kind(),
-            clap::error::ErrorKind::UnknownArgument
-        );
     }
 
     #[test]

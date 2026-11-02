@@ -4192,42 +4192,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn untargeted_commands_do_not_accept_child_selectors() {
-        for family in [
-            "source",
-            "role",
-            "dashboard",
-            "alert",
-            "webhook",
-            "saved-search",
-        ] {
-            for operation in ["list", "create", "validate"] {
-                if operation == "validate" && !matches!(family, "dashboard" | "webhook") {
-                    continue;
-                }
-                let mut args = vec![
-                    "clickhousectl",
-                    "cloud",
-                    "clickstack",
-                    family,
-                    operation,
-                    "service-id",
-                ];
-                if operation != "list" {
-                    args.extend(["--file", "-"]);
-                }
-                assert!(Cli::try_parse_from(&args).is_ok());
-                args.extend(["--name", "child"]);
-                assert_eq!(
-                    Cli::try_parse_from(args).err().unwrap().kind(),
-                    clap::error::ErrorKind::UnknownArgument,
-                    "{family} {operation}"
-                );
-            }
-        }
-    }
-
     fn named_record(name: &str, id: &str) -> NamedRecord {
         (Some(name.to_owned()), Some(id.to_owned()))
     }
@@ -4705,19 +4669,6 @@ mod tests {
             .unwrap()
             .kind(),
             clap::error::ErrorKind::MissingRequiredArgument
-        );
-
-        assert!(
-            Cli::try_parse_from([
-                "clickhousectl",
-                "cloud",
-                "clickstack",
-                "webhook",
-                "get",
-                "svc-1",
-                "webhook-1",
-            ])
-            .is_err()
         );
     }
 

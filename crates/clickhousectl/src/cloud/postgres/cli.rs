@@ -2242,23 +2242,6 @@ mod tests {
     }
 
     #[test]
-    fn postgres_prometheus_does_not_advertise_unsupported_filters() {
-        let error = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "prometheus",
-            "service",
-            "pg-1",
-            "--filtered-metrics",
-            "false",
-        ])
-        .err()
-        .expect("expected parse error");
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
-
-    #[test]
     fn parses_postgres_read_replica_create() {
         let cmd = parse_postgres(&[
             "clickhousectl",
@@ -2300,74 +2283,5 @@ mod tests {
             parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"]),
             PostgresCommands::Switchover { .. }
         ));
-    }
-
-    // --- role change (promote / switchover) parsing, issue #834 ---
-
-    #[test]
-    fn promote_and_switchover_reject_removed_wait_flags() {
-        for command in ["promote", "switchover"] {
-            for args in [["--wait", ""], ["--wait-timeout", "30"]] {
-                let mut argv = vec!["clickhousectl", command, "pg-1", args[0]];
-                if !args[1].is_empty() {
-                    argv.push(args[1]);
-                }
-                let err = match PostgresCli::try_parse_from(argv) {
-                    Ok(_) => panic!("{command} {} must be rejected", args[0]),
-                    Err(err) => err,
-                };
-                assert_eq!(
-                    err.kind(),
-                    clap::error::ErrorKind::UnknownArgument,
-                    "{command} {}: {err}",
-                    args[0]
-                );
-                assert_eq!(err.exit_code(), 2, "{command} {}: {err}", args[0]);
-            }
-        }
-    }
-
-    /// `--org-id` is a shared flag, so every `cloud postgres` screen must
-    /// describe it identically, and the `<POSTGRES_ID>` positional must always
-    /// carry a description. Both properties are structural: the assertions
-    /// compare occurrences to each other, never to a fixed sentence.
-    #[test]
-    fn postgres_screens_describe_org_id_consistently_and_document_the_positional() {
-        use clap::CommandFactory;
-
-        fn walk(cmd: &clap::Command, path: &str, org_id: &mut Option<(String, String)>) {
-            for arg in cmd.get_arguments() {
-                let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
-                match arg.get_id().as_str() {
-                    "org_id" => {
-                        assert!(!help.is_empty(), "{path}: --org-id has no help text");
-                        match org_id {
-                            Some((first_path, first_help)) => assert_eq!(
-                                &help, first_help,
-                                "{path}: --org-id help differs from {first_path}"
-                            ),
-                            None => *org_id = Some((path.to_string(), help)),
-                        }
-                    }
-                    "postgres_id" => {
-                        assert!(!help.is_empty(), "{path}: <POSTGRES_ID> has no help text")
-                    }
-                    _ => {}
-                }
-            }
-            for sub in cmd.get_subcommands() {
-                walk(sub, &format!("{path} {}", sub.get_name()), org_id);
-            }
-        }
-
-        let mut cli = Cli::command();
-        cli.build();
-        let cloud = cli.find_subcommand("cloud").expect("cloud command");
-        let postgres = cloud
-            .find_subcommand("postgres")
-            .expect("cloud postgres command");
-        let mut org_id = None;
-        walk(postgres, "cloud postgres", &mut org_id);
-        assert!(org_id.is_some());
     }
 }

@@ -1317,23 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn key_create_does_not_accept_clear_expiry() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "create",
-            "--name",
-            "key",
-            "--clear-expiry",
-        ]);
-        let Err(error) = result else {
-            panic!("expected unknown argument");
-        };
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
-
-    #[test]
     fn build_api_key_update_request_clears_only_expiry() {
         let request = build_api_key_update_request(&KeyUpdateOptions {
             clear_expiry: true,

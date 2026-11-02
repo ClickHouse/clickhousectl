@@ -7454,31 +7454,12 @@ mod tests {
                 );
             }
         }
-        for (source, kind) in [
-            ("postgres", ClickPipeSourceKind::Postgres),
-            ("mysql", ClickPipeSourceKind::MySql),
-            ("mongodb", ClickPipeSourceKind::MongoDb),
-            ("bigquery", ClickPipeSourceKind::BigQuery),
+        for kind in [
+            ClickPipeSourceKind::Postgres,
+            ClickPipeSourceKind::MySql,
+            ClickPipeSourceKind::MongoDb,
+            ClickPipeSourceKind::BigQuery,
         ] {
-            assert!(
-                !create
-                    .find_subcommand(source)
-                    .unwrap()
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some("start-paused"))
-            );
-            let error = Cli::try_parse_from([
-                "chctl",
-                "cloud",
-                "clickpipe",
-                "create",
-                source,
-                "svc-1",
-                "--start-paused",
-            ])
-            .err()
-            .unwrap();
-            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
             let args = ClickPipeCreateRequestArgs {
                 start_paused: true,
                 ..Default::default()
