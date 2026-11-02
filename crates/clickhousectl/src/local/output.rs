@@ -978,7 +978,7 @@ impl fmt::Display for ListInstalledOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.versions.is_empty() {
             writeln!(f, "No versions installed")?;
-            write!(f, "Run: clickhousectl local install stable")?;
+            write!(f, "Run: clickhousectl local install latest")?;
             return Ok(());
         }
         let rows: Vec<InstalledVersionRow> = self
@@ -3422,11 +3422,30 @@ mod tests {
     }
 
     #[test]
-    fn list_installed_display_empty() {
-        let output = ListInstalledOutput { versions: vec![] };
-        let text = output.to_string();
-        assert!(text.contains("No versions installed"));
-        assert!(text.contains("Run: clickhousectl local install stable"));
+    fn list_installed_display_empty_suggests_a_runnable_latest_install() {
+        use crate::cli::{Cli, Commands};
+        use crate::local::cli::{InstallVersionArg, LocalCommands};
+        use clap::Parser;
+
+        let text = ListInstalledOutput { versions: vec![] }.to_string();
+        let start = text.find("clickhousectl ").expect("a suggested command");
+        let argv: Vec<&str> = text[start..].split_whitespace().collect();
+        let Commands::Local(local) = Cli::try_parse_from(&argv).unwrap().command else {
+            panic!("expected a local command: {argv:?}");
+        };
+        // Docs and suggestions use `latest`, never `stable`.
+        assert!(
+            matches!(
+                local.command,
+                LocalCommands::Install {
+                    version: InstallVersionArg::ClickHouse(
+                        crate::version_manager::VersionSpec::Latest
+                    ),
+                    force: false,
+                }
+            ),
+            "{argv:?}"
+        );
     }
 
     #[test]
