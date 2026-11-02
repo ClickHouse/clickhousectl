@@ -23,6 +23,7 @@ fn command(project: &Path, home: &Path, mode: Mode, postgres: bool) -> Command {
         .env("HOME", home)
         .env("PATH", home.join("bin"))
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .current_dir(project)
         .arg("local");
     match mode {

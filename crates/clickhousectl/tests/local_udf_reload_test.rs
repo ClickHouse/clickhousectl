@@ -115,6 +115,7 @@ fn command(env: &Env) -> Command {
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", env.home.path())
         .env("PATH", format!("{}:/usr/bin:/bin", env.bin.display()))
         .env("FAKE_CLICKHOUSE_HTTP_PORT", env.http_port.to_string())

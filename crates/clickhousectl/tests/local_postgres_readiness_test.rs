@@ -527,6 +527,7 @@ fn run_start_command(
         command.env("CHCTL_TELEMETRY_DEBUG", "1");
     } else {
         command.env("DO_NOT_TRACK", "1");
+        command.env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0");
     }
     // Bound hangs after acquiring the fixture lock, independently of the
     // readiness deadline under test. Capturing on another thread also drains
@@ -665,6 +666,7 @@ fn postgres_dotenv_releases_metadata_lock_before_docker_credentials_read() {
     let output = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .current_dir(project.path())
@@ -719,6 +721,7 @@ fn postgres_start_revalidates_metadata_after_image_inspection() {
     let output = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .current_dir(project.path())
@@ -899,6 +902,7 @@ fn failed_fresh_start_preserves_postgres_identity_without_polluting_clickhouse_s
     let stop = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("PATH", "/usr/bin:/bin")
         .current_dir(project.path())
@@ -1284,6 +1288,7 @@ fn removing_running_postgres_preserves_instance_and_supplies_stop_recovery() {
                 .env_clear()
                 .env("HOME", home.path())
                 .env("DO_NOT_TRACK", "1")
+                .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
                 .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
                 .current_dir(project.path())
                 .args(["local", "postgres", "remove"]);

@@ -84,6 +84,7 @@ fn run_install(tag: &str, pull_response: &str) -> Output {
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", tempdir.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .args(["local", "install", &format!("postgres@{tag}"), "--force"])

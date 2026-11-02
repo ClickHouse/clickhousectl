@@ -15,6 +15,7 @@ fn command(project: &Path, home: &Path) -> Command {
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .current_dir(project);
     command
@@ -127,6 +128,7 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
         command
             .env_clear()
             .env("HOME", home.path())
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .current_dir(project.path());
         command
     };

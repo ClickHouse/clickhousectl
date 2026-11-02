@@ -35,8 +35,9 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_SERVICE_STOP_POLL_INTERVAL_MS` | `cloud service delete --force` stop poll interval (5 s) |
 | `CHCTL_UDF_POLL_INTERVAL_MS` | `cloud udf` service poll interval (5 s) |
 | `CHCTL_QUERY_READINESS_TIMEOUT_MS` | Query API readiness window after a key bind (120 s) |
+| `CHCTL_UPDATE_CHECK_TIMEOUT_MS` | Background update check (400 ms); `0` skips it, so tests never reach the release server |
 
-Add a new override to that module rather than parsing an environment variable at the call site.
+Add a new override to that module rather than parsing an environment variable at the call site. In `cli_request_shape_test.rs`, use `isolated_env()` in place of `env_clear()`: it clears the environment and turns the update check off.
 
 Structural help tests check the full command tree, descriptions, shared flags, and agent context limits in both feature configurations:
 

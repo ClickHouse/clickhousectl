@@ -11,6 +11,7 @@ fn clickhousectl_binary() -> PathBuf {
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .current_dir(project)
         .args(args)

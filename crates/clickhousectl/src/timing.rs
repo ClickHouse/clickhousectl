@@ -16,6 +16,8 @@ pub const TERM_TIMEOUT_ENV: &str = "CHCTL_TERM_TIMEOUT_MS";
 pub const UDF_POLL_INTERVAL_ENV: &str = "CHCTL_UDF_POLL_INTERVAL_MS";
 /// Bounds the Query API readiness wait after a key is bound.
 pub const QUERY_READINESS_TIMEOUT_ENV: &str = "CHCTL_QUERY_READINESS_TIMEOUT_MS";
+/// Bounds the background update check; `0` skips it.
+pub const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
 
 /// `default`, unless `env` holds a whole number of milliseconds.
 ///

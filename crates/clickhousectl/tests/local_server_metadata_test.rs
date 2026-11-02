@@ -19,6 +19,7 @@ fn command(project: &Path, home: &Path) -> Command {
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
         .env(

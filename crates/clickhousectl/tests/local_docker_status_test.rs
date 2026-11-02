@@ -41,6 +41,7 @@ impl Project {
         command
             .env_clear()
             .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .env("HOME", self.directory.path())
             .env("PATH", "/usr/bin:/bin")
             .env("DOCKER_HOST", docker_host)

@@ -75,6 +75,7 @@ impl Home {
             // subprocess to JSON, so human-output assertions stay meaningful.
             .env_clear()
             .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .env("HOME", self.home.path())
             .current_dir(self.project.path())
             .args(args);

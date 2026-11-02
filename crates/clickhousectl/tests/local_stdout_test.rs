@@ -7,6 +7,7 @@ fn command(home: &std::path::Path, args: &[&str]) -> Command {
         .env_clear()
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .current_dir(home)
         .args(args);
     command

@@ -27,6 +27,7 @@ fn run_with_docker(project: &Path, home: &Path, docker_host: &str, args: &[&str]
     Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
         .env("DOCKER_HOST", docker_host)
