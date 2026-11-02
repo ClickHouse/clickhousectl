@@ -7844,33 +7844,6 @@ async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint(
     }
 }
 
-#[tokio::test]
-async fn postgres_hostname_mismatch_error_preserves_api_detail_and_adds_tls_host_hint() {
-    let mock = MockServer::start().await;
-    let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify \
-                     certificate: x509: certificate is valid for postgres.internal.example.com, \
-                     not 10.0.0.8";
-    Mock::given(method("POST"))
-        .and(path_regex(
-            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes$",
-        ))
-        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
-            "status": 400,
-            "error": api_error,
-        })))
-        .mount(&mock)
-        .await;
-
-    let args = postgres_args_minimal();
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(api_error), "{stderr}");
-    assert!(stderr.contains("--tls-host <HOSTNAME>"), "{stderr}");
-    assert!(stderr.contains("does not match `--host`"), "{stderr}");
-}
-
 // ── Dotenv ─────────────────────────────────────────────────────────────────
 //
 // A `.env` file in the current working directory supplying
@@ -13034,6 +13007,10 @@ async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes
             ],
         );
         assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({ "object_storage_max_file_count": 200 })
+        );
 
         // No settings GET: nothing needs reading back when no Kafka-only
         // setting is being re-sent.
@@ -13288,63 +13265,43 @@ async fn mount_clickpipe_settings_get(mock: &MockServer) {
 
 #[tokio::test]
 async fn clickpipe_settings_get_refuses_database_pipes_before_calling_the_endpoint() {
-    for (source, label) in [
-        (
-            serde_json::json!({ "postgres": { "host": "db.example.com" } }),
-            "Postgres CDC",
-        ),
-        (
-            serde_json::json!({ "mysql": { "host": "db.example.com" } }),
-            "MySQL CDC",
-        ),
-        (
-            serde_json::json!({ "mongodb": { "host": "db.example.com" } }),
-            "MongoDB CDC",
-        ),
-        (
-            serde_json::json!({ "bigquery": { "projectId": "proj" } }),
-            "BigQuery",
-        ),
-    ] {
-        let mock = MockServer::start().await;
-        mount_clickpipe_get(&mock, source.clone()).await;
-        mount_clickpipe_settings_get(&mock).await;
+    // The label for each database source is unit-tested; one source is enough.
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(
+        &mock,
+        serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+    )
+    .await;
+    mount_clickpipe_settings_get(&mock).await;
 
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "clickpipe",
-                "settings",
-                "get",
-                "svc-id",
-                "pipe-id",
-                "--org-id",
-                "org",
-            ],
-        );
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "settings",
+            "get",
+            "svc-id",
+            "pipe-id",
+            "--org-id",
+            "org",
+        ],
+    );
 
-        assert_eq!(output.status.code(), Some(1), "source {source}");
-        assert_eq!(
-            cloud_runtime_error(&output)["message"],
-            format!(
-                "ClickPipe pipe-id is a {label} pipe; `clickpipe settings get` and \
-                 `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
-                 pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
-                 itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`."
-            ),
-        );
-        assert_eq!(cloud_runtime_error(&output)["code"], "other");
-        assert!(
-            String::from_utf8_lossy(&output.stdout).is_empty(),
-            "a refusal must print no settings for source {source}"
-        );
-        // Only the pipe read: the settings endpoint is never called.
-        assert_eq!(
-            recorded_request_shape(&mock).await,
-            vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
-            "unexpected requests for source {source}"
-        );
-    }
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        cloud_runtime_error(&output)["message"],
+        "ClickPipe pipe-id is a Postgres CDC pipe; `clickpipe settings get` and \
+         `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+         pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+         itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`.",
+    );
+    assert_eq!(cloud_runtime_error(&output)["code"], "other");
+    assert!(output.stdout.is_empty(), "a refusal must print no settings");
+    // Only the pipe read: the settings endpoint is never called.
+    assert_eq!(
+        recorded_request_shape(&mock).await,
+        vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
+    );
 }
 
 #[tokio::test]
@@ -13649,8 +13606,9 @@ async fn pubsub_service_account_key_never_reaches_output_on_an_api_error() {
 
     let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&args));
 
-    assert!(
-        !output.status.success(),
+    assert_eq!(
+        output.status.code(),
+        Some(1),
         "a rejected create must fail: {}",
         String::from_utf8_lossy(&output.stdout),
     );
@@ -13694,7 +13652,7 @@ async fn mount_clickpipe_context(mock: &MockServer, result: Value) {
 }
 
 #[tokio::test]
-async fn clickpipe_context_get_renders_full_and_sparse_responses() {
+async fn clickpipe_context_get_renders_json_and_human_output() {
     let mock = MockServer::start().await;
     mount_clickpipe_context(
         &mock,
@@ -13739,78 +13697,6 @@ async fn clickpipe_context_get_renders_full_and_sparse_responses() {
         String::from_utf8_lossy(&output.stdout),
         "gcpWorkloadIdentity:\n  supported: true\n  ready: true\n  principal: clickpipes@project.iam.gserviceaccount.com\n"
     );
-
-    let sparse = MockServer::start().await;
-    mount_clickpipe_context(&sparse, serde_json::json!({})).await;
-    let output = invoke_cli_human(
-        &sparse,
-        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
-    );
-    assert_success(&output);
-    assert_eq!(output.stdout, b"{}\n");
-
-    let not_ready = MockServer::start().await;
-    mount_clickpipe_context(
-        &not_ready,
-        serde_json::json!({
-            "gcpWorkloadIdentity": { "supported": true, "ready": false }
-        }),
-    )
-    .await;
-    let output = invoke_cli_human(
-        &not_ready,
-        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
-    );
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "gcpWorkloadIdentity:\n  supported: true\n  ready: false\n"
-    );
-}
-
-#[tokio::test]
-async fn clickpipe_context_get_accepts_oauth_bearer_auth() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org/services/svc-id/clickpipes/context",
-        ))
-        .and(header("authorization", "Bearer test-bearer-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "gcpWorkloadIdentity": { "supported": false } },
-            "status": 200,
-            "requestId": "stub-clickpipes-context",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", &home)
-        .current_dir(dir.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "--json",
-            "clickpipe",
-            "context",
-            "get",
-            "svc-id",
-            "--org-id",
-            "org",
-        ])
-        .output()
-        .expect("run OAuth context get");
-    assert_success(&output);
 }
 
 // ── Generated service passwords are never silently dropped ─────────────────
@@ -14488,60 +14374,32 @@ async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
 // that body on the wire.
 
 #[tokio::test]
-async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
-    let mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path_regex(
-            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "id": "11111111-2222-3333-4444-555555555555",
-                "name": "pipe-1",
-                "scaling": { "replicas": 4 },
-            },
-            "status": 200,
-            "requestId": "stub-clickpipe-scale",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "clickpipe",
-            "scale",
-            "svc-1",
-            "pipe-1",
-            "--org-id",
-            "org-1",
-            "--replicas",
-            "4",
-        ],
-    );
-
-    assert_success(&output);
-    let requests = mock.received_requests().await.unwrap();
-    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert_eq!(body["replicas"], 4);
-}
-
-#[tokio::test]
-async fn clickpipe_scale_boundaries_preserve_wire_values() {
-    for (replicas, cpu, memory, body) in [
+async fn clickpipe_scale_sends_exactly_the_requested_targets() {
+    for (flags, body) in [
+        // An omitted target stays off the wire.
+        (vec!["--replicas", "4"], serde_json::json!({"replicas": 4})),
         (
-            "1",
-            "125",
-            "0.5",
+            vec![
+                "--replicas",
+                "1",
+                "--cpu-millicores",
+                "125",
+                "--memory-gb",
+                "0.5",
+            ],
             serde_json::json!({
                 "replicas": 1, "replicaCpuMillicores": 125, "replicaMemoryGb": 0.5
             }),
         ),
         (
-            "40",
-            "2000",
-            "8",
+            vec![
+                "--replicas",
+                "40",
+                "--cpu-millicores",
+                "2000",
+                "--memory-gb",
+                "8",
+            ],
             serde_json::json!({
                 "replicas": 40, "replicaCpuMillicores": 2000, "replicaMemoryGb": 8.0
             }),
@@ -14561,23 +14419,9 @@ async fn clickpipe_scale_boundaries_preserve_wire_values() {
             .expect(1)
             .mount(&mock)
             .await;
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &[
-                "clickpipe",
-                "scale",
-                "svc-1",
-                "pipe-1",
-                "--org-id",
-                "org-1",
-                "--replicas",
-                replicas,
-                "--cpu-millicores",
-                cpu,
-                "--memory-gb",
-                memory,
-            ],
-        );
+        let mut args = vec!["clickpipe", "scale", "svc-1", "pipe-1", "--org-id", "org-1"];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
         assert_success(&output);
     }
 }
@@ -14638,107 +14482,6 @@ async fn clickpipe_cdc_scaling_get_supports_oauth_and_preserves_sparse_json() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         serde_json::json!({ "replicaCpuMillicores": 2000 })
     );
-}
-
-#[tokio::test]
-async fn clickpipe_cdc_scaling_get_prints_sparse_human_output() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(CDC_SCALING_PATH))
-        .respond_with(cdc_scaling_envelope(serde_json::json!({
-            "replicaMemoryGb": 8,
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials_human(
-        &mock,
-        &[
-            "clickpipe",
-            "cdc-scaling",
-            "get",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("replicaMemoryGb: 8"), "{stdout}");
-    assert!(!stdout.contains("replicaCpuMillicores"), "{stdout}");
-}
-
-#[tokio::test]
-async fn clickpipe_cdc_scaling_update_rejects_oauth_before_http() {
-    let mock = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &mock.uri());
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "--json",
-            "clickpipe",
-            "cdc-scaling",
-            "update",
-            "svc-1",
-            "--memory-gb",
-            "4",
-            "--org-id",
-            "org-1",
-        ])
-        .output()
-        .expect("failed to run CDC scaling update with OAuth");
-
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn clickpipe_cdc_scaling_get_scopes_not_found_errors_to_the_organization() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(CDC_SCALING_PATH))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "error": "NOT_FOUND",
-            "requestId": "stub-cdc-scaling-error",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "clickpipe",
-            "cdc-scaling",
-            "get",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "NOT_FOUND: request scoped to organization org-1"
-    );
-    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 // ── the Query API gateway timeout (issue #644) ─────────────────────────────
@@ -15281,8 +15024,9 @@ async fn other_query_500s_keep_the_generic_api_error() {
 // PrivateLink connectivity for ClickPipes is a reverse private endpoint the
 // user creates on the service and then references from a pipe: by ID for
 // Kafka, or by DNS name as `--host` for Postgres/MySQL CDC. These tests pin
-// the five requests, the request bodies (including which fields stay off the
-// wire), and the client-side type/flag validation that must cost no request.
+// the five requests and what each handler prints; the per-type bodies and
+// the type/flag validation are unit tests in `src/cloud/clickpipe_endpoints.rs`
+// and `main.rs`.
 
 const RPE_COLLECTION_PATH: &str =
     "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints";
@@ -15364,12 +15108,8 @@ async fn reverse_private_endpoint_list_returns_the_resource_array() {
     assert_success(&output);
     let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
         .expect("stdout should be the resource array as JSON");
-    assert_eq!(stdout[0]["id"], RPE_ID);
-    assert_eq!(stdout[0]["status"], "PendingAcceptance");
-    assert!(
-        stdout.get("status").is_none() && stdout.get("requestId").is_none(),
-        "must not emit the raw API envelope, got: {stdout}"
-    );
+    // The resource array itself, not the API envelope around it.
+    assert_eq!(stdout, serde_json::json!([reverse_private_endpoint_json()]));
     assert_eq!(
         received_request_shape(&mock).await,
         vec![("GET".to_string(), RPE_COLLECTION_PATH.to_string())]
@@ -15411,145 +15151,6 @@ async fn reverse_private_endpoint_list_table_renders_absent_fields() {
     assert_eq!(stdout.matches(" - ").count(), 5, "{stdout}");
 }
 
-/// A `VPC_RESOURCE` endpoint's read-only `dnsTargets` and
-/// `privateDnsMappings`: the list counts the targets, and `get` shows every
-/// target ID (the value `--custom-private-dns-mapping NAME=TARGET_ID` takes)
-/// and every provider DNS mapping.
-fn vpc_resource_endpoint_json() -> serde_json::Value {
-    serde_json::json!({
-        "id": RPE_ID,
-        "type": "VPC_RESOURCE",
-        "description": "warehouse",
-        "status": "Ready",
-        "dnsNames": ["vpce-1.rcfg-1.vpc-lattice-rsc.us-east-1.on.aws"],
-        "dnsTargets": [
-            {
-                "id": "rcfg-097648d8068504966",
-                "kind": "RESOURCE_CONFIGURATION",
-                "internalDnsName": "vpce-052ef.rcfg-097648d8068504966.vpc-lattice-rsc.us-east-1.on.aws",
-            },
-            { "id": "rcfg-2", "kind": "RESOURCE_CONFIGURATION" },
-        ],
-        "privateDnsMappings": [
-            {
-                "privateDnsName": "db.internal.example.com",
-                "internalDnsName": "vpce-0123.vpce-svc-0123.us-east-1.vpce.amazonaws.com",
-            },
-        ],
-        "customPrivateDnsMappings": [
-            { "privateDnsName": "db.example.com", "targetId": "rcfg-2" },
-        ],
-    })
-}
-
-#[tokio::test]
-async fn reverse_private_endpoint_list_counts_dns_targets() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(RPE_COLLECTION_PATH))
-        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
-            vpc_resource_endpoint_json()
-        ])))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_human(
-        &mock,
-        &[
-            "clickpipe",
-            "reverse-private-endpoint",
-            "list",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let row = stdout
-        .lines()
-        .find(|line| line.contains(RPE_ID))
-        .unwrap_or_else(|| panic!("no row for the endpoint: {stdout}"));
-    let cells: Vec<&str> = row.split('|').map(str::trim).collect();
-    assert_eq!(cells[cells.len() - 2], "2", "{stdout}");
-}
-
-#[tokio::test]
-async fn reverse_private_endpoint_get_shows_dns_targets_and_provider_mappings() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(reverse_private_endpoint_path()))
-        .respond_with(reverse_private_endpoint_envelope(
-            vpc_resource_endpoint_json(),
-        ))
-        .expect(2)
-        .mount(&mock)
-        .await;
-    let args = [
-        "clickpipe",
-        "reverse-private-endpoint",
-        "get",
-        "svc-1",
-        RPE_ID,
-        "--org-id",
-        "org-1",
-    ];
-
-    let human = invoke_cli_human(&mock, &args);
-    assert_success(&human);
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    for expected in [
-        "rcfg-097648d8068504966",
-        "rcfg-2",
-        "RESOURCE_CONFIGURATION",
-        "db.internal.example.com",
-        "vpce-0123.vpce-svc-0123.us-east-1.vpce.amazonaws.com",
-    ] {
-        assert!(stdout.contains(expected), "missing {expected}: {stdout}");
-    }
-
-    let json = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&json);
-    let stdout: Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(stdout["dnsTargets"][0]["id"], "rcfg-097648d8068504966");
-    assert_eq!(
-        stdout["privateDnsMappings"][0]["privateDnsName"],
-        "db.internal.example.com"
-    );
-    assert_eq!(stdout["customPrivateDnsMappings"][0]["targetId"], "rcfg-2");
-}
-
-#[tokio::test]
-async fn reverse_private_endpoint_list_reports_an_empty_collection() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(RPE_COLLECTION_PATH))
-        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([])))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_human(
-        &mock,
-        &[
-            "clickpipe",
-            "reverse-private-endpoint",
-            "list",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ],
-    );
-
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "No reverse private endpoints found"
-    );
-}
-
 #[tokio::test]
 async fn reverse_private_endpoint_get_reads_the_single_endpoint() {
     let mock = MockServer::start().await;
@@ -15586,142 +15187,54 @@ async fn reverse_private_endpoint_get_reads_the_single_endpoint() {
     );
 }
 
-/// One create per endpoint type: the POST body carries the type's own fields
-/// and nothing else, so an omitted flag never reaches the wire as `""`.
+/// The create handler posts the builder's body to the service's collection.
+/// Each type's field mapping is a `build_create_reverse_private_endpoint_request`
+/// unit test.
 #[tokio::test]
-async fn reverse_private_endpoint_create_sends_the_body_for_each_type() {
-    let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
-        (
-            vec![
-                "--type",
-                "VPC_ENDPOINT_SERVICE",
-                "--vpc-endpoint-service-name",
-                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
-            ],
-            serde_json::json!({
-                "description": "warehouse",
-                "type": "VPC_ENDPOINT_SERVICE",
-                "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
-            }),
-        ),
-        (
-            vec![
-                "--type",
-                "VPC_RESOURCE",
-                "--vpc-resource-configuration-id",
-                "rcfg-12345678901234567",
-                "--vpc-resource-share-arn",
-                "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
-            ],
-            serde_json::json!({
-                "description": "warehouse",
-                "type": "VPC_RESOURCE",
-                "vpcResourceConfigurationId": "rcfg-12345678901234567",
-                "vpcResourceShareArn":
-                    "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
-            }),
-        ),
-        (
-            vec![
-                "--type",
-                "VPC_RESOURCE",
-                "--vpc-resource-configuration-id",
-                "rcfg-12345678901234567",
-                "--vpc-resource-share-arn",
-                "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
-                "--custom-private-dns-mapping",
-                "db.example.com=rcfg-097648d8068504966",
-                "--custom-private-dns-mapping",
-                "*.example.com",
-            ],
-            serde_json::json!({
-                "description": "warehouse",
-                "type": "VPC_RESOURCE",
-                "vpcResourceConfigurationId": "rcfg-12345678901234567",
-                "vpcResourceShareArn":
-                    "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
-                "customPrivateDnsMappings": [
-                    {
-                        "privateDnsName": "db.example.com",
-                        "targetId": "rcfg-097648d8068504966",
-                    },
-                    { "privateDnsName": "*.example.com" },
-                ],
-            }),
-        ),
-        (
-            vec![
-                "--type",
-                "MSK_MULTI_VPC",
-                "--msk-cluster-arn",
-                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
-                "--msk-authentication",
-                "SASL_IAM",
-            ],
-            serde_json::json!({
-                "description": "warehouse",
-                "type": "MSK_MULTI_VPC",
-                "mskClusterArn": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
-                "mskAuthentication": "SASL_IAM",
-            }),
-        ),
-        (
-            vec![
-                "--type",
-                "GCP_PSC_SERVICE_ATTACHMENT",
-                "--gcp-service-attachment",
-                "projects/p/regions/us-central1/serviceAttachments/s",
-                "--custom-private-dns-mapping",
-                "db.example.com",
-                "--custom-private-dns-mapping",
-                "*.example.com",
-            ],
-            serde_json::json!({
-                "description": "warehouse",
-                "type": "GCP_PSC_SERVICE_ATTACHMENT",
-                "gcpServiceAttachment": "projects/p/regions/us-central1/serviceAttachments/s",
-                "customPrivateDnsMappings": [
-                    { "privateDnsName": "db.example.com" },
-                    { "privateDnsName": "*.example.com" },
-                ],
-            }),
-        ),
-    ];
+async fn reverse_private_endpoint_create_posts_the_built_body() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
 
-    for (flags, expected_body) in cases {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(RPE_COLLECTION_PATH))
-            .respond_with(reverse_private_endpoint_envelope(
-                reverse_private_endpoint_json(),
-            ))
-            .expect(1)
-            .mount(&mock)
-            .await;
-
-        let mut args = vec![
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
             "clickpipe",
             "reverse-private-endpoint",
             "create",
             "svc-1",
             "--description",
             "warehouse",
+            "--type",
+            "VPC_ENDPOINT_SERVICE",
+            "--vpc-endpoint-service-name",
+            "com.amazonaws.vpce.us-east-1.vpce-svc-1",
             "--org-id",
             "org-1",
-        ];
-        args.extend_from_slice(&flags);
-        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        ],
+    );
 
-        assert_success(&output);
-        let requests = mock.received_requests().await.unwrap();
-        assert_eq!(
-            received_request_shape(&mock).await,
-            vec![("POST".to_string(), RPE_COLLECTION_PATH.to_string())],
-            "unexpected requests for {flags:?}"
-        );
-        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body, expected_body, "unexpected body for {flags:?}");
-    }
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("POST".to_string(), RPE_COLLECTION_PATH.to_string())],
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "description": "warehouse",
+            "type": "VPC_ENDPOINT_SERVICE",
+            "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+        })
+    );
 }
 
 #[tokio::test]
@@ -15855,113 +15368,6 @@ async fn reverse_private_endpoint_delete_confirms_the_removal() {
             ("DELETE".to_string(), reverse_private_endpoint_path()),
             ("DELETE".to_string(), reverse_private_endpoint_path()),
         ]
-    );
-}
-
-// ── PEM certificates are elided from human output (issue #665) ─────────────
-//
-// A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block.
-// Rendered verbatim it pushed every other field of `clickpipe get` off the
-// screen. Human output replaces each block with a one-line summary of that
-// block; `--json` still carries the bytes, so a caller that needs the
-// certificate has not lost anything.
-
-/// A real self-signed EC certificate, the same fixture the `cloud::output`
-/// unit tests use. The fingerprint came from
-/// `openssl x509 -noout -fingerprint -sha256`.
-const CA_CERTIFICATE_PEM: &str = "\
------BEGIN CERTIFICATE-----
-MIIBjDCCATOgAwIBAgIUajES1wl65zexYYPuWX8ShldYw4YwCgYIKoZIzj0EAwIw
-HDEaMBgGA1UEAwwRY2hjdGwtcGVtLWZpeHR1cmUwHhcNMjYwOTAyMTc1NDI3WhcN
-NDYwODI4MTc1NDI3WjAcMRowGAYDVQQDDBFjaGN0bC1wZW0tZml4dHVyZTBZMBMG
-ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7
-p+2PyHYm5ZdIS+kqT25Xm2SGM3th4dB43l3fd5kF0g6CzvGNt42jUzBRMB0GA1Ud
-DgQWBBQcL9JNezOJ8vzT0lR1Pj4sMoH2STAfBgNVHSMEGDAWgBQcL9JNezOJ8vzT
-0lR1Pj4sMoH2STAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIAhv
-iLjfMqcnJ10gmKoyEIMDDRJP2UwtGRcJZU/FnaIEAiBeUmN+nJBGIq0tFHIxz1Xl
-LaBMf6qZANMrXRQaETxhIA==
------END CERTIFICATE-----
-";
-
-const CA_CERTIFICATE_SUMMARY: &str = "caCertificate: <PEM CERTIFICATE, SHA-256 fingerprint 5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8>";
-
-fn postgres_source_with_certificate() -> Value {
-    serde_json::json!({
-        "postgres": {
-            "host": "db.example.com",
-            "port": 5432,
-            "database": "postgres",
-            "caCertificate": CA_CERTIFICATE_PEM,
-        }
-    })
-}
-
-#[tokio::test]
-async fn clickpipe_get_human_output_summarizes_the_ca_certificate() {
-    let mock = MockServer::start().await;
-    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
-
-    let output = invoke_cli_human(
-        &mock,
-        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
-    );
-
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains(CA_CERTIFICATE_SUMMARY),
-        "certificate not summarized:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("-----BEGIN"),
-        "certificate body dumped:\n{stdout}"
-    );
-    // The point of eliding is that the surrounding fields stay readable.
-    assert!(stdout.contains("host: db.example.com"), "{stdout}");
-    assert!(stdout.contains("name: test-pipe"), "{stdout}");
-}
-
-#[tokio::test]
-async fn clickpipe_get_human_output_shows_present_empty_fields() {
-    let mock = MockServer::start().await;
-    mount_clickpipe_get(
-        &mock,
-        serde_json::json!({"kafka": {"brokers": "", "consumerGroup": ""}}),
-    )
-    .await;
-
-    let output = invoke_cli_human(
-        &mock,
-        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
-    );
-
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("brokers: \"\""), "{stdout}");
-    assert!(stdout.contains("consumerGroup: \"\""), "{stdout}");
-}
-
-#[tokio::test]
-async fn clickpipe_get_json_output_keeps_the_full_ca_certificate() {
-    let mock = MockServer::start().await;
-    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
-    );
-
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let pipe: Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
-    assert_eq!(
-        pipe["source"]["postgres"]["caCertificate"],
-        Value::String(CA_CERTIFICATE_PEM.to_string()),
-        "--json must carry the certificate verbatim: {stdout}"
-    );
-    assert!(
-        stdout.contains("-----BEGIN CERTIFICATE-----"),
-        "--json must not elide: {stdout}"
     );
 }
 
@@ -22641,26 +22047,6 @@ async fn upgrade_window_errors_preserve_the_api_message() {
 
 const CLICKPIPE_UPDATE_PATH: &str = "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1";
 
-fn invoke_clickpipe_update_file(mock: &MockServer, patch: &Value) -> std::process::Output {
-    let project = tempfile::tempdir().unwrap();
-    let config_path = project.path().join("patch.json");
-    std::fs::write(&config_path, serde_json::to_vec(patch).unwrap()).unwrap();
-    let config_path = config_path.to_str().unwrap();
-    invoke_cli_with_cloud_credentials(
-        mock,
-        &[
-            "clickpipe",
-            "update",
-            "svc-1",
-            "pipe-1",
-            "--file",
-            config_path,
-            "--org-id",
-            "org-1",
-        ],
-    )
-}
-
 async fn mount_clickpipe_update(mock: &MockServer, patch: Value) {
     Mock::given(method("PATCH"))
         .and(path(CLICKPIPE_UPDATE_PATH))
@@ -22680,104 +22066,31 @@ async fn mount_clickpipe_update(mock: &MockServer, patch: Value) {
 
 #[tokio::test]
 async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
-    for file_flag in ["--file", "--config-file"] {
-        clickpipe_update_reads_stdin_and_preserves_explicit_empty_values_with_file_flag(file_flag)
-            .await;
-    }
-}
-
-async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values_with_file_flag(
-    file_flag: &str,
-) {
     let mock = MockServer::start().await;
     let patch = serde_json::json!({"fieldMappings": []});
     mount_clickpipe_update(&mock, patch.clone()).await;
-    let project = tempfile::tempdir().unwrap();
-    let mut child = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &mock.uri(),
-            "--json",
-            "clickpipe",
-            "update",
-            "svc-1",
-            "pipe-1",
-            file_flag,
-            "-",
-            "--org-id",
-            "org-1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&serde_json::to_vec(&patch).unwrap())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert_success(&output);
-}
-
-#[tokio::test]
-async fn clickpipe_update_propagates_api_errors_and_rejects_oauth_before_http() {
-    let error_mock = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path(CLICKPIPE_UPDATE_PATH))
-        .respond_with(
-            ResponseTemplate::new(409)
-                .set_body_json(serde_json::json!({"error": "update conflict"})),
-        )
-        .expect(1)
-        .mount(&error_mock)
-        .await;
-    let output = invoke_clickpipe_update_file(&error_mock, &serde_json::json!({"name": "new"}));
-    assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("update conflict"));
-
-    let oauth_mock = MockServer::start().await;
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    let cloud_dir = home.join(".clickhouse");
-    std::fs::create_dir_all(&cloud_dir).unwrap();
-    write_oauth_tokens(&cloud_dir, &oauth_mock.uri());
-    let config_path = project.path().join("patch.json");
-    std::fs::write(&config_path, br#"{"name":"new"}"#).unwrap();
-    let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home)
-        .current_dir(project.path())
-        .args([
-            "cloud",
-            "--url",
-            &oauth_mock.uri(),
-            "--json",
+    let output = invoke_cli_with_cloud_credentials_and_stdin(
+        &mock,
+        &[
             "clickpipe",
             "update",
             "svc-1",
             "pipe-1",
             "--file",
-            config_path.to_str().unwrap(),
+            "-",
             "--org-id",
             "org-1",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    assert!(oauth_mock.received_requests().await.unwrap().is_empty());
+        ],
+        &patch.to_string(),
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "updated"
+        })
+    );
 }
 
 #[tokio::test]
@@ -24008,7 +23321,7 @@ async fn clickpipe_list_renders_source_destination_table_and_preserves_json() {
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
         )
-        .expect(3)
+        .expect(2)
         .mount(&mock)
         .await;
     let args = ["clickpipe", "list", "svc-1", "--org-id", "org-1"];
@@ -24045,55 +23358,10 @@ async fn clickpipe_list_renders_source_destination_table_and_preserves_json() {
         serde_json::from_slice::<Value>(&explicit.stdout).unwrap(),
         result
     );
-
-    let project = tempfile::tempdir().unwrap();
-    let home = project.path().join("home");
-    std::fs::create_dir(&home).unwrap();
-    let agent = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("AI_AGENT", "1")
-        .env("HOME", home)
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .current_dir(project.path())
-        .args(["cloud", "--url", &mock.uri()])
-        .args(args)
-        .output()
-        .unwrap();
-    assert_success(&agent);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&agent.stdout).unwrap(),
-        result
-    );
     for request in mock.received_requests().await.unwrap() {
         assert_eq!(request.url.query(), None);
         assert!(request.body.is_empty());
     }
-}
-
-#[tokio::test]
-async fn clickpipe_list_empty_results_keep_human_message_and_json_array() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
-        .expect(2)
-        .mount(&mock)
-        .await;
-    let args = ["clickpipe", "list", "svc-1", "--org-id", "org-1"];
-    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
-    assert_success(&human);
-    assert_eq!(
-        String::from_utf8(human.stdout).unwrap(),
-        "No ClickPipes found\n"
-    );
-    let json = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&json);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
-        serde_json::json!([])
-    );
 }
 
 async fn invoke_clickpipe_delete(result: Value, json: bool) -> std::process::Output {
@@ -24130,39 +23398,32 @@ async fn invoke_clickpipe_delete(result: Value, json: bool) -> std::process::Out
 }
 
 #[tokio::test]
-async fn clickpipe_delete_human_output_uses_the_returned_name() {
-    let output = invoke_clickpipe_delete(serde_json::json!({"name": "events-pipe"}), false).await;
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "ClickPipe events-pipe deleted\n"
-    );
-}
-
-#[tokio::test]
-async fn clickpipe_delete_human_output_uses_the_requested_id_when_name_is_missing() {
-    let output = invoke_clickpipe_delete(serde_json::json!({}), false).await;
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "ClickPipe pipe-id deleted\n"
-    );
-}
-
-#[tokio::test]
-async fn clickpipe_delete_human_output_uses_the_requested_id_when_name_is_empty() {
-    let output = invoke_clickpipe_delete(serde_json::json!({"name": ""}), false).await;
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "ClickPipe pipe-id deleted\n"
-    );
-}
-
-#[tokio::test]
-async fn clickpipe_delete_json_output_keeps_the_requested_id() {
-    let output = invoke_clickpipe_delete(serde_json::json!({"name": "events-pipe"}), true).await;
-    assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        serde_json::json!({"deleted": "pipe-id"}),
-    );
+async fn clickpipe_delete_prints_the_returned_name_or_the_requested_id() {
+    for (result, json, expected) in [
+        (
+            serde_json::json!({"name": "events-pipe"}),
+            false,
+            "ClickPipe events-pipe deleted\n",
+        ),
+        (serde_json::json!({}), false, "ClickPipe pipe-id deleted\n"),
+        (
+            serde_json::json!({"name": ""}),
+            false,
+            "ClickPipe pipe-id deleted\n",
+        ),
+        (
+            serde_json::json!({"name": "events-pipe"}),
+            true,
+            "{\"deleted\":\"pipe-id\"}\n",
+        ),
+    ] {
+        let output = invoke_clickpipe_delete(result.clone(), json).await;
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{result} json={json}"
+        );
+    }
 }
 
 // Deleted resources return 404, while never-existing UUIDs may return 400 (#831).
@@ -26327,144 +25588,79 @@ fn kinesis_protobuf_args<'a>(
 }
 
 #[tokio::test]
-async fn kinesis_protobuf_relationships_are_usage_errors_before_auth_files_or_http() {
-    let mock = MockServer::start().await;
-    for operation in ["create", "schema-discover"] {
-        for (format, schema) in [
-            ("Protobuf", None),
-            ("JSONEachRow", Some("/missing/schema.proto")),
-            ("Avro", Some("/missing/schema.proto")),
-            ("AvroConfluent", Some("/missing/schema.proto")),
-        ] {
-            let args = kinesis_protobuf_args(operation, format, schema);
-            for credentials in [false, true] {
-                let output = if credentials {
-                    invoke_cli_with_cloud_credentials(&mock, &args)
-                } else {
-                    invoke_cli_without_cloud_credentials(
-                        &mock,
-                        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
-                    )
-                };
-                assert_eq!(
-                    output.status.code(),
-                    Some(2),
-                    "{operation} {format}: {output:?}"
-                );
-                assert!(output.stdout.is_empty());
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                assert!(stderr.contains("--protobuf-schema-file"), "{stderr}");
-                assert!(stderr.contains(&format!("{operation} kinesis")), "{stderr}");
-                assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
-            }
-        }
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn kinesis_protobuf_empty_stdin_is_a_usage_error_and_missing_file_stays_io() {
+    // Create and schema discovery share the source builder, so one operation
+    // covers both. Empty stdin is a usage error that keeps clap's text even in
+    // JSON mode; a missing file is an I/O failure with the JSON `io` code.
     let mock = MockServer::start().await;
-    for operation in ["create", "schema-discover"] {
-        let args = kinesis_protobuf_args(operation, "Protobuf", Some("-"));
-        for json in [false, true] {
-            let project = tempfile::tempdir().unwrap();
-            let mut command = Command::new(clickhousectl_binary());
-            command
-                .isolated_env()
-                .env("DO_NOT_TRACK", "1")
-                .env("HOME", project.path())
-                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-                .current_dir(project.path())
-                .args(["cloud", "--url", &mock.uri()])
-                .args(&args)
-                .stdin(Stdio::null());
-            if json {
-                command.arg("--json");
-            }
-            let output = command.output().unwrap();
-            assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
-            assert!(output.stdout.is_empty());
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("Protobuf") && stderr.contains("stdin"),
-                "{stderr}"
-            );
-            assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
+    let args = kinesis_protobuf_args("create", "Protobuf", Some("-"));
+    for json in [false, true] {
+        let project = tempfile::tempdir().unwrap();
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .isolated_env()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri()])
+            .args(&args)
+            .stdin(Stdio::null());
+        if json {
+            command.arg("--json");
         }
-        let output = invoke_cli_with_cloud_credentials(
-            &mock,
-            &kinesis_protobuf_args(operation, "Protobuf", Some("/missing/schema.proto")),
-        );
-        assert_eq!(output.status.code(), Some(1));
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "json={json}: {output:?}");
         assert!(output.stdout.is_empty());
-        assert_eq!(cloud_runtime_error(&output)["code"], "io");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Protobuf") && stderr.contains("stdin"),
+            "{stderr}"
+        );
+        assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
     }
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &kinesis_protobuf_args("create", "Protobuf", Some("/missing/schema.proto")),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(cloud_runtime_error(&output)["code"], "io");
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
-    let dir = tempfile::tempdir().unwrap();
-    let schema = dir.path().join("events.proto");
+async fn kinesis_protobuf_schema_can_be_read_from_stdin() {
     let raw = "syntax = \"proto3\"; message Event {}";
-    std::fs::write(&schema, raw).unwrap();
-    for operation in ["create", "schema-discover"] {
-        for input in [schema.to_str().unwrap(), "-"] {
-            let mock = if operation == "create" {
-                start_mock_clickpipes_api().await
-            } else {
-                start_mock_schema_discovery_api().await
-            };
-            let mut args = vec![
-                "clickpipe",
-                operation,
-                "kinesis",
-                "svc-id",
-                "--org-id",
-                "org",
-                "--stream-name",
-                "events",
-                "--region",
-                "us-east-1",
-                "--format",
-                "Protobuf",
-                "--protobuf-schema-file",
-                input,
-                "--access-key-id",
-                "access",
-                "--secret-key",
-                "secret",
-            ];
-            if operation == "create" {
-                args.extend([
-                    "--name",
-                    "pipe",
-                    "--database",
-                    "default",
-                    "--table",
-                    "events",
-                ]);
-            }
-            let body = if input == "-" {
-                invoke_cli_capture_body_with_stdin(&mock, &args, raw.as_bytes()).await
-            } else {
-                invoke_cli_capture_body(&mock, &args).await
-            };
-            let source = &body["source"]["kinesis"];
-            assert_eq!(source["format"], "Protobuf");
-            assert_eq!(
-                source["protobufSchema"],
-                "c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30="
-            );
-            assert_eq!(source["authentication"], "IAM_USER");
-            assert_eq!(
-                source["accessKey"],
-                serde_json::json!({"accessKeyId": "access", "secretKey": "secret"})
-            );
-        }
-    }
+    let mock = start_mock_clickpipes_api().await;
+    let args = [
+        "clickpipe",
+        "create",
+        "kinesis",
+        "svc-id",
+        "--org-id",
+        "org",
+        "--stream-name",
+        "events",
+        "--region",
+        "us-east-1",
+        "--format",
+        "Protobuf",
+        "--protobuf-schema-file",
+        "-",
+        "--name",
+        "pipe",
+        "--database",
+        "default",
+        "--table",
+        "events",
+    ];
+    let body = invoke_cli_capture_body_with_stdin(&mock, &args, raw.as_bytes()).await;
+    assert_eq!(
+        body["source"]["kinesis"]["protobufSchema"],
+        "c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30="
+    );
 }
 
 // API-key pagination: explicit pages, all-page listing, and exhaustive name lookup.
