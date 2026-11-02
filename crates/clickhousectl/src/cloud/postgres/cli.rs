@@ -2025,6 +2025,16 @@ mod tests {
                 clap::error::ErrorKind::ValueValidation,
             ),
             (
+                "--from-date",
+                "2026-04-16T12:00:00.1234Z",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
+                "--to-date",
+                "2026-04-16T13:00:00",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
                 "--sort-by",
                 "duration",
                 clap::error::ErrorKind::InvalidValue,

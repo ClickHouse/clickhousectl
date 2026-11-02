@@ -5563,6 +5563,37 @@ mod tests {
         }
     }
 
+    /// Every variant's request serializes back to the document it was read
+    /// from, nested log fields included, so nothing is dropped on the wire.
+    #[test]
+    fn every_source_variant_round_trips_to_the_wire_unchanged() {
+        let bodies = [
+            serde_json::json!({
+                "kind":"log", "name":"logs", "connection":"c",
+                "from":{"databaseName":"d","tableName":"logs"},
+                "defaultTableSelectExpression":"*", "timestampValueExpression":"Timestamp",
+                "serviceVersionExpression":"ServiceVersion",
+                "eventNameExpression":"EventName", "severityNumberExpression":"SeverityNumber",
+                "filterSettings":{"databaseName":"d","tableName":"filters","columns":[
+                    {"name":"service","label":"Service","allowAll":true,"valueExpression":"ServiceName"}
+                ]},
+                "materializedViews":[{"databaseName":"d","tableName":"mv","dimensionColumns":"ServiceName",
+                    "minGranularity":"1m","timestampColumn":"Timestamp","aggregatedColumns":[
+                        {"aggFn":"count","mvColumn":"count"}
+                    ]}],
+                "metadataMaterializedViews":{"keyRollupTable":"keys","kvRollupTable":"kv","granularity":"1m"}
+            }),
+            serde_json::json!({"kind":"trace","name":"traces","connection":"c","from":{"databaseName":"d","tableName":"traces"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","durationExpression":"duration","durationPrecision":9,"traceIdExpression":"trace","spanIdExpression":"span","parentSpanIdExpression":"parent","spanNameExpression":"name","spanKindExpression":"kind","serviceVersionExpression":"version"}),
+            serde_json::json!({"kind":"metric","name":"metrics","connection":"c","from":{"databaseName":"d"},"metricTables":{"gauge":"g","histogram":"h","sum":"s","summary":"summary","exponential histogram":"eh"},"timestampValueExpression":"ts","resourceAttributesExpression":"resource"}),
+            serde_json::json!({"kind":"session","name":"sessions","connection":"c","from":{"databaseName":"d","tableName":"sessions"},"traceSourceId":"traces"}),
+            serde_json::json!({"kind":"promql","name":"promql","connection":"c","from":{"databaseName":"d","tableName":"metrics"},"timestampValueExpression":"ts"}),
+        ];
+        for body in bodies {
+            let source = parse_source_request(body.clone(), "test").unwrap();
+            assert_eq!(serde_json::to_value(source).unwrap(), body);
+        }
+    }
+
     #[test]
     fn role_builders_cover_minimal_and_complete_permissions() {
         use clickhouse_cloud_api::models::ClickStackCASLPermission;
@@ -5753,5 +5784,30 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("orderByy"), "{error}");
+        let error = deserialize_strict_config::<ClickStackSavedSearchInput>(
+            serde_json::json!({"name":"bad"}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("missing field"), "{error}");
+
+        for (body, expected) in [
+            (
+                serde_json::json!({"kind":"promql","name":"p","connection":"c","from":{"databaseName":"d","tableName":"t","tableNaem":null},"timestampValueExpression":"ts"}),
+                "tableNaem",
+            ),
+            (
+                serde_json::json!({"kind":"log","name":"l"}),
+                "missing field",
+            ),
+            (
+                serde_json::json!({"kind":"log","name":"l","connection":"c","from":{"databaseName":"d","tableName":"t"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","useTextIndexForImplicitColumn":"enabledd"}),
+                "unknown useTextIndexForImplicitColumn",
+            ),
+            (serde_json::json!({"name":"no kind"}), "source `kind`"),
+        ] {
+            let error = parse_source_request(body, "test").unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
     }
 }

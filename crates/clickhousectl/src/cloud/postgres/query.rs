@@ -214,6 +214,7 @@ impl PostgresQueryRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
 
     #[test]
     fn builds_postgres_query_request_minimal_and_maximal() {
@@ -267,6 +268,22 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.failure.unwrap().kind, FailureKind::Io);
+    }
+
+    #[test]
+    fn postgres_query_sql_errors_separate_usage_from_io() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b" \n").unwrap();
+        let blank =
+            read_postgres_query_sql(None, Some(file.path()), std::io::empty(), false).unwrap_err();
+        assert_eq!(blank.kind, CloudErrorKind::Usage);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"SELECT \xff").unwrap();
+        let invalid =
+            read_postgres_query_sql(None, Some(file.path()), std::io::empty(), false).unwrap_err();
+        assert_eq!(invalid.kind, CloudErrorKind::Generic);
+        assert_eq!(invalid.failure.unwrap().kind, FailureKind::Io);
     }
 
     #[test]

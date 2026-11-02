@@ -859,6 +859,30 @@ mod tests {
     }
 
     #[test]
+    fn postgres_window_datetimes_reject_malformed_and_submillisecond_values() {
+        for (input, expected) in [
+            ("yesterday", "expected ISO 8601 / RFC 3339"),
+            ("2026-04-16T12:00:00", "expected ISO 8601 / RFC 3339"),
+            ("2026-04-16T12:00:00.1234Z", "at most millisecond precision"),
+            (
+                "2026-04-16T12:00:00.123456Z",
+                "at most millisecond precision",
+            ),
+            (
+                "2026-04-16T12:00:00.123456789Z",
+                "at most millisecond precision",
+            ),
+            (
+                "2026-04-16T12:00:00.0000000001Z",
+                "at most millisecond precision",
+            ),
+        ] {
+            let error = parse_postgres_window_datetime(input).unwrap_err();
+            assert!(error.contains(expected), "{input}: {error}");
+        }
+    }
+
+    #[test]
     fn postgres_metrics_validates_chronological_range() {
         assert!(
             validate_datetime_range("2026-04-16T12:00:00+01:00", "2026-04-16T11:00:00Z").is_ok()
