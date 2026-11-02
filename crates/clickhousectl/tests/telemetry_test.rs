@@ -606,8 +606,9 @@ fn run_local_client(sandbox: &Sandbox, project: &std::path::Path) -> Output {
 /// Wait for the event, then give a hypothetical second one time to arrive and
 /// fail if it does: exactly one event per invocation is the contract, and the
 /// handoff hook shares its guard with `main`'s tail. That guard is shared by
-/// every handoff path, so one test waits for a second event; the others take
-/// [`the_event`].
+/// every handoff path, so one test waits for a second event: a failed
+/// `exec()`, the one path where both the hook and the tail run. The others
+/// take [`the_event`].
 async fn exactly_one_event(sandbox: &Sandbox) -> Value {
     let payloads = sandbox.wait_for_requests(1).await;
     tokio::time::sleep(STRAY_EVENT_GRACE).await;
@@ -655,7 +656,7 @@ async fn successful_handoff_is_one_censored_exec_attempt() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
     assert!(stdout_of(&output).contains("child ran"), "{output:?}");
 
-    let event = exactly_one_event(&sandbox).await;
+    let event = the_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "exec_attempt");
     // Fixed 0: censored, not "the native client succeeded".
@@ -877,7 +878,9 @@ async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
         "the OS launch failure must still reach the shell: {stderr}"
     );
 
-    let event = the_event(&sandbox).await;
+    // The hook already sent `exec_attempt`, then the error returned to
+    // `main`'s tail: the shared guard is what keeps that to one event.
+    let event = exactly_one_event(&sandbox).await;
     assert_eq!(event["command"], "local client");
     assert_eq!(event["outcome"], "exec_attempt");
     assert_eq!(event["exit_code"], 0);
