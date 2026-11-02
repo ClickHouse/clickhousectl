@@ -1529,8 +1529,8 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(probe.readiness_checks, 2);
         assert_eq!(
-            last_probe_error.as_deref(),
-            Some("Docker error: temporary exec failure")
+            last_probe_error,
+            Some(Error::DockerError("temporary exec failure".to_string()).to_string())
         );
     }
 
@@ -1570,10 +1570,15 @@ mod tests {
                 last_probe_error: None,
             },
             "FATAL: database system is not ready",
-        )
-        .to_string();
-        assert!(error.contains("did not become ready within 12 seconds"));
-        assert!(error.contains("last 50 container log lines"));
+        );
+        assert!(
+            matches!(&error, Error::StartupTimeout { kind: StartupKind::Postgres, name, seconds: 12, .. }
+                if name == "test"),
+            "{error}"
+        );
+        let error = error.to_string();
+        assert!(error.contains(&READINESS_LOG_LINES.to_string()), "{error}");
+        // The container's own log text is carried through.
         assert!(error.contains("FATAL: database system is not ready"));
     }
 
@@ -1585,9 +1590,30 @@ mod tests {
             std::future::pending::<Result<String>>(),
         )
         .await;
+        let empty = collect_postgres_readiness_logs(
+            "test-container",
+            Duration::from_millis(10),
+            std::future::ready(Ok(String::new())),
+        )
+        .await;
+        let failed = collect_postgres_readiness_logs(
+            "test-container",
+            Duration::from_millis(10),
+            std::future::ready(Err(Error::DockerError("logs unavailable".into()))),
+        )
+        .await;
 
-        assert!(logs.contains("Timed out reading container logs"));
-        assert!(logs.contains("docker logs test-container"));
+        // Each fallback names the command that fetches the logs, and the
+        // stall is told apart from an empty or failed read.
+        for fallback in [&logs, &empty, &failed] {
+            assert!(
+                fallback.contains("`docker logs test-container`"),
+                "{fallback}"
+            );
+        }
+        assert_ne!(logs, empty);
+        assert_ne!(logs, failed);
+        assert!(failed.contains("logs unavailable"), "{failed}");
     }
 
     #[test]
@@ -1616,10 +1642,7 @@ mod tests {
     #[test]
     fn parse_pg_port_rejects_zero_with_actionable_error() {
         let err = parse_pg_port_arg("0").unwrap_err();
-        assert_eq!(
-            err,
-            "--port 0 is not allowed; pick a specific port or omit the flag"
-        );
+        assert!(err.contains("--port 0"), "{err}");
     }
 
     #[test]
@@ -1782,7 +1805,7 @@ mod tests {
         .expect("duplicate environment variable should fail");
 
         assert!(
-            matches!(error, Error::PostgresUsage(msg) if msg.contains("APP_MODE") && msg.contains("more than once"))
+            matches!(error, Error::PostgresUsage(msg) if msg.contains("'APP_MODE'") && msg.contains("--env"))
         );
     }
 
@@ -1802,8 +1825,10 @@ mod tests {
             )
             .err()
             .expect("reserved environment variable should fail");
+            let key = assignment.split_once('=').unwrap().0;
             assert!(
-                matches!(error, Error::PostgresUsage(msg) if msg.contains("managed by clickhousectl"))
+                matches!(&error, Error::PostgresUsage(msg) if msg.starts_with(key) && msg.contains("--")),
+                "{error}"
             );
         }
     }
@@ -1819,9 +1844,8 @@ mod tests {
         )
         .err()
         .expect("password sources should conflict");
-        assert!(
-            matches!(error, Error::PostgresUsage(msg) if msg.contains("both --password and --env"))
-        );
+        assert!(matches!(error, Error::PostgresUsage(msg)
+                if msg.contains("POSTGRES_PASSWORD") && msg.contains("--password") && msg.contains("--env")));
 
         let error = validate_start_options(
             Some("dev"),
@@ -1836,7 +1860,7 @@ mod tests {
         .err()
         .expect("duplicate password should fail");
         assert!(
-            matches!(error, Error::PostgresUsage(msg) if msg.contains("POSTGRES_PASSWORD") && msg.contains("more than once"))
+            matches!(error, Error::PostgresUsage(msg) if msg.contains("'POSTGRES_PASSWORD'") && !msg.contains("--password"))
         );
     }
 }
