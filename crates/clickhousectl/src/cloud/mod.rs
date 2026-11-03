@@ -23,6 +23,7 @@ pub mod udfs;
 #[cfg(test)]
 mod types_test;
 
+use client::stored_api_url_notice;
 pub use client::{
     AuthSource, CloudClient, CloudError, CloudErrorKind, EnvCredPresence, dotenv_env_provenance,
     env_cred_presence, resolve_active_auth_source,
@@ -102,6 +103,12 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     if !json
         && let Some(notice) =
             ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
+    {
+        eprint_line(notice);
+    }
+    if !json
+        && let Some(notice) =
+            stored_api_url_notice(client.auth_source(), args.url.as_deref(), client.base_url())
     {
         eprint_line(notice);
     }

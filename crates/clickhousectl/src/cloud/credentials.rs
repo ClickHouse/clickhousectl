@@ -15,6 +15,11 @@ pub struct Credentials {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret: Option<String>,
+    /// The API the key pair was minted or verified against, recorded only when
+    /// it is not production (#1202). Absent means production, so files written
+    /// before the field existed keep resolving as they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub service_query_keys: HashMap<String, ServiceQueryKey>,
 }
@@ -25,6 +30,14 @@ impl Credentials {
         let key = self.api_key.as_deref()?;
         let secret = self.api_secret.as_deref()?;
         (!key.is_empty() && !secret.is_empty()).then_some((key, secret))
+    }
+
+    /// The normalized API base URL the saved key pair belongs to.
+    pub(crate) fn api_base_url(&self) -> String {
+        self.api_url
+            .as_deref()
+            .map(crate::cloud::auth::normalize_api_url)
+            .unwrap_or_else(|| crate::cloud::client::DEFAULT_BASE_URL.to_string())
     }
 }
 
@@ -221,12 +234,27 @@ pub(crate) fn set_service_query_key(
     save_credentials(&creds)
 }
 
-pub(crate) fn set_api_credentials(api_key: String, api_secret: String) -> CloudResult<()> {
+/// Save a management key pair along with the API it belongs to: `api_url` is
+/// the resolved base URL the key was minted or verified against, not whether
+/// `--url` was passed.
+pub(crate) fn set_api_credentials(
+    api_key: String,
+    api_secret: String,
+    api_url: &str,
+) -> CloudResult<()> {
     let _lock = lock_credentials_mutation()?;
     let mut creds = try_load_credentials()?.unwrap_or_default();
     creds.api_key = Some(api_key);
     creds.api_secret = Some(api_secret);
+    creds.api_url = stored_api_url(api_url);
     save_credentials(&creds)
+}
+
+/// The `api_url` to record for a key used against `api_url`: `None` for
+/// production, so a production key's file looks as it always has.
+fn stored_api_url(api_url: &str) -> Option<String> {
+    let api_url = crate::cloud::auth::normalize_api_url(api_url);
+    (api_url != crate::cloud::client::DEFAULT_BASE_URL).then_some(api_url)
 }
 
 pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
@@ -344,6 +372,42 @@ fn push_pending_if_api_key_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_non_prod_api_url_is_recorded() {
+        for prod in [
+            "https://api.clickhouse.cloud",
+            "https://api.clickhouse.cloud/",
+            "https://api.clickhouse.cloud/v1",
+        ] {
+            assert_eq!(stored_api_url(prod), None, "{prod}");
+        }
+        assert_eq!(
+            stored_api_url("https://api.control-plane.clickhouse-dev.com").as_deref(),
+            Some("https://api.control-plane.clickhouse-dev.com/v1")
+        );
+    }
+
+    #[test]
+    fn a_file_without_api_url_is_a_prod_key_and_stays_that_shape() {
+        let creds: Credentials =
+            serde_json::from_value(serde_json::json!({"api_key": "k", "api_secret": "s"})).unwrap();
+        assert_eq!(creds.api_url, None);
+        assert_eq!(creds.api_base_url(), crate::cloud::client::DEFAULT_BASE_URL);
+        let written = serde_json::to_value(&creds).unwrap();
+        assert!(written.get("api_url").is_none());
+
+        let dev: Credentials = serde_json::from_value(serde_json::json!({
+            "api_key": "k",
+            "api_secret": "s",
+            "api_url": "https://api.control-plane.clickhouse-dev.com/v1",
+        }))
+        .unwrap();
+        assert_eq!(
+            dev.api_base_url(),
+            "https://api.control-plane.clickhouse-dev.com/v1"
+        );
+    }
 
     #[test]
     fn committed_credentials_succeed_when_directory_sync_fails() {

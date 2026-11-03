@@ -78,7 +78,7 @@ Failures fail the run by default. `CONTINUE_ON_NON_BLOCKING_FAILURES=1` collects
 
 ## Debugging endpoints
 
-Cloud `--debug` prints the selected credential source and API URL. For a non-production control plane, `--url` overrides the Cloud API base URL; release builds accept it but hide it from help. `CLICKHOUSE_CLOUD_QUERY_HOST` separately overrides the Query API host.
+Cloud `--debug` prints the selected credential source and API URL. For a non-production control plane, `--url` overrides the Cloud API base URL; release builds accept it but hide it from help. `CLICKHOUSE_CLOUD_QUERY_HOST` separately overrides the Query API host. An API key saved by `cloud auth login --api-key … --url <API_URL>` remembers that API, so later commands need no `--url`, and a different `--url` is refused; see [saved API keys](reference/authentication.md#credential-precedence).
 
 For OAuth login to an API host outside the built-in mappings, set `CLICKHOUSECTL_AUTH_URL` and `CLICKHOUSECTL_CLIENT_ID` when running `cloud auth login --url <API_URL>`; login saves the resolved configuration with the tokens, and refresh uses that saved configuration rather than the current environment. Built-in hosts ignore these overrides. Token files must include the complete configuration; older files without it require a new login, including for built-in hosts. Refresh never consults the built-in mappings or environment.
 

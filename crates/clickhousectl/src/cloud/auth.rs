@@ -268,6 +268,15 @@ pub async fn run(
                 scope: String,
                 #[tabled(rename = "Active")]
                 active: String,
+                /// The API a saved source is sent to (#1202); flags and env
+                /// vars carry no URL of their own.
+                #[tabled(rename = "API URL", display = "display_api_url")]
+                #[serde(skip_serializing_if = "Option::is_none")]
+                api_url: Option<String>,
+            }
+
+            fn display_api_url(api_url: &Option<String>) -> String {
+                api_url.clone().unwrap_or_else(|| "-".into())
             }
 
             let active = resolve_active_auth_source(api_key, api_secret);
@@ -299,6 +308,7 @@ pub async fn run(
                 status,
                 scope: scope.into(),
                 active: mark(AuthSource::CliFlags),
+                api_url: None,
             });
 
             let mut oauth_warning = None;
@@ -309,14 +319,16 @@ pub async fn run(
                         status: configured_status(AuthSource::OAuthTokens),
                         scope: "read-only".into(),
                         active: mark(AuthSource::OAuthTokens),
+                        api_url: Some(tokens.api_url),
                     });
                 }
-                Ok(Some(_)) => {
+                Ok(Some(tokens)) => {
                     rows.push(AuthRow {
                         auth_type: "OAuth".into(),
                         status: "Expired".into(),
                         scope: "read-only".into(),
                         active: "-".into(),
+                        api_url: Some(tokens.api_url),
                     });
                 }
                 Err(UnusableTokens) => {
@@ -326,6 +338,7 @@ pub async fn run(
                         status: "Login required".into(),
                         scope: "-".into(),
                         active: "-".into(),
+                        api_url: None,
                     });
                 }
                 Ok(None) => {
@@ -334,6 +347,7 @@ pub async fn run(
                         status: "Not configured".into(),
                         scope: "-".into(),
                         active: "-".into(),
+                        api_url: None,
                     });
                 }
             }
@@ -353,6 +367,10 @@ pub async fn run(
                 status,
                 scope: scope.into(),
                 active: mark(AuthSource::CredentialsFile),
+                api_url: saved
+                    .as_ref()
+                    .filter(|creds| creds.api_credentials().is_some())
+                    .map(credentials::Credentials::api_base_url),
             });
 
             let env_creds = env_cred_presence();
@@ -376,6 +394,7 @@ pub async fn run(
                         status,
                         scope: "read/write".into(),
                         active: mark(AuthSource::EnvVars),
+                        api_url: None,
                     });
                 }
                 (true, false) => {
@@ -384,6 +403,7 @@ pub async fn run(
                         status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
                         scope: "-".into(),
                         active: "-".into(),
+                        api_url: None,
                     });
                 }
                 (false, true) => {
@@ -392,6 +412,7 @@ pub async fn run(
                         status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
                         scope: "-".into(),
                         active: "-".into(),
+                        api_url: None,
                     });
                 }
                 (false, false) => {
@@ -400,6 +421,7 @@ pub async fn run(
                         status: "Not configured".into(),
                         scope: "-".into(),
                         active: "-".into(),
+                        api_url: None,
                     });
                 }
             }
@@ -597,7 +619,10 @@ async fn login_with_api_key(
             error.message
         )));
     }
-    credentials::set_api_credentials(key.to_owned(), secret.to_owned())
+    let api_url = api_url
+        .map(normalize_api_url)
+        .unwrap_or_else(|| DEFAULT_API_URL.to_string());
+    credentials::set_api_credentials(key.to_owned(), secret.to_owned(), &api_url)
         .map_err(|error| Error::Cloud(error.to_string()))?;
     let saved = credentials::credentials_path().display().to_string();
     let report = LoginReport::new(saved, verification, "could not verify the credentials");
