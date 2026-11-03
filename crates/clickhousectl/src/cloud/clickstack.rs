@@ -4270,10 +4270,17 @@ mod tests {
     }
 
     /// `expected` is a space-separated list of the identifiers (field paths,
-    /// offending values, bounds) the message must name.
+    /// offending values, bounds) the message must name, each as a whole token
+    /// so that `1` is not found inside `10`.
     fn assert_names(error: &CloudError, expected: &str) {
+        let message = &error.message;
+        let is_word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
         for id in expected.split_whitespace() {
-            assert!(error.message.contains(id), "`{id}` missing from: {error}");
+            let found = message.match_indices(id).any(|(at, _)| {
+                !is_word(message[..at].chars().next_back())
+                    && !is_word(message[at + id.len()..].chars().next())
+            });
+            assert!(found, "`{id}` missing from: {error}");
         }
     }
 
