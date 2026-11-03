@@ -8,7 +8,7 @@ Use `cloud clickpipe create <source> --help` for flag names, allowed values, def
 
 | Source | Setup and authentication |
 | --- | --- |
-| Kafka | Omit all credential flags only for an unauthenticated broker. Auth is inferred from a complete username/password, IAM access-key pair, IAM role, or certificate/private-key pair. Partial pairs fail. Avro uses a schema registry or AWS Glue; Protobuf accepts a schema file. |
+| Kafka | Authentication is required: pass `--auth`, or let it be inferred from a complete username/password, IAM access-key pair, IAM role, certificate/private-key pair, or Event Hubs connection string. Partial pairs fail. Avro uses a schema registry or AWS Glue; Protobuf accepts a schema file. |
 | Kinesis | Use IAM role or a complete access-key pair. Choose stream and region, then initial position/format. |
 | Object storage | Grant read access through IAM, access keys, an Azure connection string, or a GCP service account. Schema discovery needs a running destination service. |
 | Postgres / MySQL | Basic auth requires both username and password; `IAM_ROLE` on supported RDS/Aurora sources requires a role ARN and rejects username/password. |
