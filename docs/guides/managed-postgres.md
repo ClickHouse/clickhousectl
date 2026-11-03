@@ -112,7 +112,7 @@ clickhousectl cloud postgres get <restored-postgres-id>
 
 Restore and read-replica creation return a new service ID without a password. Wait for `running` and obtain valid credentials separately; do not assume the source's current password works for a historical restore or replica.
 
-`promote` and `switchover` also return after acceptance. Promotion makes a read replica an independent primary; confirm `isPrimary: true` on that replica, while the source stays primary. HA switchover changes the active internal node; service-level state, `isPrimary`, and readiness cannot prove that it completed.
+`promote` and `switchover` also return after acceptance. Promotion makes a read replica an independent primary; confirm `isPrimary: true` on that replica, while the source stays primary. Switchover replaces the primary's server: it moves onto the standby if one exists, otherwise onto a newly provisioned server, so it also works on a service without HA. The replacement catches up, a planned failover moves the service to it, and the old server is removed; this may wait for the maintenance window, and clients reconnect at failover. Service-level state, `isPrimary`, and readiness do not show its progress, so the CLI cannot confirm that a switchover completed.
 
 ## Delete a service
 

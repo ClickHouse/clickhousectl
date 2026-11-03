@@ -345,13 +345,13 @@ CONTEXT FOR AGENTS:
         postgres_id: NameSelector,
     },
 
-    /// Switch a primary over to an HA standby
+    /// Switch a primary over to a standby or a new server
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Exit 0 means accepted, not completed; switchover is asynchronous.
-  The standby takes over inside the same HA service.
-  Service isPrimary and state, plus database readiness, do not identify the active HA node.
-  Monitor client connectivity separately; these service fields expose no completion check.")]
+  Exit 0 means accepted, not completed; asynchronous, and may wait for the maintenance window.
+  Moves the primary onto its standby, or onto a newly provisioned server without HA; never a no-op.
+  The new server catches up, a planned failover switches to it, then the old server is removed.
+  Clients reconnect at failover. Service state, isPrimary and readiness do not confirm completion.")]
     Switchover {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]

@@ -308,10 +308,10 @@ fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str) -> Vec<String>
              {postgres_id} --json` until isPrimary is true."
         )],
         PostgresRoleCommand::Switchover => vec![format!(
-            "Switchover is asynchronous inside Postgres service {postgres_id}. Service isPrimary \
-             and state, plus database readiness, do not identify the active HA node or confirm \
-             completion. Monitor client connectivity separately; these service fields expose no \
-             completion check."
+            "Switchover is asynchronous and may wait for the maintenance window. Postgres service \
+             {postgres_id} moves to its standby, or to a newly provisioned server if it has none, \
+             and the old server is removed. Service state, isPrimary and readiness do not confirm \
+             completion; monitor client connectivity separately."
         )],
     }
 }
