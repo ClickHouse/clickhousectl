@@ -18114,13 +18114,15 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
 
 #[tokio::test]
 async fn org_get_and_update_require_one_organization_for_autodetection() {
-    for (subcommand, organizations) in [
-        ("get", serde_json::json!([])),
+    // No organization is a runtime failure; several is a usage error (#1198).
+    for (subcommand, organizations, exit) in [
+        ("get", serde_json::json!([]), 1),
         (
             "update",
             serde_json::json!([
                 {"id": "00000000-0000-0000-0000-000000000001", "name": "First"}, {"id": "00000000-0000-0000-0000-000000000002", "name": "Second"}
             ]),
+            2,
         ),
     ] {
         let mock = MockServer::start().await;
@@ -18153,7 +18155,7 @@ async fn org_get_and_update_require_one_organization_for_autodetection() {
             ])
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(output.status.code(), Some(exit), "{output:?}");
         let requests = mock.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/v1/organizations");
@@ -24021,17 +24023,23 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
         serde_json::json!([])
     );
 
-    // One organization per page is still two organizations, not an auto-detected one.
+    // One organization per page is still two organizations, not an auto-detected
+    // one: a usage error (exit 2, clap text even in JSON mode) that lists both.
     let detected = invoke_cli_with_cloud_credentials(&mock, &["service", "list"]);
-    assert_eq!(detected.status.code(), Some(1), "{detected:?}");
-    let message = cloud_runtime_error(&detected)["message"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert!(
-        message.contains("--org-id") && message.contains("--org-name"),
-        "{message}"
-    );
+    assert_eq!(detected.status.code(), Some(2), "{detected:?}");
+    assert!(detected.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&detected.stderr);
+    assert!(serde_json::from_str::<Value>(&stderr).is_err(), "{stderr}");
+    for token in [
+        "--org-id",
+        "--org-name",
+        PAGED_ORG_FIRST,
+        "first-org",
+        PAGED_ORG_SECOND,
+        "second-org",
+    ] {
+        assert!(stderr.contains(token), "missing {token}: {stderr}");
+    }
 }
 
 #[tokio::test]
