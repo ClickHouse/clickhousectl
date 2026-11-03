@@ -349,8 +349,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Exit 0 means accepted, not completed; asynchronous, and may wait for the maintenance window.
-  Moves the primary onto its standby, or onto a newly provisioned server without HA; never a no-op.
-  The new server catches up, a planned failover switches to it, then the old server is removed.
+  Moves the primary onto its standby, or without HA onto a newly provisioned server; never a no-op.
+  The target catches up, a planned failover switches to it, then the old server is removed.
   Clients reconnect at failover. Service state, isPrimary and readiness do not confirm completion.")]
     Switchover {
         /// Postgres service ID (from `cloud postgres list`)
