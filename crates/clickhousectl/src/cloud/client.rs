@@ -559,10 +559,13 @@ impl CloudClient {
                     (Some(id), None) => Ok(id.clone()),
                     (None, Some(name)) => {
                         let rows = self.list_organizations().await?;
-                        crate::cloud::shared::select_named_id(
+                        // Names may collide, and an organization has no
+                        // positional ID: only --org-id can choose one (#1200).
+                        crate::cloud::shared::select_named_id_or(
                             "organization",
                             name,
                             rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+                            |ids| format!("choose one with --org-id <ID>: {}", ids.join(", ")),
                         )
                     }
                     (None, None) => self.get_default_org_id().await,

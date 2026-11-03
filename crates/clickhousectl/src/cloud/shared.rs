@@ -70,6 +70,19 @@ pub(super) fn select_named_id<'a, I: std::fmt::Display>(
     name: &str,
     records: impl IntoIterator<Item = (Option<&'a str>, Option<I>)>,
 ) -> CloudResult<String> {
+    select_named_id_or(kind, name, records, |_| {
+        "supply a positional ID".to_string()
+    })
+}
+
+/// [`select_named_id`] for a resource with no positional ID: `ambiguous`
+/// turns the matching IDs into the advice that ends the ambiguity error.
+pub(super) fn select_named_id_or<'a, I: std::fmt::Display>(
+    kind: &'static str,
+    name: &str,
+    records: impl IntoIterator<Item = (Option<&'a str>, Option<I>)>,
+    ambiguous: impl FnOnce(&[String]) -> String,
+) -> CloudResult<String> {
     let mut matches = Vec::new();
     for (candidate, id) in records {
         let candidate = candidate.ok_or_else(|| {
@@ -91,7 +104,8 @@ pub(super) fn select_named_id<'a, I: std::fmt::Display>(
         ))),
         1 => Ok(matches.remove(0)),
         count => Err(CloudError::new(format!(
-            "found {count} {kind} resources matching '{name}'; supply a positional ID"
+            "found {count} {kind} resources matching '{name}'; {}",
+            ambiguous(&matches)
         ))),
     }
 }

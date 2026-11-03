@@ -47,7 +47,7 @@ clickhousectl cloud service list --org-id <org-id>
 clickhousectl cloud service get --name analytics --org-id <org-id>
 ```
 
-Organization-scoped commands auto-select only when credentials reach exactly one organization. Otherwise pass `--org-id` or, where supported, exact `--org-name`. When credentials reach several organizations and neither is given, the command exits 2 as a usage error and lists each organization's ID and name.
+Organization-scoped commands auto-select only when credentials reach exactly one organization. Otherwise pass `--org-id` or, where supported, exact `--org-name`. When credentials reach several organizations and neither is given, the command exits 2 as a usage error and lists each organization's ID and name. Organization names need not be unique: when `--org-name` matches more than one, the command exits 1 and lists the matching IDs to pass to `--org-id`.
 
 Most resource commands accept a positional ID or exact `--name`. Name lookup needs list permission within the selected organization or required parent service, and ambiguous matches fail. A child name selects the child, never its parent service. Member and invitation `--email` matching is exact, including case.
 
