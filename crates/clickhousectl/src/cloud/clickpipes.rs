@@ -8372,6 +8372,14 @@ mod tests {
                 &["--auth", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"][..],
                 &["--event-hubs-connection-string", "Endpoint=sb://e/"],
                 &["--iam-role", "arn:role"],
+                &["--username", "user", "--password", "password"],
+                &["--access-key-id", "AKIA", "--secret-key", "secret"],
+                &[
+                    "--client-certificate",
+                    "cert.pem",
+                    "--client-key",
+                    "key.pem",
+                ],
             ] {
                 let mut args = base();
                 args.extend(selector);
