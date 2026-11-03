@@ -182,7 +182,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 &from_date,
                 &to_date,
                 body_contains.as_deref(),
-                severity.as_deref(),
+                severity,
                 sort_order.as_ref(),
                 limit,
                 offset,

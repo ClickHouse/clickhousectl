@@ -7,6 +7,35 @@ use clickhouse_cloud_api::models::{
 };
 use tabled::{Table, Tabled, settings::Style};
 
+/// A Postgres log level the logs endpoint filters on, sent in upper case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "UPPER")]
+pub(crate) enum PostgresLogSeverity {
+    Debug,
+    Log,
+    Info,
+    Notice,
+    Warning,
+    Error,
+    Fatal,
+    Panic,
+}
+
+impl PostgresLogSeverity {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Debug => "DEBUG",
+            Self::Log => "LOG",
+            Self::Info => "INFO",
+            Self::Notice => "NOTICE",
+            Self::Warning => "WARNING",
+            Self::Error => "ERROR",
+            Self::Fatal => "FATAL",
+            Self::Panic => "PANIC",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct PostgresLogsQuery {
     pub(super) from_date: String,
@@ -23,7 +52,7 @@ pub(super) fn build_postgres_logs_query(
     from_date: &str,
     to_date: &str,
     body_contains: Option<&str>,
-    severity: Option<&str>,
+    severity: Option<PostgresLogSeverity>,
     sort_order: Option<&PostgresLogsGetListSortorder>,
     limit: Option<i64>,
     offset: Option<i64>,
@@ -57,7 +86,7 @@ pub(super) fn build_postgres_logs_query(
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
         body_contains: body_contains.map(str::to_string),
-        severity: severity.map(str::to_string),
+        severity: severity.map(|severity| severity.as_str().to_string()),
         sort_order,
         limit,
         offset,
@@ -742,14 +771,14 @@ mod tests {
             "2026-08-01T00:00:00Z",
             "2026-08-31T00:00:00Z",
             Some("checkpoint"),
-            Some("LOG"),
+            Some(PostgresLogSeverity::Error),
             Some(&PostgresLogsGetListSortorder::Asc),
             Some(2000),
             Some(0),
         )
         .unwrap();
         assert_eq!(query.body_contains.as_deref(), Some("checkpoint"));
-        assert_eq!(query.severity.as_deref(), Some("LOG"));
+        assert_eq!(query.severity.as_deref(), Some("ERROR"));
         assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(query.limit, Some(2000));
         assert_eq!(query.offset, Some(0));
