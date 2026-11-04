@@ -185,11 +185,21 @@ impl CloudClient {
     /// Resolve the caller behind the active credentials; not organization-scoped.
     /// Also identifies the key `cloud service query` binds to an endpoint (#1043).
     pub(crate) async fn get_whoami(&self) -> CloudResult<Whoami> {
-        let response = self
-            .api()
-            .whoami_get()
-            .await
-            .map_err(|error| self.convert_error(error))?;
+        let response = self.api().whoami_get().await.map_err(|error| {
+            // whoami answers any credential the API accepts, so its 403
+            // refuses the credentials themselves; elsewhere a 403 refuses
+            // only the request (#1225).
+            let refused = matches!(error, clickhouse_cloud_api::Error::Api { status: 403, .. });
+            let error = self.convert_error(error);
+            if refused {
+                super::CloudError {
+                    kind: super::CloudErrorKind::Auth,
+                    ..error
+                }
+            } else {
+                error
+            }
+        })?;
         Self::unwrap_response(response)
     }
 }
