@@ -350,6 +350,14 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
+        /// Instance profile (enterprise and BYOC only), e.g. v1-highmem-s
+        ///
+        /// Omit to keep the current profile. A BYOC profile needs both memory flags equal to its
+        /// size; any other profile cannot be combined with a memory change.
+        /// `cloud service profile list` shows the available profiles.
+        #[arg(long)]
+        profile: Option<String>,
+
         /// Fixed replica count for vertical autoscaling (up to 50)
         ///
         /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
@@ -2132,6 +2140,7 @@ mod tests {
             autoscaling_mode,
             idle_scaling,
             idle_timeout_minutes,
+            profile,
             ..
         } = scale
         else {
@@ -2145,6 +2154,7 @@ mod tests {
         assert!(autoscaling_mode.is_none());
         assert!(idle_scaling.is_none());
         assert!(idle_timeout_minutes.is_none());
+        assert!(profile.is_none());
 
         let reset = parse_service(&[
             "clickhousectl",
@@ -2491,6 +2501,8 @@ mod tests {
             "false",
             "--idle-timeout-minutes",
             "15",
+            "--profile",
+            "v1-highmem-s",
             "--org-id",
             "org-1",
         ]);
@@ -2503,6 +2515,7 @@ mod tests {
             max_replicas,
             idle_scaling,
             idle_timeout_minutes,
+            profile,
             ..
         } = command
         else {
@@ -2516,6 +2529,7 @@ mod tests {
         assert!(max_replicas.is_none());
         assert_eq!(idle_scaling, Some(false));
         assert_eq!(idle_timeout_minutes, Some(15));
+        assert_eq!(profile.as_deref(), Some("v1-highmem-s"));
     }
 
     #[test]

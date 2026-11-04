@@ -54,6 +54,12 @@ clickhousectl cloud service get <service-id>
 
 Cloud validates counts against the organization and warehouse limits. Horizontal autoscaling requires its organization feature; use `scale --help` for the separate minimum/maximum replica controls. BYOC services use `profile list --byoc-id` and the returned profile's exact memory size; see `cloud org byoc --help` for preflight and provisioning.
 
+Enterprise and BYOC organizations can change the instance profile with `scale --profile`. Send a standard profile on its own, without memory flags; a BYOC profile needs `--min-replica-memory-gb` and `--max-replica-memory-gb` both equal to its memory size. While a scaling-schedule window is active, the new profile applies once the window ends.
+
+```bash
+clickhousectl cloud service scale <service-id> --profile v1-highmem-s
+```
+
 Discover service setting names and types before changing them:
 
 ```bash

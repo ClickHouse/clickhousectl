@@ -460,6 +460,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             autoscaling_mode,
             idle_scaling,
             idle_timeout_minutes,
+            profile,
         } => {
             service_scale(
                 client,
@@ -473,6 +474,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                     autoscaling_mode,
                     idle_scaling,
                     idle_timeout_minutes,
+                    profile,
                 },
                 json,
             )

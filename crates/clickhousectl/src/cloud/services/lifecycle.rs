@@ -1119,6 +1119,7 @@ pub(super) struct ServiceScaleOptions {
     pub(super) autoscaling_mode: Option<String>,
     pub(super) idle_scaling: Option<bool>,
     pub(super) idle_timeout_minutes: Option<u32>,
+    pub(super) profile: Option<String>,
 }
 
 fn build_service_scale_request(
@@ -1139,7 +1140,7 @@ fn build_service_scale_request(
         num_replicas: options.num_replicas.map(i64::from),
         idle_scaling: options.idle_scaling,
         idle_timeout_minutes: options.idle_timeout_minutes.map(f64::from),
-        profile: None,
+        profile: options.profile.clone(),
     })
 }
 
@@ -2141,6 +2142,7 @@ mod tests {
         assert!(request.max_replicas.is_none());
         assert!(request.idle_scaling.is_none());
         assert!(request.idle_timeout_minutes.is_none());
+        assert!(request.profile.is_none());
     }
 
     #[test]
@@ -2170,6 +2172,7 @@ mod tests {
             max_replica_memory_gb: Some(32),
             idle_scaling: Some(false),
             idle_timeout_minutes: Some(15),
+            profile: Some("v1-highmem-s".to_string()),
             ..Default::default()
         })
         .unwrap();
@@ -2182,6 +2185,7 @@ mod tests {
         assert!(request.max_replicas.is_none());
         assert_eq!(request.idle_scaling, Some(false));
         assert_eq!(request.idle_timeout_minutes, Some(15.0));
+        assert_eq!(request.profile.as_deref(), Some("v1-highmem-s"));
     }
 
     #[test]
