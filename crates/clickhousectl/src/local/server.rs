@@ -1031,9 +1031,34 @@ pub async fn wait_for_server_ready(
     }
 }
 
-/// Check if a TCP port is available by attempting to bind to it.
+/// How long a loopback connect probe may take. Loopback refuses an unused port
+/// at once, so only a listener (perhaps with a full backlog) gets this far.
+const PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Check if a TCP port is free for a server that listens on loopback, as
+/// ClickHouse does on both `127.0.0.1` and `::1`.
+///
+/// The bind alone is not enough (#1229): std sets `SO_REUSEADDR`, so on macOS
+/// it succeeds over a listener on `0.0.0.0`, `::` or `::1`. A connect to each
+/// loopback address finds those listeners on every platform, while the
+/// `SO_REUSEADDR` bind still ignores the `TIME_WAIT` sockets a just-stopped
+/// server leaves behind.
 fn is_port_available(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+        return false;
+    }
+    !is_loopback_listener(std::net::Ipv4Addr::LOCALHOST.into(), port)
+        && !is_loopback_listener(std::net::Ipv6Addr::LOCALHOST.into(), port)
+}
+
+/// True when something accepts, or silently holds, a connection to `ip:port`.
+/// A refusal, or a host without that loopback address, means nothing listens.
+fn is_loopback_listener(ip: std::net::IpAddr, port: u16) -> bool {
+    let addr = std::net::SocketAddr::new(ip, port);
+    match std::net::TcpStream::connect_timeout(&addr, PORT_PROBE_TIMEOUT) {
+        Ok(_) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::TimedOut,
+    }
 }
 
 /// Find a free port starting from `start`, incrementing by 1.
@@ -1989,6 +2014,34 @@ mod tests {
             matches!(tcp_error, Error::PortInUse { kind: PortKind::Tcp, port: p } if p == port),
             "{tcp_error}"
         );
+    }
+
+    /// A listener on either loopback address ClickHouse binds makes the port
+    /// unavailable, not just an exact `127.0.0.1` listener (#1229). Wildcard
+    /// listeners take the same connect path, but binding `0.0.0.0` here would
+    /// raise the macOS firewall prompt on every test run.
+    #[test]
+    fn port_with_any_loopback_listener_is_unavailable() {
+        use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
+
+        let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        assert!(!is_port_available(ipv4.local_addr().unwrap().port()));
+
+        // Hosts without IPv6 loopback cannot hold a `::1` listener at all.
+        if let Ok(ipv6) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+            assert!(!is_port_available(ipv6.local_addr().unwrap().port()));
+        }
+
+        // A freed port is free again, so a refused probe is not a listener.
+        // Concurrent tests may take any one freed ephemeral port, so it is
+        // enough that one of several fresh candidates reads as free.
+        let any_freed_port_is_available = (0..8).any(|_| {
+            let freed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = freed.local_addr().unwrap().port();
+            drop(freed);
+            is_port_available(port)
+        });
+        assert!(any_freed_port_is_available);
     }
 
     #[test]
