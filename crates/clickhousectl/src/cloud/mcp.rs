@@ -22,10 +22,14 @@ pub const CLOUD_MCP_URL: &str = "https://mcp.clickhouse.cloud/mcp";
 /// the MCP server itself (see `CloudArgs::mcp_flag_conflict`).
 const REJECTED_CLOUD_FLAGS: [&str; 5] = ["org_id", "org_name", "api_key", "api_secret", "url"];
 
-/// Hide the rejected Cloud-wide flags from `cloud mcp` help. clap propagates a
-/// global flag only into subcommands without an arg of the same ID, so hidden
-/// copies on `mcp` replace the visible ones there and nowhere else. The copies
-/// stay global, so a value given after `mcp add` still reaches `CloudArgs`.
+/// Hide the rejected Cloud-wide flags from `cloud mcp` help, and nothing else.
+///
+/// The copies added to `mcp` exist only to override the global flags so they
+/// can be hidden there: clap propagates a global flag only into subcommands
+/// without an arg of the same ID, so these hidden copies replace the visible
+/// ones under `mcp` and leave every other Cloud command unchanged. They add no
+/// behaviour. Rejecting the flags is `CloudArgs::mcp_flag_conflict`'s job, and
+/// the copies stay global so a value given after `mcp add` still reaches it.
 pub(crate) fn hide_rejected_cloud_flags(root: clap::Command) -> clap::Command {
     root.mut_subcommand("cloud", |cloud| {
         let hidden: Vec<clap::Arg> = cloud
