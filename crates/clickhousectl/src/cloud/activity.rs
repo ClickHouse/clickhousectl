@@ -11,6 +11,7 @@ use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use clap::Subcommand;
+use clap::builder::NonEmptyStringValueParser;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
@@ -29,6 +30,7 @@ pub enum ActivityCommands {
     /// Get activity log entry details
     Get {
         /// Activity ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         activity_id: String,
     },
 }

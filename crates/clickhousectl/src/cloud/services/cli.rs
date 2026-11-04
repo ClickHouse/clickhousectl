@@ -1,6 +1,7 @@
 use crate::cloud::backups::{BackupConfigCommands, SnapshotCommands};
 use crate::cloud::shared::NameSelector;
 use crate::cloud::shared::parse_tag_filter;
+use clap::builder::NonEmptyStringValueParser;
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::QueryEndpointRole;
@@ -516,7 +517,7 @@ CONTEXT FOR AGENTS:
     )]
     Query {
         /// Service ID to query
-        #[arg(conflicts_with_all = ["name", "id"])]
+        #[arg(conflicts_with_all = ["name", "id"], value_parser = NonEmptyStringValueParser::new())]
         service_id: Option<String>,
 
         /// Service name to query
@@ -707,13 +708,14 @@ CONTEXT FOR AGENTS:
 #[derive(clap::Args)]
 pub struct ServiceSettingTarget {
     /// Service ID, or setting name with --name
-    #[arg(value_name = "ID_OR_SETTING_NAME")]
+    #[arg(value_name = "ID_OR_SETTING_NAME", value_parser = NonEmptyStringValueParser::new())]
     id_or_setting_name: String,
     /// Setting name when selecting by service ID
     #[arg(
         value_name = "SETTING_NAME",
         required_unless_present = "name",
-        conflicts_with = "name"
+        conflicts_with = "name",
+        value_parser = NonEmptyStringValueParser::new(),
     )]
     setting_name: Option<String>,
     /// Exact service name within the selected organization
@@ -934,13 +936,14 @@ CONTEXT FOR AGENTS:
 #[derive(clap::Args)]
 pub struct JwtProviderTarget {
     /// Service ID, or provider name with --name
-    #[arg(value_name = "ID_OR_PROVIDER_NAME")]
+    #[arg(value_name = "ID_OR_PROVIDER_NAME", value_parser = NonEmptyStringValueParser::new())]
     id_or_provider_name: String,
     /// JWT provider name when selecting by service ID
     #[arg(
         value_name = "PROVIDER_NAME",
         required_unless_present = "name",
-        conflicts_with = "name"
+        conflicts_with = "name",
+        value_parser = NonEmptyStringValueParser::new(),
     )]
     provider_name: Option<String>,
     /// Exact service name within the selected organization

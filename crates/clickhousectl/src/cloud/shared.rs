@@ -1,5 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use chrono::{DateTime, FixedOffset, NaiveDate};
+use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{IpAccessListEntry, ResourceTagsV1};
 use std::net::IpAddr;
 
@@ -33,7 +34,8 @@ pub struct NameSelector {
         id = "resource_id",
         value_name = "ID",
         required_unless_present = "name",
-        conflicts_with = "name"
+        conflicts_with = "name",
+        value_parser = NonEmptyStringValueParser::new(),
     )]
     pub id: Option<String>,
     /// Exact resource name within the selected scope
@@ -45,7 +47,7 @@ pub struct NameSelector {
 #[group(id = "source_selector", required = true, multiple = false)]
 pub struct SourceSelector {
     /// Source Postgres service ID
-    #[arg(value_name = "POSTGRES_ID")]
+    #[arg(value_name = "POSTGRES_ID", value_parser = NonEmptyStringValueParser::new())]
     pub id: Option<String>,
     /// Exact source Postgres service name
     #[arg(long = "source-name")]
@@ -56,7 +58,7 @@ pub struct SourceSelector {
 #[group(id = "email_selector", required = true, multiple = false)]
 pub struct EmailSelector {
     /// Existing resource ID
-    #[arg(value_name = "ID")]
+    #[arg(value_name = "ID", value_parser = NonEmptyStringValueParser::new())]
     pub id: Option<String>,
     /// Exact stored email address (case-sensitive, without normalization)
     #[arg(long)]

@@ -44,7 +44,7 @@ Paginated commands require command-specific handling. `cloud org list`, `cloud s
 | --- | --- |
 | `0` | Success (which may mean an asynchronous request was accepted) |
 | `1` | Runtime error |
-| `2` | Usage error, including invalid command-line values |
+| `2` | Usage error, including invalid command-line values such as an empty Cloud resource ID (often an unset shell variable); nothing is sent |
 | `3` | Cancellation |
 | `4` | Authentication required/rejected, including OAuth-only writes |
 
