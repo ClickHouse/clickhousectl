@@ -419,8 +419,10 @@ pub enum ServerCommands {
 CONTEXT FOR AGENTS:
   Starting a name that is already running is an error; a bare start with \"default\" already
   running picks a new generated name instead.
-  With no --version and no default set, start installs \"latest\" first (~150 MB) without making
-  it the default.
+  Restarting a stopped server without --version reuses the version it last ran successfully
+  (shown by `list`); pass --version to move its data to another version.
+  A new server with no --version and no default set installs \"latest\" first (~150 MB)
+  without making it the default.
   After editing a custom config, stop the server and start again with the same --config.
   Omitting --config on a later start removes the previously selected override.")]
     Start {

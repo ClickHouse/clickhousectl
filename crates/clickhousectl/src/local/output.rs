@@ -591,7 +591,8 @@ impl LocalErrorOutput {
                 Mapping::parity(LocalErrorCode::VersionNotInstalled)
                     .command("clickhousectl local install latest")
             }
-            Error::ClientVersionNotInstalled(version) => {
+            Error::ClientVersionNotInstalled(version)
+            | Error::ServerVersionNotInstalled { version, .. } => {
                 Mapping::parity(LocalErrorCode::VersionNotInstalled)
                     .command(format!("clickhousectl local install {version}"))
             }

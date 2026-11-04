@@ -90,7 +90,7 @@ clickhousectl local clickhouse stop native-demo
 
 For an existing server, find its TCP port with `clickhousectl local clickhouse list` and pass that port to `clickhouse client`. The native client connects by host and port; `clickhousectl` manages the server's process, configuration, and data. All native client options are available directly.
 
-Run `local use latest` again to check for a newer master build, or select `stable`, `lts`, or an exact version to switch the binary. Switching changes the binary used by subsequent `clickhouse` commands and the default for future server starts; running servers keep their existing version. To match a running server, select its version from `local clickhouse list` with `local use <version>`.
+Run `local use latest` again to check for a newer master build, or select `stable`, `lts`, or an exact version to switch the binary. Switching changes the binary used by subsequent `clickhouse` commands and the default for new servers. Running servers keep their existing version, and a stopped server restarts on the version it last ran successfully, shown by `local clickhouse list`; pass `--version` to `local clickhouse start` to move its data to another version. To match a running server, select its version from `local clickhouse list` with `local use <version>`.
 
 ## Apply a custom ClickHouse configuration
 

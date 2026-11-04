@@ -1,4 +1,5 @@
-//! Regression coverage for stopped ClickHouse server metadata (issue #324).
+//! Regression coverage for stopped ClickHouse server metadata (issue #324),
+//! and for restarting a stopped server on the version it last ran (#1230).
 
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
@@ -45,7 +46,11 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
 }
 
 fn install_fake_clickhouse(home: &Path) {
-    let binary = home.join(".clickhouse/versions/25.12.9.61/clickhouse");
+    install_fake_clickhouse_version(home, "25.12.9.61");
+}
+
+fn install_fake_clickhouse_version(home: &Path, version: &str) {
+    let binary = home.join(format!(".clickhouse/versions/{version}/clickhouse"));
     std::fs::create_dir_all(binary.parent().unwrap()).expect("create fake version dir");
     std::fs::write(
         &binary,
@@ -57,7 +62,7 @@ fn install_fake_clickhouse(home: &Path) {
     std::fs::set_permissions(binary, permissions).expect("make fake ClickHouse executable");
 }
 
-fn assert_stopped_list(output: &Output) {
+fn assert_stopped_list(output: &Output, version: Option<&str>) {
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -70,7 +75,7 @@ fn assert_stopped_list(output: &Output) {
     assert_eq!(server["name"], "default");
     assert_eq!(server["running"], false);
     assert!(server.get("pid").is_none());
-    assert!(server.get("version").is_none());
+    assert_eq!(server.get("version").and_then(Value::as_str), version);
     assert!(server.get("http_port").is_none());
     assert!(server.get("tcp_port").is_none());
 }
@@ -145,16 +150,64 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
     assert_eq!(body["already_stopped"], false);
     assert_eq!(body["selection"], "implicit");
 
-    let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
     assert_eq!(saved["version"], "");
     assert_eq!(saved["http_port"], 0);
     assert_eq!(saved["tcp_port"], 0);
-    assert_stopped_list(&run(
+    // The fake never answered readiness probes, so its version is not the
+    // one the data dir last ran (#1230).
+    assert!(saved.get("last_version").is_none());
+    assert_stopped_list(
+        &run(
+            project.path(),
+            home.path(),
+            &["local", "--json", "server", "list"],
+        ),
+        None,
+    );
+
+    // A bare restart of a server last seen ready on 25.12.9.61 keeps its data
+    // dir on that version, not the default (#1230).
+    saved["last_version"] = json!("25.12.9.61");
+    std::fs::write(&metadata, serde_json::to_vec_pretty(&saved).unwrap()).unwrap();
+    install_fake_clickhouse_version(home.path(), "26.9.1.1312");
+    std::fs::write(home.path().join(".clickhouse/default"), "26.9.1.1312\n").unwrap();
+    let restart = run(
         project.path(),
         home.path(),
-        &["local", "--json", "server", "list"],
-    ));
+        &["local", "--json", "server", "start", "--no-wait"],
+    );
+    assert!(
+        restart.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    let restart_body: Value = serde_json::from_slice(&restart.stdout).expect("parse start JSON");
+    let mut process = ProcessGuard::new(restart_body["pid"].as_u64().expect("start PID") as u32);
+    assert_eq!(restart_body["version"], "25.12.9.61");
+    let stop = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "stop"],
+    );
+    assert!(stop.status.success());
+    process.disarm();
+
+    // Once that version is removed, a bare restart refuses rather than
+    // switching the data dir to the default.
+    std::fs::remove_dir_all(home.path().join(".clickhouse/versions/25.12.9.61")).unwrap();
+    let restart = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "start", "--no-wait"],
+    );
+    assert_eq!(json_error_code(&restart), "version_not_installed");
+    let error: Value = serde_json::from_slice(&restart.stderr).unwrap();
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local install 25.12.9.61"
+    );
 }
 
 #[test]
@@ -238,11 +291,14 @@ fn stale_clickhouse_metadata_is_retained_as_stopped() {
         home.path(),
         &["local", "--json", "server", "list"],
     );
-    assert_stopped_list(&first);
+    // Metadata without `last_version` was never seen ready by this CLI, so a
+    // dead server records no version.
+    assert_stopped_list(&first, None);
 
     let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
     assert_eq!(saved["version"], "");
+    assert!(saved.get("last_version").is_none());
     assert_eq!(saved["http_port"], 0);
     assert_eq!(saved["tcp_port"], 0);
 
@@ -251,7 +307,7 @@ fn stale_clickhouse_metadata_is_retained_as_stopped() {
         home.path(),
         &["local", "--json", "server", "list"],
     );
-    assert_stopped_list(&second);
+    assert_stopped_list(&second, None);
     assert!(metadata.exists());
 }
 
