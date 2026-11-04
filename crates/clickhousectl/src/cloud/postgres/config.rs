@@ -1,7 +1,6 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file};
 use crate::cloud::output::print_human;
 use crate::cloud::shared::resolve_org_id;
-use crate::failure::{ApiFailure, FailureKind};
 use clickhouse_cloud_api::models::{
     PgConfig, PgConfigDefaultToastCompression, PgConfigDefaultTransactionIsolation,
     PgConfigEnableParallelHash, PgConfigIoMethod, PgConfigLogLockWaits,
@@ -10,11 +9,10 @@ use clickhouse_cloud_api::models::{
 use serde::de::DeserializeOwned;
 use std::path::Path;
 
-pub(super) fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        CloudError::new(format!("failed to read {}: {}", path.display(), e))
-            .with_failure(ApiFailure::new(FailureKind::Io))
-    })?;
+/// Read and parse the JSON file `flag` names. A file that cannot be read is an
+/// `Io` failure naming the flag; one that does not parse is a usage error.
+pub(super) fn load_json_file<T: DeserializeOwned>(flag: &str, path: &Path) -> CloudResult<T> {
+    let contents = read_flag_file(flag, path)?;
     serde_json::from_str(&contents).map_err(|e| {
         CloudError::usage(format!("failed to parse {} as JSON: {}", path.display(), e))
     })
@@ -139,7 +137,7 @@ fn pg_config_from_json(doc: serde_json::Value) -> CloudResult<PgConfig> {
 }
 
 pub(super) fn load_pg_config_file(path: &Path) -> CloudResult<PgConfig> {
-    let doc = load_json_file::<serde_json::Value>(path)?;
+    let doc = load_json_file::<serde_json::Value>("--pg-config-file", path)?;
     pg_config_from_json(doc)
         .map_err(|e| CloudError::usage(format!("invalid PgConfig file {}: {e}", path.display())))
 }
@@ -229,7 +227,7 @@ pub async fn postgres_config_replace(
     file: &Path,
     json: bool,
 ) -> CloudResult<()> {
-    let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
+    let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>("--file", file)?)?;
     let org_id = resolve_org_id(client).await?;
     let out = client
         .replace_postgres_config(&org_id, postgres_id, &cfg)
@@ -259,7 +257,7 @@ pub async fn postgres_config_patch(
     );
 
     let cfg = if let Some(path) = file {
-        instance_config_from_json(&load_json_file::<serde_json::Value>(path)?)?
+        instance_config_from_json(&load_json_file::<serde_json::Value>("--file", path)?)?
     } else {
         // Build the request body from --set entries: the overrides become the
         // pgConfig object, and pgBouncerConfig resolves to `{}`.
@@ -464,7 +462,7 @@ mod tests {
             let serde_error = serde_json::from_value::<PgBouncerConfig>(parameters.clone())
                 .unwrap_err()
                 .to_string();
-            let error = load_json_file::<PgBouncerConfig>(&file)
+            let error = load_json_file::<PgBouncerConfig>("--pg-bouncer-config-file", &file)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("pgbouncer.json"), "{value}: {error}");

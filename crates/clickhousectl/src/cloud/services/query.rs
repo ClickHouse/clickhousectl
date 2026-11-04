@@ -1,4 +1,4 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file_bytes};
 use crate::cloud::credentials;
 use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, eprint_line, or_absent};
 use crate::cloud::services::query_key::{CallerKeyBinding, RepairVerification};
@@ -1198,7 +1198,10 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
             std::io::stdin().read_to_end(&mut bytes)?;
             (bytes, "stdin".to_string())
         } else {
-            (std::fs::read(path)?, format!("queries file '{}'", path))
+            (
+                read_flag_file_bytes("--queries-file", path)?,
+                format!("queries file '{}'", path),
+            )
         };
         let content = decode_query_sql(bytes, &source)?;
         if content.trim().is_empty() {
@@ -1250,6 +1253,8 @@ mod tests {
         let missing = directory.path().join("missing.sql");
         let error = read_query_sql(None, missing.to_str()).unwrap_err();
         assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert!(error.message.contains("--queries-file"), "{error}");
+        assert!(error.message.contains(missing.to_str().unwrap()), "{error}");
         assert_eq!(
             error.failure.map(|failure| failure.kind),
             Some(FailureKind::Io)

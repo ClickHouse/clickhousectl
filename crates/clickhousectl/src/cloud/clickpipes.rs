@@ -72,8 +72,12 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("clickpipe create pubsub", &[&op::CLICK_PIPE_CREATE]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::config::{config_source_label, deserialize_strict_config, read_config_value};
+use crate::cloud::client::{
+    CloudClient, CloudError, Result as CloudResult, read_flag_file, read_flag_file_bytes,
+};
+use crate::cloud::config::{
+    config_source_label, deserialize_strict_config, read_config_value, read_flag_config_value,
+};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
@@ -2990,10 +2994,11 @@ fn build_kafka_schema_registry(
         },
         _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
     };
-    let ca_certificate = match args.schema_registry_ca_certificate.as_deref() {
-        Some(path) => Some(std::fs::read_to_string(path)?),
-        None => None,
-    };
+    let ca_certificate = args
+        .schema_registry_ca_certificate
+        .as_deref()
+        .map(|path| read_flag_file("--schema-registry-ca-certificate", path))
+        .transpose()?;
     Ok(Some(
         ClickPipeMutateKafkaConfluentSchemaRegistry {
             // Send `type` only when the user named it; the API defaults to confluent.
@@ -3022,7 +3027,7 @@ fn read_protobuf_schema_file(
         std::io::stdin().read_to_end(&mut contents)?;
         contents
     } else {
-        std::fs::read(path)?
+        read_flag_file_bytes("--protobuf-schema-file", path)?
     };
     if contents.is_empty() {
         return Err(invalid_input(if path == "-" {
@@ -3073,8 +3078,8 @@ fn build_kafka_source_with_exactly_once(
     ) {
         (ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS, Some(cert_path), Some(key_path)) => {
             Some((
-                std::fs::read_to_string(cert_path)?,
-                std::fs::read_to_string(key_path)?,
+                read_flag_file("--client-certificate", cert_path)?,
+                read_flag_file("--client-key", key_path)?,
             ))
         }
         _ => None,
@@ -3083,10 +3088,11 @@ fn build_kafka_source_with_exactly_once(
 
     let schema_registry = build_kafka_schema_registry(args)?;
 
-    let ca_certificate = match args.ca_certificate.as_deref() {
-        Some(path) => Some(std::fs::read_to_string(path)?),
-        None => None,
-    };
+    let ca_certificate = args
+        .ca_certificate
+        .as_deref()
+        .map(|path| read_flag_file("--ca-certificate", path))
+        .transpose()?;
     let protobuf_schema = args
         .protobuf_schema_file
         .as_deref()
@@ -4714,7 +4720,7 @@ fn read_destination_table_definition(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition> {
     use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
 
-    let mut value = read_config_value(config_file)?;
+    let mut value = read_flag_config_value("--table-definition-file", config_file)?;
     // TTL was added after table-definition files shipped. Preserve omission in
     // existing files; the strict library request omits this empty sentinel when
     // serialized. Explicit nulls or wrong types still fail strict parsing.
@@ -4814,7 +4820,7 @@ fn read_gcp_service_account_file(path: &str) -> CloudResult<String> {
         std::io::stdin().read_to_string(&mut contents)?;
         contents
     } else {
-        std::fs::read_to_string(path)?
+        read_flag_file("--service-account-file", path)?
     };
     if contents.trim().is_empty() {
         return Err(CloudError::new(if path == "-" {
@@ -5504,7 +5510,7 @@ fn build_postgres_request(
     let ca_certificate = args
         .ca_certificate
         .as_deref()
-        .map(std::fs::read_to_string)
+        .map(|path| read_flag_file("--ca-certificate", path))
         .transpose()?;
     // Match the parsed authentication mode, not the raw `--auth` string, so a
     // new mode added to the library enum is a compile error here rather than a
@@ -5741,7 +5747,7 @@ fn build_mysql_request(
     let ca_certificate = args
         .ca_certificate
         .as_deref()
-        .map(std::fs::read_to_string)
+        .map(|path| read_flag_file("--ca-certificate", path))
         .transpose()?;
 
     // Match the parsed authentication mode, not the raw `--auth` string, so a
@@ -5920,10 +5926,11 @@ fn build_mongodb_request(
 
     let table_mappings = resolve_mongodb_table_mappings(args)?;
 
-    let ca_certificate = match args.ca_certificate.as_deref() {
-        Some(path) => Some(std::fs::read_to_string(path)?),
-        None => None,
-    };
+    let ca_certificate = args
+        .ca_certificate
+        .as_deref()
+        .map(|path| read_flag_file("--ca-certificate", path))
+        .transpose()?;
 
     let source = ClickPipeMutateMongoDBSource {
         credentials: Some(PLAIN {

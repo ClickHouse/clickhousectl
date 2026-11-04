@@ -325,7 +325,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 source.as_deref(),
                 create_request_runtime(&request)?,
             )?;
-            let file = open_artifact(artifact.path()).await?;
+            let file = open_artifact(&artifact).await?;
             let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
@@ -360,7 +360,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 source.as_deref(),
                 version_request_runtime(&request)?,
             )?;
-            let file = open_artifact(artifact.path()).await?;
+            let file = open_artifact(&artifact).await?;
             let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
@@ -838,14 +838,21 @@ fn write_archive(file: &mut std::fs::File, entries: &[SourceEntry]) -> std::io::
     Ok(())
 }
 
-async fn open_artifact(path: &std::path::Path) -> CloudResult<tokio::fs::File> {
-    let file = tokio::fs::File::open(path)
+/// Open the archive to upload. A failure names `--artifact` and its path, or
+/// the packaged archive's path, and keeps the OS reason as an `Io` failure.
+async fn open_artifact(artifact: &Artifact) -> CloudResult<tokio::fs::File> {
+    let read_error = |error: std::io::Error| match artifact {
+        Artifact::File(path) => CloudError::file_read("--artifact", path, error),
+        Artifact::Packaged(file) => CloudError::new(format!(
+            "Cannot read the packaged UDF archive '{}': {error}",
+            file.path().display()
+        ))
+        .with_failure(ApiFailure::new(FailureKind::Io)),
+    };
+    let file = tokio::fs::File::open(artifact.path())
         .await
-        .map_err(|_| CloudError::new("Cannot open UDF ZIP archive"))?;
-    let metadata = file
-        .metadata()
-        .await
-        .map_err(|_| CloudError::new("Cannot inspect UDF ZIP archive"))?;
+        .map_err(read_error)?;
+    let metadata = file.metadata().await.map_err(read_error)?;
     if !metadata.is_file() || metadata.len() == 0 {
         return Err(CloudError::new("UDF ZIP archive must be a nonempty file"));
     }
@@ -1182,7 +1189,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let org = resolve_org_id(client).await?;
     check_deploy_target(client, &org, service, !args.no_wake).await?;
     let existing = client.get_udf_if_exists(&org, name).await?;
-    let file = open_artifact(artifact.path()).await?;
+    let file = open_artifact(&artifact).await?;
     let upload_id = upload_artifact(client, &org, file).await?;
     let (action, created) = match existing {
         None => {
@@ -1834,13 +1841,10 @@ mod tests {
         std::fs::write(&empty, b"").unwrap();
         let archive = directory.path().join("code.zip");
         std::fs::write(&archive, b"PK\x03\x04archive").unwrap();
+        let missing = directory.path().join("missing.zip");
         let mut messages = Vec::new();
-        for path in [
-            directory.path().join("missing.zip"),
-            empty,
-            directory.path().to_path_buf(),
-        ] {
-            let error = open_artifact(&path).await.unwrap_err();
+        for path in [missing.clone(), empty, directory.path().to_path_buf()] {
+            let error = open_artifact(&Artifact::File(path)).await.unwrap_err();
             assert_eq!(error.kind, CloudErrorKind::Generic);
             messages.push(error.message);
         }
@@ -1848,7 +1852,13 @@ mod tests {
         // that cannot be opened at all fails earlier, with its own error.
         assert_eq!(messages[1], messages[2]);
         assert_ne!(messages[0], messages[1]);
-        assert!(open_artifact(&archive).await.is_ok());
+        let error = open_artifact(&Artifact::File(missing.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
+        assert!(error.message.contains("--artifact"), "{error}");
+        assert!(error.message.contains(missing.to_str().unwrap()), "{error}");
+        assert!(open_artifact(&Artifact::File(archive)).await.is_ok());
     }
 
     /// List pages keep zero and omit absent metadata, never fabricating a
