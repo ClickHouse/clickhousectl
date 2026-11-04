@@ -5974,6 +5974,8 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         "default",
         "--table",
         "events",
+        "--column",
+        "id:Int64",
         "--org-id",
         "org",
     ]
@@ -22063,6 +22065,8 @@ async fn kinesis_protobuf_schema_can_be_read_from_stdin() {
         "default",
         "--table",
         "events",
+        "--column",
+        "id:Int64",
     ];
     let body = invoke_cli_capture_body_with_stdin(&mock, &args, raw.as_bytes()).await;
     assert_eq!(
