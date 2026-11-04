@@ -48,7 +48,7 @@ Paginated commands require command-specific handling. `cloud org list`, `cloud s
 | `3` | Cancellation |
 | `4` | Authentication required/rejected, including OAuth-only writes |
 
-Exit `2` also covers input that is checked after parsing but can never succeed, such as an unknown `--provider`, a malformed `--tag`, `--ip-allow` or `--role-id` entry, `--min-replicas` without `--max-replicas`, empty SQL, a `--file` body that is not valid JSON or has unknown fields, or `cloud auth login --interactive` without a TTY. A file that cannot be read is a runtime error (`1`, code `io`), and so is a check that depends on the resource's current state.
+Exit `2` also covers input that is checked after parsing but can never succeed, such as an unknown `--provider`, a malformed `--tag`, `--ip-allow` or `--role-id` entry, `--min-replicas` without `--max-replicas`, empty SQL, a `--file` body that is not valid JSON or has unknown fields, or `cloud auth login --interactive` without a TTY. A file that cannot be read is a runtime error (`1`, code `io`), and so is a check that depends on the resource's current state. When valid JSON does not fit the request, the error names the file, the JSON path of the offending value, such as `policies[0].permissions[0]`, and the kind of JSON value expected; only JSON syntax errors give a line and column.
 
 Spawned native clients retain their own output and exit status. A successful wrapper handoff does not prove SQL succeeded.
 

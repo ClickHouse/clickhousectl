@@ -1143,8 +1143,8 @@ fn strict_union_variant<T>(value: &Value, path: &str, source: &str) -> CloudResu
 where
     T: serde::de::DeserializeOwned,
 {
-    deserialize_strict_value::<T>(value.clone())
-        .map_err(|detail| invalid_clickstack_request(source, format!("invalid {path}: {detail}")))
+    deserialize_strict_value::<T>(value.clone(), path)
+        .map_err(|detail| invalid_clickstack_request(source, detail))
 }
 
 macro_rules! reject_unknown_enum {
