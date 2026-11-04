@@ -79,7 +79,10 @@ use crate::cloud::client::{
 use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_flag_config_value,
 };
-use crate::cloud::output::{ABSENT, NextStep, json_with_next, or_absent, print_human};
+use crate::cloud::output::{
+    ABSENT, NextStep, cloud_command, eprint_background_change, eprint_line, json_with_next,
+    or_absent, print_human,
+};
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::NonEmptyStringValueParser;
@@ -449,7 +452,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   The allocation applies to database CDC ClickPipes on the service.
   Omitted update values keep their current settings.
-  Typical flow: `get` -> `update` -> `get`.")]
+  Typical flow: `get` -> `update` -> poll `get` until the new values show.")]
     CdcScaling {
         #[command(subcommand)]
         command: ClickPipeCdcScalingCommands,
@@ -648,6 +651,10 @@ pub enum ClickPipeCdcScalingCommands {
 
     /// Update CDC scaling
     #[command(
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Exit 0 means accepted, not completed; the change takes minutes and the output shows the old values.
+  Poll `cdc-scaling get <service-id> --json` until they change; another update meanwhile is rejected.",
         group(ArgGroup::new("cdc_scale_target").required(true).multiple(true).args(["cpu_millicores", "memory_gb"]))
     )]
     Update {
@@ -4239,7 +4246,14 @@ async fn clickpipe_cdc_scaling_update(
         let next = cdc_scaling_next(&org_id, service_id, values);
         println!("{}", json_with_next(&scaling, next)?);
     } else {
+        println!("CDC scaling update accepted");
+        println!();
         print_human(&scaling)?;
+        eprint_background_change(
+            "The new allocation",
+            &cloud_command(&["clickpipe", "cdc-scaling", "get", service_id], &org_id),
+        );
+        eprint_line("Another scaling update before it applies fails with a conflict.");
     }
     Ok(())
 }

@@ -286,19 +286,8 @@ impl NextStep {
     /// Poll `clickhousectl cloud <args> --org-id <org_id> --json` and read
     /// `field`. Each argument is shell-quoted when it needs to be.
     pub(crate) fn poll(args: &[&str], org_id: &str, field: &'static str) -> Self {
-        let quote = |arg: &str| {
-            shlex::try_quote(arg)
-                .map(std::borrow::Cow::into_owned)
-                .unwrap_or_else(|_| arg.to_string())
-        };
-        let mut command = String::from("clickhousectl cloud");
-        for arg in args.iter().copied().chain(["--org-id", org_id]) {
-            command.push(' ');
-            command.push_str(&quote(arg));
-        }
-        command.push_str(" --json");
         Self {
-            command,
+            command: format!("{} --json", cloud_command(args, org_id)),
             field,
             until: Vec::new(),
             fail_on: Vec::new(),
@@ -326,6 +315,32 @@ impl NextStep {
         self.interval_seconds = seconds;
         self
     }
+}
+
+/// `clickhousectl cloud <args> --org-id <org_id>`, each argument shell-quoted
+/// when it needs to be.
+pub(crate) fn cloud_command(args: &[&str], org_id: &str) -> String {
+    let quote = |arg: &str| {
+        shlex::try_quote(arg)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_else(|_| arg.to_string())
+    };
+    let mut command = String::from("clickhousectl cloud");
+    for arg in args.iter().copied().chain(["--org-id", org_id]) {
+        command.push(' ');
+        command.push_str(&quote(arg));
+    }
+    command
+}
+
+/// Human-mode note, on stderr, for a change the API accepted but applies in
+/// the background, so the response printed with it still shows the old value
+/// (#1241). `check` is the read to repeat; JSON mode carries `next` instead.
+pub(crate) fn eprint_background_change(change: &str, check: &str) {
+    eprint_line(format!(
+        "{change} applies in the background and can take several minutes; the values shown \
+         may not include it yet. Check progress with: {check}"
+    ));
 }
 
 /// Serialize the library's own values, so a hint names exactly what the poll

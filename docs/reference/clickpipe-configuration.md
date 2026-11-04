@@ -83,7 +83,7 @@ Supported engines are `MergeTree`, `ReplacingMergeTree`, and `Null`. Postgres de
 
 ## Choose create-time ingestion controls
 
-Kafka, Kinesis, object storage, and Pub/Sub support `--start-paused`, repeatable JSON `--field-mapping`, and initial scaling. Supply all three of `--replicas`, `--cpu-millicores`, and `--memory-gb` together for an allocation. Database CDC scaling is service-wide via `clickpipe cdc-scaling`, not per-pipe allocation.
+Kafka, Kinesis, object storage, and Pub/Sub support `--start-paused`, repeatable JSON `--field-mapping`, and initial scaling. Supply all three of `--replicas`, `--cpu-millicores`, and `--memory-gb` together for an allocation. Database CDC scaling is service-wide via `clickpipe cdc-scaling`, not per-pipe allocation. `cdc-scaling update` returns once the change is accepted and prints the old allocation; it applies within minutes, so poll `cdc-scaling get` until the new values show. Another scaling update before then fails with a conflict.
 
 For Postgres, snapshot worker/partition settings, nullability, failover slots, and delete-on-merge are create-time choices. Only `syncIntervalSeconds` and `pullBatchSize` can be patched later. `--replication-slot-name` requires `--replication-mode cdc_only`; PG17+ failover slots apply when ClickPipes creates the slot, not when reusing one. MongoDB `--initial-load-parallelism` is per collection; `--snapshot-parallel-collections` controls concurrent collections.
 

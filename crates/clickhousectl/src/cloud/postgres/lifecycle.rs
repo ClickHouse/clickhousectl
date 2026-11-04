@@ -1,6 +1,9 @@
 use super::config::{load_json_file, load_pg_config_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, NextStep, json_with_next, or_absent, print_line};
+use crate::cloud::output::{
+    ABSENT, NextStep, cloud_command, eprint_background_change, eprint_line, json_with_next,
+    or_absent, print_line,
+};
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PgBouncerConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgStateProperty, PgVersion,
@@ -729,6 +732,7 @@ pub async fn postgres_update(
     };
 
     let next = postgres_update_next(&org_id, postgres_id, size.as_ref(), ha_type.as_ref());
+    let (resizes, changes_ha) = (size.is_some(), ha_type.is_some());
     let ip_access_list =
         build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
     let req = build_postgres_update_request(
@@ -746,6 +750,19 @@ pub async fn postgres_update(
 
     if json {
         println!("{}", json_with_next(&svc, next)?);
+    } else if resizes || changes_ha {
+        println!("Postgres service update accepted");
+        println!();
+        render_postgres_service(&svc);
+        if resizes {
+            eprint_background_change(
+                "The resize",
+                &cloud_command(&["postgres", "get", postgres_id], &org_id),
+            );
+        }
+        if changes_ha {
+            eprint_line(HA_CHANGE_NOTE);
+        }
     } else {
         println!("Postgres service updated");
         println!();
@@ -753,6 +770,12 @@ pub async fn postgres_update(
     }
     Ok(())
 }
+
+/// Human-mode note for an accepted `--ha-type` change (#1241). Unlike a
+/// resize, `haType` shows the new value at once, so no `get` confirms it.
+const HA_CHANGE_NOTE: &str = "The HA type already shows the new value, but the standby is still \
+     being added or removed in the background, which can take several minutes. Check \
+     `pg_stat_replication` on the primary through psql: an added standby is ready once it is listed.";
 
 pub async fn postgres_delete(
     client: &CloudClient,

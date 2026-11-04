@@ -13142,6 +13142,95 @@ async fn clickpipe_cdc_scaling_update_patches_the_built_body() {
     assert_eq!(next["until"], serde_json::json!([1000]));
 }
 
+/// Human mode names the check that confirms a change applied in the background
+/// (#1241): the `get` command for a CDC scaling change or a Postgres resize,
+/// and `pg_stat_replication` for an HA change, whose `haType` flips at once so
+/// no `get` confirms it. A rename applies at once, so it gets no note.
+#[tokio::test]
+async fn background_changes_name_their_progress_check_in_human_output() {
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{postgres_id}");
+    let postgres_check = format!("clickhousectl cloud postgres get {postgres_id} --org-id org-1");
+    let ha_check = "pg_stat_replication";
+    // (args, identifiers stderr must name, identifiers it must not)
+    let cases: [(Vec<&str>, Vec<&str>, Vec<&str>); 5] = [
+        (
+            vec![
+                "clickpipe",
+                "cdc-scaling",
+                "update",
+                "svc-1",
+                "--memory-gb",
+                "8",
+            ],
+            vec!["clickhousectl cloud clickpipe cdc-scaling get svc-1 --org-id org-1"],
+            vec![],
+        ),
+        (
+            vec!["postgres", "update", postgres_id, "--size", "c6gd.large"],
+            vec![&postgres_check],
+            vec![ha_check],
+        ),
+        (
+            vec!["postgres", "update", postgres_id, "--ha-type", "async"],
+            vec![ha_check],
+            vec![&postgres_check],
+        ),
+        (
+            vec![
+                "postgres",
+                "update",
+                postgres_id,
+                "--size",
+                "c6gd.large",
+                "--ha-type",
+                "async",
+            ],
+            vec![&postgres_check, ha_check],
+            vec![],
+        ),
+        (
+            vec!["postgres", "update", postgres_id, "--new-name", "renamed"],
+            vec![],
+            vec![],
+        ),
+    ];
+    for (mut args, names, omits) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(CDC_SCALING_PATH))
+            .respond_with(cdc_scaling_envelope(
+                serde_json::json!({ "replicaMemoryGb": 4.0 }),
+            ))
+            .mount(&mock)
+            .await;
+        let postgres = serde_json::json!({ "result": { "id": postgres_id, "tags": [] } });
+        for verb in ["GET", "PATCH"] {
+            Mock::given(method(verb))
+                .and(path(&postgres_path))
+                .respond_with(ResponseTemplate::new(200).set_body_json(postgres.clone()))
+                .mount(&mock)
+                .await;
+        }
+        args.extend(["--org-id", "org-1"]);
+
+        let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
+
+        assert_success(&output);
+        assert!(!output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if names.is_empty() {
+            assert!(stderr.is_empty(), "{args:?}: {stderr}");
+        }
+        for name in names {
+            assert!(stderr.contains(name), "{args:?}: {stderr}");
+        }
+        for name in omits {
+            assert!(!stderr.contains(name), "{args:?}: {stderr}");
+        }
+    }
+}
+
 // ── the Query API gateway timeout (issue #644) ─────────────────────────────
 //
 // The gateway stops waiting after roughly 30 seconds and answers HTTP 500

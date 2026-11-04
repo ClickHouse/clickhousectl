@@ -86,6 +86,8 @@ Run `SELECT pg_postmaster_start_time()` again: only a later timestamp confirms a
 
 `pgConfig` uses supported Cloud GUC names; unknown names, null values, and values outside a setting's documented set (for example `io_method` or `wal_compression`) are rejected before any request. On create, restore, or read-replica creation, `--pg-bouncer-config-file` takes just the string-valued PgBouncer map, without the two-section wrapper.
 
+`update --size` and `--ha-type` return once the API accepts the change, which then applies in the background and can take several minutes. After a resize, the printed service still shows the old size; poll `get` until `size` shows the new one (in JSON mode, `next` names the poll). After an HA change, `haType` shows the new value at once while the standby is still being added or removed, so `get` cannot confirm it; check `pg_stat_replication` on the primary through `psql`, where an added standby appears once it is replicating.
+
 Tag updates fetch and replace the complete tag snapshot. Omitted flags preserve it; `--clear-tags` empties it. Avoid concurrent tag edits because one snapshot can overwrite another.
 
 ## Monitor and recover
