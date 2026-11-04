@@ -1139,6 +1139,7 @@ fn build_service_scale_request(
         num_replicas: options.num_replicas.map(i64::from),
         idle_scaling: options.idle_scaling,
         idle_timeout_minutes: options.idle_timeout_minutes.map(f64::from),
+        profile: None,
     })
 }
 

@@ -131,6 +131,7 @@ mod byoc;
 mod clickpipes;
 mod clickstack;
 mod invitations;
+mod jwt_providers;
 mod members;
 mod organization_private_endpoints;
 mod organizations;
@@ -183,6 +184,7 @@ pub use clickstack::*;
 pub use invitations::{
     Invitation, InvitationPostRequest, InvitationPostRequestRole, InvitationRole,
 };
+pub use jwt_providers::{JwtProvider, JwtProviderPostRequest, JwtProviderPutRequest};
 pub use members::{Member, MemberPatchRequest, MemberPatchRequestRole, MemberRole};
 pub use organization_private_endpoints::{
     OrganizationCloudRegionPrivateEndpointConfig, OrganizationPatchPrivateEndpoint,

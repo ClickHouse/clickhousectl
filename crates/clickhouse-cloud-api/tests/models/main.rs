@@ -5,6 +5,7 @@ mod byoc;
 mod clickpipes;
 mod clickstack;
 mod cross_domain;
+mod jwt_providers;
 mod organizations;
 mod postgres;
 mod query_api_endpoints;

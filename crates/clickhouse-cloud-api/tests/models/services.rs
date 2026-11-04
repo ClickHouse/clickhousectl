@@ -378,6 +378,21 @@ fn serialize_service_replica_scaling_patch_request() {
 }
 
 #[test]
+fn service_replica_scaling_patch_request_sends_profile_only_when_set() {
+    let unchanged = serde_json::to_value(ServiceReplicaScalingPatchRequest::default()).unwrap();
+    assert_eq!(unchanged, serde_json::json!({}));
+
+    let req = ServiceReplicaScalingPatchRequest {
+        profile: Some("v1-highmem-s".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json, serde_json::json!({"profile": "v1-highmem-s"}));
+    let parsed: ServiceReplicaScalingPatchRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed, req);
+}
+
+#[test]
 fn serialize_service_scaling_patch_request() {
     let req = ServiceScalingPatchRequest {
         num_replicas: Some(3),

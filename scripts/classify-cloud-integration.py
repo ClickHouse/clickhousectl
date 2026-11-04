@@ -35,6 +35,7 @@ SOURCE_PATH_SUITES = {
     ),
     "crates/clickhouse-cloud-api/src/client/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client/invitations.rs": frozenset({"organization"}),
+    "crates/clickhouse-cloud-api/src/client/jwt_providers.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/members.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/organizations.rs": frozenset(
         {"service", "organization"}
@@ -133,6 +134,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/invitations.rs": frozenset(
         {"organization"}
     ),
+    "crates/clickhouse-cloud-api/src/models/jwt_providers.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/members.rs": frozenset(
         {"organization"}
     ),
@@ -214,6 +216,7 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-cloud-api/tests/client/client.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/invitations.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/main.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/tests/client/jwt_providers.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/members.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/organizations.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/postgres.rs": NO_SUITES,
@@ -240,6 +243,7 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-cloud-api/tests/models/clickpipes.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models/cross_domain.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/tests/models/jwt_providers.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models/main.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models/organizations.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models/postgres.rs": NO_SUITES,
