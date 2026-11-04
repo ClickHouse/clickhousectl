@@ -1236,7 +1236,7 @@ const PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 /// loopback address finds those listeners on every platform, while the
 /// `SO_REUSEADDR` bind still ignores the `TIME_WAIT` sockets a just-stopped
 /// server leaves behind.
-fn is_port_available(port: u16) -> bool {
+pub(crate) fn is_port_available(port: u16) -> bool {
     if std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
         return false;
     }

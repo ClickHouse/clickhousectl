@@ -10,6 +10,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+/// A free host port for a stored fixture instance. Resume refuses a stored
+/// port another process holds (#1227), so each fixture reserves its own.
+fn reserve_port() -> u16 {
+    std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .expect("reserve stored Postgres port")
+        .port()
+}
+
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
@@ -56,7 +65,8 @@ struct FakeDocker {
 }
 
 impl FakeDocker {
-    fn start(socket_path: &Path) -> Self {
+    /// `published_port` is the host port the started container publishes.
+    fn start(socket_path: &Path, published_port: u16) -> Self {
         let listener = UnixListener::bind(socket_path).expect("bind fake Docker socket");
         listener
             .set_nonblocking(true)
@@ -130,6 +140,16 @@ impl FakeDocker {
                         },
                         "State": {
                             "Running": thread_started.load(Ordering::Relaxed)
+                        },
+                        "NetworkSettings": {
+                            "Ports": if thread_started.load(Ordering::Relaxed) {
+                                json!({ "5432/tcp": [{
+                                    "HostIp": "127.0.0.1",
+                                    "HostPort": published_port.to_string()
+                                }] })
+                            } else {
+                                json!({})
+                            }
                         }
                     });
                     write_response(&mut stream, "application/json", &body.to_string());
@@ -163,7 +183,7 @@ fn run_invalid_start(args: &[&str]) -> (Output, usize, bool) {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
     let socket_path = home.path().join("docker.sock");
-    let docker = FakeDocker::start(&socket_path);
+    let docker = FakeDocker::start(&socket_path, 0);
     let output = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
@@ -275,11 +295,11 @@ fn bound_explicit_port_fails_locally_without_docker_or_project_state() {
 fn exhausted_auto_port_range_does_not_block_resume() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
-    let stored_port = 6543;
+    let stored_port = reserve_port();
     write_stopped_postgres_metadata(project.path(), stored_port);
 
     let socket_path = home.path().join("docker.sock");
-    let docker = FakeDocker::start(&socket_path);
+    let docker = FakeDocker::start(&socket_path, stored_port);
     let _listeners: Vec<_> = (5432..=5532)
         .filter_map(
             |port| match std::net::TcpListener::bind(("127.0.0.1", port)) {
@@ -311,10 +331,11 @@ fn exhausted_auto_port_range_does_not_block_resume() {
 fn password_env_override_reports_stored_settings_on_resume() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
-    write_stopped_postgres_metadata(project.path(), 6543);
+    let stored_port = reserve_port();
+    write_stopped_postgres_metadata(project.path(), stored_port);
 
     let socket_path = home.path().join("docker.sock");
-    let _docker = FakeDocker::start(&socket_path);
+    let _docker = FakeDocker::start(&socket_path, stored_port);
     let output = run_resume(
         project.path(),
         home.path(),
@@ -342,7 +363,8 @@ fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
         let project = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let servers = project.path().join(".clickhouse/servers");
-        write_stopped_postgres_metadata(project.path(), 6543);
+        let stored_port = reserve_port();
+        write_stopped_postgres_metadata(project.path(), stored_port);
         let original = servers.join("default-pg18.json");
         let selected = servers.join(format!("{name}-pg18.json"));
         let mut metadata: Value =
@@ -353,7 +375,7 @@ fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
         let selected_data = servers.join(format!("{name}-pg18/data"));
         std::fs::create_dir_all(&selected_data).unwrap();
         let socket_path = home.path().join("docker.sock");
-        let _docker = FakeDocker::start(&socket_path);
+        let _docker = FakeDocker::start(&socket_path, stored_port);
 
         // Without --version, either name syntax resumes the sole stored major.
         let output = run_resume(project.path(), home.path(), &socket_path, true, selector);
@@ -361,7 +383,7 @@ fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
         let body: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(body["name"], name);
         assert_eq!(body["container_id"], "existing-container");
-        assert_eq!(body["port"], 6543);
+        assert_eq!(body["port"], stored_port);
 
         // A second major must remain untouched when --version disambiguates.
         let decoy = servers.join(format!("{name}-pg17.json"));
@@ -386,7 +408,9 @@ fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
             if action == "dotenv" {
                 let contents = std::fs::read_to_string(project.path().join(".env")).unwrap();
                 assert!(
-                    contents.lines().any(|line| line == "POSTGRES_PORT=6543"),
+                    contents
+                        .lines()
+                        .any(|line| line == format!("POSTGRES_PORT={stored_port}")),
                     "{contents}"
                 );
             } else {

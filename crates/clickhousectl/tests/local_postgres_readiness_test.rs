@@ -34,6 +34,8 @@ struct DockerScenario {
     logs: Vec<String>,
     write_partial_data: bool,
     create_metadata_directory_on_start: bool,
+    /// Whether a started container publishes its host port (#1227).
+    publish_port: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -74,8 +76,16 @@ impl FakeDocker {
                 logs,
                 write_partial_data,
                 create_metadata_directory_on_start,
+                publish_port,
             } = scenario;
             let mut started = false;
+            // The host port a started container publishes: the stored port on
+            // a resume, the requested binding on a fresh create.
+            let mut host_port =
+                std::fs::read(project.join(".clickhouse/servers/default-pg18.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .map(|metadata| metadata["tcp_port"].to_string());
             let mut next_exec = 0_usize;
             let mut start_statuses: VecDeque<u16> = start_statuses.into();
             let mut remove_statuses: VecDeque<u16> = remove_statuses.into();
@@ -134,6 +144,10 @@ impl FakeDocker {
                         } else {
                             assert!(!existing, "resumed start created a new container");
                             started = false;
+                            host_port =
+                                body["HostConfig"]["PortBindings"]["5432/tcp"][0]["HostPort"]
+                                    .as_str()
+                                    .map(str::to_string);
                             write_json(&mut stream, 201, r#"{"Id":"pg-id","Warnings":[]}"#);
                         }
                     }
@@ -173,8 +187,14 @@ impl FakeDocker {
                         } else {
                             r#"{"Status":"exited","Running":false,"Paused":false,"ExitCode":0,"OOMKilled":false}"#
                         };
+                        let ports = match host_port.as_deref() {
+                            Some(port) if started && publish_port => format!(
+                                r#"{{"5432/tcp":[{{"HostIp":"127.0.0.1","HostPort":"{port}"}}]}}"#
+                            ),
+                            _ => "{}".to_string(),
+                        };
                         let body = format!(
-                            r#"{{"Id":"pg-id","State":{state},"Config":{{"Env":["POSTGRES_USER=postgres","POSTGRES_PASSWORD=stored-secret","POSTGRES_DB=postgres"]}}}}"#
+                            r#"{{"Id":"pg-id","State":{state},"Config":{{"Env":["POSTGRES_USER=postgres","POSTGRES_PASSWORD=stored-secret","POSTGRES_DB=postgres"]}},"NetworkSettings":{{"Ports":{ports}}}}}"#
                         );
                         write_json(&mut stream, 200, &body);
                     }
@@ -593,6 +613,7 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
         false,
         false,
@@ -660,6 +681,7 @@ fn postgres_dotenv_releases_metadata_lock_before_docker_credentials_read() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -714,6 +736,7 @@ fn postgres_start_revalidates_metadata_after_image_inspection() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
     let port = reserve_port().to_string();
@@ -775,6 +798,7 @@ fn resumed_start_also_waits_for_postgres_readiness() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
         true,
         false,
@@ -798,6 +822,89 @@ fn resumed_start_also_waits_for_postgres_readiness() {
     );
 }
 
+fn port_scenario(existing: bool, publish_port: bool) -> DockerScenario {
+    DockerScenario {
+        existing,
+        outcome: ContainerOutcome::Running,
+        start_statuses: vec![204],
+        remove_statuses: vec![],
+        readiness_exit_codes: vec![0],
+        readiness_create_errors: 0,
+        logs: vec![],
+        write_partial_data: false,
+        create_metadata_directory_on_start: false,
+        publish_port,
+    }
+}
+
+fn error_code(output: &Output) -> serde_json::Value {
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap_or_else(|_| {
+        panic!(
+            "one JSON error, got: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    error["error"]["code"].clone()
+}
+
+fn stored_started_at(project: &Path) -> serde_json::Value {
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(metadata_path(project)).unwrap()).unwrap();
+    metadata["started_at"].clone()
+}
+
+#[test]
+fn resume_onto_a_held_stored_port_fails_before_starting_the_container() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    write_resumed_server(project.path());
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+    let port = u16::try_from(metadata["tcp_port"].as_u64().unwrap()).unwrap();
+    let _holder = std::net::TcpListener::bind(("127.0.0.1", port)).expect("hold stored port");
+
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(&socket_path, project.path(), port_scenario(true, true));
+    let output = run_start_command(home.path(), project.path(), &socket_path, true, false, 2);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(error_code(&output), "port_in_use");
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.method == "POST" && request.path.contains("/containers/")),
+        "a held stored port must not start or create a container: {requests:?}"
+    );
+    assert_eq!(stored_started_at(project.path()), "before-resume");
+}
+
+#[test]
+fn resume_that_docker_starts_unpublished_is_stopped_with_port_in_use() {
+    let (output, requests, project) = run_start(port_scenario(true, false), true, false, 2, false);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(error_code(&output), "port_in_use");
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    let stop = request_index(&requests, "POST", "/containers/pg-id/stop");
+    assert!(start < stop, "{requests:?}");
+    assert!(readiness_requests(&requests).is_empty());
+    assert!(!requests.iter().any(|request| request.method == "DELETE"));
+    assert_eq!(stored_started_at(project.path()), "before-resume");
+}
+
+#[test]
+fn fresh_start_that_docker_starts_unpublished_rolls_back_with_port_in_use() {
+    let (output, requests, project) =
+        run_start(port_scenario(false, false), false, false, 2, false);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(error_code(&output), "port_in_use");
+    request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(readiness_requests(&requests).is_empty());
+    assert!(!metadata_path(project.path()).exists());
+}
+
 #[test]
 fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise() {
     let mut logs: Vec<String> = (0..80)
@@ -815,6 +922,7 @@ fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise(
             logs,
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
         false,
         true,
@@ -867,6 +975,7 @@ fn failed_fresh_start_preserves_postgres_identity_without_polluting_clickhouse_s
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
         false,
         false,
@@ -941,6 +1050,7 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
         false,
         false,
@@ -1011,6 +1121,7 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -1048,6 +1159,7 @@ fn initialization_timeout_removes_partial_pgdata() {
             logs: vec!["database system is starting up".to_string()],
             write_partial_data: true,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -1108,6 +1220,7 @@ fn metadata_failure_uses_the_fresh_start_rollback() {
             logs: vec![],
             write_partial_data: true,
             create_metadata_directory_on_start: true,
+            publish_port: true,
         },
     );
 
@@ -1145,6 +1258,7 @@ fn retry_after_rolled_back_start_failure_succeeds_cleanly() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -1196,6 +1310,7 @@ fn resume_failure_preserves_existing_container_metadata_and_data() {
             logs: vec!["resume failed".to_string()],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -1229,6 +1344,7 @@ fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
             logs: vec![],
             write_partial_data: false,
             create_metadata_directory_on_start: false,
+            publish_port: true,
         },
     );
 
@@ -1268,6 +1384,7 @@ fn removing_running_postgres_preserves_instance_and_supplies_stop_recovery() {
                 logs: vec![],
                 write_partial_data: false,
                 create_metadata_directory_on_start: false,
+                publish_port: true,
             },
         );
         let started = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
