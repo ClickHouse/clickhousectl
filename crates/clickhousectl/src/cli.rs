@@ -39,13 +39,13 @@ pub struct Cli {
 // Parsing and all help consumers use the same decorated command tree.
 impl clap::CommandFactory for Cli {
     fn command() -> clap::Command {
-        crate::cloud::permissions::decorate(Self::augment_args(clap::Command::new("clickhousectl")))
+        let command = Self::augment_args(clap::Command::new("clickhousectl"));
+        crate::cloud::mcp::hide_rejected_cloud_flags(crate::cloud::permissions::decorate(command))
     }
 
     fn command_for_update() -> clap::Command {
-        crate::cloud::permissions::decorate(Self::augment_args_for_update(clap::Command::new(
-            "clickhousectl",
-        )))
+        let command = Self::augment_args_for_update(clap::Command::new("clickhousectl"));
+        crate::cloud::mcp::hide_rejected_cloud_flags(crate::cloud::permissions::decorate(command))
     }
 }
 
@@ -467,13 +467,23 @@ mod tests {
             } else {
                 &[]
             };
+            // `cloud mcp` rejects the credential and organization flags, so it hides them.
+            let mcp_hidden: &[&str] = if path.starts_with("clickhousectl cloud mcp") {
+                &["org-id", "org-name", "api-key", "api-secret", "url"]
+            } else {
+                &[]
+            };
             for flag in required {
                 let arg = command
                     .get_arguments()
                     .find(|arg| arg.get_long() == Some(flag))
                     .unwrap_or_else(|| panic!("{path}: missing inherited --{flag}"));
-                if *flag == "url" {
+                if mcp_hidden.contains(flag) {
+                    assert!(arg.is_hide_set(), "{path}: --{flag}");
+                } else if *flag == "url" {
                     assert_eq!(arg.is_hide_set(), !cfg!(debug_assertions), "{path}");
+                } else {
+                    assert!(!arg.is_hide_set(), "{path}: --{flag}");
                 }
             }
         });

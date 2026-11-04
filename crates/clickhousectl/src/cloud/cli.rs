@@ -15,6 +15,7 @@ pub(crate) use crate::cloud::clickpipes::{
     ObjectStorageCreateArgs, PostgresCreateArgs,
 };
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
+pub(crate) use crate::cloud::mcp::McpCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
@@ -79,6 +80,23 @@ impl CloudArgs {
                     }
                 }
             )
+    }
+
+    /// A Cloud-wide flag passed to `mcp add`, which never uses clickhousectl
+    /// credentials or an organization: the agent signs in by itself.
+    pub fn mcp_flag_conflict(&self) -> Option<&'static str> {
+        if !matches!(self.command, CloudCommands::Mcp { .. }) {
+            return None;
+        }
+        [
+            (self.org_id.is_some(), "--org-id"),
+            (self.org_name.is_some(), "--org-name"),
+            (self.api_key.is_some(), "--api-key"),
+            (self.api_secret.is_some(), "--api-secret"),
+            (self.url.is_some(), "--url"),
+        ]
+        .into_iter()
+        .find_map(|(set, flag)| set.then_some(flag))
     }
 
     /// The schema-discovery source's usage error, checked before credentials.
@@ -273,6 +291,12 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: crate::cloud::postgres::PostgresCommands,
     },
+
+    /// Connect coding agents to the Cloud MCP server
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
 }
 
 impl CloudCommands {
@@ -298,6 +322,7 @@ impl CloudCommands {
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
             CloudCommands::ClickStack { command } => command.is_write(),
+            CloudCommands::Mcp { command } => command.is_write(),
         }
     }
 }
@@ -369,7 +394,8 @@ pub(crate) mod tests {
 
     #[test]
     fn org_id_is_global_and_visible_throughout_cloud_hierarchy() {
-        fn walk(command: &clap::Command) {
+        // `cloud mcp` rejects --org-id, so only that subtree hides it.
+        fn walk(command: &clap::Command, under_mcp: bool) {
             let selectors: Vec<_> = command
                 .get_arguments()
                 .filter(|arg| arg.get_id() == "org_id")
@@ -377,7 +403,7 @@ pub(crate) mod tests {
             assert_eq!(selectors.len(), 1, "{}", command.get_name());
             let selector = selectors[0];
             assert!(selector.is_global_set());
-            assert!(!selector.is_hide_set());
+            assert_eq!(selector.is_hide_set(), under_mcp, "{}", command.get_name());
             assert!(!selector.is_required_set());
             assert_eq!(selector.get_long(), Some("org-id"));
             assert!(
@@ -389,13 +415,13 @@ pub(crate) mod tests {
                 .get_subcommands()
                 .filter(|child| child.get_name() != "help")
             {
-                walk(child);
+                walk(child, under_mcp || child.get_name() == "mcp");
             }
         }
         let mut command = Cli::command();
         command.build();
         assert!(!command.get_arguments().any(|arg| arg.get_id() == "org_id"));
-        walk(command.find_subcommand("cloud").unwrap());
+        walk(command.find_subcommand("cloud").unwrap(), false);
         assert!(
             Cli::try_parse_from(["chctl", "--org-id", "org-1", "cloud", "org", "get"]).is_err()
         );

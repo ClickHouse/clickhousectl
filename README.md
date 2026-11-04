@@ -26,7 +26,7 @@
 - **[ClickPipes](https://clickhouse.com/cloud/clickpipes)** ingests data into ClickHouse Cloud from object storage, streams, and databases through change data capture. Create, inspect, update, scale, and troubleshoot pipelines.
 - **[ClickStack](https://clickhouse.com/clickstack)** combines ClickHouse, OpenTelemetry, and the HyperDX UI for observability. Manage sources, roles, saved searches, dashboards, alerts, and webhooks for an existing [Managed ClickStack](https://clickhouse.com/cloud/clickstack) service.
 
-The CLI also manages organization access and installs official ClickHouse skills for coding agents.
+The CLI also manages organization access, installs official ClickHouse skills for coding agents, and connects them to the hosted Cloud MCP server.
 
 ## Install
 
@@ -228,6 +228,12 @@ clickhousectl skills --agent claude --agent codex
 ```
 
 The common `.agents/skills/` directory is always included. Run `skills` without flags for interactive selection; unattended installs require `--agent`, `--all`, or `--detected-only`.
+
+Register the read-only [Cloud MCP server](docs/guides/cloud-mcp.md) in an agent and sign in. Sign-in opens a browser:
+
+```bash
+clickhousectl cloud mcp add claude
+```
 
 Structured commands support `--json` and select it automatically for detected coding agents. SQL and native clients retain command-specific formats. Always check the exit status and distinguish an accepted request from a completed operation. See [automation and output contracts](docs/reference/automation.md).
 

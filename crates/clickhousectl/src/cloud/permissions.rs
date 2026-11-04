@@ -109,6 +109,7 @@ fn declarations() -> impl Iterator<Item = &'static Declaration> {
         super::clickpipe_endpoints::PERMISSIONS,
         super::clickpipes::PERMISSIONS,
         super::clickstack::PERMISSIONS,
+        super::mcp::PERMISSIONS,
         super::organizations::PERMISSIONS,
         super::postgres::PERMISSIONS,
         super::query_api_endpoints::PERMISSIONS,

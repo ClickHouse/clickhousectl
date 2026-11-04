@@ -9,6 +9,7 @@ pub mod clickstack;
 pub mod client;
 pub(crate) mod config;
 pub mod credentials;
+pub(crate) mod mcp;
 pub mod organizations;
 pub mod output;
 pub(crate) mod permissions;
@@ -71,6 +72,8 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             )
             .await;
         }
+        // Runs the agent's CLI; it needs no Cloud credentials.
+        CloudCommands::Mcp { command } => return mcp::run(command, args.debug, json),
         command => command,
     };
 
@@ -179,6 +182,9 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,
         CloudCommands::ClickPipe { command } => clickpipes::run(client, *command, json).await,
         CloudCommands::ClickStack { command } => clickstack::run(client, command, json).await,
+        CloudCommands::Mcp { .. } => {
+            unreachable!("mcp commands are handled before a client is built")
+        }
     }
 }
 

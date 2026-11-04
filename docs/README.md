@@ -12,6 +12,7 @@ Start with the [README](../README.md) for installation and product examples. The
 | Load object storage or replicate Postgres, then verify ingestion | [ClickPipes](guides/clickpipes.md) |
 | Create and safely replace a ClickStack dashboard | [ClickStack](guides/clickstack.md) |
 | Test an executable UDF locally, then deploy and update it in Cloud | [User-defined functions](guides/user-defined-functions.md) |
+| Connect a coding agent to the hosted Cloud MCP server | [Cloud MCP server](guides/cloud-mcp.md) |
 
 ## Reference
 
