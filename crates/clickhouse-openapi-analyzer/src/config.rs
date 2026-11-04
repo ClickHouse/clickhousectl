@@ -63,16 +63,13 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
 }
 
 // Live slow-query list/detail responses contain fractional microsecond durations,
-// including avgDurationUs = 1190.8419405320817. The public spec still declares
-// integers (verified 2026-09-08); rounding would destroy valid response data.
+// including avgDurationUs = 1190.8419405320817. The spec now declares the
+// average and percentiles as numbers, but max/total durations and execution
+// durations are still integers; rounding would destroy valid response data.
 // https://github.com/ClickHouse/clickhousectl/issues/758
 // Only duration measurements are widened; counts and CPU/JIT counters stay i64.
 const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
-    ("PostgresSlowQueryPattern", "avgDurationUs"),
     ("PostgresSlowQueryPattern", "maxDurationUs"),
-    ("PostgresSlowQueryPattern", "p50DurationUs"),
-    ("PostgresSlowQueryPattern", "p95DurationUs"),
-    ("PostgresSlowQueryPattern", "p99DurationUs"),
     ("PostgresSlowQueryPattern", "totalDurationUs"),
     ("PostgresQueryExecution", "durationUs"),
 ];

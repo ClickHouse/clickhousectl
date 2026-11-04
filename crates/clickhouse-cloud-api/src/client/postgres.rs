@@ -428,7 +428,7 @@ impl Client {
         from_date: &str,
         to_date: &str,
         body_contains: Option<&str>,
-        severity: Option<&str>,
+        severity: Option<&PostgresLogsGetListSeverity>,
         sort_order: Option<&PostgresLogsGetListSortorder>,
         limit: Option<i64>,
         offset: Option<i64>,

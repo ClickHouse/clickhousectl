@@ -2,8 +2,8 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clickhouse_cloud_api::models::{
-    PostgresBackup, PostgresLogEntry, PostgresLogsGetListSortorder, PostgresMetrics,
-    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PostgresBackup, PostgresLogEntry, PostgresLogsGetListSeverity, PostgresLogsGetListSortorder,
+    PostgresMetrics, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -22,16 +22,16 @@ pub(crate) enum PostgresLogSeverity {
 }
 
 impl PostgresLogSeverity {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) fn to_api(self) -> PostgresLogsGetListSeverity {
         match self {
-            Self::Debug => "DEBUG",
-            Self::Log => "LOG",
-            Self::Info => "INFO",
-            Self::Notice => "NOTICE",
-            Self::Warning => "WARNING",
-            Self::Error => "ERROR",
-            Self::Fatal => "FATAL",
-            Self::Panic => "PANIC",
+            Self::Debug => PostgresLogsGetListSeverity::Debug,
+            Self::Log => PostgresLogsGetListSeverity::Log,
+            Self::Info => PostgresLogsGetListSeverity::Info,
+            Self::Notice => PostgresLogsGetListSeverity::Notice,
+            Self::Warning => PostgresLogsGetListSeverity::Warning,
+            Self::Error => PostgresLogsGetListSeverity::Error,
+            Self::Fatal => PostgresLogsGetListSeverity::Fatal,
+            Self::Panic => PostgresLogsGetListSeverity::Panic,
         }
     }
 }
@@ -41,7 +41,7 @@ pub(super) struct PostgresLogsQuery {
     pub(super) from_date: String,
     pub(super) to_date: String,
     pub(super) body_contains: Option<String>,
-    pub(super) severity: Option<String>,
+    pub(super) severity: Option<PostgresLogsGetListSeverity>,
     pub(super) sort_order: Option<PostgresLogsGetListSortorder>,
     pub(super) limit: Option<i64>,
     pub(super) offset: Option<i64>,
@@ -86,7 +86,7 @@ pub(super) fn build_postgres_logs_query(
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
         body_contains: body_contains.map(str::to_string),
-        severity: severity.map(|severity| severity.as_str().to_string()),
+        severity: severity.map(PostgresLogSeverity::to_api),
         sort_order,
         limit,
         offset,
@@ -778,7 +778,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(query.body_contains.as_deref(), Some("checkpoint"));
-        assert_eq!(query.severity.as_deref(), Some("ERROR"));
+        assert_eq!(query.severity, Some(PostgresLogsGetListSeverity::Error));
         assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(query.limit, Some(2000));
         assert_eq!(query.offset, Some(0));

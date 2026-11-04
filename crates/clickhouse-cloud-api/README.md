@@ -6,6 +6,29 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`postgres_logs_get_list` now takes `severity: Option<&PostgresLogsGetListSeverity>`
+instead of `Option<&str>`, because the spec now lists the accepted levels. The
+enum has `Debug`, `Log`, `Info`, `Notice`, `Warning`, `Error`, `Fatal` and
+`Panic`, a `VALUES` const, and an `Unknown(String)` catch-all. Migrate
+`Some("ERROR")` to `Some(&PostgresLogsGetListSeverity::Error)`; the query string
+sent is unchanged.
+
+`PostgresService`, `PostgresServiceListItem` and `PostgresServicePatchRequest`
+gain optional `deletion_protection` (`PgDeletionProtectionProperty`, a `bool`).
+When it is `true`, the service cannot be deleted until it is turned off; it is
+only available to organizations with deletion protection enabled. Struct-literal
+callers need `deletion_protection: None` or `..Default::default()`.
+
+`PgSize` adds 49 GCP local-SSD sizes: C3 (`C3_standard_lssd_4` /
+`c3-standard-lssd-4`), C3D (`C3d_highmem_lssd_8`, `C3d_standard_lssd_8`) and N2
+(`N2_highmem_2xlssd_4` / `n2-highmem-2xlssd-4`, `N2_standard_2xlssd_4`, and the
+`4xlssd`, `8xlssd` and `16xlssd` highmem shapes). Exhaustive matches without a
+wildcard arm need the new variants.
+
+The spec now declares slow-query `avgDurationUs` and the `p50`/`p95`/`p99`
+durations as numbers, so their fractional-response analyzer exemptions are
+removed. The fields stay `Option<f64>`.
+
 `ClickStackLogSource` and `ClickStackLogSourceResponse` gain optional
 `event_name_expression` and `severity_number_expression`, the expressions for
 the OpenTelemetry log `EventName` and numeric `SeverityNumber` (1-24). `TryFrom`

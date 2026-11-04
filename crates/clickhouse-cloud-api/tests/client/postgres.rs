@@ -37,7 +37,7 @@ async fn list_postgres_logs_with_filters() {
             "2026-08-01T00:00:00Z",
             "2026-08-02T00:00:00Z",
             Some("checkpoint"),
-            Some("LOG"),
+            Some(&PostgresLogsGetListSeverity::Log),
             Some(&PostgresLogsGetListSortorder::Asc),
             Some(100),
             Some(20),

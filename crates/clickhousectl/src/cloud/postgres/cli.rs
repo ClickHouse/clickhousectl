@@ -1000,7 +1000,10 @@ mod tests {
                 let PostgresCommands::Logs { severity, .. } = cmd else {
                     panic!("expected logs");
                 };
-                assert_eq!(severity.map(PostgresLogSeverity::as_str), Some(level));
+                assert_eq!(
+                    severity.map(|severity| severity.to_api().to_string()),
+                    Some(level.to_string())
+                );
             }
         }
     }

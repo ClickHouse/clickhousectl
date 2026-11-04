@@ -311,6 +311,10 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PostgresLogEntry::default(),
     );
     assert_same_type(
+        api::PostgresLogsGetListSeverity::default(),
+        api::models::PostgresLogsGetListSeverity::default(),
+    );
+    assert_same_type(
         api::PostgresLogsGetListSortorder::default(),
         api::models::PostgresLogsGetListSortorder::default(),
     );

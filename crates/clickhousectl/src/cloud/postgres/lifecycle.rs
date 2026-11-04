@@ -637,6 +637,7 @@ pub(super) fn build_postgres_update_request(
     ip_access_list: Option<PostgresIpAccessListPatch>,
 ) -> PostgresServicePatchRequest {
     PostgresServicePatchRequest {
+        deletion_protection: None,
         name: name.map(str::to_string),
         size,
         ha_type,

@@ -93,6 +93,53 @@ impl std::fmt::Display for PostgresLogsGetListSortorder {
     }
 }
 
+/// Inline enum for `postgresLogsGetList.severity`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PostgresLogsGetListSeverity {
+    #[serde(rename = "DEBUG")]
+    #[default]
+    Debug,
+    #[serde(rename = "LOG")]
+    Log,
+    #[serde(rename = "INFO")]
+    Info,
+    #[serde(rename = "NOTICE")]
+    Notice,
+    #[serde(rename = "WARNING")]
+    Warning,
+    #[serde(rename = "ERROR")]
+    Error,
+    #[serde(rename = "FATAL")]
+    Fatal,
+    #[serde(rename = "PANIC")]
+    Panic,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PostgresLogsGetListSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Debug => write!(f, "DEBUG"),
+            Self::Log => write!(f, "LOG"),
+            Self::Info => write!(f, "INFO"),
+            Self::Notice => write!(f, "NOTICE"),
+            Self::Warning => write!(f, "WARNING"),
+            Self::Error => write!(f, "ERROR"),
+            Self::Fatal => write!(f, "FATAL"),
+            Self::Panic => write!(f, "PANIC"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PostgresLogsGetListSeverity {
+    pub const VALUES: &'static [&'static str] = &[
+        "DEBUG", "LOG", "INFO", "NOTICE", "WARNING", "ERROR", "FATAL", "PANIC",
+    ];
+}
+
 /// Inline enum for `slowQueryPatternsGetList.sort_by`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum SlowQueryPatternsGetListSortby {
@@ -462,6 +509,46 @@ pub enum PgSize {
     C4d_standard_lssd_192,
     #[serde(rename = "c4d-standard-lssd-384")]
     C4d_standard_lssd_384,
+    #[serde(rename = "c3-standard-lssd-4")]
+    C3_standard_lssd_4,
+    #[serde(rename = "c3-standard-lssd-8")]
+    C3_standard_lssd_8,
+    #[serde(rename = "c3-standard-lssd-22")]
+    C3_standard_lssd_22,
+    #[serde(rename = "c3-standard-lssd-44")]
+    C3_standard_lssd_44,
+    #[serde(rename = "c3-standard-lssd-88")]
+    C3_standard_lssd_88,
+    #[serde(rename = "c3-standard-lssd-176")]
+    C3_standard_lssd_176,
+    #[serde(rename = "c3d-highmem-lssd-8")]
+    C3d_highmem_lssd_8,
+    #[serde(rename = "c3d-highmem-lssd-16")]
+    C3d_highmem_lssd_16,
+    #[serde(rename = "c3d-highmem-lssd-30")]
+    C3d_highmem_lssd_30,
+    #[serde(rename = "c3d-highmem-lssd-60")]
+    C3d_highmem_lssd_60,
+    #[serde(rename = "c3d-highmem-lssd-90")]
+    C3d_highmem_lssd_90,
+    #[serde(rename = "c3d-highmem-lssd-180")]
+    C3d_highmem_lssd_180,
+    #[serde(rename = "c3d-highmem-lssd-360")]
+    C3d_highmem_lssd_360,
+    #[serde(rename = "c3d-standard-lssd-8")]
+    C3d_standard_lssd_8,
+    #[serde(rename = "c3d-standard-lssd-16")]
+    C3d_standard_lssd_16,
+    #[serde(rename = "c3d-standard-lssd-30")]
+    C3d_standard_lssd_30,
+    #[serde(rename = "c3d-standard-lssd-60")]
+    C3d_standard_lssd_60,
+    #[serde(rename = "c3d-standard-lssd-90")]
+    C3d_standard_lssd_90,
+    #[serde(rename = "c3d-standard-lssd-180")]
+    C3d_standard_lssd_180,
+    #[serde(rename = "c3d-standard-lssd-360")]
+    C3d_standard_lssd_360,
     #[serde(rename = "z3-highmem-highlssd-8")]
     Z3_highmem_highlssd_8,
     #[serde(rename = "z3-highmem-highlssd-16")]
@@ -484,6 +571,64 @@ pub enum PgSize {
     Z3_highmem_standardlssd_88,
     #[serde(rename = "z3-highmem-standardlssd-176")]
     Z3_highmem_standardlssd_176,
+    #[serde(rename = "n2-highmem-2xlssd-4")]
+    N2_highmem_2xlssd_4,
+    #[serde(rename = "n2-highmem-2xlssd-8")]
+    N2_highmem_2xlssd_8,
+    #[serde(rename = "n2-highmem-2xlssd-16")]
+    N2_highmem_2xlssd_16,
+    #[serde(rename = "n2-highmem-2xlssd-32")]
+    N2_highmem_2xlssd_32,
+    #[serde(rename = "n2-highmem-2xlssd-48")]
+    N2_highmem_2xlssd_48,
+    #[serde(rename = "n2-highmem-2xlssd-64")]
+    N2_highmem_2xlssd_64,
+    #[serde(rename = "n2-highmem-2xlssd-96")]
+    N2_highmem_2xlssd_96,
+    #[serde(rename = "n2-standard-2xlssd-4")]
+    N2_standard_2xlssd_4,
+    #[serde(rename = "n2-standard-2xlssd-8")]
+    N2_standard_2xlssd_8,
+    #[serde(rename = "n2-standard-2xlssd-16")]
+    N2_standard_2xlssd_16,
+    #[serde(rename = "n2-standard-2xlssd-32")]
+    N2_standard_2xlssd_32,
+    #[serde(rename = "n2-standard-2xlssd-48")]
+    N2_standard_2xlssd_48,
+    #[serde(rename = "n2-standard-2xlssd-64")]
+    N2_standard_2xlssd_64,
+    #[serde(rename = "n2-standard-2xlssd-96")]
+    N2_standard_2xlssd_96,
+    #[serde(rename = "n2-highmem-4xlssd-2")]
+    N2_highmem_4xlssd_2,
+    #[serde(rename = "n2-highmem-4xlssd-4")]
+    N2_highmem_4xlssd_4,
+    #[serde(rename = "n2-highmem-4xlssd-8")]
+    N2_highmem_4xlssd_8,
+    #[serde(rename = "n2-highmem-4xlssd-16")]
+    N2_highmem_4xlssd_16,
+    #[serde(rename = "n2-highmem-4xlssd-32")]
+    N2_highmem_4xlssd_32,
+    #[serde(rename = "n2-highmem-4xlssd-48")]
+    N2_highmem_4xlssd_48,
+    #[serde(rename = "n2-highmem-8xlssd-2")]
+    N2_highmem_8xlssd_2,
+    #[serde(rename = "n2-highmem-8xlssd-4")]
+    N2_highmem_8xlssd_4,
+    #[serde(rename = "n2-highmem-8xlssd-8")]
+    N2_highmem_8xlssd_8,
+    #[serde(rename = "n2-highmem-8xlssd-16")]
+    N2_highmem_8xlssd_16,
+    #[serde(rename = "n2-highmem-8xlssd-32")]
+    N2_highmem_8xlssd_32,
+    #[serde(rename = "n2-highmem-16xlssd-2")]
+    N2_highmem_16xlssd_2,
+    #[serde(rename = "n2-highmem-16xlssd-4")]
+    N2_highmem_16xlssd_4,
+    #[serde(rename = "n2-highmem-16xlssd-8")]
+    N2_highmem_16xlssd_8,
+    #[serde(rename = "n2-highmem-16xlssd-16")]
+    N2_highmem_16xlssd_16,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -624,6 +769,26 @@ impl std::fmt::Display for PgSize {
             Self::C4d_standard_lssd_96 => write!(f, "c4d-standard-lssd-96"),
             Self::C4d_standard_lssd_192 => write!(f, "c4d-standard-lssd-192"),
             Self::C4d_standard_lssd_384 => write!(f, "c4d-standard-lssd-384"),
+            Self::C3_standard_lssd_4 => write!(f, "c3-standard-lssd-4"),
+            Self::C3_standard_lssd_8 => write!(f, "c3-standard-lssd-8"),
+            Self::C3_standard_lssd_22 => write!(f, "c3-standard-lssd-22"),
+            Self::C3_standard_lssd_44 => write!(f, "c3-standard-lssd-44"),
+            Self::C3_standard_lssd_88 => write!(f, "c3-standard-lssd-88"),
+            Self::C3_standard_lssd_176 => write!(f, "c3-standard-lssd-176"),
+            Self::C3d_highmem_lssd_8 => write!(f, "c3d-highmem-lssd-8"),
+            Self::C3d_highmem_lssd_16 => write!(f, "c3d-highmem-lssd-16"),
+            Self::C3d_highmem_lssd_30 => write!(f, "c3d-highmem-lssd-30"),
+            Self::C3d_highmem_lssd_60 => write!(f, "c3d-highmem-lssd-60"),
+            Self::C3d_highmem_lssd_90 => write!(f, "c3d-highmem-lssd-90"),
+            Self::C3d_highmem_lssd_180 => write!(f, "c3d-highmem-lssd-180"),
+            Self::C3d_highmem_lssd_360 => write!(f, "c3d-highmem-lssd-360"),
+            Self::C3d_standard_lssd_8 => write!(f, "c3d-standard-lssd-8"),
+            Self::C3d_standard_lssd_16 => write!(f, "c3d-standard-lssd-16"),
+            Self::C3d_standard_lssd_30 => write!(f, "c3d-standard-lssd-30"),
+            Self::C3d_standard_lssd_60 => write!(f, "c3d-standard-lssd-60"),
+            Self::C3d_standard_lssd_90 => write!(f, "c3d-standard-lssd-90"),
+            Self::C3d_standard_lssd_180 => write!(f, "c3d-standard-lssd-180"),
+            Self::C3d_standard_lssd_360 => write!(f, "c3d-standard-lssd-360"),
             Self::Z3_highmem_highlssd_8 => write!(f, "z3-highmem-highlssd-8"),
             Self::Z3_highmem_highlssd_16 => write!(f, "z3-highmem-highlssd-16"),
             Self::Z3_highmem_highlssd_22 => write!(f, "z3-highmem-highlssd-22"),
@@ -635,6 +800,35 @@ impl std::fmt::Display for PgSize {
             Self::Z3_highmem_standardlssd_44 => write!(f, "z3-highmem-standardlssd-44"),
             Self::Z3_highmem_standardlssd_88 => write!(f, "z3-highmem-standardlssd-88"),
             Self::Z3_highmem_standardlssd_176 => write!(f, "z3-highmem-standardlssd-176"),
+            Self::N2_highmem_2xlssd_4 => write!(f, "n2-highmem-2xlssd-4"),
+            Self::N2_highmem_2xlssd_8 => write!(f, "n2-highmem-2xlssd-8"),
+            Self::N2_highmem_2xlssd_16 => write!(f, "n2-highmem-2xlssd-16"),
+            Self::N2_highmem_2xlssd_32 => write!(f, "n2-highmem-2xlssd-32"),
+            Self::N2_highmem_2xlssd_48 => write!(f, "n2-highmem-2xlssd-48"),
+            Self::N2_highmem_2xlssd_64 => write!(f, "n2-highmem-2xlssd-64"),
+            Self::N2_highmem_2xlssd_96 => write!(f, "n2-highmem-2xlssd-96"),
+            Self::N2_standard_2xlssd_4 => write!(f, "n2-standard-2xlssd-4"),
+            Self::N2_standard_2xlssd_8 => write!(f, "n2-standard-2xlssd-8"),
+            Self::N2_standard_2xlssd_16 => write!(f, "n2-standard-2xlssd-16"),
+            Self::N2_standard_2xlssd_32 => write!(f, "n2-standard-2xlssd-32"),
+            Self::N2_standard_2xlssd_48 => write!(f, "n2-standard-2xlssd-48"),
+            Self::N2_standard_2xlssd_64 => write!(f, "n2-standard-2xlssd-64"),
+            Self::N2_standard_2xlssd_96 => write!(f, "n2-standard-2xlssd-96"),
+            Self::N2_highmem_4xlssd_2 => write!(f, "n2-highmem-4xlssd-2"),
+            Self::N2_highmem_4xlssd_4 => write!(f, "n2-highmem-4xlssd-4"),
+            Self::N2_highmem_4xlssd_8 => write!(f, "n2-highmem-4xlssd-8"),
+            Self::N2_highmem_4xlssd_16 => write!(f, "n2-highmem-4xlssd-16"),
+            Self::N2_highmem_4xlssd_32 => write!(f, "n2-highmem-4xlssd-32"),
+            Self::N2_highmem_4xlssd_48 => write!(f, "n2-highmem-4xlssd-48"),
+            Self::N2_highmem_8xlssd_2 => write!(f, "n2-highmem-8xlssd-2"),
+            Self::N2_highmem_8xlssd_4 => write!(f, "n2-highmem-8xlssd-4"),
+            Self::N2_highmem_8xlssd_8 => write!(f, "n2-highmem-8xlssd-8"),
+            Self::N2_highmem_8xlssd_16 => write!(f, "n2-highmem-8xlssd-16"),
+            Self::N2_highmem_8xlssd_32 => write!(f, "n2-highmem-8xlssd-32"),
+            Self::N2_highmem_16xlssd_2 => write!(f, "n2-highmem-16xlssd-2"),
+            Self::N2_highmem_16xlssd_4 => write!(f, "n2-highmem-16xlssd-4"),
+            Self::N2_highmem_16xlssd_8 => write!(f, "n2-highmem-16xlssd-8"),
+            Self::N2_highmem_16xlssd_16 => write!(f, "n2-highmem-16xlssd-16"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -956,6 +1150,9 @@ impl PgConfigLogLockWaits {
 /// Type alias for `pgCreatedAtProperty`.
 pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
 
+/// Type alias for `pgDeletionProtectionProperty`.
+pub type PgDeletionProtectionProperty = bool;
+
 /// Type alias for `pgIdProperty`.
 pub type PgIdProperty = uuid::Uuid;
 
@@ -1005,6 +1202,11 @@ pub struct PostgresService {
     pub connection_string: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<PgCreatedAtProperty>,
+    /// When `true`, the service cannot be deleted until deletion protection is
+    /// turned off. Only available for organizations with deletion protection
+    /// enabled.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<PgDeletionProtectionProperty>,
     /// Earliest point in time the service can be restored to with
     /// `postgres_instance_restore`. Only present for a primary service once its
     /// first backup has completed.
@@ -1115,6 +1317,11 @@ pub struct PostgresIpAccessListRuleReference {
 pub struct PostgresServiceListItem {
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<PgCreatedAtProperty>,
+    /// When `true`, the service cannot be deleted until deletion protection is
+    /// turned off. Only available for organizations with deletion protection
+    /// enabled.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<PgDeletionProtectionProperty>,
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1147,6 +1354,11 @@ pub struct PostgresServicePasswordResource {
 /// `PostgresServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePatchRequest {
+    /// `Some(true)` blocks deletion until it is turned off again with
+    /// `Some(false)`. Only available for organizations with deletion
+    /// protection enabled.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<PgDeletionProtectionProperty>,
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     /// Access-rule changes: removals by ID, then additions and edits.
