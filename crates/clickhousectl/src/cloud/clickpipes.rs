@@ -468,6 +468,7 @@ CONTEXT FOR AGENTS:
   Needs API key auth even though it only reads; OAuth is rejected here.
   Output is one inferred name/type per field — pass them to `--column name:type` on
   `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
+  Virtual fields are metadata ClickPipes adds (e.g. `_topic`, `_path`), not source data.
   GCP workload identity uses the principal from `clickpipe context get`.
   Typical flow: `schema-discover <source> <service-id>` -> `create <source> <service-id>`.")]
     SchemaDiscover {
@@ -3517,29 +3518,7 @@ async fn clickpipe_schema_discover(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Name")]
-            name: String,
-            #[tabled(rename = "Type")]
-            r#type: String,
-            #[tabled(rename = "Optional")]
-            optional: String,
-        }
-        let rows: Vec<Row> = response
-            .fields
-            .unwrap_or_default()
-            .into_iter()
-            .map(|field| Row {
-                name: or_absent(field.name),
-                r#type: or_absent(field.r#type),
-                optional: match field.optional {
-                    Some(true) => "true".to_string(),
-                    Some(false) => "false".to_string(),
-                    None => "".to_string(),
-                },
-            })
-            .collect();
+        let rows = schema_discovery_rows(response.fields.unwrap_or_default());
         if rows.is_empty() {
             println!("No fields discovered");
         } else {
@@ -3547,6 +3526,37 @@ async fn clickpipe_schema_discover(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Tabled)]
+struct SchemaDiscoveryRow {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Type")]
+    r#type: String,
+    #[tabled(rename = "Optional")]
+    optional: String,
+    #[tabled(rename = "Virtual")]
+    is_virtual: String,
+    #[tabled(rename = "Disabled By Default")]
+    is_virtual_disabled_default: String,
+}
+
+/// One table row per discovered field; an absent flag renders as an empty cell.
+fn schema_discovery_rows(
+    fields: Vec<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryField>,
+) -> Vec<SchemaDiscoveryRow> {
+    let flag = |value: Option<bool>| value.map(|value| value.to_string()).unwrap_or_default();
+    fields
+        .into_iter()
+        .map(|field| SchemaDiscoveryRow {
+            name: or_absent(field.name),
+            r#type: or_absent(field.r#type),
+            optional: flag(field.optional),
+            is_virtual: flag(field.is_virtual),
+            is_virtual_disabled_default: flag(field.is_virtual_disabled_default),
+        })
+        .collect()
 }
 
 async fn clickpipe_get(
@@ -6197,17 +6207,19 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    /// Every ClickPipe of the service, read across all pages.
     pub async fn list_clickpipes(
         &self,
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
-        let response = self
-            .api()
-            .click_pipe_get_list(org_id, service_id, None, None)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        Self::collect_cursor_pages("ClickPipe", |cursor| async move {
+            self.api()
+                .click_pipe_get_list(org_id, service_id, None, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error_for_organization(error, org_id))
+        })
+        .await
     }
 
     pub async fn get_clickpipe(
@@ -10915,6 +10927,47 @@ mod tests {
             panic!("expected object-storage schema discovery");
         };
         Box::new(source.source)
+    }
+
+    #[test]
+    fn schema_discovery_rows_show_virtual_flags_and_leave_absent_flags_empty() {
+        use clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryField;
+        let rows = schema_discovery_rows(vec![
+            ClickPipeSchemaDiscoveryField {
+                name: Some("_topic".into()),
+                r#type: Some("String".into()),
+                optional: Some(false),
+                is_virtual: Some(true),
+                is_virtual_disabled_default: Some(true),
+            },
+            ClickPipeSchemaDiscoveryField {
+                name: Some("user_id".into()),
+                r#type: Some("Int64".into()),
+                optional: Some(true),
+                is_virtual: Some(false),
+                is_virtual_disabled_default: Some(false),
+            },
+            ClickPipeSchemaDiscoveryField::default(),
+        ]);
+        let cells = |row: &SchemaDiscoveryRow| {
+            [
+                row.name.clone(),
+                row.r#type.clone(),
+                row.optional.clone(),
+                row.is_virtual.clone(),
+                row.is_virtual_disabled_default.clone(),
+            ]
+        };
+        assert_eq!(
+            cells(&rows[0]),
+            ["_topic", "String", "false", "true", "true"]
+        );
+        assert_eq!(
+            cells(&rows[1]),
+            ["user_id", "Int64", "true", "false", "false"]
+        );
+        assert_eq!(cells(&rows[2]), ["-", "-", "", "", ""]);
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]

@@ -26,7 +26,7 @@ clickhousectl cloud clickpipe schema-discover object-storage <service-id> \
   --format JSONEachRow --iam-role "$S3_IAM_ROLE_ARN"
 ```
 
-Discovery returns inferred fields without creating a pipe. Review them, then choose destination columns. Object storage requires at least one `--column name:type`; this example assumes the source has `event_id` and `event_type` fields:
+Discovery returns inferred fields without creating a pipe. Fields marked `Virtual` (`isVirtual` in JSON) are metadata that ClickPipes adds, such as `_topic` or `_path`, rather than source data; `Disabled By Default` (`isVirtualDisabledDefault`) marks metadata left unselected by default when destination columns are built. Review them, then choose destination columns. Object storage requires at least one `--column name:type`; this example assumes the source has `event_id` and `event_type` fields:
 
 ```bash
 clickhousectl cloud clickpipe create object-storage <service-id> \
