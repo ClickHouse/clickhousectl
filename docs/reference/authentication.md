@@ -17,7 +17,7 @@ clickhousectl cloud auth whoami
 clickhousectl cloud auth status
 ```
 
-`signup` opens account creation. Plain `login` opens the OAuth device flow; `--interactive` prompts for an API key and secret; it needs a TTY and cannot be combined with `--api-key` or `--api-secret` (both exit 2). Login checks identity: a rejected key is not saved and exits 4. If the API is unreachable, the key is saved with a warning for offline setup. `whoami` requires no organization selection and supports either credential type.
+`signup` opens account creation. Plain `login` opens the OAuth device flow; in JSON mode its code and URL go to stderr, so stdout holds only the login report. `--interactive` prompts for an API key and secret; it needs a TTY and cannot be combined with `--api-key` or `--api-secret` (both exit 2). Login checks identity: a rejected key is not saved and exits 4. If the API is unreachable, the key is saved with a warning for offline setup. `whoami` requires no organization selection and supports either credential type.
 
 `auth status` shows configured sources, the active source, and identity verification. It can exit 0 with no active credentials, rejected credentials, or an unavailable identity check; use `whoami` or the intended command to test access. Its remote check times out after five seconds.
 

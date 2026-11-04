@@ -17,6 +17,9 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | Command | Successful output |
 | --- | --- |
 | `cloud service list --json` | Bare array |
+| `cloud auth login --json` | Object with `saved` (file path), `identity`, `verification` (`verified` or `unverified`), and optional `warning`; the OAuth device code and URL go to stderr |
+| `cloud auth logout --json` | Object with `oauth_tokens` and `api_keys`, each `cleared` or `unchanged` |
+| `cloud auth signup --json` | Object with `url` and `browser_opened` |
 | `cloud service create --json` | The API's `service` and one-time `password`; with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
 | `cloud service dotenv --json` | Object with `file`, `service` (name), and `vars` of `key` and `value`; never a password |
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
@@ -60,7 +63,7 @@ Local and Cloud runtime errors in JSON mode write an envelope to stderr:
 {"error":{"code":"server_not_found","message":"The selected server was not found"}}
 ```
 
-`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. Management-command failures (`skills`, `telemetry`, `update`, `feedback`) keep their existing diagnostics rather than sharing this runtime envelope.
+`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. `update` and `skills` failures use the same envelope with the generic codes `transport`, `timeout`, `io`, and `other`; `telemetry` and `feedback` failures keep their text diagnostics.
 
 Error rendering adds nothing to stdout, but a streaming query or a command that already committed a change may have emitted a result before failing. Do not accept partial output as success or assume nonzero exit means no side effects.
 

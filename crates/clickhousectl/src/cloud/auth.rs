@@ -36,6 +36,7 @@ pub enum AuthCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
+  In JSON mode the device code and URL go to stderr; stdout holds only the JSON report.
   --api-key/--api-secret: no browser, read+write; a key the API rejects is not saved (exit 4).
   Prints the verified identity; offline, the key is saved unverified with a warning.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
@@ -236,7 +237,7 @@ pub async fn run(
                 login_with_api_key(&key, &secret, api_url, json).await
             } else {
                 let url = api_url.unwrap_or(DEFAULT_API_URL);
-                let tokens = device_auth_login(url)
+                let tokens = device_auth_login(url, json)
                     .await
                     .map_err(|error| Error::Cloud(error.to_string()))?;
                 save_tokens(&tokens).map_err(|error| Error::Cloud(error.to_string()))?;
@@ -260,31 +261,27 @@ pub async fn run(
                 "https://console.{}/signUp?utm_source=clickhousectl",
                 base_host
             );
-            println!("Opening ClickHouse Cloud sign-up page...");
-            if open::that(&url).is_err() {
-                println!("Could not open browser. Please visit: {}", url);
+            if !json {
+                println!("Opening ClickHouse Cloud sign-up page...");
             }
-            Ok(())
+            let report = SignupReport {
+                browser_opened: open::that(&url).is_ok(),
+                url,
+            };
+            report.write(&mut crate::stdout::stdout(), json)
         }
         AuthCommands::Logout { oauth, api_keys } => {
-            match (oauth, api_keys) {
-                (true, false) => {
-                    clear_tokens();
-                    println!("OAuth tokens cleared. API keys unchanged.");
-                }
-                (false, true) => {
-                    credentials::clear_credentials()
-                        .map_err(|error| Error::Cloud(error.to_string()))?;
-                    println!("API keys cleared. OAuth tokens unchanged.");
-                }
-                _ => {
-                    clear_tokens();
-                    credentials::clear_credentials()
-                        .map_err(|error| Error::Cloud(error.to_string()))?;
-                    println!("Logged out. All saved credentials cleared.");
-                }
+            // No flag (or both) clears everything.
+            let clear_oauth = oauth || !api_keys;
+            let clear_api_keys = api_keys || !oauth;
+            if clear_oauth {
+                clear_tokens();
             }
-            Ok(())
+            if clear_api_keys {
+                credentials::clear_credentials()
+                    .map_err(|error| Error::Cloud(error.to_string()))?;
+            }
+            LogoutReport::new(clear_oauth, clear_api_keys).write(&mut crate::stdout::stdout(), json)
         }
         AuthCommands::Status => {
             use tabled::{Table, Tabled, settings::Style};
@@ -596,6 +593,76 @@ impl From<Verification> for IdentityCheck {
                 warning: Some(error.message),
             },
         }
+    }
+}
+
+/// What `auth signup` reports: the page it opened, or tried to.
+#[derive(Debug, Serialize)]
+struct SignupReport {
+    url: String,
+    browser_opened: bool,
+}
+
+impl SignupReport {
+    fn write(&self, output: &mut dyn std::io::Write, json: bool) -> crate::error::Result<()> {
+        if json {
+            writeln!(output, "{}", serde_json::to_string_pretty(self)?)?;
+        } else if !self.browser_opened {
+            writeln!(output, "Could not open browser. Please visit: {}", self.url)?;
+        }
+        Ok(())
+    }
+}
+
+/// What a saved credential source looks like after `auth logout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LogoutAction {
+    Cleared,
+    Unchanged,
+}
+
+impl LogoutAction {
+    fn from_cleared(cleared: bool) -> Self {
+        if cleared {
+            Self::Cleared
+        } else {
+            Self::Unchanged
+        }
+    }
+}
+
+/// What `auth logout` did to each saved credential source.
+#[derive(Debug, Serialize)]
+struct LogoutReport {
+    oauth_tokens: LogoutAction,
+    api_keys: LogoutAction,
+}
+
+impl LogoutReport {
+    fn new(oauth_tokens: bool, api_keys: bool) -> Self {
+        Self {
+            oauth_tokens: LogoutAction::from_cleared(oauth_tokens),
+            api_keys: LogoutAction::from_cleared(api_keys),
+        }
+    }
+
+    fn write(&self, output: &mut dyn std::io::Write, json: bool) -> crate::error::Result<()> {
+        if json {
+            writeln!(output, "{}", serde_json::to_string_pretty(self)?)?;
+            return Ok(());
+        }
+        let line = match (self.oauth_tokens, self.api_keys) {
+            (LogoutAction::Cleared, LogoutAction::Unchanged) => {
+                "OAuth tokens cleared. API keys unchanged."
+            }
+            (LogoutAction::Unchanged, LogoutAction::Cleared) => {
+                "API keys cleared. OAuth tokens unchanged."
+            }
+            _ => "Logged out. All saved credentials cleared.",
+        };
+        writeln!(output, "{line}")?;
+        Ok(())
     }
 }
 
@@ -1041,7 +1108,12 @@ pub fn is_token_valid(tokens: &TokenStore) -> bool {
     tokens.expires_at > now + 60
 }
 
-pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std::error::Error>> {
+/// Run the OAuth device flow. The code and URL are instructions for a human,
+/// so in JSON mode they go to stderr and stdout keeps only the login report.
+pub async fn device_auth_login(
+    api_url: &str,
+    json: bool,
+) -> Result<TokenStore, Box<dyn std::error::Error>> {
     let api_url = normalize_api_url(api_url);
     let config = auth_config_for_url(&api_url)
         .map_err(|error| format!("Cannot resolve OAuth configuration for '{api_url}': {error}"))?;
@@ -1081,17 +1153,24 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
         .as_deref()
         .unwrap_or(&device_resp.verification_uri);
 
-    println!("Login to ClickHouse Cloud:");
-    println!();
-    println!("  Code: {}", device_resp.user_code);
-    println!("  URL:  {verification_url}");
-    println!();
+    let say = |line: &str| {
+        if json {
+            eprint_line(line);
+        } else {
+            println!("{line}");
+        }
+    };
+    say("Login to ClickHouse Cloud:");
+    say("");
+    say(&format!("  Code: {}", device_resp.user_code));
+    say(&format!("  URL:  {verification_url}"));
+    say("");
 
     // Best-effort browser open
     if open::that(verification_url).is_ok() {
-        println!("Browser opened. Waiting for authentication...");
+        say("Browser opened. Waiting for authentication...");
     } else {
-        println!("Open the URL above in your browser. Waiting for authentication...");
+        say("Open the URL above in your browser. Waiting for authentication...");
     }
 
     // Step 3: Poll for token
@@ -1906,6 +1985,28 @@ mod tests {
                     Err(AuthConfigError::InvalidApiUrl)
                 ),
                 "{api_url}"
+            );
+        }
+    }
+
+    /// `auth signup` opens a real browser, so its JSON contract is checked
+    /// here rather than in a subprocess (#1233).
+    #[test]
+    fn signup_json_report_is_one_object_with_the_url_and_browser_outcome() {
+        for browser_opened in [true, false] {
+            let report = SignupReport {
+                url: "https://console.clickhouse.cloud/signUp".into(),
+                browser_opened,
+            };
+            let mut output = Vec::new();
+            report.write(&mut output, true).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "url": "https://console.clickhouse.cloud/signUp",
+                    "browser_opened": browser_opened,
+                })
             );
         }
     }
