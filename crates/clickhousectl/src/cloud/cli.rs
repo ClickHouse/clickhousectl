@@ -15,6 +15,7 @@ pub(crate) use crate::cloud::clickpipes::{
     ObjectStorageCreateArgs, PostgresCreateArgs,
 };
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
+pub(crate) use crate::cloud::mcp::McpCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
@@ -79,6 +80,23 @@ impl CloudArgs {
                     }
                 }
             )
+    }
+
+    /// A Cloud-wide flag passed to `mcp add`, which never uses clickhousectl
+    /// credentials or an organization: the agent signs in by itself.
+    pub fn mcp_flag_conflict(&self) -> Option<&'static str> {
+        if !matches!(self.command, CloudCommands::Mcp { .. }) {
+            return None;
+        }
+        [
+            (self.org_id.is_some(), "--org-id"),
+            (self.org_name.is_some(), "--org-name"),
+            (self.api_key.is_some(), "--api-key"),
+            (self.api_secret.is_some(), "--api-secret"),
+            (self.url.is_some(), "--url"),
+        ]
+        .into_iter()
+        .find_map(|(set, flag)| set.then_some(flag))
     }
 
     /// The schema-discovery source's usage error, checked before credentials.
@@ -273,6 +291,12 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: crate::cloud::postgres::PostgresCommands,
     },
+
+    /// Connect coding agents to the Cloud MCP server
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
 }
 
 impl CloudCommands {
@@ -298,6 +322,7 @@ impl CloudCommands {
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
             CloudCommands::ClickStack { command } => command.is_write(),
+            CloudCommands::Mcp { command } => command.is_write(),
         }
     }
 }

@@ -218,6 +218,18 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         return Err(login.error(kind, message));
     }
 
+    if let Some(flag) = args.mcp_flag_conflict() {
+        let add = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("mcp"))
+            .and_then(|mcp| mcp.find_subcommand_mut("add"))
+            .expect("cloud mcp add command must exist");
+        return Err(add.error(
+            ErrorKind::ArgumentConflict,
+            format!("{flag} cannot be used with `cloud mcp add`; the agent signs in to the MCP server itself"),
+        ));
+    }
+
     if args.has_explicit_json_format_conflict() {
         // clap validates each subcommand before propagating values supplied for a
         // global argument at a parent level, so this cross-level conflict needs a
@@ -599,6 +611,52 @@ mod tests {
             .expect("Cli::from_arg_matches must accept matches from Cli::command()");
         validate_post_parse(&cli, &mut cmd)?;
         Ok(cli)
+    }
+
+    #[test]
+    fn mcp_add_rejects_cloud_credential_and_org_flags_at_any_level() {
+        for (flag, value) in [
+            ("--org-id", "org-1"),
+            ("--org-name", "Acme"),
+            ("--api-key", "key"),
+            ("--api-secret", "secret"),
+            ("--url", "https://api.example.com"),
+        ] {
+            for args in [
+                vec![
+                    "clickhousectl",
+                    "cloud",
+                    flag,
+                    value,
+                    "mcp",
+                    "add",
+                    "claude",
+                ],
+                vec![
+                    "clickhousectl",
+                    "cloud",
+                    "mcp",
+                    "add",
+                    "claude",
+                    flag,
+                    value,
+                ],
+            ] {
+                let error = parse_and_validate(&args).err().unwrap();
+                assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+                assert!(error.to_string().contains(flag), "{args:?}");
+            }
+        }
+        parse_and_validate(&[
+            "clickhousectl",
+            "cloud",
+            "--json",
+            "--debug",
+            "mcp",
+            "add",
+            "claude",
+        ])
+        .unwrap();
     }
 
     #[test]
