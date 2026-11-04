@@ -17882,6 +17882,188 @@ async fn service_settings_set_reads_a_map_from_stdin() {
     assert_success(&valid);
 }
 
+const JWT_PROVIDERS_PATH: &str = "/v1/organizations/org-1/services/svc-1/jwtProviders";
+
+#[tokio::test]
+async fn service_jwt_provider_commands_send_exact_requests_and_print_json() {
+    let mock = MockServer::start().await;
+    let item = format!("{JWT_PROVIDERS_PATH}/okta");
+    let provider = serde_json::json!({
+        "name": "okta",
+        "issuer": "https://auth.example.com",
+        "audience": "analytics",
+        "jwksUrl": "https://auth.example.com/jwks.json",
+        "rolesClaim": "clickhouse:roles"
+    });
+    Mock::given(method("POST"))
+        .and(path(JWT_PROVIDERS_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .and(body_json(provider.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": provider, "status": 200, "requestId": "stub-jwt-create"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(JWT_PROVIDERS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [provider, {"name": "sparse"}], "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(&item))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": provider, "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    // No rolesClaim in the replacement removes the stored one.
+    let replaced = serde_json::json!({
+        "issuer": "https://auth2.example.com",
+        "audience": "analytics",
+        "jwksUrl": "https://auth2.example.com/jwks.json"
+    });
+    Mock::given(method("PUT"))
+        .and(path(&item))
+        .and(body_json(replaced.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "okta", "issuer": "https://auth2.example.com"},
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(&item))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "stub-jwt-delete"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let prefix = ["service", "jwt-provider"];
+    let run = |args: &[&str]| {
+        let mut full = prefix.to_vec();
+        full.extend(args);
+        full.extend(["--org-id", "org-1"]);
+        let output = invoke_cli_with_cloud_credentials(&mock, &full);
+        assert_success(&output);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+
+    assert_eq!(
+        run(&[
+            "create",
+            "svc-1",
+            "okta",
+            "--issuer",
+            "https://auth.example.com",
+            "--audience",
+            "analytics",
+            "--jwks-url",
+            "https://auth.example.com/jwks.json",
+            "--roles-claim",
+            "clickhouse:roles",
+        ]),
+        provider
+    );
+    assert_eq!(
+        run(&["list", "svc-1"]),
+        serde_json::json!([provider, {"name": "sparse"}])
+    );
+    assert_eq!(run(&["get", "svc-1", "okta"]), provider);
+    assert_eq!(
+        run(&[
+            "update",
+            "svc-1",
+            "okta",
+            "--issuer",
+            "https://auth2.example.com",
+            "--audience",
+            "analytics",
+            "--jwks-url",
+            "https://auth2.example.com/jwks.json",
+        ]),
+        serde_json::json!({"name": "okta", "issuer": "https://auth2.example.com"})
+    );
+    assert_eq!(
+        run(&["delete", "svc-1", "okta"]),
+        serde_json::json!({"status": 200, "requestId": "stub-jwt-delete"})
+    );
+}
+
+#[tokio::test]
+async fn service_jwt_provider_list_renders_a_table_with_absent_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(JWT_PROVIDERS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"name": "okta", "issuer": "https://auth.example.com", "audience": "analytics",
+                 "jwksUrl": "https://auth.example.com/jwks.json"},
+                {"name": "sparse"}
+            ],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "jwt-provider",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(serde_json::from_str::<Value>(&stdout).is_err(), "{stdout}");
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .map(|line| line.split('|').map(str::trim).collect())
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains(&"okta")
+            && row.contains(&"https://auth.example.com/jwks.json")),
+        "{stdout}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains(&"sparse") && row.iter().filter(|c| **c == "-").count() == 4),
+        "{stdout}"
+    );
+}
+
+/// The provider name is a request path segment; an invalid one is a usage
+/// error before any request, so `..` never reaches the service itself.
+#[tokio::test]
+async fn service_jwt_provider_rejects_an_invalid_name_before_any_request() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec!["delete", "svc-1", ".."],
+        vec!["delete", "--name", "analytics", ".."],
+    ] {
+        let mut full = vec!["service", "jwt-provider"];
+        full.extend(args);
+        full.extend(["--org-id", "org-1"]);
+        let output = invoke_cli_with_cloud_credentials(&mock, &full);
+        assert_eq!(output.status.code(), Some(2), "{full:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 const UPGRADE_WINDOW_PATH: &str = "/v1/organizations/org-1/services/svc-1/upgradeWindow";
 
 #[tokio::test]

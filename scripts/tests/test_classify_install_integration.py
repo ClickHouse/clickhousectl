@@ -140,6 +140,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhousectl/src/cloud/permissions.rs",
                     "crates/clickhousectl/src/cloud/query_api_endpoints.rs",
                     "crates/clickhousectl/src/cloud/saved_queries.rs",
+                    "crates/clickhousectl/src/cloud/services/jwt_provider.rs",
                     "crates/clickhousectl/src/cloud/udfs.rs",
                     "crates/clickhousectl/src/client_facts.rs",
                     "crates/clickhousectl/src/dotenv.rs",

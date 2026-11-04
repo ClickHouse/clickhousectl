@@ -1,6 +1,7 @@
 mod cli;
 mod client;
 mod endpoints;
+mod jwt_provider;
 mod lifecycle;
 mod query;
 pub mod query_key;
@@ -116,6 +117,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::REPLICA_AWARE_ROUTING_UPDATE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service jwt-provider list", &[&op::JWT_PROVIDER_GET_LIST])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service jwt-provider get", &[&op::JWT_PROVIDER_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service jwt-provider create", &[&op::JWT_PROVIDER_CREATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service jwt-provider update", &[&op::JWT_PROVIDER_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service jwt-provider delete", &[&op::JWT_PROVIDER_DELETE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service create", &[&op::INSTANCE_CREATE]).when(&[Conditional::new(
@@ -171,9 +182,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    PrivateEndpointCommands, QueryEndpointCommands, ReplicaAwareRoutingCommands,
-    ScalingScheduleCommands, ServiceCommands, ServiceProfileCommands, ServiceSettingsCommands,
-    UpgradeWindowCommands,
+    JwtProviderCommands, PrivateEndpointCommands, QueryEndpointCommands,
+    ReplicaAwareRoutingCommands, ScalingScheduleCommands, ServiceCommands, ServiceProfileCommands,
+    ServiceSettingsCommands, UpgradeWindowCommands,
 };
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
@@ -181,6 +192,10 @@ use crate::cloud::shared::NamedResource;
 use endpoints::{
     QueryEndpointCreateOptions, private_endpoint_create, private_endpoint_get_config,
     query_endpoint_create, query_endpoint_delete, query_endpoint_get,
+};
+use jwt_provider::{
+    JwtProviderConfig, jwt_provider_create, jwt_provider_delete, jwt_provider_get,
+    jwt_provider_list, jwt_provider_update,
 };
 use lifecycle::{
     CreateServiceOptions, ServiceResetPasswordOptions, ServiceScaleOptions, ServiceUpdateOptions,
@@ -599,6 +614,80 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                     client,
                     &service_id.resolve(client, NamedResource::Service).await?,
                     build_replica_aware_routing_request(http_enabled, native_enabled),
+                    json,
+                )
+                .await
+            }
+        },
+        ServiceCommands::JwtProvider { command } => match command {
+            JwtProviderCommands::List { service_id } => {
+                jwt_provider_list(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
+            }
+            JwtProviderCommands::Get { target } => {
+                let (selector, provider_name) = target.parts()?;
+                jwt_provider_get(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    provider_name,
+                    json,
+                )
+                .await
+            }
+            JwtProviderCommands::Create {
+                target,
+                issuer,
+                audience,
+                jwks_url,
+                roles_claim,
+            } => {
+                let (selector, provider_name) = target.parts()?;
+                jwt_provider_create(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    provider_name,
+                    JwtProviderConfig {
+                        issuer,
+                        audience,
+                        jwks_url,
+                        roles_claim,
+                    },
+                    json,
+                )
+                .await
+            }
+            JwtProviderCommands::Update {
+                target,
+                issuer,
+                audience,
+                jwks_url,
+                roles_claim,
+            } => {
+                let (selector, provider_name) = target.parts()?;
+                jwt_provider_update(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    provider_name,
+                    JwtProviderConfig {
+                        issuer,
+                        audience,
+                        jwks_url,
+                        roles_claim,
+                    },
+                    json,
+                )
+                .await
+            }
+            JwtProviderCommands::Delete { target } => {
+                let (selector, provider_name) = target.parts()?;
+                jwt_provider_delete(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    provider_name,
                     json,
                 )
                 .await
