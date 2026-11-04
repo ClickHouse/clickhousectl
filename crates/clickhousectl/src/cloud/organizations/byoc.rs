@@ -18,9 +18,9 @@ fn parse_known_byoc_value<T: serde::de::DeserializeOwned>(
     is_unknown: fn(&T) -> bool,
 ) -> CloudResult<T> {
     let parsed = serde_json::from_value::<T>(serde_json::Value::String(value.to_string()))
-        .map_err(|error| CloudError::new(format!("invalid {field}: {error}")))?;
+        .map_err(|error| CloudError::usage(format!("invalid {field}: {error}")))?;
     if is_unknown(&parsed) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid {field}: {unknown} '{value}'"
         )));
     }

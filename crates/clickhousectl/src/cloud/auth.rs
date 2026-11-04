@@ -86,16 +86,38 @@ CONTEXT FOR AGENTS:
 }
 
 impl AuthCommands {
-    pub fn login_validation_error(&self) -> Option<(clap::error::ErrorKind, &'static str)> {
+    /// Usage errors for `auth login` that clap cannot see: the credential
+    /// flags are global, so a pair split across command levels only meets
+    /// after propagation, and `--interactive` needs a terminal to prompt on.
+    pub fn login_validation_error(
+        &self,
+        has_terminal: bool,
+    ) -> Option<(clap::error::ErrorKind, &'static str)> {
         let Self::Login {
+            interactive,
             api_key,
             api_secret,
-            ..
         } = self
         else {
             return None;
         };
         use clap::error::ErrorKind;
+        if *interactive {
+            return if api_key.is_some() || api_secret.is_some() {
+                Some((
+                    ErrorKind::ArgumentConflict,
+                    "--interactive cannot be used with --api-key or --api-secret",
+                ))
+            } else if !has_terminal {
+                Some((
+                    ErrorKind::MissingRequiredArgument,
+                    "--interactive requires a TTY. Use --api-key and --api-secret in \
+                     non-interactive environments.",
+                ))
+            } else {
+                None
+            };
+        }
         match (api_key.as_deref(), api_secret.as_deref()) {
             (Some(_), None) => Some((
                 ErrorKind::MissingRequiredArgument,
@@ -1213,6 +1235,37 @@ mod tests {
     struct AuthCli {
         #[command(subcommand)]
         command: AuthCommands,
+    }
+
+    #[test]
+    fn interactive_login_is_a_usage_error_with_credentials_or_without_a_tty() {
+        use clap::error::ErrorKind;
+        let login = |args: &[&str]| {
+            let mut argv = vec!["clickhousectl", "login"];
+            argv.extend(args);
+            AuthCli::try_parse_from(argv).unwrap().command
+        };
+        for has_terminal in [true, false] {
+            for flags in [
+                &["--interactive", "--api-key", "k"][..],
+                &["--interactive", "--api-secret", "s"],
+                &["--interactive", "--api-key", "k", "--api-secret", "s"],
+            ] {
+                let (kind, _) = login(flags)
+                    .login_validation_error(has_terminal)
+                    .expect("credentials conflict with --interactive");
+                assert_eq!(kind, ErrorKind::ArgumentConflict, "{flags:?}");
+            }
+        }
+        let (kind, _) = login(&["--interactive"])
+            .login_validation_error(false)
+            .expect("no TTY to prompt on");
+        assert_eq!(kind, ErrorKind::MissingRequiredArgument);
+        assert!(
+            login(&["--interactive"])
+                .login_validation_error(true)
+                .is_none()
+        );
     }
 
     #[test]

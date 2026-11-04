@@ -959,11 +959,13 @@ async fn dispatched_events_record_names_and_slots_but_never_values() {
             1,
             &["SECRET"],
         ),
+        // A server name is validated in clap, so the hostile value goes
+        // through an opaque positional that reaches its handler.
         (
-            &["local", "server", "stop", HOSTILE],
-            "local clickhouse stop",
+            &["local", "remove", HOSTILE],
+            "local remove",
             json(&[]),
-            json(&["name"]),
+            json(&["version"]),
             1,
             &["postgres://", "pa55w0rd", "db.internal"],
         ),
@@ -1903,7 +1905,7 @@ async fn empty_sql_is_a_sql_input_failure_before_any_request() {
         None,
         &["--query", "   \n  "],
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let event = debug_payload(&output);
     assert_eq!(event["failure_stage"], "sql_input");
     assert_eq!(event["failure_kind"], "other");

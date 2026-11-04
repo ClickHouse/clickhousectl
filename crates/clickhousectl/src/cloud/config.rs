@@ -1,4 +1,5 @@
 use crate::cloud::client::{CloudError, Result as CloudResult};
+use crate::failure::{ApiFailure, FailureKind};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::Read as _;
@@ -13,23 +14,26 @@ pub(crate) fn config_source_label(config_file: &str) -> &str {
 }
 
 /// Read a JSON request body from a file or stdin.
+///
+/// A file that cannot be read is a runtime I/O failure (exit 1, code `io`);
+/// a body that is not JSON is invalid input (a usage error, exit 2).
 pub(crate) fn read_config_value(config_file: &str) -> CloudResult<Value> {
+    let io_failure =
+        |message: String| CloudError::new(message).with_failure(ApiFailure::new(FailureKind::Io));
     let contents = if config_file == "-" {
         let mut contents = String::new();
         std::io::stdin()
             .read_to_string(&mut contents)
-            .map_err(|error| {
-                CloudError::new(format!("failed to read config from stdin: {error}"))
-            })?;
+            .map_err(|error| io_failure(format!("failed to read config from stdin: {error}")))?;
         contents
     } else {
         std::fs::read_to_string(config_file).map_err(|error| {
-            CloudError::new(format!("failed to read config file {config_file}: {error}"))
+            io_failure(format!("failed to read config file {config_file}: {error}"))
         })?
     };
 
     serde_json::from_str(&contents).map_err(|error| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "failed to parse config {} as JSON: {error}",
             config_source_label(config_file)
         ))
@@ -71,7 +75,7 @@ where
     T: DeserializeOwned,
 {
     deserialize_strict_value(value).map_err(|detail| {
-        CloudError::new(format!("invalid request body in config {source}: {detail}"))
+        CloudError::usage(format!("invalid request body in config {source}: {detail}"))
     })
 }
 
@@ -171,6 +175,7 @@ pub(crate) fn assert_primary_json_input(args: &[&str], id: &str, aliases: &[&str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize, PartialEq)]
@@ -208,6 +213,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("`nested.enabeld`"), "{error}");
+        assert_eq!(error.kind, CloudErrorKind::Usage);
     }
 
     #[test]
@@ -237,6 +243,12 @@ mod tests {
             error.message.contains(missing) && error.message.ends_with(&io_error),
             "{error}"
         );
+        // A file that cannot be read is a runtime failure, not a usage error.
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure.map(|failure| failure.kind),
+            Some(FailureKind::Io)
+        );
 
         let malformed = directory.path().join("malformed.json");
         std::fs::write(&malformed, r#"{"entries":["#).unwrap();
@@ -249,6 +261,7 @@ mod tests {
             error.message.contains(malformed) && error.message.ends_with(&serde_error),
             "{error}"
         );
+        assert_eq!(error.kind, CloudErrorKind::Usage);
 
         let valid = directory.path().join("valid.json");
         std::fs::write(&valid, r#"{"name":"ok"}"#).unwrap();

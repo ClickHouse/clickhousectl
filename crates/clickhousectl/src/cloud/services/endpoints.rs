@@ -22,7 +22,7 @@ fn build_query_endpoint_create_request(
     existing: Option<&ServiceQueryAPIEndpoint>,
 ) -> CloudResult<InstanceServiceQueryApiEndpointsPostRequest> {
     if options.roles.is_empty() {
-        return Err(CloudError::new("at least one --role is required"));
+        return Err(CloudError::usage("at least one --role is required"));
     }
     let mut open_api_keys = match existing {
         Some(endpoint) if !options.replace_open_api_keys => {

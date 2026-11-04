@@ -276,7 +276,7 @@ fn parse_api_key_hash_data(
                 key_secret_hash: key_secret_hash.to_string(),
             }))
         }
-        _ => Err(CloudError::new(
+        _ => Err(CloudError::usage(
             "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together",
         )),
     }
@@ -287,7 +287,7 @@ fn parse_uuid_list(values: &[String], field: &str) -> CloudResult<Vec<uuid::Uuid
         .iter()
         .map(|value| {
             uuid::Uuid::parse_str(value).map_err(|error| {
-                CloudError::new(format!("invalid {} UUID '{}': {}", field, value, error))
+                CloudError::usage(format!("invalid {} UUID '{}': {}", field, value, error))
             })
         })
         .collect()
@@ -297,7 +297,7 @@ fn parse_api_key_state_post(value: &str) -> CloudResult<ApiKeyPostRequestState> 
     match value {
         "enabled" => Ok(ApiKeyPostRequestState::Enabled),
         "disabled" => Ok(ApiKeyPostRequestState::Disabled),
-        _ => Err(CloudError::new(format!(
+        _ => Err(CloudError::usage(format!(
             "invalid state: unknown value '{}', expected one of: enabled, disabled",
             value
         ))),
@@ -308,7 +308,7 @@ fn parse_api_key_state_patch(value: &str) -> CloudResult<ApiKeyPatchRequestState
     match value {
         "enabled" => Ok(ApiKeyPatchRequestState::Enabled),
         "disabled" => Ok(ApiKeyPatchRequestState::Disabled),
-        _ => Err(CloudError::new(format!(
+        _ => Err(CloudError::usage(format!(
             "invalid state: unknown value '{}', expected one of: enabled, disabled",
             value
         ))),
@@ -319,7 +319,7 @@ fn parse_expire_at(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|datetime| datetime.with_timezone(&chrono::Utc))
         .map_err(|error| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid expire_at '{}': expected ISO 8601 / RFC 3339 format (e.g. 2025-12-31T23:59:59Z): {}",
                 value, error
             ))
@@ -354,7 +354,7 @@ fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKe
 
 fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKeyPatchRequest> {
     if options.clear_expiry && options.expires_at.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--clear-expiry conflicts with --expires-at",
         ));
     }
@@ -1346,14 +1346,13 @@ mod tests {
 
     #[test]
     fn build_api_key_update_request_rejects_conflicting_expiry_changes() {
-        assert!(
-            build_api_key_update_request(&KeyUpdateOptions {
-                expires_at: Some("2030-01-01T00:00:00Z".into()),
-                clear_expiry: true,
-                ..Default::default()
-            })
-            .is_err()
-        );
+        let error = build_api_key_update_request(&KeyUpdateOptions {
+            expires_at: Some("2030-01-01T00:00:00Z".into()),
+            clear_expiry: true,
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
     }
 
     #[test]
@@ -1473,6 +1472,15 @@ mod tests {
             ..Default::default()
         };
         let error = build_api_key_create_request(&options).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
+        assert!(error.to_string().contains("not-a-uuid"));
+
+        let error = build_api_key_update_request(&KeyUpdateOptions {
+            role_ids: vec!["not-a-uuid".to_string()],
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
         assert!(error.to_string().contains("not-a-uuid"));
     }
 
@@ -1484,6 +1492,7 @@ mod tests {
             ..Default::default()
         };
         let error = build_api_key_create_request(&options).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
         assert!(error.to_string().contains("next-tuesday"));
     }
 
@@ -1495,6 +1504,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap_err();
+        assert_eq!(create_error.kind, CloudErrorKind::Usage);
         assert!(create_error.to_string().contains("broken"));
 
         let update_error = build_api_key_update_request(&KeyUpdateOptions {
@@ -1502,6 +1512,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap_err();
+        assert_eq!(update_error.kind, CloudErrorKind::Usage);
         assert!(update_error.to_string().contains("broken"));
     }
 

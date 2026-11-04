@@ -23,7 +23,7 @@ fn validate_scaling_schedule_entry(
     source: &str,
 ) -> CloudResult<()> {
     let invalid = |message: String| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "invalid request body in config {source}: entries[{index}] {message}"
         ))
     };

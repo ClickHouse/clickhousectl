@@ -213,7 +213,10 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     // Login's credentials are global arguments. Validate after propagation so
     // a pair split across command levels remains valid.
     if let cloud::cli::CloudCommands::Auth { command } = &args.command
-        && let Some((kind, message)) = command.login_validation_error()
+        && let Some((kind, message)) = command.login_validation_error({
+            use std::io::IsTerminal;
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+        })
     {
         let login = cmd
             .find_subcommand_mut("cloud")
@@ -550,7 +553,6 @@ mod tests {
         }
         for args in [
             vec!["clickhousectl", "cloud", "auth", "login"],
-            vec!["clickhousectl", "cloud", "auth", "login", "--interactive"],
             vec![
                 "clickhousectl",
                 "cloud",

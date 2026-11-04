@@ -68,7 +68,7 @@ pub fn list_configs_in(dir: &Path) -> Vec<String> {
 /// segments escape the store (`Path::join` replaces the base on an absolute
 /// argument), copying arbitrary files into the server overlay. Mirrors
 /// `server::validate_server_name`.
-fn validate_config_name(name: &str) -> Result<()> {
+pub(crate) fn validate_config_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.contains('/')
         || name.contains('\\')

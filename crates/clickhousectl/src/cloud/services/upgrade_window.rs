@@ -17,13 +17,13 @@ fn build_upgrade_window_request(
         "12" => UpgradeWindowStartHourUtc::Hour12,
         "18" => UpgradeWindowStartHourUtc::Hour18,
         value => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid start_hour '{value}': expected one of 0, 6, 12, 18"
             )));
         }
     };
     if !(0..=6).contains(&weekday) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid weekday '{weekday}': expected a number from 0 through 6"
         )));
     }

@@ -8,6 +8,45 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+fn parse_config_name_arg(name: &str) -> Result<String, String> {
+    crate::local::config::validate_config_name(name)
+        .map(|()| name.to_string())
+        .map_err(|error| error.to_string())
+}
+
+/// A raw config path passed through to clickhouse-server would bypass the
+/// managed `--config` handling and could move the data directory out of
+/// `.clickhouse/servers/<name>/`, which list, stop, remove and dotenv rely on.
+/// Individual `--setting=value` flags are fine. `--config` also matches
+/// `--config-file` as a prefix.
+fn parse_server_passthrough_arg(arg: &str) -> Result<String, String> {
+    if arg.starts_with("--config") || arg.starts_with("-C") {
+        return Err(
+            "--config / --config-file / -C cannot be passed through in trailing args. \
+             Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
+             (see `clickhousectl local clickhouse configs`). \
+             Individual --setting=value flags are supported."
+                .into(),
+        );
+    }
+    Ok(arg.to_string())
+}
+
+/// `local remove` matches an installed directory name, so a channel can never
+/// name one; reject it here rather than report it as not installed.
+fn parse_installed_version_arg(version: &str) -> Result<String, String> {
+    if ["latest", "stable", "lts"]
+        .iter()
+        .any(|channel| version.eq_ignore_ascii_case(channel))
+    {
+        return Err(format!(
+            "'{version}' is a channel, not an installed version; pass an exact version \
+             from `clickhousectl local list`"
+        ));
+    }
+    Ok(version.to_string())
+}
+
 fn parse_udf_name_arg(name: &str) -> Result<String, String> {
     crate::local::udf::validate_local_function_name(name).map(|()| name.to_string())
 }
@@ -67,7 +106,7 @@ impl FromStr for InstallVersionArg {
             .strip_prefix("postgres@")
             .or_else(|| input.strip_prefix("postgres:"))
         {
-            return Ok(Self::Postgres(tag.to_string()));
+            return crate::local::postgres::parse_pg_tag_arg(tag).map(Self::Postgres);
         }
 
         version_manager::parse_version_spec(input)
@@ -245,7 +284,7 @@ CONTEXT FOR AGENTS:
     )]
     Client {
         /// Server name to connect to (default: "default")
-        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg)]
         #[arg(display_order = 0)]
         name: Option<String>,
 
@@ -255,7 +294,8 @@ CONTEXT FOR AGENTS:
             short = 'n',
             value_name = "NAME",
             hide = true,
-            conflicts_with_all = ["name", "host", "port"]
+            conflicts_with_all = ["name", "host", "port"],
+            value_parser = parse_server_name_arg
         )]
         #[arg(display_order = 0)]
         name_flag: Option<String>,
@@ -348,6 +388,7 @@ CONTEXT FOR AGENTS:
     Remove {
         /// Exact installed version to remove (not "latest"/"stable"/"lts")
         // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
+        #[arg(value_parser = parse_installed_version_arg)]
         version: String,
 
         /// Stop any server using this version and remove it even if it is the default
@@ -384,7 +425,7 @@ CONTEXT FOR AGENTS:
   Omitting --config on a later start removes the previously selected override.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -392,7 +433,8 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -427,13 +469,23 @@ CONTEXT FOR AGENTS:
         /// Overlay defaults with a named partial config (see `clickhouse configs`)
         ///
         /// Select one file from ~/.clickhouse/configs/; paths are not accepted.
-        #[arg(long = "config", alias = "config-file", value_name = "NAME")]
+        #[arg(
+            long = "config",
+            alias = "config-file",
+            value_name = "NAME",
+            value_parser = parse_config_name_arg
+        )]
         config_file: Option<String>,
 
         /// Arguments passed to clickhouse-server after `--`
         ///
         /// --config, --config-file and -C are rejected here; use `--config <NAME>` instead.
-        #[arg(last = true, allow_hyphen_values = true, value_name = "CLICKHOUSE_ARG")]
+        #[arg(
+            last = true,
+            allow_hyphen_values = true,
+            value_name = "CLICKHOUSE_ARG",
+            value_parser = parse_server_passthrough_arg
+        )]
         args: Vec<String>,
     },
 
@@ -460,7 +512,7 @@ CONTEXT FOR AGENTS:
   it errors — pass a name or use `stop-all`.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -468,7 +520,8 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -500,7 +553,7 @@ CONTEXT FOR AGENTS:
   exactly one exists.")]
     Remove {
         /// Name of the server to remove (defaults to "default" if it exists)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -508,7 +561,8 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
     },
@@ -526,7 +580,7 @@ CONTEXT FOR AGENTS:
   CLICKHOUSE_* lines are kept.")]
     Dotenv {
         /// Server name (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -534,7 +588,8 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -633,7 +688,7 @@ CONTEXT FOR AGENTS:
     /// Stop a running Postgres instance
     Stop {
         /// Name of the instance to stop (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -641,12 +696,13 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
     },
 
@@ -660,7 +716,7 @@ CONTEXT FOR AGENTS:
   removing a running one errors.")]
     Remove {
         /// Name of the instance to remove (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -668,12 +724,13 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
     },
 
@@ -688,7 +745,7 @@ CONTEXT FOR AGENTS:
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default")
-        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg)]
         #[arg(display_order = 0)]
         name: Option<String>,
 
@@ -698,13 +755,19 @@ CONTEXT FOR AGENTS:
             short = 'n',
             value_name = "NAME",
             hide = true,
-            conflicts_with_all = ["name", "host", "port"]
+            conflicts_with_all = ["name", "host", "port"],
+            value_parser = parse_server_name_arg
         )]
         #[arg(display_order = 0)]
         name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
+        #[arg(
+            long,
+            short = 'v',
+            conflicts_with_all = ["host", "port"],
+            value_parser = crate::local::postgres::parse_pg_tag_arg
+        )]
         #[arg(display_order = 3)]
         version: Option<String>,
 
@@ -746,7 +809,7 @@ CONTEXT FOR AGENTS:
   Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
         /// Instance name (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -754,12 +817,13 @@ CONTEXT FOR AGENTS:
             long = "name",
             value_name = "NAME",
             conflicts_with = "name",
-            hide = true
+            hide = true,
+            value_parser = parse_server_name_arg
         )]
         name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
 
         /// Write to .env.local instead of .env
@@ -1134,7 +1198,7 @@ mod tests {
         for (input, expected) in [
             ("postgres@18", "18"),
             ("postgres:17-alpine", "17-alpine"),
-            ("  postgres@16  ", "16"),
+            ("  postgres@17  ", "17"),
         ] {
             let LocalCommands::Install {
                 version: InstallVersionArg::Postgres(tag),
@@ -1863,6 +1927,42 @@ mod tests {
         }
     }
 
+    /// Inputs that can never succeed are usage errors (exit 2) found while
+    /// parsing, before any install, lookup or container work (#1236).
+    #[test]
+    fn invalid_local_inputs_are_rejected_at_clap_time() {
+        for (args, identifier) in [
+            (&["install", "postgres@16"][..], "16"),
+            (&["install", "postgres@"], "postgres"),
+            (&["postgres", "stop", "--version", "18garbage"], "18garbage"),
+            (&["postgres", "remove", "-v", "18garbage"], "18garbage"),
+            (
+                &["postgres", "client", "--version", "18garbage"],
+                "18garbage",
+            ),
+            (
+                &["postgres", "dotenv", "--version", "18garbage"],
+                "18garbage",
+            ),
+            (&["clickhouse", "start", ""], "''"),
+            (&["clickhouse", "start", "--name", "../unsafe"], "../unsafe"),
+            (&["clickhouse", "start", "--config", "../x.xml"], "../x.xml"),
+            (&["clickhouse", "start", "--", "-C", "x.xml"], "-C"),
+            (
+                &["clickhouse", "start", "--", "--config-file=x.xml"],
+                "--config",
+            ),
+            (&["remove", "latest"], "latest"),
+            (&["remove", "LTS"], "LTS"),
+        ] {
+            assert_version_rejected(args, &[identifier]);
+        }
+        // Passthrough settings and exact versions still parse.
+        local_command(&["clickhouse", "start", "--", "--http_port=0"]);
+        local_command(&["remove", "25.12.9.61"]);
+        local_command(&["postgres", "stop", "--version", "17-alpine"]);
+    }
+
     #[test]
     fn postgres_start_rejects_invalid_name_tag_port_and_env_at_clap_time() {
         use crate::local::postgres::{parse_pg_env_arg, parse_pg_port_arg, parse_pg_tag_arg};
@@ -2005,6 +2105,28 @@ mod tests {
                         (Some(name.to_owned()), None)
                     };
                     assert_eq!(instance_names(local_command(&args)), expected, "{args:?}");
+                }
+            }
+        }
+    }
+
+    /// A name that can never be a server is a usage error on every command
+    /// that takes one, in both name forms (#1236).
+    #[test]
+    fn all_instance_commands_reject_invalid_names_at_clap_time() {
+        for command in instance_commands() {
+            for name in ["", "a/b", ".."] {
+                for flag in [false, true] {
+                    let mut args = command.to_vec();
+                    if flag {
+                        args.push("--name");
+                    }
+                    args.push(name);
+                    assert_eq!(
+                        local_parse_error(&args).kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
                 }
             }
         }

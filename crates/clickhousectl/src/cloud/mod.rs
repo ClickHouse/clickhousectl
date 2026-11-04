@@ -150,10 +150,9 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
         (CloudErrorKind::Auth, _) => Error::AuthRequired(e.message),
         // Input-dependent validation keeps clap's usage format and exit 2,
         // even when the invalid value could only be found after parsing.
-        (CloudErrorKind::Usage, _) => Error::Usage(Box::new(clap::Error::raw(
-            clap::error::ErrorKind::ValueValidation,
-            e.message,
-        ))),
+        (CloudErrorKind::Usage, _) => {
+            Error::usage(clap::error::ErrorKind::ValueValidation, e.message)
+        }
         // A structured detail replaces the prose *only* in JSON mode; its
         // `message` is the same text, so human output is unchanged (#644).
         (CloudErrorKind::Generic, Some(details)) => Error::CloudDetailed(details),
@@ -250,6 +249,8 @@ mod runtime_tests {
             matches!(&usage, Error::Usage(error) if error.kind() == clap::error::ErrorKind::ValueValidation)
         );
         assert_eq!(usage.exit_code(), 2);
+        // Rendered like clap's own errors, so the next stderr line starts fresh.
+        assert!(usage.to_string().ends_with('\n'), "{usage:?}");
 
         let generic = cloud_error_to_top_level(CloudError::new("boom"));
         assert!(

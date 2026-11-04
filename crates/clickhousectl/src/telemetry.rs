@@ -2656,22 +2656,23 @@ mod tests {
             "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
         ];
         for hostile in HOSTILE {
-            // Successful parse.
-            let inv = capture_from(&["clickhousectl", "local", "server", "stop", hostile]);
-            assert_eq!(inv.positionals, ["name"]);
+            // Successful parse. A local server name is validated in clap, so
+            // these fixtures go through a free-form Cloud resource ID.
+            let inv = capture_from(&["clickhousectl", "cloud", "service", "get", hostile]);
+            assert_eq!(inv.positionals, ["resource_id"]);
             let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
             assert!(!json.contains(hostile), "leaked {hostile}: {json}");
 
             // Failed parse (unknown flag after the positional).
             let inv = capture_lossy_from(&[
                 "clickhousectl",
-                "local",
-                "server",
-                "stop",
+                "cloud",
+                "service",
+                "get",
                 hostile,
                 "--frobnicate",
             ]);
-            assert_eq!(inv.positionals, ["name"]);
+            assert_eq!(inv.positionals, ["resource_id"]);
             let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
             assert!(!json.contains(hostile), "leaked {hostile}: {json}");
 

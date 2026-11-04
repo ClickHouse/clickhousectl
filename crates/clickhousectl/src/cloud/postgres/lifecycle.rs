@@ -14,7 +14,7 @@ use tabled::{Table, Tabled, settings::Style};
 
 fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| CloudError::new(format!("invalid size '{}': {}", value, e)))
+        .map_err(|e| CloudError::usage(format!("invalid size '{}': {}", value, e)))
 }
 
 /// Parse an access rule in `IP_OR_CIDR:PORTS[=DESCRIPTION]` form.
@@ -102,13 +102,13 @@ fn generate_compliant_password() -> String {
 
 fn validate_password(pw: &str) -> CloudResult<()> {
     if pw.len() < 12 {
-        return Err(CloudError::new("password must be at least 12 characters"));
+        return Err(CloudError::usage("password must be at least 12 characters"));
     }
     let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
     let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
     let has_digit = pw.chars().any(|c| c.is_ascii_digit());
     if !(has_lower && has_upper && has_digit) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "password must include at least one lowercase, one uppercase, and one digit",
         ));
     }
@@ -906,10 +906,19 @@ pub(super) mod tests {
 
     #[test]
     fn validate_password_rules() {
-        assert!(validate_password("Short1").is_err());
-        assert!(validate_password("alllowercase12345").is_err()); // no upper
-        assert!(validate_password("ALLUPPERCASE12345").is_err()); // no lower
-        assert!(validate_password("NoDigitsHereAtAll").is_err());
+        for weak in [
+            "Short1",
+            "alllowercase12345", // no upper
+            "ALLUPPERCASE12345", // no lower
+            "NoDigitsHereAtAll",
+        ] {
+            let error = validate_password(weak).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{weak}"
+            );
+        }
         assert!(validate_password("Valid1Password").is_ok());
     }
 

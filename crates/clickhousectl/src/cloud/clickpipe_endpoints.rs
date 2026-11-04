@@ -463,7 +463,7 @@ fn validate_create_args(args: &ReversePrivateEndpointCreateArgs) -> CloudResult<
 
     for (flag, owner, present) in flags {
         if present && owner != requested {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "--{flag} applies to --type {owner}, not --type {requested}"
             )));
         }
@@ -475,14 +475,14 @@ fn validate_create_args(args: &ReversePrivateEndpointCreateArgs) -> CloudResult<
         .map(|(flag, _, _)| format!("--{flag}"))
         .collect();
     if !missing.is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "--type {requested} requires {}",
             missing.join(" and ")
         )));
     }
 
     if requested == TYPE_MSK_MULTI_VPC && !args.custom_private_dns_mappings.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC",
         ));
     }
@@ -494,7 +494,7 @@ fn validate_create_args(args: &ReversePrivateEndpointCreateArgs) -> CloudResult<
             .iter()
             .any(|mapping| mapping.target_id.is_some())
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "--custom-private-dns-mapping NAME=TARGET_ID applies to --type {TYPE_VPC_RESOURCE}, \
              not --type {requested}"
         )));

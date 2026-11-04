@@ -792,7 +792,7 @@ fn build_webhook_request(config_file: &str) -> CloudResult<ClickStackWebhookInpu
 }
 
 fn invalid_clickstack_request(source: &str, message: impl std::fmt::Display) -> CloudError {
-    CloudError::new(format!(
+    CloudError::usage(format!(
         "invalid request body in config {source}: {message}"
     ))
 }
@@ -2708,7 +2708,7 @@ fn validate_saved_search_closed_enums(
     source: &str,
 ) -> CloudResult<()> {
     if let Some(ClickStackSavedSearchInputWherelanguage::Unknown(value)) = &request.where_language {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {source}: unknown whereLanguage value `{value}`"
         )));
     }
@@ -2721,7 +2721,7 @@ fn validate_saved_search_closed_enums(
             }
         })
     }) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {source}: unknown filters[{index}].type value `{value}`"
         )));
     }
@@ -2781,12 +2781,12 @@ fn parse_source_request(value: Value, source: &str) -> CloudResult<ClickStackSou
             ClickStackPromqlSource,
         >(value, source)?),
         Some(other) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid request body in config {source}: unknown source discriminator `{other}`; expected log, trace, metric, session, or promql"
             )));
         }
         None => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid request body in config {source}: source `kind` must be one of log, trace, metric, session, or promql"
             )));
         }
@@ -2809,7 +2809,7 @@ fn validate_materialized_views(
             }
         })
     }) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {source}: unknown materializedViews[{index}].minGranularity value `{value}`"
         )));
     }
@@ -2822,7 +2822,7 @@ fn validate_source_closed_enums(request: &ClickStackSource, source: &str) -> Clo
             if let Some(ClickStackLogSourceUsetextindexforimplicitcolumn::Unknown(value)) =
                 &log.use_text_index_for_implicit_column
             {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "invalid request body in config {source}: unknown useTextIndexForImplicitColumn value `{value}`"
                 )));
             }
@@ -2832,7 +2832,7 @@ fn validate_source_closed_enums(request: &ClickStackSource, source: &str) -> Clo
             if let Some(ClickStackTraceSourceUsetextindexforimplicitcolumn::Unknown(value)) =
                 &trace.use_text_index_for_implicit_column
             {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "invalid request body in config {source}: unknown useTextIndexForImplicitColumn value `{value}`"
                 )));
             }
@@ -2971,7 +2971,7 @@ async fn resolve_clickstack_target(
         (Some(id), None) => return Ok(id),
         (None, Some(name)) => name,
         _ => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "Specify exactly one positional ID or --name",
             ));
         }

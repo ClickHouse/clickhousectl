@@ -2755,7 +2755,7 @@ async fn postgres_metrics_handler_rejects_a_reverse_range_before_any_request() {
             "org-1",
         ],
     );
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
@@ -6860,7 +6860,7 @@ async fn service_query_refuses_data_on_stdin_before_any_request() {
     )
     .await;
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--query"), "{stderr}");
     assert!(stderr.contains("cat - data.csv"), "{stderr}");
@@ -6887,7 +6887,7 @@ async fn service_query_refuses_data_that_arrives_after_the_check_starts() {
     )
     .await;
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("--query cannot be combined with SQL or data on stdin"),
@@ -18303,7 +18303,7 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
     );
     // The wording is unit-tested in `services::settings`; the error names the
     // flag and the setting.
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("--setting") && stderr.contains("'value'"),

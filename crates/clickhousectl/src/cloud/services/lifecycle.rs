@@ -337,7 +337,7 @@ fn resolve_horizontal_autoscaling(
     max_replicas: Option<u32>,
 ) -> CloudResult<HorizontalAutoscaling> {
     if min_replicas.is_some() != max_replicas.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--min-replicas and --max-replicas must be specified together",
         ));
     }
@@ -405,12 +405,12 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
     )?;
 
     if options.byoc_id.as_deref().is_some_and(str::is_empty) {
-        return Err(CloudError::new("--byoc-id cannot be empty"));
+        return Err(CloudError::usage("--byoc-id cannot be empty"));
     }
     if options.byoc_id.is_some()
         && (options.min_replica_memory_gb.is_none() || options.max_replica_memory_gb.is_none())
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--byoc-id requires --min-replica-memory-gb and --max-replica-memory-gb",
         ));
     }
@@ -423,7 +423,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
     if matches!(profile, Some(ServicePostRequestProfile::Unknown(_)))
         && options.min_replica_memory_gb != options.max_replica_memory_gb
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "a dynamic BYOC --profile requires equal --min-replica-memory-gb and --max-replica-memory-gb",
         ));
     }
@@ -451,7 +451,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             .as_deref()
             .map(uuid::Uuid::parse_str)
             .transpose()
-            .map_err(|error| CloudError::new(format!("invalid backup_id: {}", error)))?,
+            .map_err(|error| CloudError::usage(format!("invalid backup_id: {}", error)))?,
         release_channel: match options.release_channel.as_deref() {
             Some(value) => Some(parse_serde_enum::<ServicePostRequestReleasechannel>(
                 value,
@@ -515,15 +515,15 @@ fn parse_create_service_profile(
         );
     }
     if byoc_id.is_none() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid profile: unknown standard profile '{value}'; dynamic profiles require --byoc-id"
         )));
     }
     if value.is_empty() {
-        return Err(CloudError::new("--profile cannot be empty"));
+        return Err(CloudError::usage("--profile cannot be empty"));
     }
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|error| CloudError::new(format!("invalid profile: {error}")))
+        .map_err(|error| CloudError::usage(format!("invalid profile: {error}")))
 }
 
 fn build_update_service_request(
@@ -1266,6 +1266,7 @@ pub(super) async fn service_prometheus(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
     use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
     use crate::failure::{ApiFailure, FailureKind};
 
@@ -1730,6 +1731,7 @@ mod tests {
             ..minimal_create_options()
         })
         .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
         assert!(error.message.contains("--byoc-id"), "{error}");
         assert!(
             error.message.contains("'future-standard-profile'"),
@@ -1757,7 +1759,32 @@ mod tests {
                 ..minimal_create_options()
             },
         ] {
-            assert!(build_create_service_request(&options).is_err());
+            let error = build_create_service_request(&options).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage);
+        }
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_invalid_local_input_as_usage() {
+        for options in [
+            CreateServiceOptions {
+                byoc_id: Some(String::new()),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                min_replica_memory_gb: Some(48),
+                max_replica_memory_gb: Some(48),
+                profile: Some(String::new()),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                backup_id: Some("not-a-uuid".to_string()),
+                ..minimal_create_options()
+            },
+        ] {
+            let error = build_create_service_request(&options).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage);
         }
     }
 
@@ -2118,6 +2145,7 @@ mod tests {
             },
         ] {
             let error = build_create_service_request(&options).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage);
             assert!(error.to_string().contains("--min-replicas"));
         }
     }
@@ -2215,6 +2243,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
         assert!(error.to_string().contains("--min-replicas"));
     }
 

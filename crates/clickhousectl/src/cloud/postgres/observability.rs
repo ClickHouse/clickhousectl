@@ -43,22 +43,22 @@ pub(super) fn build_postgres_logs_query(
     offset: Option<i64>,
 ) -> CloudResult<PostgresLogsQuery> {
     let from = chrono::DateTime::parse_from_rfc3339(from_date)
-        .map_err(|error| CloudError::new(format!("invalid from-date: {error}")))?;
+        .map_err(|error| CloudError::usage(format!("invalid from-date: {error}")))?;
     let to = chrono::DateTime::parse_from_rfc3339(to_date)
-        .map_err(|error| CloudError::new(format!("invalid to-date: {error}")))?;
+        .map_err(|error| CloudError::usage(format!("invalid to-date: {error}")))?;
     if to <= from {
-        return Err(CloudError::new("to-date must be after from-date"));
+        return Err(CloudError::usage("to-date must be after from-date"));
     }
     if to.signed_duration_since(from) > chrono::Duration::days(30) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "the Postgres log time window must not exceed 30 days",
         ));
     }
     if !matches!(limit, None | Some(1..=2000)) {
-        return Err(CloudError::new("limit must be between 1 and 2000"));
+        return Err(CloudError::usage("limit must be between 1 and 2000"));
     }
     if offset.is_some_and(|value| value < 0) {
-        return Err(CloudError::new("offset must be at least 0"));
+        return Err(CloudError::usage("offset must be at least 0"));
     }
 
     let sort_order = sort_order
@@ -192,11 +192,11 @@ pub(super) fn parse_postgres_window_datetime(value: &str) -> Result<String, Stri
 
 fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
     let from = chrono::DateTime::parse_from_rfc3339(from_date)
-        .map_err(|_| CloudError::new("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
+        .map_err(|_| CloudError::usage("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
     let to = chrono::DateTime::parse_from_rfc3339(to_date)
-        .map_err(|_| CloudError::new("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
+        .map_err(|_| CloudError::usage("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
     if from > to {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "invalid date range: --from-date must not be after --to-date",
         ));
     }
@@ -356,12 +356,12 @@ fn build_slow_query_list_query(
 ) -> CloudResult<SlowQueryListQuery<'_>> {
     validate_datetime_range(input.from_date, input.to_date)?;
     if input.limit.is_some_and(|limit| !(1..=500).contains(&limit)) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "invalid --limit: expected a value from 1 to 500",
         ));
     }
     if input.offset.is_some_and(|offset| offset < 0) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "invalid --offset: expected a non-negative value",
         ));
     }
@@ -415,7 +415,7 @@ fn build_slow_query_detail_query(
 ) -> CloudResult<SlowQueryDetailQuery<'_>> {
     if let Some(timestamp) = input.timestamp {
         chrono::DateTime::parse_from_rfc3339(timestamp)
-            .map_err(|_| CloudError::new("invalid --timestamp: expected ISO 8601 / RFC 3339"))?;
+            .map_err(|_| CloudError::usage("invalid --timestamp: expected ISO 8601 / RFC 3339"))?;
     }
     Ok(SlowQueryDetailQuery {
         db_name: input.db_name,
