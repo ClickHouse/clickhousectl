@@ -85,7 +85,8 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             None | Some(AuthSource::OAuthTokens)
         )
     {
-        // Refresh failures clear unusable tokens; returned errors are storage failures.
+        // A failed refresh keeps the saved login (#1224) and the resolver below
+        // reports it as expired; returned errors are storage failures.
         auth::ensure_fresh_tokens(json)
             .await
             .map_err(|e| Error::Cloud(e.to_string()))?;

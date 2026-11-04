@@ -315,9 +315,12 @@ fn resolve_auth_with_sources(
 
     let tokens =
         load_tokens().map_err(|_| CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_REQUIRED))?;
-    if let Some(tokens) = tokens
-        && crate::cloud::auth::is_token_valid(&tokens)
-    {
+    if let Some(tokens) = tokens {
+        // `cloud::run` has already tried to refresh an expired login and kept
+        // the file; name the expiry rather than claiming nothing is saved.
+        if !crate::cloud::auth::is_token_valid(&tokens) {
+            return Err(CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_EXPIRED));
+        }
         let base_url = url_override
             .map(crate::cloud::auth::normalize_api_url)
             .unwrap_or(tokens.api_url);
@@ -2073,6 +2076,41 @@ mod tests {
             api_secret: Some("file_s".to_string()),
             ..Default::default()
         })
+    }
+
+    /// An expired saved login (#1224) is an auth error naming the expiry, not
+    /// the "no credentials" error an absent login gets.
+    #[test]
+    fn expired_oauth_login_reports_expiry_not_missing_credentials() {
+        let expired = || {
+            serde_json::from_value(serde_json::json!({
+                "access_token": "expired", "refresh_token": "", "expires_at": 1,
+                "api_url": DEFAULT_BASE_URL,
+                "auth_config": {"auth_url": "https://auth.example", "client_id": "client"}
+            }))
+            .map(Some)
+            .map_err(|_| crate::cloud::auth::UnusableTokens)
+        };
+        let dotenv = dotenv_with(&[]);
+        let resolve = |tokens: TokensLookup<'_>| {
+            resolve_auth_with_sources(
+                None,
+                None,
+                None,
+                &dotenv,
+                &|_| None,
+                &no_credentials,
+                tokens,
+            )
+            .err()
+            .expect("no usable credentials")
+        };
+        let error = resolve(&expired);
+        assert_eq!(error.kind, CloudErrorKind::Auth);
+        assert_eq!(error.message, crate::cloud::auth::OAUTH_LOGIN_EXPIRED);
+        let error = resolve(&no_tokens);
+        assert_eq!(error.kind, CloudErrorKind::Auth);
+        assert_ne!(error.message, crate::cloud::auth::OAUTH_LOGIN_EXPIRED);
     }
 
     #[test]
