@@ -75,6 +75,13 @@ const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
 ];
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
+    // The server feature-gates iamRoleExternalId on AWS backup-bucket create:
+    // orgs without the feature get "iamRoleExternalId is not available for this
+    // organization" for any string and "is invalid" for "". The schema has no
+    // required[], so the description fallback marks it required, which would
+    // make AWS create impossible in those orgs. Omission is the only valid input.
+    // https://github.com/ClickHouse/clickhousectl/issues/1245
+    ("AwsBackupBucketPostRequestV1", "iamRoleExternalId"),
     // Kinesis requires protobufSchema only for Protobuf and forbids it for
     // other formats; the schema has no required[], and the legacy requiredness
     // heuristic misses that condition.

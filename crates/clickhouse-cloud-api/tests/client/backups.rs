@@ -552,7 +552,7 @@ async fn create_backup_bucket() {
     let body =
         BackupBucketPostRequest::AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1 {
             bucket_path: "s3://new-bucket".to_string(),
-            iam_role_external_id: "trust-policy-id".to_string(),
+            iam_role_external_id: Some("trust-policy-id".to_string()),
             ..Default::default()
         });
     let resp = c
