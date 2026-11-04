@@ -28,14 +28,27 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List ClickPipes
+    /// List ClickPipes.
+    ///
+    /// With neither `limit` nor `cursor`, the server returns every ClickPipe and
+    /// `next_cursor` is `None`. Either one requests a page, most recent first:
+    /// `limit` must be at least 1 (server default 50, capped at its maximum page
+    /// size). Pass the response's `next_cursor` as `cursor` until it is `None`.
     pub async fn click_pipe_get_list(
         &self,
         organization_id: &str,
         service_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<ClickPipe>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes");
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

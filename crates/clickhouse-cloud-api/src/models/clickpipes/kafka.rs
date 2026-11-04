@@ -629,17 +629,15 @@ pub struct ClickPipePatchKafkaSource {
 pub struct ClickPipePostKafkaSource {
     #[serde(rename = "protobufSchema", skip_serializing_if = "Option::is_none")]
     pub protobuf_schema: Option<String>,
-    /// Omitted for a broker that requires no authentication: the spec enum has
-    /// no "none" value, and the control plane's own field is `omitempty`, so
-    /// absence — not a sentinel value — is how "no auth" is expressed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authentication: Option<ClickPipePostKafkaSourceAuthentication>,
+    /// Required by the spec: every Kafka create names an authentication mechanism.
+    pub authentication: ClickPipePostKafkaSourceAuthentication,
     pub brokers: String,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
     #[serde(rename = "consumerGroup", skip_serializing_if = "Option::is_none")]
     pub consumer_group: Option<String>,
-    pub credentials: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<serde_json::Value>,
     #[serde(rename = "exactlyOnce", skip_serializing_if = "Option::is_none")]
     pub exactly_once: Option<bool>,
     pub format: ClickPipePostKafkaSourceFormat,
@@ -647,8 +645,11 @@ pub struct ClickPipePostKafkaSource {
     pub iam_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<ClickPipeKafkaOffset>,
-    #[serde(rename = "reversePrivateEndpointIds")]
-    pub reverse_private_endpoint_ids: Vec<String>,
+    #[serde(
+        rename = "reversePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reverse_private_endpoint_ids: Option<Vec<String>>,
     #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
     pub schema_registry: Option<ClickPipeMutateKafkaSchemaRegistry>,
     pub topics: String,

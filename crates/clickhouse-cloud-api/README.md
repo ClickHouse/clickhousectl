@@ -6,6 +6,31 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`click_pipe_get_list` now takes `limit: Option<i64>` and `cursor: Option<&str>`
+after the organization and service IDs, and still returns
+`ApiResponse<Vec<ClickPipe>>`. Pass `None, None` to keep listing every ClickPipe
+in one response, as before. Either argument requests a page, most recent first
+(`limit` at least 1, server default 50); the envelope's `limit`, `total_count`
+and `next_cursor` carry the page metadata, and `next_cursor` is `None` on the
+last page. `total_count` is best-effort and may be `None`.
+
+`ClickPipePostKafkaSource.credentials` is now `Option<serde_json::Value>` and
+`reverse_private_endpoint_ids` is `Option<Vec<String>>`, because the spec no
+longer requires either. `None` omits the key; `Default` no longer sends
+`"reversePrivateEndpointIds": []`. To send the previous body, wrap the values
+in `Some`: `Some(serde_json::Value::Null)` still sends `"credentials": null`
+(IAM_ROLE), and `Some(vec![])` still sends an empty list. The spec now lists
+`protobufSchema` as optional itself, so its optionality exemption is removed.
+
+`ClickPipePostKafkaSource.authentication` is now
+`ClickPipePostKafkaSourceAuthentication` instead of an `Option`, because the
+spec now requires it. Replace `Some(auth)` with `auth`; a source without
+authentication can no longer be built, and deserializing a body without it fails.
+
+`ClickPipeSchemaDiscoveryField` gains optional `is_virtual` (metadata added by
+ClickPipes, such as `_topic` or `_path`) and `is_virtual_disabled_default`
+(left unselected by default when building destination columns).
+
 `postgres_logs_get_list` now takes `severity: Option<&PostgresLogsGetListSeverity>`
 instead of `Option<&str>`, because the spec now lists the accepted levels. The
 enum has `Debug`, `Log`, `Info`, `Notice`, `Warning`, `Error`, `Fatal` and

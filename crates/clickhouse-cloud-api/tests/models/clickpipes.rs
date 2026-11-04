@@ -595,33 +595,35 @@ fn click_pipe_schema_discovery_request_kafka_source() {
     assert!(v["source"].get("pubsub").is_none());
 }
 
-// A Kafka broker with no authentication has no spec enum value; absence of the
-// `authentication` key is the wire representation, so `None` must be omitted
-// rather than serialized as a mechanism or as `null`.
+// The spec requires `authentication` on a Kafka create source, so the request
+// side rejects a body without it rather than defaulting a mechanism.
 #[test]
-fn click_pipe_post_kafka_source_omits_absent_authentication() {
-    let no_auth = ClickPipePostKafkaSource {
-        brokers: "broker1:9092".to_string(),
-        topics: "events".to_string(),
-        authentication: None,
-        credentials: serde_json::Value::Null,
-        ..Default::default()
-    };
-    let v = serde_json::to_value(&no_auth).unwrap();
-    assert!(
-        v.get("authentication").is_none(),
-        "absent authentication must be omitted, got {v}"
+fn click_pipe_post_kafka_source_requires_authentication() {
+    let wire = serde_json::json!({
+        "type": "kafka", "format": "JSONEachRow", "brokers": "broker1:9092",
+        "topics": "events", "authentication": "PLAIN",
+        "credentials": {"username": "u", "password": "p"}
+    });
+    let parsed: ClickPipePostKafkaSource = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        parsed.authentication,
+        ClickPipePostKafkaSourceAuthentication::PLAIN
     );
-    assert_eq!(v["brokers"], "broker1:9092");
-
-    let plain = ClickPipePostKafkaSource {
-        authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
-        credentials: serde_json::json!({"username": "u", "password": "p"}),
-        ..Default::default()
-    };
-    let v = serde_json::to_value(&plain).unwrap();
-    assert_eq!(v["authentication"], "PLAIN");
-    assert_eq!(v["credentials"]["username"], "u");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    for field in ["type", "format", "brokers", "topics", "authentication"] {
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ClickPipePostKafkaSource>(missing).is_err(),
+            "missing {field} must be rejected"
+        );
+        let mut null = wire.clone();
+        null[field] = serde_json::Value::Null;
+        assert!(
+            serde_json::from_value::<ClickPipePostKafkaSource>(null).is_err(),
+            "null {field} must be rejected"
+        );
+    }
 }
 
 // `kafka_read_committed` is only supported for Kafka pipes, so a settings PUT
@@ -678,6 +680,32 @@ fn click_pipe_schema_discovery_request_default_omits_sources() {
     let v = serde_json::to_value(ClickPipeSchemaDiscoveryRequest::default()).unwrap();
     assert!(v["source"].get("kafka").is_none());
     assert!(v["source"].get("kinesis").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_field_virtual_flags() {
+    let json = r#"{"name": "_topic", "type": "String", "optional": false,
+        "isVirtual": true, "isVirtualDisabledDefault": false}"#;
+    let field: ClickPipeSchemaDiscoveryField = serde_json::from_str(json).unwrap();
+    assert_eq!(field.is_virtual, Some(true));
+    assert_eq!(field.is_virtual_disabled_default, Some(false));
+    let v = serde_json::to_value(&field).unwrap();
+    assert_eq!(v["isVirtual"], true);
+    assert_eq!(v["isVirtualDisabledDefault"], false);
+
+    let dropped: ClickPipeSchemaDiscoveryField =
+        serde_json::from_str(r#"{"name": "user_id"}"#).unwrap();
+    let nulled: ClickPipeSchemaDiscoveryField = serde_json::from_str(
+        r#"{"name": "user_id", "isVirtual": null, "isVirtualDisabledDefault": null}"#,
+    )
+    .unwrap();
+    for field in [dropped, nulled] {
+        assert_eq!(field.is_virtual, None);
+        assert_eq!(field.is_virtual_disabled_default, None);
+        let v = serde_json::to_value(&field).unwrap();
+        assert!(v.get("isVirtual").is_none());
+        assert!(v.get("isVirtualDisabledDefault").is_none());
+    }
 }
 
 #[test]
@@ -1057,6 +1085,42 @@ fn bigquery_service_account_allows_omitted_authentication() {
         ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(_)
     ));
     assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+}
+
+// The spec no longer requires `credentials` or `reversePrivateEndpointIds` on a
+// Kafka create source: `None` omits each key, while an explicit `null`
+// credentials body (IAM_ROLE) and an explicit empty endpoint list stay on the wire.
+#[test]
+fn kafka_post_source_credentials_and_endpoints_are_optional() {
+    let absent = ClickPipePostKafkaSource::default();
+    assert_eq!(absent.credentials, None);
+    assert_eq!(absent.reverse_private_endpoint_ids, None);
+    let wire = serde_json::to_value(&absent).unwrap();
+    assert!(wire.get("credentials").is_none(), "got {wire}");
+    assert!(
+        wire.get("reversePrivateEndpointIds").is_none(),
+        "got {wire}"
+    );
+
+    let explicit = ClickPipePostKafkaSource {
+        authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
+        credentials: Some(serde_json::Value::Null),
+        reverse_private_endpoint_ids: Some(vec![]),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&explicit).unwrap();
+    assert_eq!(wire.get("credentials"), Some(&serde_json::Value::Null));
+    assert_eq!(wire["reversePrivateEndpointIds"], serde_json::json!([]));
+
+    let endpoints = ClickPipePostKafkaSource {
+        reverse_private_endpoint_ids: Some(vec!["rpe-1".to_string()]),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&endpoints).unwrap();
+    assert_eq!(
+        wire["reversePrivateEndpointIds"],
+        serde_json::json!(["rpe-1"])
+    );
 }
 
 #[test]

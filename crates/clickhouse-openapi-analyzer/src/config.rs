@@ -75,11 +75,9 @@ const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
 ];
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
-    // The spec allows protobufSchema only for Protobuf without schemaRegistry;
-    // requiring it would reject JSON/Avro and schema-registry Kafka requests.
-    ("ClickPipePostKafkaSource", "protobufSchema"),
-    // Kinesis likewise requires protobufSchema only for Protobuf and forbids it
-    // for other formats; the legacy requiredness heuristic misses that condition.
+    // Kinesis requires protobufSchema only for Protobuf and forbids it for
+    // other formats; the schema has no required[], and the legacy requiredness
+    // heuristic misses that condition.
     ("ClickPipePostKinesisSource", "protobufSchema"),
     // Non-Postgres pipe requests must be able to omit the Postgres union arm.
     ("ClickPipePostSource", "postgres"),
@@ -114,13 +112,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
         "ClickPipePostgresPipeSettings",
         "snapshotNumberOfParallelTables",
     ),
-    // A Kafka broker that requires no authentication has no representation in
-    // the spec enum (PLAIN..MUTUAL_TLS only) and the schema carries no
-    // `required[]`, so requiredness resolves from the description heuristic.
-    // Absence is the wire representation of "no auth": the control plane's own
-    // field is `omitempty` and the equivalent PATCH property is nullable.
-    // Keeping this `T` would force every request to claim an auth mechanism.
-    ("ClickPipePostKafkaSource", "authentication"),
     // The official Terraform provider's released Kafka update path omits
     // unchanged credentials and reversePrivateEndpointIds, including for a
     // CA-only update. The API schema also has authentication modes IAM_ROLE
