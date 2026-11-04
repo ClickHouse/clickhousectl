@@ -1,9 +1,9 @@
 use super::config::{load_json_file, load_pg_config_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, or_absent, print_line};
+use crate::cloud::output::{ABSENT, NextStep, json_with_next, or_absent, print_line};
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
-    PgBouncerConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgVersion,
+    PgBouncerConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgStateProperty, PgVersion,
     PostgresIpAccessListEntry, PostgresIpAccessListPatch, PostgresIpAccessListRuleReference,
     PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceSetPassword, PostgresServiceSetStateCommand,
@@ -507,6 +507,49 @@ pub async fn postgres_list(
     Ok(())
 }
 
+/// Poll `postgres get` for `field` (#1162).
+fn postgres_poll(org_id: &str, postgres_id: &str, field: &'static str) -> NextStep {
+    NextStep::poll(&["postgres", "get", postgres_id], org_id, field)
+}
+
+/// `next` for a Postgres service that a create, restore or read-replica
+/// create just started: poll the new service until it is running. `None` when
+/// the response carried no ID to poll.
+pub(super) fn postgres_provisioning_next(org_id: &str, svc: &PostgresService) -> Option<NextStep> {
+    let id = svc.id.as_ref()?.to_string();
+    Some(
+        postgres_poll(org_id, &id, "state")
+            .until(&[PgStateProperty::Running])
+            .fail_on(&[PgStateProperty::Deleting]),
+    )
+}
+
+/// `next` for an accepted promotion: poll the replica until it is a primary.
+pub(super) fn postgres_promote_next(org_id: &str, postgres_id: &str) -> NextStep {
+    postgres_poll(org_id, postgres_id, "isPrimary").until(&[true])
+}
+
+/// `next` for `postgres update --size`, whose resize applies in the
+/// background while `size` still shows the old value. `None` whenever
+/// `--ha-type` is given: `haType` shows the new value as soon as the change is
+/// accepted, long before the standby exists, so no field confirms it. `None`
+/// for any other update, which applies at once.
+fn postgres_update_next(
+    org_id: &str,
+    postgres_id: &str,
+    size: Option<&PgSize>,
+    ha_type: Option<&PgHaType>,
+) -> Option<NextStep> {
+    match (size, ha_type) {
+        (Some(size), None) => Some(
+            postgres_poll(org_id, postgres_id, "size")
+                .until(std::slice::from_ref(size))
+                .every(30),
+        ),
+        _ => None,
+    }
+}
+
 pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let svc = client.get_postgres_service(&org_id, postgres_id).await?;
@@ -611,7 +654,8 @@ pub async fn postgres_create(
     let svc = client.create_postgres_service(&org_id, &req).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&svc)?);
+        let next = postgres_provisioning_next(&org_id, &svc);
+        println!("{}", json_with_next(&svc, next)?);
     } else {
         println!("Postgres service created");
         println!();
@@ -684,6 +728,7 @@ pub async fn postgres_update(
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
 
+    let next = postgres_update_next(&org_id, postgres_id, size.as_ref(), ha_type.as_ref());
     let ip_access_list =
         build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
     let req = build_postgres_update_request(
@@ -700,7 +745,7 @@ pub async fn postgres_update(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&svc)?);
+        println!("{}", json_with_next(&svc, next)?);
     } else {
         println!("Postgres service updated");
         println!();
@@ -854,6 +899,42 @@ pub async fn postgres_state_change(
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    /// A resize is confirmed by `size`, the field name `postgres get --json`
+    /// prints. An HA change, alone or with a resize, gets no hint because
+    /// `haType` flips on acceptance; neither does an update changing neither.
+    #[test]
+    fn postgres_update_next_polls_size_only() {
+        let size = parse_pg_size("c6gd.large").unwrap();
+        let ha_type = PgHaType::Async;
+        let svc = serde_json::to_value(PostgresService {
+            size: Some(size.clone()),
+            ..PostgresService::default()
+        })
+        .unwrap();
+        let next = postgres_update_next("org-1", "pg-1", Some(&size), None).unwrap();
+        assert_eq!(
+            next.command,
+            "clickhousectl cloud postgres get pg-1 --org-id org-1 --json"
+        );
+        assert_eq!(next.field, "size");
+        assert_eq!(next.until, [svc[next.field].clone()]);
+        for (size, ha_type) in [
+            (None, Some(&ha_type)),
+            (Some(&size), Some(&ha_type)),
+            (None, None),
+        ] {
+            assert_eq!(postgres_update_next("org-1", "pg-1", size, ha_type), None);
+        }
+    }
+
+    #[test]
+    fn postgres_provisioning_next_needs_the_new_service_id() {
+        assert_eq!(
+            postgres_provisioning_next("org-1", &PostgresService::default()),
+            None
+        );
+    }
 
     #[test]
     fn parses_postgres_list_filter_keys_case_insensitively() {

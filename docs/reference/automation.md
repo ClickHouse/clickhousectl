@@ -20,7 +20,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud auth login --json` | Object with `saved` (file path), `identity`, `verification` (`verified` or `unverified`), and optional `warning`; the OAuth device code and URL go to stderr |
 | `cloud auth logout --json` | Object with `oauth_tokens` and `api_keys`, each `cleared` or `unchanged` |
 | `cloud auth signup --json` | Object with `url` and `browser_opened` |
-| `cloud service create --json` | The API's `service` and one-time `password`; with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
+| `cloud service create --json` | The API's `service` and one-time `password`, plus `next` (see [Wait for completion](#wait-for-completion-and-retry-deliberately)); with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
 | `cloud service dotenv --json` | Object with `file`, `service` (name), and `vars` of `key` and `value`; never a password |
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
@@ -78,15 +78,48 @@ Local errors redact external logs, subprocess output, and OS details where neede
 | Operation | Completion check or retry constraint |
 | --- | --- |
 | ClickHouse create/start/stop | Poll `service get` for the intended state |
+| ClickHouse delete | Poll `service get` until `state` is `terminated` or `softdeleted`, or it fails with `resource_not_found` |
 | Postgres create/restore/replica | Poll `postgres get`; verify connectivity and credentials separately |
+| Postgres resize (`update --size`) | Poll `postgres get` until `size` shows the requested value; this can take several minutes |
+| Postgres HA change (`update --ha-type`) | No field signal: `haType` shows the new value as soon as the change is accepted, minutes before the standby exists; check `pg_stat_replication` on the primary |
 | Postgres config/restart | Re-read configuration, compare `pg_postmaster_start_time()` before/after restart, then `SHOW` the changed setting |
 | Postgres promote | Poll the replica until `isPrimary: true` |
 | Postgres switchover | No completion signal: it may wait for the maintenance window, and service-level state, `isPrimary` and readiness do not confirm it |
 | CDC stop/update/start | Wait for `Paused`, update, explicitly restart, then verify ingestion |
+| CDC scaling (`clickpipe cdc-scaling update`) | Poll `cdc-scaling get` until `replicaCpuMillicores` (or `replicaMemoryGb`) shows the requested value; another update meanwhile fails with a conflict |
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
 | Query-key repair | Replacement can persist despite failed verification; do not blindly rotate again |
 | UDF creation/attachment | Wait for the version to be ready and inspect the service attachment; `udf deploy` waits for both |
+
+The asynchronous commands add a `next` object to their `--json` output that names the poll. The CLI still returns as soon as the API accepts the request:
+
+```json
+"next": {
+  "command": "clickhousectl cloud service get 1234-... --org-id 5678-... --json",
+  "field": "state",
+  "until": ["running"],
+  "fail_on": ["failed"],
+  "interval_seconds": 5
+}
+```
+
+Run `command` as is: it carries the resolved IDs and `--org-id`, but not credentials. Stop when the top-level `field` of its output holds one of the `until` values. A value in `fail_on` means the operation will not finish. `until_error_code`, when present, is an error code from `command` that also means finished, such as `resource_not_found` once a deleted service is gone. `interval_seconds` is a suggested delay between polls.
+
+| Command | Polls | `field` | `until` | `fail_on` |
+| --- | --- | --- | --- | --- |
+| `service create`, `service start` | `service get` | `state` | `running` | `failed` |
+| `service stop` | `service get` | `state` | `stopped`, `idle` | `failed`, `terminated` |
+| `service delete` | `service get` | `state` | `terminated`, `softdeleted` (or `resource_not_found`) | `failed` |
+| `postgres create`, `postgres restore`, `postgres read-replica create` | `postgres get` on the new service | `state` | `running` | `deleting` |
+| `postgres update --size` | `postgres get` | `size` | The requested value | None |
+| `postgres promote` | `postgres get` | `isPrimary` | `true` | None |
+| `clickpipe start`, `clickpipe resync` | `clickpipe get` | `state` | `Running`, `Completed` | `Failed`, `InternalError` |
+| `clickpipe stop` | `clickpipe get` | `state` | `Stopped`, `Paused` | `Failed`, `InternalError` |
+| `clickpipe cdc-scaling update` | `clickpipe cdc-scaling get` | `replicaCpuMillicores`, or `replicaMemoryGb` when only memory is given | The requested value | None |
+| `clickpipe reverse-private-endpoint create` | `clickpipe reverse-private-endpoint get` | `status` | `Ready` | `Failed`, `Rejected`, `Expired` |
+
+Some commands have no `next`, because no single field confirms them. `postgres restart` can show `running` before the restart begins, so compare `pg_postmaster_start_time()` instead. Nothing that `postgres get` returns confirms a `postgres switchover`. A `postgres update --ha-type`, alone or with `--size`, has none because `haType` shows the new value on acceptance, minutes before the standby is replicating, so check `pg_stat_replication` on the primary instead. Any other `postgres update` applies at once. `next` is also omitted when the API response has no ID to poll. An endpoint in `PendingAcceptance` stays there until the source-side owner accepts it.
 
 See the relevant [task guide](../README.md) for the full sequence. Resource creation, resync, password reset, and SQL writes are not safe generic retry targets. Reconcile the observed state before deciding what to repeat.
 

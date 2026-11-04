@@ -38,7 +38,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
-use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::output::{ABSENT, NextStep, json_with_next, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clap::builder::NonEmptyStringValueParser;
 use clap::builder::PossibleValuesParser;
@@ -346,6 +346,22 @@ async fn endpoint_get(
     Ok(())
 }
 
+/// `next` for a created endpoint: poll it until it is `Ready` (#1162). One in
+/// `PendingAcceptance` waits for the source-side owner to accept it.
+fn endpoint_create_next(org_id: &str, service_id: &str, endpoint_id: &str) -> NextStep {
+    use clickhouse_cloud_api::models::ReversePrivateEndpointStatus::*;
+    let args = [
+        "clickpipe",
+        "reverse-private-endpoint",
+        "get",
+        service_id,
+        endpoint_id,
+    ];
+    NextStep::poll(&args, org_id, "status")
+        .until(&[Ready])
+        .fail_on(&[Failed, Rejected, Expired])
+}
+
 async fn endpoint_create(
     client: &CloudClient,
     args: &ReversePrivateEndpointCreateArgs,
@@ -360,7 +376,10 @@ async fn endpoint_create(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&endpoint)?);
+        let next = endpoint
+            .id
+            .map(|id| endpoint_create_next(&org_id, &args.service_id, &id.to_string()));
+        println!("{}", json_with_next(&endpoint, next)?);
     } else {
         println!("Reverse private endpoint created");
         println!("  ID: {}", or_absent(endpoint.id.as_ref()));
@@ -699,6 +718,21 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
     use clap::Parser;
+
+    /// Wiring and `Ready` are the subprocess test; these are the end states.
+    #[test]
+    fn endpoint_create_next_stops_on_states_that_never_become_ready() {
+        let next = endpoint_create_next("org-1", "svc-1", "rpe-1");
+        assert_eq!(next.field, "status");
+        assert_eq!(
+            next.fail_on,
+            [
+                serde_json::json!("Failed"),
+                serde_json::json!("Rejected"),
+                serde_json::json!("Expired")
+            ]
+        );
+    }
 
     /// Asserts `message` names every identifier in `names` (a flag or a
     /// `--type` value) without pinning the prose around them.

@@ -79,7 +79,7 @@ use crate::cloud::client::{
 use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_flag_config_value,
 };
-use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::output::{ABSENT, NextStep, json_with_next, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::NonEmptyStringValueParser;
@@ -4076,6 +4076,23 @@ impl ClickPipeLifecycleCommand {
             Self::Resync => "resync",
         }
     }
+
+    /// `next` for the accepted state change: poll `clickpipe get` for `state`
+    /// (#1162). A stopped CDC pipe reports `Paused`; a finished one-off load
+    /// reports `Completed`.
+    fn next(self, org_id: &str, service_id: &str, clickpipe_id: &str) -> NextStep {
+        use clickhouse_cloud_api::models::ClickPipeState::*;
+        let poll = NextStep::poll(
+            &["clickpipe", "get", service_id, clickpipe_id],
+            org_id,
+            "state",
+        )
+        .fail_on(&[Failed, InternalError]);
+        match self {
+            Self::Start | Self::Resync => poll.until(&[Running, Completed]),
+            Self::Stop => poll.until(&[Stopped, Paused]),
+        }
+    }
 }
 
 async fn clickpipe_state(
@@ -4091,7 +4108,8 @@ async fn clickpipe_state(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+        let next = command.next(&org_id, service_id, clickpipe_id);
+        println!("{}", json_with_next(&clickpipe, Some(next))?);
     } else {
         println!(
             "ClickPipe {} {} request accepted (returned state: {})",
@@ -4150,6 +4168,23 @@ struct CdcScalingValues {
     memory_gb: Option<f64>,
 }
 
+/// `next` for an accepted CDC scaling change, which applies in the background
+/// while the PATCH response still shows the old allocation (#1162). CPU and
+/// memory change together, so the requested one confirms both.
+fn cdc_scaling_next(org_id: &str, service_id: &str, values: &CdcScalingValues) -> Option<NextStep> {
+    let (field, until) = match (values.cpu_millicores, values.memory_gb) {
+        (Some(cpu_millicores), _) => ("replicaCpuMillicores", serde_json::json!(cpu_millicores)),
+        (None, Some(memory_gb)) => ("replicaMemoryGb", serde_json::json!(memory_gb)),
+        (None, None) => return None,
+    };
+    let args = ["clickpipe", "cdc-scaling", "get", service_id];
+    Some(
+        NextStep::poll(&args, org_id, field)
+            .until(&[until])
+            .every(30),
+    )
+}
+
 fn build_cdc_scaling_request(
     values: &CdcScalingValues,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest> {
@@ -4201,7 +4236,8 @@ async fn clickpipe_cdc_scaling_update(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&scaling)?);
+        let next = cdc_scaling_next(&org_id, service_id, values);
+        println!("{}", json_with_next(&scaling, next)?);
     } else {
         print_human(&scaling)?;
     }
@@ -6498,6 +6534,32 @@ mod tests {
             "config_file",
             &["config-file"],
         );
+    }
+
+    /// Start and the CPU field are the subprocess tests.
+    #[test]
+    fn clickpipe_stop_and_resync_next_name_their_end_states() {
+        let stop = ClickPipeLifecycleCommand::Stop.next("org", "svc", "pipe");
+        assert_eq!(
+            stop.until,
+            [serde_json::json!("Stopped"), serde_json::json!("Paused")]
+        );
+        let resync = ClickPipeLifecycleCommand::Resync.next("org", "svc", "pipe");
+        assert_eq!(
+            resync.until,
+            [serde_json::json!("Running"), serde_json::json!("Completed")]
+        );
+    }
+
+    #[test]
+    fn cdc_scaling_next_polls_memory_when_only_memory_changes() {
+        let values = CdcScalingValues {
+            cpu_millicores: None,
+            memory_gb: Some(8.0),
+        };
+        let next = cdc_scaling_next("org", "svc", &values).unwrap();
+        assert_eq!(next.field, "replicaMemoryGb");
+        assert_eq!(next.until, [serde_json::json!(8.0)]);
     }
 
     use super::*;

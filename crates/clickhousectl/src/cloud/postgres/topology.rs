@@ -3,10 +3,11 @@ use super::config::{load_json_file, load_pg_config_file};
 use super::lifecycle::postgres_state_change;
 use super::lifecycle::{
     build_postgres_update_request, merge_response_tags, postgres_create_ip_access_list,
-    render_postgres_connection_guidance, render_postgres_service,
+    postgres_promote_next, postgres_provisioning_next, render_postgres_connection_guidance,
+    render_postgres_service,
 };
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{eprint_line, print_line};
+use crate::cloud::output::{eprint_line, json_with_next, print_line};
 use crate::cloud::shared::{parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PgBouncerConfig, PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse,
@@ -128,7 +129,8 @@ pub async fn postgres_read_replica_create(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&svc)?);
+        let next = postgres_provisioning_next(&org_id, &svc);
+        println!("{}", json_with_next(&svc, next)?);
     } else {
         println!("Read replica created");
         println!();
@@ -187,7 +189,8 @@ pub async fn postgres_restore(
     let svc = apply_restored_access_rules(client, &org_id, svc, &desired, tags).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&svc)?);
+        let next = postgres_provisioning_next(&org_id, &svc);
+        println!("{}", json_with_next(&svc, next)?);
     } else {
         println!("Postgres service restore initiated");
         println!();
@@ -338,7 +341,11 @@ pub async fn postgres_role_change(
     // `print_line`, not `println!`: a closed pipe must not turn an accepted
     // role change into a panic (#598).
     if json {
-        print_line(serde_json::to_string_pretty(&svc)?);
+        // Switchover gets no `next`: nothing `postgres get` returns confirms
+        // it (see `role_change_notes`).
+        let next = (cmd == PostgresRoleCommand::Promote)
+            .then(|| postgres_promote_next(&org_id, postgres_id));
+        print_line(json_with_next(&svc, next)?);
     } else {
         print_line(format!("{} accepted", cmd.label()));
         print_line("");

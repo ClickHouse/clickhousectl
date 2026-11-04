@@ -258,6 +258,98 @@ pub fn print_error(error: &crate::error::Error) {
     }
 }
 
+// ── next-step polling hints (issue #1162) ───────────────────────────────────
+
+/// How to confirm that an accepted asynchronous operation finished, added to
+/// the operation's JSON output as `next`. The CLI never waits: exit 0 means
+/// the API accepted the request, and this names the read that shows when it
+/// is done. `docs/reference/automation.md` documents the shape.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct NextStep {
+    /// The read command to repeat, with resolved IDs, `--org-id` and `--json`.
+    pub(crate) command: String,
+    /// Top-level field of that command's JSON output to check.
+    pub(crate) field: &'static str,
+    /// Values of `field` that mean the operation finished.
+    pub(crate) until: Vec<Value>,
+    /// Values of `field` that mean it will not finish, so polling should stop.
+    pub(crate) fail_on: Vec<Value>,
+    /// A `--json` error code from `command` that also means finished: the
+    /// resource is gone after a delete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) until_error_code: Option<CloudErrorCode>,
+    /// Suggested delay between polls.
+    pub(crate) interval_seconds: u64,
+}
+
+impl NextStep {
+    /// Poll `clickhousectl cloud <args> --org-id <org_id> --json` and read
+    /// `field`. Each argument is shell-quoted when it needs to be.
+    pub(crate) fn poll(args: &[&str], org_id: &str, field: &'static str) -> Self {
+        let quote = |arg: &str| {
+            shlex::try_quote(arg)
+                .map(std::borrow::Cow::into_owned)
+                .unwrap_or_else(|_| arg.to_string())
+        };
+        let mut command = String::from("clickhousectl cloud");
+        for arg in args.iter().copied().chain(["--org-id", org_id]) {
+            command.push(' ');
+            command.push_str(&quote(arg));
+        }
+        command.push_str(" --json");
+        Self {
+            command,
+            field,
+            until: Vec::new(),
+            fail_on: Vec::new(),
+            until_error_code: None,
+            interval_seconds: 10,
+        }
+    }
+
+    pub(crate) fn until<T: Serialize>(mut self, values: &[T]) -> Self {
+        self.until = hint_values(values);
+        self
+    }
+
+    pub(crate) fn fail_on<T: Serialize>(mut self, values: &[T]) -> Self {
+        self.fail_on = hint_values(values);
+        self
+    }
+
+    pub(crate) fn until_error_code(mut self, code: CloudErrorCode) -> Self {
+        self.until_error_code = Some(code);
+        self
+    }
+
+    pub(crate) fn every(mut self, seconds: u64) -> Self {
+        self.interval_seconds = seconds;
+        self
+    }
+}
+
+/// Serialize the library's own values, so a hint names exactly what the poll
+/// command prints. Every value here is a field enum, a bool or a number, which
+/// cannot fail to serialize.
+fn hint_values<T: Serialize>(values: &[T]) -> Vec<Value> {
+    values
+        .iter()
+        .filter_map(|value| serde_json::to_value(value).ok())
+        .collect()
+}
+
+/// `value` as pretty JSON, with `next` added when `value` is an object.
+pub(crate) fn json_with_next<T: Serialize>(
+    value: &T,
+    next: Option<NextStep>,
+) -> serde_json::Result<String> {
+    let mut value = serde_json::to_value(value)?;
+    if let (Some(next), Some(object)) = (next, value.as_object_mut()) {
+        object.insert("next".to_string(), serde_json::to_value(next)?);
+    }
+    serde_json::to_string_pretty(&value)
+}
+
 /// Serialize `value` and print it as an indented, human-readable tree.
 ///
 /// - Object keys are printed verbatim (camelCase, as the API returns them).
@@ -795,6 +887,44 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn next_step_serializes_a_runnable_poll() {
+        let next = NextStep::poll(&["service", "get", "svc 1"], "org-1", "state")
+            .until(&["running"])
+            .every(5);
+        assert_eq!(
+            serde_json::to_value(&next).unwrap(),
+            json!({
+                "command": "clickhousectl cloud service get 'svc 1' --org-id org-1 --json",
+                "field": "state",
+                "until": ["running"],
+                "fail_on": [],
+                "interval_seconds": 5,
+            })
+        );
+        let gone = next.until_error_code(CloudErrorCode::ResourceNotFound);
+        assert_eq!(
+            serde_json::to_value(&gone).unwrap()["until_error_code"],
+            "resource_not_found"
+        );
+    }
+
+    #[test]
+    fn json_with_next_adds_next_to_objects_only() {
+        let next = NextStep::poll(&["service", "get", "svc-1"], "org-1", "state");
+        let with: Value = serde_json::from_str(
+            &json_with_next(&json!({"id": "svc-1"}), Some(next.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(with["id"], "svc-1");
+        assert_eq!(with["next"]["field"], "state");
+        for (value, next) in [(json!({"id": "svc-1"}), None), (json!(["a"]), Some(next))] {
+            let printed: Value =
+                serde_json::from_str(&json_with_next(&value, next).unwrap()).unwrap();
+            assert_eq!(printed, value);
+        }
     }
 
     // ── PEM summaries (issue #665) ─────────────────────────────────────────

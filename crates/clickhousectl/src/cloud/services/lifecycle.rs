@@ -4,7 +4,10 @@ use crate::cloud::client::{
     read_flag_file,
 };
 use crate::cloud::credentials;
-use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
+use crate::cloud::output::{
+    ABSENT, CloudErrorCode, NextStep, eprint_line, json_with_next, or_absent, print_human,
+    print_line,
+};
 use crate::cloud::shared::PollProgress;
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
 use crate::failure::{ApiFailure, FailureKind};
@@ -666,6 +669,33 @@ pub(super) fn build_service_state_patch_request(
     }
 }
 
+/// The ClickHouse service operations that return before they finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceOperation {
+    Create,
+    Start,
+    Stop,
+    Delete,
+}
+
+/// `next` for an accepted service operation: poll `service get` for `state`
+/// (#1162). A finished delete is gone, so `service get` then fails with
+/// `resource_not_found`.
+fn service_next(org_id: &str, service_id: &str, operation: ServiceOperation) -> NextStep {
+    use ServiceState::*;
+    let poll = NextStep::poll(&["service", "get", service_id], org_id, "state").every(5);
+    match operation {
+        ServiceOperation::Create | ServiceOperation::Start => {
+            poll.until(&[Running]).fail_on(&[Failed])
+        }
+        ServiceOperation::Stop => poll.until(&[Stopped, Idle]).fail_on(&[Failed, Terminated]),
+        ServiceOperation::Delete => poll
+            .until(&[Terminated, Softdeleted])
+            .fail_on(&[Failed])
+            .until_error_code(CloudErrorCode::ResourceNotFound),
+    }
+}
+
 fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
     service_id.map(|id| {
         format!(
@@ -713,6 +743,8 @@ pub(super) async fn service_create(
     validate_dynamic_byoc_profile(client, &org_id, &request).await?;
     let response = client.create_service(&org_id, &request).await?;
     let service_id = response.service.as_ref().and_then(|service| service.id);
+    let next =
+        service_id.map(|id| service_next(&org_id, &id.to_string(), ServiceOperation::Create));
 
     let written = match dotenv {
         None => None,
@@ -721,7 +753,7 @@ pub(super) async fn service_create(
             if let Err(error) = crate::dotenv::write_vars(path, "CLICKHOUSE_", &vars) {
                 // Print the password as if --dotenv were absent, so the
                 // credential is never lost, then fail the command.
-                print_created_service(&response, service_id, json)?;
+                print_created_service(&response, service_id, next, json)?;
                 let message = format!(
                     "the service was created, but writing {} failed: {error}. The one-time \
                      password is in the output above.",
@@ -748,14 +780,14 @@ pub(super) async fn service_create(
     };
 
     match written {
-        None => print_created_service(&response, service_id, json)?,
+        None => print_created_service(&response, service_id, next, json)?,
         Some(written) if json => {
             let mut value = serde_json::to_value(&response)?;
             if let Some(object) = value.as_object_mut() {
                 object.remove("password");
                 object.insert("dotenv".to_string(), serde_json::to_value(&written)?);
             }
-            println!("{}", serde_json::to_string_pretty(&value)?);
+            println!("{}", json_with_next(&value, next)?);
         }
         Some(written) => {
             println!("Service created successfully!");
@@ -787,10 +819,11 @@ pub(super) async fn service_create(
 fn print_created_service(
     response: &ServicePostResponse,
     service_id: Option<uuid::Uuid>,
+    next: Option<NextStep>,
     json: bool,
 ) -> CloudResult<()> {
     if json {
-        println!("{}", serde_json::to_string_pretty(response)?);
+        println!("{}", json_with_next(response, next)?);
     } else {
         println!("Service created successfully!");
         println!();
@@ -1028,7 +1061,8 @@ pub(super) async fn service_delete(
     // The service is already gone by here, so a closed stdout must not turn a
     // completed deletion into a panic — see `print_line` and #598.
     if json {
-        print_line(serde_json::to_string_pretty(&response)?);
+        let next = service_next(&org_id, service_id, ServiceOperation::Delete);
+        print_line(json_with_next(&response, Some(next))?);
     } else {
         print_line(format!("Service {} deletion initiated", service_id));
     }
@@ -1046,7 +1080,8 @@ pub(super) async fn service_start(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&service)?);
+        let next = service_next(&org_id, service_id, ServiceOperation::Start);
+        println!("{}", json_with_next(&service, Some(next))?);
     } else {
         println!(
             "Service {} start request accepted (returned state: {})",
@@ -1068,7 +1103,8 @@ pub(super) async fn service_stop(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&service)?);
+        let next = service_next(&org_id, service_id, ServiceOperation::Stop);
+        println!("{}", json_with_next(&service, Some(next))?);
     } else {
         println!(
             "Service {} stop request accepted (returned state: {})",
@@ -1289,6 +1325,39 @@ mod tests {
     use crate::cloud::client::CloudErrorKind;
     use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
     use crate::failure::{ApiFailure, FailureKind};
+
+    /// The start/stop hints and their wiring are the subprocess tests; this
+    /// covers the create and delete states, and that `state` is the field
+    /// `service get --json` prints.
+    #[test]
+    fn service_next_names_the_states_that_end_each_operation() {
+        let create = service_next("org-1", "svc-1", ServiceOperation::Create);
+        assert_eq!(create.until, [serde_json::json!("running")]);
+        assert_eq!(create.fail_on, [serde_json::json!("failed")]);
+        assert_eq!(create.until_error_code, None);
+
+        let delete = service_next("org-1", "svc-1", ServiceOperation::Delete);
+        assert_eq!(
+            delete.until,
+            [
+                serde_json::json!("terminated"),
+                serde_json::json!("softdeleted")
+            ]
+        );
+        assert_eq!(
+            delete.until_error_code,
+            Some(CloudErrorCode::ResourceNotFound)
+        );
+
+        let service = Service {
+            state: Some(ServiceState::Running),
+            ..Service::default()
+        };
+        assert_eq!(
+            serde_json::to_value(service).unwrap()[create.field],
+            create.until[0]
+        );
+    }
 
     #[test]
     fn first_endpoint_keeps_the_present_half_of_a_partial_endpoint() {
