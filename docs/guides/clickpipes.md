@@ -112,6 +112,6 @@ clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
 ```
 
-Update does not stop, wait, or restart automatically. If it fails, leave the pipe paused until you have inspected the error and can safely proceed. [Partial updates and mapping changes](../reference/clickpipe-configuration.md#update-a-pipe) have different semantics from full resource replacement.
+A start sent while the pipe is still `Pausing`, or answered with `Paused` just after it paused, is not applied, so `start` exits 1 and names the command to repeat: the `get` while it is `Pausing`, the `start` once it is `Paused`. Wait a few seconds between starts. Update does not stop, wait, or restart automatically. If it fails, leave the pipe paused until you have inspected the error and can safely proceed. [Partial updates and mapping changes](../reference/clickpipe-configuration.md#update-a-pipe) have different semantics from full resource replacement.
 
 Deletion removes the ingestion pipeline; treat it as destructive and confirm the selected pipe first. Resync is a separate operation that re-ingests data: inspect `clickpipe resync --help` before using it, rather than retrying it as a diagnostic.

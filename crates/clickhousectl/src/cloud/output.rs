@@ -126,6 +126,16 @@ pub enum CloudErrorCode {
     /// stopped (the API's typed `SERVICE_NOT_RUNNING`, e.g. starting): wait
     /// for it to reach `running`, or start it.
     ServiceNotRunning,
+    /// `cloud clickpipe start` reached a CDC pipe that is still `Pausing`: the
+    /// API answers 200 but does not apply the start (#1228). Poll `command`
+    /// until the pipe is `Paused`, then rerun start.
+    #[serde(rename = "clickpipe_still_pausing")]
+    ClickPipeStillPausing,
+    /// `cloud clickpipe start` was answered with `Paused`: a CDC pipe that has
+    /// only just finished pausing accepts the start but does not apply it
+    /// (#1228). Wait a few seconds and rerun `command`, the same start.
+    #[serde(rename = "clickpipe_start_not_applied")]
+    ClickPipeStartNotApplied,
 }
 
 impl CloudErrorCode {
@@ -172,6 +182,8 @@ impl CloudErrorCode {
         Self::UdfSourceInvalid,
         Self::ServiceIdle,
         Self::ServiceNotRunning,
+        Self::ClickPipeStillPausing,
+        Self::ClickPipeStartNotApplied,
     ];
 }
 
@@ -852,6 +864,8 @@ mod tests {
                 "udf_source_invalid",
                 "service_idle",
                 "service_not_running",
+                "clickpipe_still_pausing",
+                "clickpipe_start_not_applied",
             ]
         );
     }

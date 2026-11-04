@@ -80,8 +80,8 @@ use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_flag_config_value,
 };
 use crate::cloud::output::{
-    ABSENT, NextStep, cloud_command, eprint_background_change, eprint_line, json_with_next,
-    or_absent, print_human,
+    ABSENT, CloudErrorCode, CloudErrorDetail, NextStep, cloud_command, eprint_background_change,
+    eprint_line, json_with_next, or_absent, print_human,
 };
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
@@ -384,7 +384,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Streaming and object-storage pipes use Stopped when halted; database CDC pipes
-  use Paused. Inspect the current state with `get` before requesting start.")]
+  use Paused. Inspect the current state with `get` before requesting start.
+  A start answered with Pausing, or with Paused just after a stop, is not applied
+  and exits 1: wait for Paused (`get`), rerun start until it returns Running.")]
     Start {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -4098,6 +4100,18 @@ impl ClickPipeLifecycleCommand {
             Self::Stop => poll.until(&[Stopped, Paused]),
         }
     }
+
+    /// Whether `state`, returned by an accepted request, shows the request
+    /// was not applied (#1228). A start that reaches a CDC pipe still
+    /// `Pausing`, or one that has only just reached `Paused`, is answered with
+    /// that state and then dropped; an applied start answers `Running`. Only
+    /// start: a resync answered with `Paused` is applied. `Stopped` and
+    /// `Stopping` are not included: streaming and object-storage pipes halt in
+    /// `Stopped`, and no start answered with either has been seen dropped.
+    fn not_applied_in(self, state: Option<&clickhouse_cloud_api::models::ClickPipeState>) -> bool {
+        use clickhouse_cloud_api::models::ClickPipeState::{Paused, Pausing};
+        matches!(self, Self::Start) && matches!(state, Some(Pausing | Paused))
+    }
 }
 
 async fn clickpipe_state(
@@ -4111,6 +4125,40 @@ async fn clickpipe_state(
     let clickpipe = client
         .change_clickpipe_state(&org_id, service_id, clickpipe_id, command.api_command())
         .await?;
+    let name = clickpipe
+        .name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(clickpipe_id);
+
+    if command.not_applied_in(clickpipe.state.as_ref()) {
+        let label = command.label();
+        let (code, retry, message) = if matches!(
+            clickpipe.state,
+            Some(clickhouse_cloud_api::models::ClickPipeState::Pausing)
+        ) {
+            let check = cloud_command(&["clickpipe", "get", service_id, clickpipe_id], &org_id);
+            let message = format!(
+                "ClickPipe {name} is still Pausing, so the {label} request was not applied. \
+                 Repeat `{check}` until the state is Paused, then run {label} again."
+            );
+            (CloudErrorCode::ClickPipeStillPausing, check, message)
+        } else {
+            let retry = cloud_command(&["clickpipe", label, service_id, clickpipe_id], &org_id);
+            let message = format!(
+                "ClickPipe {name} answered the {label} request with state Paused, so it was \
+                 not applied. Wait a few seconds, then repeat `{retry}` until it returns \
+                 Running."
+            );
+            (CloudErrorCode::ClickPipeStartNotApplied, retry, message)
+        };
+        return Err(
+            CloudError::new(message.clone()).with_details(CloudErrorDetail {
+                command: Some(retry),
+                ..CloudErrorDetail::new(code, message)
+            }),
+        );
+    }
 
     if json {
         let next = command.next(&org_id, service_id, clickpipe_id);
@@ -4118,11 +4166,7 @@ async fn clickpipe_state(
     } else {
         println!(
             "ClickPipe {} {} request accepted (returned state: {})",
-            clickpipe
-                .name
-                .as_deref()
-                .filter(|name| !name.is_empty())
-                .unwrap_or(clickpipe_id),
+            name,
             command.label(),
             or_absent(clickpipe.state.as_ref())
         );
