@@ -451,7 +451,6 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   The allocation applies to database CDC ClickPipes on the service.
-  Omitted update values keep their current settings.
   Typical flow: `get` -> `update` -> poll `get` until the new values show.")]
     CdcScaling {
         #[command(subcommand)]
@@ -650,25 +649,24 @@ pub enum ClickPipeCdcScalingCommands {
     },
 
     /// Update CDC scaling
-    #[command(
-        after_help = "\
+    #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Exit 0 means accepted, not completed; the change takes minutes and the output shows the old values.
-  Poll `cdc-scaling get <service-id> --json` until they change; another update meanwhile is rejected.",
-        group(ArgGroup::new("cdc_scale_target").required(true).multiple(true).args(["cpu_millicores", "memory_gb"]))
-    )]
+  Poll `cdc-scaling get <service-id> --json` until they change; another update meanwhile is rejected.")]
     Update {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// CPU millicores per replica (1000-32000, in increments of 1000)
-        #[arg(long, value_parser = parse_cdc_cpu_millicores)]
-        cpu_millicores: Option<u32>,
+        #[arg(long, required = true, value_parser = parse_cdc_cpu_millicores)]
+        cpu_millicores: u32,
 
         /// Memory GiB per replica (4-128, in increments of 4)
-        #[arg(long, value_parser = parse_cdc_memory_gb)]
-        memory_gb: Option<f64>,
+        ///
+        /// Must equal --cpu-millicores / 250, for example 8 with 2000.
+        #[arg(long, required = true, value_parser = parse_cdc_memory_gb)]
+        memory_gb: f64,
     },
 }
 
@@ -4169,45 +4167,42 @@ async fn clickpipe_scale(
     Ok(())
 }
 
-#[derive(Debug, Default, PartialEq)]
+/// The API sets CPU and memory together: an omitted field reads as 0 and
+/// fails the fixed ratio check (#1242), so both flags are required.
+#[derive(Debug, PartialEq)]
 struct CdcScalingValues {
-    cpu_millicores: Option<u32>,
-    memory_gb: Option<f64>,
+    cpu_millicores: u32,
+    memory_gb: f64,
 }
 
 /// `next` for an accepted CDC scaling change, which applies in the background
 /// while the PATCH response still shows the old allocation (#1162). CPU and
-/// memory change together, so the requested one confirms both.
-fn cdc_scaling_next(org_id: &str, service_id: &str, values: &CdcScalingValues) -> Option<NextStep> {
-    let (field, until) = match (values.cpu_millicores, values.memory_gb) {
-        (Some(cpu_millicores), _) => ("replicaCpuMillicores", serde_json::json!(cpu_millicores)),
-        (None, Some(memory_gb)) => ("replicaMemoryGb", serde_json::json!(memory_gb)),
-        (None, None) => return None,
-    };
+/// memory change together, so the requested CPU confirms both.
+fn cdc_scaling_next(org_id: &str, service_id: &str, values: &CdcScalingValues) -> NextStep {
     let args = ["clickpipe", "cdc-scaling", "get", service_id];
-    Some(
-        NextStep::poll(&args, org_id, field)
-            .until(&[until])
-            .every(30),
-    )
+    NextStep::poll(&args, org_id, "replicaCpuMillicores")
+        .until(&[serde_json::json!(values.cpu_millicores)])
+        .every(30)
 }
 
 fn build_cdc_scaling_request(
     values: &CdcScalingValues,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest> {
-    if let (Some(cpu_millicores), Some(memory_gb)) = (values.cpu_millicores, values.memory_gb) {
-        let required_memory_gb = f64::from(cpu_millicores) / 250.0;
-        if memory_gb != required_memory_gb {
-            return Err(CloudError::usage(format!(
-                "--memory-gb must be {required_memory_gb} when --cpu-millicores is {cpu_millicores}"
-            )));
-        }
+    let CdcScalingValues {
+        cpu_millicores,
+        memory_gb,
+    } = *values;
+    let required_memory_gb = f64::from(cpu_millicores) / 250.0;
+    if memory_gb != required_memory_gb {
+        return Err(CloudError::usage(format!(
+            "--memory-gb must be {required_memory_gb} when --cpu-millicores is {cpu_millicores}"
+        )));
     }
 
     Ok(
         clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest {
-            replica_cpu_millicores: values.cpu_millicores.map(i64::from),
-            replica_memory_gb: values.memory_gb,
+            replica_cpu_millicores: Some(i64::from(cpu_millicores)),
+            replica_memory_gb: Some(memory_gb),
         },
     )
 }
@@ -4244,7 +4239,7 @@ async fn clickpipe_cdc_scaling_update(
 
     if json {
         let next = cdc_scaling_next(&org_id, service_id, values);
-        println!("{}", json_with_next(&scaling, next)?);
+        println!("{}", json_with_next(&scaling, Some(next))?);
     } else {
         println!("CDC scaling update accepted");
         println!();
@@ -6565,17 +6560,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cdc_scaling_next_polls_memory_when_only_memory_changes() {
-        let values = CdcScalingValues {
-            cpu_millicores: None,
-            memory_gb: Some(8.0),
-        };
-        let next = cdc_scaling_next("org", "svc", &values).unwrap();
-        assert_eq!(next.field, "replicaMemoryGb");
-        assert_eq!(next.until, [serde_json::json!(8.0)]);
-    }
-
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -7237,13 +7221,32 @@ mod tests {
     }
 
     #[test]
-    fn cdc_scaling_update_requires_a_target_and_enforces_schema_ranges() {
+    fn cdc_scaling_update_requires_both_values_and_enforces_schema_ranges() {
+        // The API reads an omitted value as 0, so one flag alone is a usage error (#1242).
         assert_rejected(&["cdc-scaling", "update", "svc-1"]);
+        assert_rejected(&["cdc-scaling", "update", "svc-1", "--cpu-millicores", "1000"]);
+        assert_rejected(&["cdc-scaling", "update", "svc-1", "--memory-gb", "4"]);
         for value in ["999", "1500", "33000"] {
-            assert_rejected(&["cdc-scaling", "update", "svc-1", "--cpu-millicores", value]);
+            assert_rejected(&[
+                "cdc-scaling",
+                "update",
+                "svc-1",
+                "--cpu-millicores",
+                value,
+                "--memory-gb",
+                "4",
+            ]);
         }
         for value in ["3", "6", "132", "NaN"] {
-            assert_rejected(&["cdc-scaling", "update", "svc-1", "--memory-gb", value]);
+            assert_rejected(&[
+                "cdc-scaling",
+                "update",
+                "svc-1",
+                "--cpu-millicores",
+                "1000",
+                "--memory-gb",
+                value,
+            ]);
         }
         // Both ends of each range are accepted.
         for (cpu, memory) in [(1000, 4.0), (32000, 128.0)] {
@@ -7266,26 +7269,15 @@ mod tests {
             else {
                 panic!("expected CDC scaling update");
             };
-            assert_eq!((cpu_millicores, memory_gb), (Some(cpu), Some(memory)));
+            assert_eq!((cpu_millicores, memory_gb), (cpu, memory));
         }
-    }
-
-    #[test]
-    fn build_cdc_scaling_request_preserves_omission() {
-        let request = build_cdc_scaling_request(&CdcScalingValues {
-            cpu_millicores: Some(1000),
-            memory_gb: None,
-        })
-        .unwrap();
-        assert_eq!(request.replica_cpu_millicores, Some(1000));
-        assert_eq!(request.replica_memory_gb, None);
     }
 
     #[test]
     fn build_cdc_scaling_request_accepts_maximum_balanced_allocation() {
         let request = build_cdc_scaling_request(&CdcScalingValues {
-            cpu_millicores: Some(32000),
-            memory_gb: Some(128.0),
+            cpu_millicores: 32000,
+            memory_gb: 128.0,
         })
         .unwrap();
         assert_eq!(request.replica_cpu_millicores, Some(32000));
@@ -7295,8 +7287,8 @@ mod tests {
     #[test]
     fn build_cdc_scaling_request_rejects_unbalanced_allocation() {
         let error = build_cdc_scaling_request(&CdcScalingValues {
-            cpu_millicores: Some(2000),
-            memory_gb: Some(4.0),
+            cpu_millicores: 2000,
+            memory_gb: 4.0,
         })
         .unwrap_err();
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
@@ -10646,7 +10638,15 @@ mod tests {
         assert_write(&["scale", "svc-1", "pipe-1", "--replicas", "4"], true);
         assert_write(&["cdc-scaling", "get", "svc-1"], false);
         assert_write(
-            &["cdc-scaling", "update", "svc-1", "--cpu-millicores", "1000"],
+            &[
+                "cdc-scaling",
+                "update",
+                "svc-1",
+                "--cpu-millicores",
+                "1000",
+                "--memory-gb",
+                "4",
+            ],
             true,
         );
         assert_write(&["settings", "get", "svc-1", "pipe-1"], false);

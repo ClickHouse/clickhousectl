@@ -86,7 +86,7 @@ Local errors redact external logs, subprocess output, and OS details where neede
 | Postgres promote | Poll the replica until `isPrimary: true` |
 | Postgres switchover | No completion signal: it may wait for the maintenance window, and service-level state, `isPrimary` and readiness do not confirm it |
 | CDC stop/update/start | Wait for `Paused`, update, explicitly restart, then verify ingestion |
-| CDC scaling (`clickpipe cdc-scaling update`) | Poll `cdc-scaling get` until `replicaCpuMillicores` (or `replicaMemoryGb`) shows the requested value; another update meanwhile fails with a conflict |
+| CDC scaling (`clickpipe cdc-scaling update`) | Poll `cdc-scaling get` until `replicaCpuMillicores` shows the requested value; another update meanwhile fails with a conflict |
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
 | Query-key repair | Replacement can persist despite failed verification; do not blindly rotate again |
@@ -116,7 +116,7 @@ Run `command` as is: it carries the resolved IDs and `--org-id`, but not credent
 | `postgres promote` | `postgres get` | `isPrimary` | `true` | None |
 | `clickpipe start`, `clickpipe resync` | `clickpipe get` | `state` | `Running`, `Completed` | `Failed`, `InternalError` |
 | `clickpipe stop` | `clickpipe get` | `state` | `Stopped`, `Paused` | `Failed`, `InternalError` |
-| `clickpipe cdc-scaling update` | `clickpipe cdc-scaling get` | `replicaCpuMillicores`, or `replicaMemoryGb` when only memory is given | The requested value | None |
+| `clickpipe cdc-scaling update` | `clickpipe cdc-scaling get` | `replicaCpuMillicores` | The requested value | None |
 | `clickpipe reverse-private-endpoint create` | `clickpipe reverse-private-endpoint get` | `status` | `Ready` | `Failed`, `Rejected`, `Expired` |
 
 Some commands have no `next`, because no single field confirms them. `postgres restart` can show `running` before the restart begins, so compare `pg_postmaster_start_time()` instead. Nothing that `postgres get` returns confirms a `postgres switchover`. A `postgres update --ha-type`, alone or with `--size`, has none because `haType` shows the new value on acceptance, minutes before the standby is replicating, so check `pg_stat_replication` on the primary instead. Any other `postgres update` applies at once. `next` is also omitted when the API response has no ID to poll. An endpoint in `PendingAcceptance` stays there until the source-side owner accepts it.
