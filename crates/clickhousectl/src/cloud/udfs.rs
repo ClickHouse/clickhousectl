@@ -44,7 +44,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("udf version delete", &[&op::UDF_VERSION_DELETE]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, CloudErrorKind, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{
     CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
@@ -1636,7 +1638,9 @@ impl CloudClient {
             .api()
             .udf_list(org, cursor, limit)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org))
+            })?;
         UdfPage::from_response(response)
     }
     /// `None` when the UDF does not exist, so `deploy` can choose between
@@ -1649,19 +1653,21 @@ impl CloudClient {
         }
     }
     async fn get_udf(&self, org: &str, name: &str) -> CloudResult<Udf> {
-        let response = self
-            .api()
-            .udf_get(org, name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+        let response = self.api().udf_get(org, name).await.map_err(|error| {
+            self.convert_error_for_resource(
+                error,
+                ResourceLookup::in_org(ResourceKind::Udf, name, org),
+            )
+        })?;
         Self::unwrap_response(response)
     }
     async fn delete_udf(&self, org: &str, name: &str) -> CloudResult<DeleteResponse> {
-        let response = self
-            .api()
-            .udf_delete(org, name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+        let response = self.api().udf_delete(org, name).await.map_err(|error| {
+            self.convert_error_for_resource(
+                error,
+                ResourceLookup::in_org(ResourceKind::Udf, name, org),
+            )
+        })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -1678,7 +1684,12 @@ impl CloudClient {
             .api()
             .udf_attachment_list(org, name, cursor, limit)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Udf, name, org),
+                )
+            })?;
         UdfPage::from_response(response)
     }
     async fn get_udf_attachment(
@@ -1687,11 +1698,14 @@ impl CloudClient {
         name: &str,
         service: &str,
     ) -> CloudResult<UdfAttachment> {
-        let response = self
-            .api()
-            .udf_attachment_get(org, name, service)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+        let response = match self.api().udf_attachment_get(org, name, service).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(self
+                    .convert_attachment_error(error, org, name, service)
+                    .await);
+            }
+        };
         Self::unwrap_response(response)
     }
     /// Attach, keeping the typed HTTP 424 payload instead of flattening it
@@ -1720,7 +1734,9 @@ impl CloudClient {
                 );
                 Ok(UdfAttachOutcome::Unavailable { response, error })
             }
-            Err(error) => Err(self.convert_error_for_organization(error, org)),
+            Err(error) => Err(self
+                .convert_attachment_error(error, org, name, service)
+                .await),
         }
     }
     async fn detach_udf(
@@ -1729,15 +1745,44 @@ impl CloudClient {
         name: &str,
         service: &str,
     ) -> CloudResult<DeleteResponse> {
-        let response = self
-            .api()
-            .udf_detach(org, name, service)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+        let response = match self.api().udf_detach(org, name, service).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(self
+                    .convert_attachment_error(error, org, name, service)
+                    .await);
+            }
+        };
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+    /// A 404 from a request about the UDF `name`'s attachment to `service`
+    /// names whichever of the two is missing, read in that order (#1237).
+    /// When both exist, or a read fails, the original error is reported.
+    async fn convert_attachment_error(
+        &self,
+        error: clickhouse_cloud_api::Error,
+        org: &str,
+        name: &str,
+        service: &str,
+    ) -> CloudError {
+        if !crate::cloud::client::is_not_found(&error) {
+            return self.convert_error_for_organization(error, org);
+        }
+        let missing = match self.get_udf_if_exists(org, name).await {
+            Ok(None) => Some(ResourceLookup::in_org(ResourceKind::Udf, name, org)),
+            Ok(Some(_)) => match self.get_service_if_exists(org, service).await {
+                Ok(None) => Some(ResourceLookup::in_org(ResourceKind::Service, service, org)),
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        match missing {
+            Some(lookup) => self.convert_error_for_resource(error, lookup),
+            None => self.convert_error_for_organization(error, org),
+        }
     }
     async fn list_udf_versions(
         &self,
@@ -1750,7 +1795,12 @@ impl CloudClient {
             .api()
             .udf_version_list(org, name, cursor, limit)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Udf, name, org),
+                )
+            })?;
         UdfPage::from_response(response)
     }
     async fn delete_udf_version(

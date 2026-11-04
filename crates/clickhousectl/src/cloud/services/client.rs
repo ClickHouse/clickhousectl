@@ -127,7 +127,9 @@ impl CloudClient {
             .api()
             .instance_get_list(org_id, &[])
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -140,7 +142,12 @@ impl CloudClient {
             .api()
             .service_clickhouse_settings_list_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -151,10 +158,17 @@ impl CloudClient {
         setting_name: &str,
     ) -> crate::cloud::client::Result<ServiceClickhouseSetting> {
         let response = self
-            .api()
-            .service_clickhouse_setting_get(org_id, service_id, setting_name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickHouseSetting,
+                    setting_name,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .service_clickhouse_setting_get(org_id, service_id, setting_name),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -167,7 +181,12 @@ impl CloudClient {
             .api()
             .service_clickhouse_settings_schema_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -178,10 +197,13 @@ impl CloudClient {
         request: &ServiceClickhouseSettingsPatchRequest,
     ) -> crate::cloud::client::Result<ServiceClickhouseSettingsPatchResponse> {
         let response = self
-            .api()
-            .service_clickhouse_settings_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .service_clickhouse_settings_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -192,10 +214,17 @@ impl CloudClient {
         setting_name: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .service_clickhouse_setting_delete(org_id, service_id, setting_name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickHouseSetting,
+                    setting_name,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .service_clickhouse_setting_delete(org_id, service_id, setting_name),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -212,7 +241,9 @@ impl CloudClient {
             .api()
             .instance_get_list(org_id, &filters)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -314,7 +345,12 @@ impl CloudClient {
             .api()
             .jwt_provider_get_list(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -325,10 +361,17 @@ impl CloudClient {
         provider_name: &str,
     ) -> crate::cloud::client::Result<JwtProvider> {
         let response = self
-            .api()
-            .jwt_provider_get(org_id, service_id, provider_name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::JwtProvider,
+                    provider_name,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .jwt_provider_get(org_id, service_id, provider_name),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -339,10 +382,12 @@ impl CloudClient {
         request: &JwtProviderPostRequest,
     ) -> crate::cloud::client::Result<JwtProvider> {
         let response = self
-            .api()
-            .jwt_provider_create(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().jwt_provider_create(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -354,10 +399,17 @@ impl CloudClient {
         request: &JwtProviderPutRequest,
     ) -> crate::cloud::client::Result<JwtProvider> {
         let response = self
-            .api()
-            .jwt_provider_update(org_id, service_id, provider_name, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::JwtProvider,
+                    provider_name,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .jwt_provider_update(org_id, service_id, provider_name, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -368,10 +420,17 @@ impl CloudClient {
         provider_name: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .jwt_provider_delete(org_id, service_id, provider_name)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::JwtProvider,
+                    provider_name,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .jwt_provider_delete(org_id, service_id, provider_name),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -438,7 +497,12 @@ impl CloudClient {
             .api()
             .instance_state_update(org_id, service_id, &request)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -449,10 +513,12 @@ impl CloudClient {
         request: &ServicePatchRequest,
     ) -> crate::cloud::client::Result<Service> {
         let response = self
-            .api()
-            .instance_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().instance_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -464,10 +530,13 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceScalingPatchResponse>
     {
         let response = self
-            .api()
-            .instance_replica_scaling_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_replica_scaling_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -479,10 +548,13 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServicePasswordPatchResponse>
     {
         let response = self
-            .api()
-            .instance_password_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_password_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -548,10 +620,13 @@ impl CloudClient {
         request: &ServicPrivateEndpointePostRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::InstancePrivateEndpoint> {
         let response = self
-            .api()
-            .instance_private_endpoint_create(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_private_endpoint_create(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -578,6 +653,11 @@ impl CloudClient {
         self.api()
             .instance_prometheus_get(org_id, service_id, filtered.as_deref())
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })
     }
 }

@@ -13,7 +13,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::SAVED_QUERY_LIST])]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file_bytes};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
+    read_flag_file_bytes,
+};
 use crate::cloud::output::{or_absent, print_human, print_line};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
@@ -325,7 +328,11 @@ async fn resolve_query_id(client: &CloudClient, target: &SavedQueryTarget) -> Cl
         }
     }
     select_named_id(
-        "saved query",
+        ResourceKind::SavedQuery,
+        Scope::Service {
+            org_id: &org,
+            service_id: &target.service_id,
+        },
         name,
         rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
     )
@@ -382,10 +389,12 @@ impl CloudClient {
         body: &PublicSavedQueryRequest,
     ) -> CloudResult<PublicSavedQuery> {
         let response = self
-            .api()
-            .saved_query_create(org, service, body)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_on_service(
+                org,
+                service,
+                self.api().saved_query_create(org, service, body),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -397,10 +406,11 @@ impl CloudClient {
         body: &PublicSavedQueryRequest,
     ) -> CloudResult<PublicSavedQuery> {
         let response = self
-            .api()
-            .saved_query_update(org, service, query, body)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::SavedQuery, query, org, service),
+                self.api().saved_query_update(org, service, query, body),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -411,10 +421,11 @@ impl CloudClient {
         query: &str,
     ) -> CloudResult<PublicSavedQuery> {
         let response = self
-            .api()
-            .saved_query_get(org, service, query)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::SavedQuery, query, org, service),
+                self.api().saved_query_get(org, service, query),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -429,7 +440,12 @@ impl CloudClient {
             .api()
             .saved_query_list(org, service, cursor, limit)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service, org),
+                )
+            })?;
         let limit = response.limit;
         let total_count = response.total_count;
         let next_cursor = response.next_cursor.take();
@@ -448,10 +464,11 @@ impl CloudClient {
         query: &str,
     ) -> CloudResult<DeleteResponse> {
         let response = self
-            .api()
-            .saved_query_delete(org, service, query)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::SavedQuery, query, org, service),
+                self.api().saved_query_delete(org, service, query),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,

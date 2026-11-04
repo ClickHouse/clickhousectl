@@ -487,62 +487,198 @@ impl AuthSource {
 // A malformed identifier keeps the server's answer verbatim: there, "invalid"
 // is both true and the more useful thing to say.
 
-/// Which resource a by-identifier read was looking up.
+// The same not-found shape covers every other by-identifier path (#1237),
+// keyed only on the typed HTTP 404 the API now returns for an identifier that
+// resolves to nothing. Those paths never take the 400 arm above (#1226).
+
+/// Which kind of resource a by-identifier request or a name lookup was for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
     Service,
     PostgresService,
     Organization,
+    Backup,
+    Snapshot,
+    ClickPipe,
+    ReversePrivateEndpoint,
+    SavedQuery,
+    QueryApiEndpoint,
+    ClickHouseSetting,
+    JwtProvider,
+    Udf,
+    Member,
+    Invitation,
+    ApiKey,
+    OrganizationRole,
+    Byoc,
+    Activity,
+    ClickStackSource,
+    ClickStackRole,
+    ClickStackDashboard,
+    ClickStackAlert,
+    ClickStackWebhook,
+    ClickStackSavedSearch,
 }
 
 impl ResourceKind {
     /// The noun the not-found message names the resource with.
-    const fn noun(self) -> &'static str {
+    pub const fn noun(self) -> &'static str {
         match self {
-            ResourceKind::Service => "service",
-            ResourceKind::PostgresService => "Postgres service",
-            ResourceKind::Organization => "organization",
+            Self::Service => "service",
+            Self::PostgresService => "Postgres service",
+            Self::Organization => "organization",
+            Self::Backup => "backup",
+            Self::Snapshot => "snapshot",
+            Self::ClickPipe => "ClickPipe",
+            Self::ReversePrivateEndpoint => "reverse private endpoint",
+            Self::SavedQuery => "saved query",
+            Self::QueryApiEndpoint => "Query API endpoint",
+            Self::ClickHouseSetting => "ClickHouse setting",
+            Self::JwtProvider => "JWT provider",
+            Self::Udf => "UDF",
+            Self::Member => "member",
+            Self::Invitation => "invitation",
+            Self::ApiKey => "API key",
+            Self::OrganizationRole => "organization role",
+            Self::Byoc => "BYOC infrastructure",
+            Self::Activity => "activity",
+            Self::ClickStackSource => "ClickStack source",
+            Self::ClickStackRole => "ClickStack role",
+            Self::ClickStackDashboard => "ClickStack dashboard",
+            Self::ClickStackAlert => "ClickStack alert",
+            Self::ClickStackWebhook => "ClickStack webhook",
+            Self::ClickStackSavedSearch => "ClickStack saved search",
         }
     }
 
-    /// The command that lists what does exist, for the structured detail.
-    /// Takes the organization the request was scoped to, which the message
-    /// already names.
-    fn list_command(self, org_id: &str) -> String {
-        let base = match self {
-            ResourceKind::Service => "clickhousectl cloud service list",
-            ResourceKind::PostgresService => "clickhousectl cloud postgres list",
-            ResourceKind::Organization => "clickhousectl cloud org list",
-        };
+    /// The command that shows what does exist. BYOC infrastructure has no
+    /// list of its own: `org get` shows the organization's `byocConfig`.
+    const fn list_base(self) -> &'static str {
         match self {
-            // The organization *is* the identifier being looked up, so the
-            // command that lists the alternatives takes no scope flag.
-            ResourceKind::Organization => base.to_string(),
-            _ => format!("{base} --org-id {org_id}"),
+            Self::Service => "clickhousectl cloud service list",
+            Self::PostgresService => "clickhousectl cloud postgres list",
+            Self::Organization => "clickhousectl cloud org list",
+            Self::Backup => "clickhousectl cloud backup list",
+            Self::Snapshot => "clickhousectl cloud service snapshot list",
+            Self::ClickPipe => "clickhousectl cloud clickpipe list",
+            Self::ReversePrivateEndpoint => {
+                "clickhousectl cloud clickpipe reverse-private-endpoint list"
+            }
+            Self::SavedQuery => "clickhousectl cloud saved-query list",
+            Self::QueryApiEndpoint => "clickhousectl cloud query-api-endpoint list",
+            Self::ClickHouseSetting => "clickhousectl cloud service settings list",
+            Self::JwtProvider => "clickhousectl cloud service jwt-provider list",
+            Self::Udf => "clickhousectl cloud udf list",
+            Self::Member => "clickhousectl cloud member list",
+            Self::Invitation => "clickhousectl cloud invitation list",
+            Self::ApiKey => "clickhousectl cloud key list",
+            Self::OrganizationRole => "clickhousectl cloud org role list",
+            Self::Byoc => "clickhousectl cloud org get",
+            Self::Activity => "clickhousectl cloud activity list",
+            Self::ClickStackSource => "clickhousectl cloud clickstack source list",
+            Self::ClickStackRole => "clickhousectl cloud clickstack role list",
+            Self::ClickStackDashboard => "clickhousectl cloud clickstack dashboard list",
+            Self::ClickStackAlert => "clickhousectl cloud clickstack alert list",
+            Self::ClickStackWebhook => "clickhousectl cloud clickstack webhook list",
+            Self::ClickStackSavedSearch => "clickhousectl cloud clickstack saved-search list",
+        }
+    }
+
+    /// The list command for resources of this kind in `scope`, for the
+    /// structured detail.
+    pub fn list_command(self, scope: Scope<'_>) -> String {
+        let base = self.list_base();
+        match scope {
+            // Keyed on the kind too: organizations are listed without a
+            // scope flag whatever scope the caller recorded.
+            _ if self == Self::Organization => base.to_string(),
+            Scope::Account => base.to_string(),
+            Scope::Organization(org_id) => format!("{base} --org-id {org_id}"),
+            Scope::Service { org_id, service_id } => {
+                format!("{base} {service_id} --org-id {org_id}")
+            }
         }
     }
 }
 
+/// Where a resource lives: what its list command and message are scoped to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope<'a> {
+    /// Above every organization: only organizations live here.
+    Account,
+    Organization(&'a str),
+    Service {
+        org_id: &'a str,
+        service_id: &'a str,
+    },
+}
+
+impl Scope<'_> {
+    /// The trailing scope clause of a not-found message.
+    fn clause(self) -> String {
+        match self {
+            Scope::Account => String::new(),
+            Scope::Organization(org_id) => format!(" (organization {org_id})"),
+            Scope::Service { org_id, service_id } => {
+                format!(" (service {service_id}, organization {org_id})")
+            }
+        }
+    }
+}
+
+/// A `--name` (or `--email`) lookup that matched nothing in `scope`, reported
+/// the way a by-identifier miss is (#1237).
+pub fn name_not_found(kind: ResourceKind, scope: Scope<'_>, name: &str) -> CloudError {
+    let message = format!("no {} found matching '{name}'", kind.noun());
+    CloudError::new(message.clone()).with_details(CloudErrorDetail {
+        code: CloudErrorCode::ResourceNotFound,
+        message,
+        host: None,
+        port: None,
+        command: Some(kind.list_command(scope)),
+        api_key_id: None,
+        ip_access_list: None,
+    })
+}
+
 /// The identifiers a by-identifier request put into its request path.
 ///
-/// Built only through [`ResourceLookup::in_org`] and
-/// [`ResourceLookup::organization`], so the kind and the organization id
-/// cannot disagree: an organization lookup is always scoped to itself, and
-/// every other kind is always scoped to the organization it was read from.
+/// Built only through [`ResourceLookup::in_org`],
+/// [`ResourceLookup::in_service`] and [`ResourceLookup::organization`], so
+/// the kind and the scope cannot disagree: an organization lookup is always
+/// scoped to itself, and every other kind is always scoped to the
+/// organization (and service) it was read from.
 pub struct ResourceLookup<'a> {
     kind: ResourceKind,
     /// The resource's own identifier, as the user supplied it.
     id: &'a str,
-    /// The organization the request was scoped to. Equal to `id` for an
-    /// organization lookup, whose only path identifier is the organization.
-    org_id: &'a str,
+    scope: Scope<'a>,
 }
 
 impl<'a> ResourceLookup<'a> {
     /// A resource looked up inside an organization: both identifiers are in
     /// the request path.
     pub fn in_org(kind: ResourceKind, id: &'a str, org_id: &'a str) -> Self {
-        Self { kind, id, org_id }
+        Self {
+            kind,
+            id,
+            scope: Scope::Organization(org_id),
+        }
+    }
+
+    /// A resource looked up inside a service, whose path also carries the
+    /// service and its organization.
+    pub fn in_service(
+        kind: ResourceKind,
+        id: &'a str,
+        org_id: &'a str,
+        service_id: &'a str,
+    ) -> Self {
+        Self {
+            kind,
+            id,
+            scope: Scope::Service { org_id, service_id },
+        }
     }
 
     /// An organization looked up by its own identifier, which is therefore
@@ -551,7 +687,16 @@ impl<'a> ResourceLookup<'a> {
         Self {
             kind: ResourceKind::Organization,
             id,
-            org_id: id,
+            scope: Scope::Account,
+        }
+    }
+
+    /// The organization the request was scoped to: the looked-up id itself
+    /// for an organization lookup.
+    fn org_id(&self) -> &'a str {
+        match self.scope {
+            Scope::Account => self.id,
+            Scope::Organization(org_id) | Scope::Service { org_id, .. } => org_id,
         }
     }
 
@@ -575,21 +720,30 @@ impl<'a> ResourceLookup<'a> {
             .all(|id| uuid::Uuid::parse_str(id).is_ok())
     }
 
-    /// Every identifier the CLI formatted into the request path.
-    fn identifiers(&self) -> impl Iterator<Item = &str> {
-        [self.id, self.org_id].into_iter()
-    }
-
-    /// The trailing scope clause, when the request was scoped to something
-    /// other than the resource being looked up.
+    /// The trailing scope clause of the not-found message. Keyed on the
+    /// kind, not only the scope, so the message never reads
+    /// "organization X (organization X)".
     fn scope_clause(&self) -> String {
         match self.kind {
-            // Keyed on the kind, not on the two ids being equal, so the
-            // message never reads "organization X (organization X)".
             ResourceKind::Organization => String::new(),
-            _ => format!(" (organization {})", self.org_id),
+            _ => self.scope.clause(),
         }
     }
+
+    /// Every identifier the CLI formatted into the request path.
+    fn identifiers(&self) -> impl Iterator<Item = &str> {
+        let (org_id, service_id) = match self.scope {
+            Scope::Account => (None, None),
+            Scope::Organization(org_id) => (Some(org_id), None),
+            Scope::Service { org_id, service_id } => (Some(org_id), Some(service_id)),
+        };
+        std::iter::once(self.id).chain(org_id).chain(service_id)
+    }
+}
+
+/// Whether the API answered the typed "no such resource" status.
+pub(crate) fn is_not_found(err: &clickhouse_cloud_api::Error) -> bool {
+    matches!(err, clickhouse_cloud_api::Error::Api { status: 404, .. })
 }
 
 pub struct CloudClient {
@@ -639,7 +793,8 @@ impl CloudClient {
                         // Names may collide, and an organization has no
                         // positional ID: only --org-id can choose one (#1200).
                         crate::cloud::shared::select_named_id_or(
-                            "organization",
+                            ResourceKind::Organization,
+                            Scope::Account,
                             name,
                             rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
                             |ids| format!("choose one with --org-id <ID>: {}", ids.join(", ")),
@@ -884,14 +1039,113 @@ impl CloudClient {
         err: clickhouse_cloud_api::Error,
         lookup: ResourceLookup<'_>,
     ) -> CloudError {
-        let rejected_well_formed_ids = lookup.rejected_well_formed_ids(&err);
+        if lookup.rejected_well_formed_ids(&err) {
+            self.not_found_error(err, &lookup)
+        } else {
+            self.convert_error_for_organization(err, lookup.org_id())
+        }
+    }
+
+    /// Report a 404 from a request addressed to `lookup` as that resource
+    /// being missing (#1237); any other failure converts as usual.
+    ///
+    /// Only the typed 404 counts, never a 400 (#1226). Use it where a 404
+    /// can only mean `lookup` is missing: the resource itself, or an
+    /// organization-scoped resource, whose message names the organization.
+    /// A resource inside a service uses [`Self::convert_error_in_service`].
+    pub fn convert_error_for_resource(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        lookup: ResourceLookup<'_>,
+    ) -> CloudError {
+        if is_not_found(&err) {
+            self.not_found_error(err, &lookup)
+        } else {
+            self.convert_error_for_organization(err, lookup.org_id())
+        }
+    }
+
+    /// [`Self::convert_error_for_resource`] for a resource inside a service,
+    /// where a 404 can mean the resource or its service is missing. A 404
+    /// reads the service to tell which; when that read fails too, the
+    /// original error is reported unchanged.
+    pub async fn convert_error_in_service(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        lookup: ResourceLookup<'_>,
+    ) -> CloudError {
+        let Scope::Service { org_id, service_id } = lookup.scope else {
+            return self.convert_error_for_resource(err, lookup);
+        };
+        self.convert_error_under_service(err, org_id, service_id, Some(&lookup))
+            .await
+    }
+
+    /// Send a request addressed to a resource inside a service, converting
+    /// its failure with [`Self::convert_error_in_service`].
+    pub async fn request_in_service<T>(
+        &self,
+        lookup: ResourceLookup<'_>,
+        request: impl std::future::Future<Output = std::result::Result<T, clickhouse_cloud_api::Error>>,
+    ) -> Result<T> {
+        match request.await {
+            Ok(response) => Ok(response),
+            Err(error) => Err(self.convert_error_in_service(error, lookup).await),
+        }
+    }
+
+    /// Send a request whose path names only the service but whose body may
+    /// name other resources, such as a create or an update. A 404 is the
+    /// service being missing only once a read of the service confirms it;
+    /// otherwise the original error is reported unchanged.
+    pub async fn request_on_service<T>(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: impl std::future::Future<Output = std::result::Result<T, clickhouse_cloud_api::Error>>,
+    ) -> Result<T> {
+        match request.await {
+            Ok(response) => Ok(response),
+            Err(error) => Err(self
+                .convert_error_under_service(error, org_id, service_id, None)
+                .await),
+        }
+    }
+
+    /// A 404 from a request under a service: the service is missing when a
+    /// read of it says so, else `leaf` (when there is one) is. Any other
+    /// failure, or a read that fails too, converts as usual.
+    async fn convert_error_under_service(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: &str,
+        service_id: &str,
+        leaf: Option<&ResourceLookup<'_>>,
+    ) -> CloudError {
+        if !is_not_found(&err) {
+            return self.convert_error_for_organization(err, org_id);
+        }
+        match (self.get_service_if_exists(org_id, service_id).await, leaf) {
+            (Ok(None), _) => self.not_found_error(
+                err,
+                &ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+            ),
+            (Ok(Some(_)), Some(leaf)) => self.not_found_error(err, leaf),
+            _ => self.convert_error_for_organization(err, org_id),
+        }
+    }
+
+    /// The not-found error for `lookup`, once the caller has decided that is
+    /// what the API's rejection means. The server's message is appended
+    /// verbatim, and the classification (#450) is kept.
+    fn not_found_error(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        lookup: &ResourceLookup<'_>,
+    ) -> CloudError {
         // The lookup message supplies its own scope; leave the server detail
         // untouched rather than appending the organization a second time.
-        let scope = (!rejected_well_formed_ids).then_some(lookup.org_id);
-        let error = self.convert_error_with_organization(err, scope);
-        if !rejected_well_formed_ids {
-            return error;
-        }
+        let error = self.convert_error_with_organization(err, None);
         let message = format!(
             "No such {}: {}{}. The API rejected the identifier: {}",
             lookup.kind.noun(),
@@ -908,7 +1162,7 @@ impl CloudClient {
             message,
             host: None,
             port: None,
-            command: Some(lookup.kind.list_command(lookup.org_id)),
+            command: Some(lookup.kind.list_command(lookup.scope)),
             api_key_id: None,
             ip_access_list: None,
         })
@@ -1665,6 +1919,126 @@ mod tests {
             err.message,
             clickhouse_cloud_api::Error::AuthMismatch("nope".into()).to_string()
         );
+    }
+
+    fn not_found_404() -> clickhouse_cloud_api::Error {
+        clickhouse_cloud_api::Error::Api {
+            status: 404,
+            message: format!("NOT_FOUND: {NIL_UUID}"),
+        }
+    }
+
+    /// Only the typed 404 is a missing resource on these paths; a 400 keeps
+    /// the server's answer (#1226), and both keep their classification.
+    #[test]
+    fn resource_404_is_missing_but_400_is_not() {
+        let lookup = || ResourceLookup::in_org(ResourceKind::Member, NIL_UUID, ORG_UUID);
+        let client = test_client();
+        let missing = client.convert_error_for_resource(not_found_404(), lookup());
+        let detail = missing
+            .details
+            .as_deref()
+            .expect("structured missing resource");
+        assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
+        assert_eq!(
+            detail.command.as_deref(),
+            Some(format!("clickhousectl cloud member list --org-id {ORG_UUID}").as_str())
+        );
+        assert_eq!(
+            missing.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 404))
+        );
+        let rejected =
+            client.convert_error_for_resource(invalid_id_400("member", NIL_UUID), lookup());
+        assert!(rejected.details.is_none());
+        assert_eq!(
+            rejected.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 400))
+        );
+    }
+
+    #[test]
+    fn list_commands_follow_the_scope_except_for_organizations() {
+        let service = Scope::Service {
+            org_id: ORG_UUID,
+            service_id: NIL_UUID,
+        };
+        assert_eq!(
+            ResourceKind::ClickPipe.list_command(service),
+            format!("clickhousectl cloud clickpipe list {NIL_UUID} --org-id {ORG_UUID}")
+        );
+        assert_eq!(
+            ResourceKind::ApiKey.list_command(Scope::Organization(ORG_UUID)),
+            format!("clickhousectl cloud key list --org-id {ORG_UUID}")
+        );
+        for scope in [Scope::Account, Scope::Organization(ORG_UUID), service] {
+            assert_eq!(
+                ResourceKind::Organization.list_command(scope),
+                "clickhousectl cloud org list"
+            );
+        }
+    }
+
+    /// A 404 under a service reads the service to tell which is missing; a
+    /// failed read, or a service-level request whose service exists, keeps
+    /// the original error rather than guessing.
+    #[tokio::test]
+    async fn a_404_under_a_service_names_only_what_a_read_confirms_missing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let service_path = format!("/v1/organizations/{ORG_UUID}/services/{NIL_UUID}");
+        let leaf =
+            || ResourceLookup::in_service(ResourceKind::ClickPipe, NIL_UUID, ORG_UUID, NIL_UUID);
+        for (service_status, leaf_command, service_level_command) in [
+            (
+                404,
+                Some(format!(
+                    "clickhousectl cloud service list --org-id {ORG_UUID}"
+                )),
+                Some(format!(
+                    "clickhousectl cloud service list --org-id {ORG_UUID}"
+                )),
+            ),
+            (
+                200,
+                Some(format!(
+                    "clickhousectl cloud clickpipe list {NIL_UUID} --org-id {ORG_UUID}"
+                )),
+                None,
+            ),
+            (500, None, None),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(service_path.clone()))
+                .respond_with(
+                    ResponseTemplate::new(service_status)
+                        .set_body_json(serde_json::json!({"result": {"id": NIL_UUID}})),
+                )
+                .mount(&server)
+                .await;
+            let client = CloudClient::for_tests(&server.uri(), None);
+            let command = |error: CloudError| {
+                assert_eq!(
+                    error.failure,
+                    Some(ApiFailure::with_status(FailureKind::Http4xx, 404))
+                );
+                error.details.and_then(|detail| detail.command)
+            };
+            let in_service = client
+                .convert_error_in_service(not_found_404(), leaf())
+                .await;
+            assert_eq!(command(in_service), leaf_command, "{service_status}");
+            let on_service = client
+                .request_on_service(ORG_UUID, NIL_UUID, async { Err::<(), _>(not_found_404()) })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                command(on_service),
+                service_level_command,
+                "{service_status}"
+            );
+        }
     }
 
     #[test]

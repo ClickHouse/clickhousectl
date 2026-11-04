@@ -19358,22 +19358,141 @@ async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing
     }
 }
 
+/// Every by-ID and `--name` path the 2026-11-04 sweep found reports a missing
+/// resource as `resource_not_found`, naming the list command for whatever is
+/// missing (#1237). Unmatched requests answer wiremock's 404, so only the
+/// resources that do exist are mounted.
 #[tokio::test]
-async fn deleted_resource_404_wrong_organization_scope_is_included_for_lists() {
-    let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!("/v1/organizations/{LOOKUP_ORG_ID}/services")))
-        .respond_with(deleted_resource_404_response())
-        .expect(1)
-        .mount(&mock)
-        .await;
-    let output =
-        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", LOOKUP_ORG_ID]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1));
-    // The list's 404 names the organization it was scoped to.
-    assert!(stderr.contains(LOOKUP_ORG_ID), "{stderr}");
-    assert!(!stderr.contains("resource_not_found"), "{stderr}");
+async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
+    const SERVICE: &str = "11111111-2222-4333-8444-555555555555";
+    let org = LOOKUP_ORG_ID;
+    let service_list = format!("clickhousectl cloud service list --org-id {org}");
+    let in_service =
+        |command: &str| format!("clickhousectl cloud {command} {SERVICE} --org-id {org}");
+    let cases: Vec<(Vec<&str>, &[&str], String)> = vec![
+        // The service itself is missing.
+        (vec!["service", "stop", SERVICE], &[], service_list.clone()),
+        (
+            vec!["service", "settings", "list", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (vec!["backup", "list", SERVICE], &[], service_list.clone()),
+        (
+            vec!["clickpipe", "list", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["saved-query", "list", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["query-api-endpoint", "list", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        // A resource inside a missing service names the service.
+        (
+            vec!["clickpipe", "get", SERVICE, UNKNOWN_UUID],
+            &[],
+            service_list.clone(),
+        ),
+        // A resource inside an existing service names the resource.
+        (
+            vec!["clickpipe", "get", SERVICE, UNKNOWN_UUID],
+            &["service"],
+            in_service("clickpipe list"),
+        ),
+        (
+            vec!["clickpipe", "delete", SERVICE, UNKNOWN_UUID],
+            &["service"],
+            in_service("clickpipe list"),
+        ),
+        (
+            vec!["saved-query", "get", SERVICE, UNKNOWN_UUID],
+            &["service"],
+            in_service("saved-query list"),
+        ),
+        (
+            vec!["query-api-endpoint", "get", SERVICE, UNKNOWN_UUID],
+            &["service"],
+            in_service("query-api-endpoint list"),
+        ),
+        (
+            vec!["backup", "get", SERVICE, UNKNOWN_UUID],
+            &["service"],
+            in_service("backup list"),
+        ),
+        // An attachment names whichever of the UDF and the service is missing.
+        (
+            vec!["udf", "attach", "my_udf", SERVICE],
+            &[],
+            format!("clickhousectl cloud udf list --org-id {org}"),
+        ),
+        (
+            vec!["udf", "attach", "my_udf", SERVICE],
+            &["udf"],
+            service_list.clone(),
+        ),
+        // An organization-scoped list names the organization.
+        (
+            vec!["member", "list"],
+            &[],
+            "clickhousectl cloud org list".into(),
+        ),
+        // A name or email that matches nothing.
+        (
+            vec!["service", "delete", "--name", "ghost"],
+            &["services"],
+            service_list.clone(),
+        ),
+        (
+            vec!["member", "get", "--email", "ghost@example.com"],
+            &["members"],
+            format!("clickhousectl cloud member list --org-id {org}"),
+        ),
+    ];
+    for (args, existing, expected_command) in cases {
+        let mock = MockServer::start().await;
+        let service_path = format!("/v1/organizations/{org}/services/{SERVICE}");
+        for resource in existing {
+            let (api_path, result) = match *resource {
+                "service" => (service_path.clone(), serde_json::json!({"id": SERVICE})),
+                "udf" => (
+                    format!("/v1/organizations/{org}/udfs/my_udf"),
+                    serde_json::json!({"name": "my_udf"}),
+                ),
+                "services" => (
+                    format!("/v1/organizations/{org}/services"),
+                    serde_json::json!([]),
+                ),
+                "members" => (
+                    format!("/v1/organizations/{org}/members"),
+                    serde_json::json!([]),
+                ),
+                other => unreachable!("{other}"),
+            };
+            Mock::given(method("GET"))
+                .and(path(api_path))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+                )
+                .mount(&mock)
+                .await;
+        }
+        let mut cli_args = args.clone();
+        cli_args.extend(["--org-id", org]);
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &cli_args);
+
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], "resource_not_found", "{args:?}: {error}");
+        assert_eq!(error["command"], expected_command, "{args:?}: {error}");
+    }
 }
 
 #[tokio::test]

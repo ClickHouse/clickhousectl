@@ -7,7 +7,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("activity get", &[&op::ACTIVITY_GET]),
 ];
 
-use crate::cloud::client::{CloudClient, Result as CloudResult};
+use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use clap::Subcommand;
@@ -114,7 +114,9 @@ impl CloudClient {
             .api()
             .activity_get_list(org_id, from_date, to_date)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -127,7 +129,12 @@ impl CloudClient {
             .api()
             .activity_get(org_id, activity_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Activity, activity_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 }

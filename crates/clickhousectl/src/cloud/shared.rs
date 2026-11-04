@@ -1,4 +1,6 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, Result as CloudResult, Scope, name_not_found,
+};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{IpAccessListEntry, ResourceTagsV1};
@@ -67,12 +69,16 @@ pub struct EmailSelector {
 
 /// Resolve only after the caller has loaded every relevant page. Missing names
 /// could hide a duplicate, so an incomplete collection cannot prove uniqueness.
+///
+/// No match is a `resource_not_found` failure whose command lists `kind` in
+/// `scope`, the same as a by-identifier miss (#1237).
 pub(super) fn select_named_id<'a, I: std::fmt::Display>(
-    kind: &'static str,
+    kind: ResourceKind,
+    scope: Scope<'_>,
     name: &str,
     records: impl IntoIterator<Item = (Option<&'a str>, Option<I>)>,
 ) -> CloudResult<String> {
-    select_named_id_or(kind, name, records, |_| {
+    select_named_id_or(kind, scope, name, records, |_| {
         "supply a positional ID".to_string()
     })
 }
@@ -80,33 +86,33 @@ pub(super) fn select_named_id<'a, I: std::fmt::Display>(
 /// [`select_named_id`] for a resource with no positional ID: `ambiguous`
 /// turns the matching IDs into the advice that ends the ambiguity error.
 pub(super) fn select_named_id_or<'a, I: std::fmt::Display>(
-    kind: &'static str,
+    kind: ResourceKind,
+    scope: Scope<'_>,
     name: &str,
     records: impl IntoIterator<Item = (Option<&'a str>, Option<I>)>,
     ambiguous: impl FnOnce(&[String]) -> String,
 ) -> CloudResult<String> {
+    let noun = kind.noun();
     let mut matches = Vec::new();
     for (candidate, id) in records {
         let candidate = candidate.ok_or_else(|| {
             CloudError::new(format!(
-                "cannot resolve {kind}: list contains an entry without a name or email"
+                "cannot resolve {noun}: list contains an entry without a name or email"
             ))
         })?;
         if candidate == name {
             let id = id
                 .map(|id| id.to_string())
                 .filter(|id| !id.trim().is_empty())
-                .ok_or_else(|| CloudError::new(format!("matching {kind} has no usable ID")))?;
+                .ok_or_else(|| CloudError::new(format!("matching {noun} has no usable ID")))?;
             matches.push(id);
         }
     }
     match matches.len() {
-        0 => Err(CloudError::new(format!(
-            "no {kind} found matching '{name}'"
-        ))),
+        0 => Err(name_not_found(kind, scope, name)),
         1 => Ok(matches.remove(0)),
         count => Err(CloudError::new(format!(
-            "found {count} {kind} resources matching '{name}'; {}",
+            "found {count} {noun} resources matching '{name}'; {}",
             ambiguous(&matches)
         ))),
     }
@@ -142,7 +148,8 @@ impl NameSelector {
             NamedResource::Service => {
                 let rows = client.list_services(&org).await?;
                 select_named_id(
-                    "service",
+                    ResourceKind::Service,
+                    Scope::Organization(&org),
                     name,
                     rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
                 )
@@ -150,7 +157,8 @@ impl NameSelector {
             NamedResource::Postgres => {
                 let rows = client.list_postgres_services(&org).await?;
                 select_named_id(
-                    "Postgres service",
+                    ResourceKind::PostgresService,
+                    Scope::Organization(&org),
                     name,
                     rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
                 )
@@ -158,7 +166,8 @@ impl NameSelector {
             NamedResource::Key => {
                 let rows = client.list_api_keys(&org, None).await?;
                 select_named_id(
-                    "API key",
+                    ResourceKind::ApiKey,
+                    Scope::Organization(&org),
                     name,
                     rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
                 )
@@ -166,18 +175,23 @@ impl NameSelector {
             NamedResource::Role => {
                 let rows = client.list_organization_roles(&org).await?;
                 select_named_id(
-                    "organization role",
+                    ResourceKind::OrganizationRole,
+                    Scope::Organization(&org),
                     name,
                     rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
                 )
             }
             NamedResource::Byoc => {
-                let org = client.get_organization(&org).await?;
-                let rows = org.byoc_config.ok_or_else(|| {
-                    CloudError::new("organization response is missing byocConfig")
-                })?;
+                let rows = client
+                    .get_organization(&org)
+                    .await?
+                    .byoc_config
+                    .ok_or_else(|| {
+                        CloudError::new("organization response is missing byocConfig")
+                    })?;
                 select_named_id(
-                    "BYOC infrastructure",
+                    ResourceKind::Byoc,
+                    Scope::Organization(&org),
                     name,
                     rows.iter()
                         .map(|r| (r.display_name.as_deref(), r.id.as_ref())),
@@ -212,7 +226,8 @@ impl EmailSelector {
         let org = resolve_org_id(client).await?;
         let rows = client.list_members(&org).await?;
         select_named_id(
-            "member",
+            ResourceKind::Member,
+            Scope::Organization(&org),
             email,
             rows.iter()
                 .map(|r| (r.email.as_deref(), r.user_id.as_ref())),
@@ -232,7 +247,8 @@ impl EmailSelector {
         let org = resolve_org_id(client).await?;
         let rows = client.list_invitations(&org).await?;
         select_named_id(
-            "invitation",
+            ResourceKind::Invitation,
+            Scope::Organization(&org),
             email,
             rows.iter().map(|r| (r.email.as_deref(), r.id.as_ref())),
         )
@@ -748,22 +764,42 @@ mod selector_tests {
             (Some("Analytics"), Some("id-1")),
             (Some("analytics"), Some("opaque-id")),
         ];
-        assert_eq!(
-            select_named_id("service", "analytics", rows).unwrap(),
-            "opaque-id"
-        );
-        for rows in [
-            vec![],
-            vec![(Some("other"), Some("id"))],
-            vec![(Some("analytics"), None)],
-            vec![(Some("analytics"), Some(" "))],
-            vec![(None, Some("id"))],
-            vec![
-                (Some("analytics"), Some("one")),
-                (Some("analytics"), Some("two")),
-            ],
+        let select = |rows| {
+            select_named_id(
+                ResourceKind::Service,
+                Scope::Organization("org-1"),
+                "analytics",
+                rows,
+            )
+        };
+        assert_eq!(select(rows.to_vec()).unwrap(), "opaque-id");
+        for (rows, missing) in [
+            (vec![], true),
+            (vec![(Some("other"), Some("id"))], true),
+            (vec![(Some("analytics"), None)], false),
+            (vec![(Some("analytics"), Some(" "))], false),
+            (vec![(None, Some("id"))], false),
+            (
+                vec![
+                    (Some("analytics"), Some("one")),
+                    (Some("analytics"), Some("two")),
+                ],
+                false,
+            ),
         ] {
-            assert!(select_named_id("service", "analytics", rows).is_err());
+            let error = select(rows).unwrap_err();
+            // Only a name that matches nothing is a missing resource (#1237).
+            let detail = error.details.as_deref();
+            assert_eq!(
+                detail.map(|detail| detail.code),
+                missing.then_some(crate::cloud::output::CloudErrorCode::ResourceNotFound)
+            );
+            if missing {
+                assert_eq!(
+                    detail.unwrap().command.as_deref(),
+                    Some("clickhousectl cloud service list --org-id org-1")
+                );
+            }
         }
     }
 }

@@ -35,7 +35,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     ),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clap::builder::NonEmptyStringValueParser;
@@ -590,7 +592,12 @@ impl CloudClient {
             .api()
             .click_pipe_reverse_private_endpoint_get_list(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -601,10 +608,17 @@ impl CloudClient {
         endpoint_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ReversePrivateEndpoint> {
         let response = self
-            .api()
-            .click_pipe_reverse_private_endpoint_get(org_id, service_id, endpoint_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ReversePrivateEndpoint,
+                    endpoint_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_reverse_private_endpoint_get(org_id, service_id, endpoint_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -615,10 +629,13 @@ impl CloudClient {
         request: &CreateReversePrivateEndpoint,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ReversePrivateEndpoint> {
         let response = self
-            .api()
-            .click_pipe_reverse_private_endpoint_create(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .click_pipe_reverse_private_endpoint_create(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -630,10 +647,21 @@ impl CloudClient {
         request: &UpdateReversePrivateEndpoint,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ReversePrivateEndpoint> {
         let response = self
-            .api()
-            .click_pipe_reverse_private_endpoint_update(org_id, service_id, endpoint_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ReversePrivateEndpoint,
+                    endpoint_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api().click_pipe_reverse_private_endpoint_update(
+                    org_id,
+                    service_id,
+                    endpoint_id,
+                    request,
+                ),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -644,10 +672,20 @@ impl CloudClient {
         endpoint_id: &str,
     ) -> crate::cloud::client::Result<crate::cloud::types::DeleteResponse> {
         let response = self
-            .api()
-            .click_pipe_reverse_private_endpoint_delete(org_id, service_id, endpoint_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ReversePrivateEndpoint,
+                    endpoint_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api().click_pipe_reverse_private_endpoint_delete(
+                    org_id,
+                    service_id,
+                    endpoint_id,
+                ),
+            )
+            .await?;
         Ok(crate::cloud::types::DeleteResponse {
             status: response.status,
             request_id: response.request_id,
