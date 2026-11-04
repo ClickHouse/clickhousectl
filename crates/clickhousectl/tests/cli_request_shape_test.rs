@@ -16282,8 +16282,12 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
         "name":"minimal", "tiles":[], "savedQuery":null, "savedQueryLanguage":null
     });
     let update = serde_json::json!({
-        "name":"replacement", "tiles":[], "tags":[], "filters":[],
-        "savedFilterValues":[], "containers":[]
+        "name":"replacement", "tags":[], "filters":[], "savedFilterValues":[], "containers":[],
+        "tiles":[{"name":"rps","x":0,"y":0,"w":6,"h":3,"config":{
+            "configType":"promql", "displayType":"line", "sourceId":"prom-1",
+            "expressions":[{"expression":"sum(rate(http_requests_total[5m]))","alias":"rps"}],
+            "legendTemplate":"{{service}}", "lineInterpolation":"step"
+        }}]
     });
     let directory = tempfile::tempdir().unwrap();
     let create_file = directory.path().join("create.json");

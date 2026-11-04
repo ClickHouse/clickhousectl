@@ -1477,27 +1477,239 @@ fn validate_common_builder_fields(
     validate_optional_number_format(number_format, &format!("{path}.numberFormat"), source)
 }
 
+/// How a chart config queries its data, as its `configType` selects: absent
+/// for a builder chart, `sql` for raw SQL, `promql` for PromQL.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChartQuery {
+    Builder,
+    RawSql,
+    Promql,
+}
+
+fn chart_query(value: &Value, path: &str, source: &str) -> CloudResult<ChartQuery> {
+    match field(value, "configType") {
+        None => Ok(ChartQuery::Builder),
+        Some(Value::String(kind)) if kind == "sql" => Ok(ChartQuery::RawSql),
+        Some(Value::String(kind)) if kind == "promql" => Ok(ChartQuery::Promql),
+        Some(other) => {
+            let rendered = other
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| other.to_string());
+            Err(invalid_clickstack_request(
+                source,
+                format!(
+                    "unknown {path}.configType `{rendered}`; expected sql, promql, or omission"
+                ),
+            ))
+        }
+    }
+}
+
+fn validate_promql_reducible_expressions(
+    expressions: &[clickhouse_cloud_api::models::ClickStackPromqlReducibleExpression],
+    path: &str,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackPromqlReducibleExpressionQuerytype, ClickStackPromqlReducibleExpressionReducer,
+    };
+    for (index, expression) in expressions.iter().enumerate() {
+        if let Some(query_type) = &expression.query_type {
+            reject_unknown_enum!(
+                query_type,
+                ClickStackPromqlReducibleExpressionQuerytype::Unknown,
+                value,
+                format!("{path}[{index}].queryType"),
+                source
+            );
+        }
+        if let Some(reducer) = &expression.reducer {
+            reject_unknown_enum!(
+                reducer,
+                ClickStackPromqlReducibleExpressionReducer::Unknown,
+                value,
+                format!("{path}[{index}].reducer"),
+                source
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Strictly check a PromQL tile config against the variant its `displayType`
+/// selects. Dispatch fixed `configType` and `displayType`, so only the other
+/// enums are checked.
+fn validate_promql_chart_config(
+    value: &Value,
+    display_type: &str,
+    path: &str,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::*;
+
+    macro_rules! check_optional_enum {
+        ($value:expr, $variant:path, $name:literal) => {
+            if let Some(value) = &$value {
+                reject_unknown_enum!(
+                    value,
+                    $variant,
+                    unknown,
+                    format!("{path}.{}", $name),
+                    source
+                );
+            }
+        };
+    }
+    let number_format_path = format!("{path}.numberFormat");
+    let expressions_path = format!("{path}.expressions");
+    match display_type {
+        "line" => {
+            let config =
+                strict_union_variant::<ClickStackLinePromqlChartConfig>(value, path, source)?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackLinePromqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "stacked_bar" => {
+            let config =
+                strict_union_variant::<ClickStackBarPromqlChartConfig>(value, path, source)?;
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "stacked_line" => {
+            let config = strict_union_variant::<ClickStackStackedLinePromqlChartConfig>(
+                value, path, source,
+            )?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackStackedLinePromqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "bar" => {
+            let config = strict_union_variant::<ClickStackCategoricalBarPromqlChartConfig>(
+                value, path, source,
+            )?;
+            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "table" => {
+            let config =
+                strict_union_variant::<ClickStackTablePromqlChartConfig>(value, path, source)?;
+            for (index, expression) in config.expressions.iter().enumerate() {
+                if let Some(query_type) = &expression.query_type {
+                    reject_unknown_enum!(
+                        query_type,
+                        ClickStackPromqlInstantExpressionQuerytype::Unknown,
+                        unknown,
+                        format!("{expressions_path}[{index}].queryType"),
+                        source
+                    );
+                }
+            }
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "number" => {
+            let config =
+                strict_union_variant::<ClickStackNumberPromqlChartConfig>(value, path, source)?;
+            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
+            if let Some(background) = &config.background_chart {
+                reject_unknown_enum!(
+                    &background.r#type,
+                    ClickStackBackgroundChartType::Unknown,
+                    unknown,
+                    format!("{path}.backgroundChart.type"),
+                    source
+                );
+                check_optional_enum!(
+                    background.color,
+                    ClickStackChartColor::Unknown,
+                    "backgroundChart.color"
+                );
+            }
+            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )?;
+            validate_number_color_rules(value, path, source)
+        }
+        "pie" => {
+            let config =
+                strict_union_variant::<ClickStackPiePromqlChartConfig>(value, path, source)?;
+            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        "heatmap" => {
+            let config =
+                strict_union_variant::<ClickStackHeatmapPromqlChartConfig>(value, path, source)?;
+            check_optional_enum!(
+                config.heatmap_mode,
+                ClickStackHeatmapPromqlChartConfigHeatmapmode::Unknown,
+                "heatmapMode"
+            );
+            check_optional_enum!(
+                config.heatmap_scale_type,
+                ClickStackHeatmapPromqlChartConfigHeatmapscaletype::Unknown,
+                "heatmapScaleType"
+            );
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &number_format_path,
+                source,
+            )
+        }
+        other => Err(invalid_clickstack_request(
+            source,
+            format!(
+                "unknown {path}.displayType `{other}` for configType promql; expected line, stacked_bar, stacked_line, bar, table, number, pie, or heatmap"
+            ),
+        )),
+    }
+}
+
 fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult<()> {
     use clickhouse_cloud_api::models::*;
 
     let display_type = require_discriminator(value, "displayType", path, source)?;
-    let config_type = field(value, "configType");
-    if let Some(config_type) = config_type
-        && config_type.as_str() != Some("sql")
-    {
-        let rendered = config_type
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| config_type.to_string());
-        return Err(invalid_clickstack_request(
-            source,
-            format!("unknown {path}.configType `{rendered}`; expected sql or omission"),
-        ));
+    let query = chart_query(value, path, source)?;
+    if query == ChartQuery::Promql {
+        return validate_promql_chart_config(value, display_type, path, source);
     }
+    let raw_sql = query == ChartQuery::RawSql;
 
     match display_type {
         "line" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config =
                     strict_union_variant::<ClickStackLineRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
@@ -1557,7 +1769,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "stacked_bar" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config =
                     strict_union_variant::<ClickStackBarRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
@@ -1599,7 +1811,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "stacked_line" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config = strict_union_variant::<ClickStackStackedLineRawSqlChartConfig>(
                     value, path, source,
                 )?;
@@ -1661,7 +1873,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "bar" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config = strict_union_variant::<ClickStackCategoricalBarRawSqlChartConfig>(
                     value, path, source,
                 )?;
@@ -1705,7 +1917,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "table" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config =
                     strict_union_variant::<ClickStackTableRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
@@ -1750,7 +1962,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             }
         }
         "number" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config =
                     strict_union_variant::<ClickStackNumberRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
@@ -1830,7 +2042,7 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             validate_number_color_rules(value, path, source)?;
         }
         "pie" => {
-            if config_type.is_some() {
+            if raw_sql {
                 let config =
                     strict_union_variant::<ClickStackPieRawSqlChartConfig>(value, path, source)?;
                 reject_unknown_enum!(
@@ -2016,20 +2228,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
     use clickhouse_cloud_api::models::*;
 
     let display_type = require_discriminator(value, "displayType", path, source)?;
-    let raw_sql = match field(value, "configType") {
-        None => false,
-        Some(Value::String(kind)) if kind == "sql" => true,
-        Some(other) => {
-            let rendered = other
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| other.to_string());
-            return Err(invalid_clickstack_request(
-                source,
-                format!("unknown {path}.configType `{rendered}`; expected sql or omission"),
-            ));
-        }
-    };
+    let query = chart_query(value, path, source)?;
     // Every variant carries the alert overlay's `whereLanguage`.
     macro_rules! check_where_language {
         ($config:expr) => {
@@ -2058,8 +2257,8 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
         };
     }
 
-    match (display_type, raw_sql) {
-        ("line", true) => {
+    match (display_type, query) {
+        ("line", ChartQuery::RawSql) => {
             let config =
                 strict_union_variant::<ClickStackAlertLineRawSqlChartConfig>(value, path, source)?;
             reject_unknown_enum!(
@@ -2081,7 +2280,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("line", false) => {
+        ("line", ChartQuery::Builder) => {
             let config =
                 strict_union_variant::<ClickStackAlertLineBuilderChartConfig>(value, path, source)?;
             check_optional_enum!(
@@ -2098,7 +2297,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("stacked_bar", true) => {
+        ("stacked_bar", ChartQuery::RawSql) => {
             let config =
                 strict_union_variant::<ClickStackAlertBarRawSqlChartConfig>(value, path, source)?;
             reject_unknown_enum!(
@@ -2115,7 +2314,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("stacked_bar", false) => {
+        ("stacked_bar", ChartQuery::Builder) => {
             let config =
                 strict_union_variant::<ClickStackAlertBarBuilderChartConfig>(value, path, source)?;
             check_where_language!(config);
@@ -2127,7 +2326,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("stacked_line", true) => {
+        ("stacked_line", ChartQuery::RawSql) => {
             let config = strict_union_variant::<ClickStackAlertStackedLineRawSqlChartConfig>(
                 value, path, source,
             )?;
@@ -2150,7 +2349,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("stacked_line", false) => {
+        ("stacked_line", ChartQuery::Builder) => {
             let config = strict_union_variant::<ClickStackAlertStackedLineBuilderChartConfig>(
                 value, path, source,
             )?;
@@ -2168,7 +2367,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 source,
             )?;
         }
-        ("number", true) => {
+        ("number", ChartQuery::RawSql) => {
             let config = strict_union_variant::<ClickStackAlertNumberRawSqlChartConfig>(
                 value, path, source,
             )?;
@@ -2188,7 +2387,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
             )?;
             validate_number_color_rules(value, path, source)?;
         }
-        ("number", false) => {
+        ("number", ChartQuery::Builder) => {
             let config = strict_union_variant::<ClickStackAlertNumberBuilderChartConfig>(
                 value, path, source,
             )?;
@@ -2213,6 +2412,79 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 &config.select,
                 config.number_format.as_ref(),
                 path,
+                source,
+            )?;
+            validate_number_color_rules(value, path, source)?;
+        }
+        ("line", ChartQuery::Promql) => {
+            let config =
+                strict_union_variant::<ClickStackAlertLinePromqlChartConfig>(value, path, source)?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackLinePromqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("stacked_bar", ChartQuery::Promql) => {
+            let config =
+                strict_union_variant::<ClickStackAlertBarPromqlChartConfig>(value, path, source)?;
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("stacked_line", ChartQuery::Promql) => {
+            let config = strict_union_variant::<ClickStackAlertStackedLinePromqlChartConfig>(
+                value, path, source,
+            )?;
+            check_optional_enum!(
+                config.line_interpolation,
+                ClickStackStackedLinePromqlChartConfigLineinterpolation::Unknown,
+                "lineInterpolation"
+            );
+            check_where_language!(config);
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
+                source,
+            )?;
+        }
+        ("number", ChartQuery::Promql) => {
+            let config = strict_union_variant::<ClickStackAlertNumberPromqlChartConfig>(
+                value, path, source,
+            )?;
+            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
+            if let Some(background) = &config.background_chart {
+                reject_unknown_enum!(
+                    &background.r#type,
+                    ClickStackBackgroundChartType::Unknown,
+                    unknown,
+                    format!("{path}.backgroundChart.type"),
+                    source
+                );
+                check_optional_enum!(
+                    background.color,
+                    ClickStackChartColor::Unknown,
+                    "backgroundChart.color"
+                );
+            }
+            check_where_language!(config);
+            validate_promql_reducible_expressions(
+                &config.expressions,
+                &format!("{path}.expressions"),
+                source,
+            )?;
+            validate_optional_number_format(
+                config.number_format.as_ref(),
+                &format!("{path}.numberFormat"),
                 source,
             )?;
             validate_number_color_rules(value, path, source)?;
@@ -4588,9 +4860,29 @@ mod tests {
         let bare = serde_json::json!({"threshold":1.0,"interval":"5m","thresholdType":"above"});
         let builder = |display: &str| serde_json::json!({"displayType":display,"sourceId":"source-1","select":[{"aggFn":"count"}]});
         let raw_sql = |display: &str| serde_json::json!({"configType":"sql","displayType":display,"connectionId":"conn-1","sqlTemplate":"SELECT 1"});
+        let promql = |display: &str| {
+            let mut config = serde_json::json!({
+                "configType":"promql", "displayType":display, "sourceId":"prom-1",
+                "expressions":[{"expression":"sum(rate(http_requests_total[5m]))","alias":"rps"}],
+                "granularity":"1m", "numberFormat":number_format(),
+                "name":"Request rate", "where":"ServiceName:api", "whereLanguage":"lucene"
+            });
+            if display == "number" {
+                config["expressions"][0]["queryType"] = "instant".into();
+                config["expressions"][0]["reducer"] = "max".into();
+                config["color"] = "chart-blue".into();
+            } else {
+                config["legendTemplate"] = "{{service}}".into();
+                config["seriesLimit"] = 5.into();
+            }
+            if display.ends_with("line") {
+                config["lineInterpolation"] = "step".into();
+            }
+            config
+        };
         let mut bodies = vec![bare.clone()];
         for display in ["line", "stacked_bar", "stacked_line", "number"] {
-            for config in [builder(display), raw_sql(display)] {
+            for config in [builder(display), raw_sql(display), promql(display)] {
                 let mut body = bare.clone();
                 body["source"] = Value::String("inline".into());
                 body["chartConfig"] = config;
@@ -4607,13 +4899,47 @@ mod tests {
         overlay["displayName"] = Value::String("API errors".into());
         overlay["tags"] = serde_json::json!(["api"]);
         bodies.push(overlay);
+        let mut promql_charts = 0;
         for body in bodies {
             std::fs::write(&config_file, body.to_string()).unwrap();
             let create = build_create_alert_request(path).unwrap();
             assert_eq!(serde_json::to_value(&create).unwrap(), body);
+            // An `Unknown` chart also round-trips, so pin the typed variant.
+            if body["chartConfig"]["configType"] == "promql" {
+                assert!(
+                    create
+                        .chart_config
+                        .as_ref()
+                        .is_some_and(is_promql_alert_chart),
+                    "{body}"
+                );
+                promql_charts += 1;
+            }
             let update = build_update_alert_request(path).unwrap();
             assert_eq!(serde_json::to_value(&update).unwrap(), body);
         }
+        assert_eq!(promql_charts, 4);
+    }
+
+    fn is_promql_alert_chart(
+        config: &clickhouse_cloud_api::models::ClickStackAlertChartConfig,
+    ) -> bool {
+        use clickhouse_cloud_api::models::{
+            ClickStackAlertBarChartConfig as Bar, ClickStackAlertChartConfig as Chart,
+            ClickStackAlertLineChartConfig as Line, ClickStackAlertNumberChartConfig as Number,
+            ClickStackAlertStackedLineChartConfig as StackedLine,
+        };
+        matches!(
+            config,
+            Chart::ClickStackAlertLineChartConfig(Line::ClickStackAlertLinePromqlChartConfig(_))
+                | Chart::ClickStackAlertBarChartConfig(Bar::ClickStackAlertBarPromqlChartConfig(_))
+                | Chart::ClickStackAlertStackedLineChartConfig(
+                    StackedLine::ClickStackAlertStackedLinePromqlChartConfig(_)
+                )
+                | Chart::ClickStackAlertNumberChartConfig(
+                    Number::ClickStackAlertNumberPromqlChartConfig(_)
+                )
+        )
     }
 
     #[test]
@@ -4631,8 +4957,25 @@ mod tests {
                 "colour",
             ),
             (
-                serde_json::json!({"configType":"promql","displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
-                "chartConfig.configType `promql`",
+                serde_json::json!({"configType":"logql","displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
+                "chartConfig.configType `logql`",
+            ),
+            (
+                // A PromQL chart queries `expressions`, not builder `select` items.
+                serde_json::json!({"configType":"promql","displayType":"line","sourceId":"s","expressions":[{"expression":"up"}],"select":[]}),
+                "select",
+            ),
+            (
+                serde_json::json!({"configType":"promql","displayType":"stacked_line","sourceId":"s","expressions":[{"expression":"up"}],"lineInterpolation":"curvy"}),
+                "chartConfig.lineInterpolation",
+            ),
+            (
+                serde_json::json!({"configType":"promql","displayType":"number","sourceId":"s","expressions":[{"expression":"up","reducer":"median"}]}),
+                "chartConfig.expressions[0].reducer",
+            ),
+            (
+                serde_json::json!({"configType":"promql","displayType":"stacked_bar","sourceId":"s","expressions":[{"expression":"up"}],"whereLanguage":"kql"}),
+                "chartConfig.whereLanguage",
             ),
             (
                 serde_json::json!({"displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
@@ -5017,6 +5360,74 @@ mod tests {
                 }),
             ),
         ];
+        let promql = |display: &str, fields: Value| {
+            let mut config = serde_json::json!({
+                "configType":"promql", "displayType":display, "sourceId":"prom-1",
+                "granularity":"1m", "numberFormat":number_format()
+            });
+            config
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            config
+        };
+        let range =
+            serde_json::json!([{"expression":"sum(rate(http_requests_total[5m]))","alias":"rps"}]);
+        let reducible = serde_json::json!([{"expression":"up","alias":"up","queryType":"instant","reducer":"lastNotNull"}]);
+        for config in [
+            promql(
+                "line",
+                serde_json::json!({
+                    "expressions":range, "alignDateRangeToGranularity":true,
+                    "compareToPreviousPeriod":true, "fillNulls":true, "legendTemplate":"{{service}}",
+                    "lineInterpolation":"step", "seriesLimit":5
+                }),
+            ),
+            promql(
+                "stacked_bar",
+                serde_json::json!({
+                    "expressions":range, "alignDateRangeToGranularity":false, "fillNulls":false,
+                    "legendTemplate":"{{service}}", "seriesLimit":3
+                }),
+            ),
+            promql(
+                "stacked_line",
+                serde_json::json!({
+                    "expressions":range, "alignDateRangeToGranularity":true, "fillNulls":true,
+                    "legendTemplate":"{{service}}", "lineInterpolation":"smooth", "seriesLimit":3
+                }),
+            ),
+            promql(
+                "bar",
+                serde_json::json!({"expressions":reducible, "legendTemplate":"{{pod}}", "limit":10}),
+            ),
+            promql(
+                "table",
+                serde_json::json!({"expressions":[{"expression":"up","alias":"up","queryType":"instant"}]}),
+            ),
+            promql(
+                "number",
+                serde_json::json!({
+                    "expressions":reducible, "color":"chart-blue",
+                    "backgroundChart":{"type":"line","color":"chart-green"},
+                    "colorRules":[{"operator":"lt","value":1.0,"color":"chart-error"}]
+                }),
+            ),
+            promql(
+                "pie",
+                serde_json::json!({"expressions":reducible, "legendTemplate":"{{pod}}", "limit":5}),
+            ),
+            promql(
+                "heatmap",
+                serde_json::json!({
+                    "expressions":range, "heatmapMode":"histogram", "heatmapScaleType":"linear",
+                    "legendTemplate":"{{le}}"
+                }),
+            ),
+        ] {
+            let name = format!("{}-promql", config["displayType"].as_str().unwrap());
+            tiles.push(dashboard_tile(&name, tiles.len() as i64, config));
+        }
         tiles[0]["id"] = Value::String("tile-1".into());
         tiles[0]["containerId"] = Value::String("health".into());
         tiles[0]["tabId"] = Value::String("errors".into());
@@ -5061,6 +5472,33 @@ mod tests {
         })
     }
 
+    fn is_promql_tile(config: &clickhouse_cloud_api::models::ClickStackTileConfig) -> bool {
+        use clickhouse_cloud_api::models::{
+            ClickStackBarChartConfig as Bar, ClickStackCategoricalBarChartConfig as CategoricalBar,
+            ClickStackHeatmapChartConfig as Heatmap, ClickStackLineChartConfig as Line,
+            ClickStackNumberChartConfig as Number, ClickStackPieChartConfig as Pie,
+            ClickStackStackedLineChartConfig as StackedLine, ClickStackTableChartConfig as Table,
+            ClickStackTileConfig as Tile,
+        };
+        matches!(
+            config,
+            Tile::ClickStackLineChartConfig(Line::ClickStackLinePromqlChartConfig(_))
+                | Tile::ClickStackBarChartConfig(Bar::ClickStackBarPromqlChartConfig(_))
+                | Tile::ClickStackStackedLineChartConfig(
+                    StackedLine::ClickStackStackedLinePromqlChartConfig(_)
+                )
+                | Tile::ClickStackCategoricalBarChartConfig(
+                    CategoricalBar::ClickStackCategoricalBarPromqlChartConfig(_)
+                )
+                | Tile::ClickStackTableChartConfig(Table::ClickStackTablePromqlChartConfig(_))
+                | Tile::ClickStackNumberChartConfig(Number::ClickStackNumberPromqlChartConfig(_))
+                | Tile::ClickStackPieChartConfig(Pie::ClickStackPiePromqlChartConfig(_))
+                | Tile::ClickStackHeatmapChartConfig(Heatmap::ClickStackHeatmapPromqlChartConfig(
+                    _
+                ))
+        )
+    }
+
     #[test]
     fn dashboard_builders_cover_minimal_and_every_configuration_variant() {
         let directory = tempfile::tempdir().unwrap();
@@ -5073,7 +5511,15 @@ mod tests {
         let create_body = complete_dashboard(false);
         std::fs::write(&config_file, create_body.to_string()).unwrap();
         let create = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
-        assert_eq!(create.tiles.len(), 20);
+        assert_eq!(create.tiles.len(), 28);
+        // An `Unknown` tile config also round-trips, so pin the typed variants.
+        assert!(
+            create.tiles[20..]
+                .iter()
+                .all(|tile| tile.config.as_ref().is_some_and(is_promql_tile)),
+            "{:?}",
+            &create.tiles[20..]
+        );
         use clickhouse_cloud_api::models::{ClickStackFilter, ClickStackFilterInput};
         let Some(
             [
@@ -5194,6 +5640,35 @@ mod tests {
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
                 "tiles[0].config.lineInterpolation `curvy`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","configType":"logql","sourceId":"s","expressions":[]}}]}),
+                "tiles[0].config.configType `logql`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"markdown","configType":"promql","markdown":"x"}}]}),
+                "tiles[0].config.displayType `markdown`",
+            ),
+            (
+                // A PromQL tile queries `expressions`, not builder `select` items.
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","configType":"promql","sourceId":"s","expressions":[],"select":[]}}]}),
+                "select",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","configType":"promql","sourceId":"s","expressions":[],"heatmapMode":"bands"}}]}),
+                "tiles[0].config.heatmapMode `bands`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"table","configType":"promql","sourceId":"s","expressions":[{"expression":"up","queryType":"vector"}]}}]}),
+                "tiles[0].config.expressions[0].queryType `vector`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"pie","configType":"promql","sourceId":"s","expressions":[{"expression":"up","queryType":"matrix"}]}}]}),
+                "tiles[0].config.expressions[0].queryType `matrix`",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","configType":"promql","sourceId":"s","expressions":[],"color":"plaid"}}]}),
+                "tiles[0].config.color `plaid`",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),

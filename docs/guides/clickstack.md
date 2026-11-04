@@ -43,6 +43,8 @@ clickhousectl cloud clickstack dashboard create <service-id> --file dashboard.js
 clickhousectl cloud clickstack dashboard get <service-id> <dashboard-id>
 ```
 
+A chart config without `configType` is a builder chart that queries with `select`. Set `configType` to `sql` for a raw SQL chart (`connectionId` and `sqlTemplate`), or to `promql` for a PromQL chart, which queries `expressions` against a source of kind `promql`. Inline alert charts accept the same three kinds.
+
 Use the returned ID to inspect the saved resource, then open it in ClickStack to verify the chart against your source data. `--file -` accepts stdin. Validation checks a **create body** without saving it; it does not validate the separate update body.
 
 ## Safely update an existing resource
