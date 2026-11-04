@@ -123,7 +123,8 @@ CONTEXT FOR AGENTS:
   Describe the gap and what you expected, not the user's workload. Never include secrets, SQL,
   connection strings, service IDs or user data.
   Put flags such as `--json` before the message; every word after them is message text.
-  Sent with the message: CLI version, OS/arch, CI and agent detection, agent session/trace IDs.
+  Sent with the message: CLI version, OS/arch, CI and agent detection, agent session/trace IDs;
+  with Cloud credentials, also their kind and org IDs. Never name, email, user ID, key ID or IP.
   Not blocked by `telemetry disable` or DO_NOT_TRACK. Exit 2: invalid message, nothing sent.")]
     Feedback(FeedbackArgs),
 }

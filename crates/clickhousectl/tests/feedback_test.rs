@@ -1,12 +1,15 @@
 //! `clickhousectl feedback` end-to-end tests (#1211).
 //!
-//! Each test runs the real binary with `HOME` at a temp dir (sandboxing
-//! `~/.clickhouse/telemetry.json`) and `CHCTL_FEEDBACK_URL` at a local
-//! `wiremock` server, then asserts on the request the binary sent, its exit
-//! code and its streams. Assertions use codes, JSON fields and identifiers,
-//! never wording. One case per distinct runtime path: message validation,
-//! the status-to-reason mapping and the payload's field values are unit
-//! tests in `src/feedback.rs`.
+//! Each test runs the real binary with `HOME` and the working directory at
+//! temp dirs (sandboxing `~/.clickhouse/telemetry.json`, saved OAuth tokens
+//! and the project's `.clickhouse/credentials.json`) and `CHCTL_FEEDBACK_URL`
+//! at a local `wiremock` server. Saved Cloud credentials name the same server
+//! as their API, so the best-effort whoami lookup lands there too. Tests
+//! assert on the requests the binary sent, its exit code and its streams,
+//! using codes, JSON fields and identifiers, never wording. One case per
+//! distinct runtime path: message validation, the status-to-reason mapping,
+//! the whoami-to-org mapping and the payload's field values are unit tests in
+//! `src/feedback.rs`.
 //!
 //!     cargo test -p clickhousectl --test feedback_test
 
@@ -20,15 +23,21 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const FEEDBACK_PATH: &str = "/v1/feedback";
+const WHOAMI_PATH: &str = "/v1/whoami";
+
+const ORG_A: &str = "0b1c2d3e-1211-4000-8000-00000000000a";
+const ORG_B: &str = "4f5a6b7c-1211-4000-8000-00000000000b";
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
-/// A sandboxed home directory plus the feedback ingest mock, which answers
-/// `status` at [`FEEDBACK_PATH`].
+/// A sandboxed home and project directory plus one mock server: the
+/// feedback ingest answering at [`FEEDBACK_PATH`], and the Cloud API for any
+/// credentials a test saves.
 struct Sandbox {
     home: tempfile::TempDir,
+    project: tempfile::TempDir,
     mock: MockServer,
 }
 
@@ -53,8 +62,67 @@ impl Sandbox {
             .await;
         Sandbox {
             home: tempfile::tempdir().unwrap(),
+            project: tempfile::tempdir().unwrap(),
             mock,
         }
+    }
+    /// The Cloud API base URL saved credentials point at.
+    fn api_url(&self) -> String {
+        format!("{}/v1", self.mock.uri())
+    }
+
+    /// Answer `GET /v1/whoami` with `status`, wrapping a 200 `identity` in
+    /// the API's response envelope.
+    async fn mount_whoami(&self, status: u16, identity: Value) {
+        self.mount_whoami_response(whoami_response(status, identity))
+            .await;
+    }
+
+    async fn mount_whoami_response(&self, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path(WHOAMI_PATH))
+            .respond_with(response)
+            .mount(&self.mock)
+            .await;
+    }
+
+    /// Save an OAuth login for the mock API in `~/.clickhouse/tokens.json`,
+    /// expiring at `expires_at` (Unix seconds).
+    fn write_oauth_tokens(&self, expires_at: u64) -> PathBuf {
+        self.write_oauth_tokens_in(self.home.path(), expires_at)
+    }
+
+    /// Save an OAuth login in `<root>/.clickhouse/tokens.json`.
+    fn write_oauth_tokens_in(&self, root: &std::path::Path, expires_at: u64) -> PathBuf {
+        let dir = root.join(".clickhouse");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tokens = serde_json::json!({
+            "access_token": "test-bearer-token",
+            "refresh_token": "test-refresh-token",
+            "expires_at": expires_at,
+            "api_url": self.api_url(),
+            "auth_config": {"auth_url": self.mock.uri(), "client_id": "test-client"},
+        });
+        let path = dir.join("tokens.json");
+        std::fs::write(&path, serde_json::to_vec(&tokens).unwrap()).unwrap();
+        path
+    }
+
+    /// Save a project API key pair for the mock API, the way
+    /// `cloud auth login --api-key ... --url <mock>` does.
+    fn write_saved_api_key(&self) {
+        let dir = self.project.path().join(".clickhouse");
+        std::fs::create_dir_all(&dir).unwrap();
+        let credentials = serde_json::json!({
+            "api_key": "test-key",
+            "api_secret": "test-secret",
+            "api_url": self.api_url(),
+        });
+        std::fs::write(
+            dir.join("credentials.json"),
+            serde_json::to_vec(&credentials).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_telemetry_state(&self, disabled: bool) {
@@ -78,6 +146,7 @@ impl Sandbox {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.home.path())
+            .current_dir(self.project.path())
             .env("DO_NOT_TRACK", "1")
             .env(
                 "CHCTL_FEEDBACK_URL",
@@ -99,6 +168,29 @@ impl Sandbox {
         self.mock.received_requests().await.unwrap_or_default()
     }
 
+    /// The whoami lookups the binary made.
+    async fn whoami_requests(&self) -> Vec<wiremock::Request> {
+        let mut requests = self.requests().await;
+        requests.retain(|request| request.url.path() == WHOAMI_PATH);
+        requests
+    }
+
+    /// The single feedback POST, alongside at most one whoami lookup.
+    async fn the_feedback_request(&self) -> wiremock::Request {
+        let mut requests = self.requests().await;
+        let whoami = requests
+            .iter()
+            .filter(|request| request.url.path() == WHOAMI_PATH)
+            .count();
+        assert!(whoami <= 1, "whoami is never retried");
+        requests.retain(|request| request.url.path() != WHOAMI_PATH);
+        assert_eq!(requests.len(), 1, "expected exactly one feedback request");
+        let request = requests.remove(0);
+        assert_eq!(request.method.as_str(), "POST");
+        assert_eq!(request.url.path(), FEEDBACK_PATH);
+        request
+    }
+
     /// The single request the binary sent, which must be a feedback POST.
     async fn the_request(&self) -> wiremock::Request {
         let mut requests = self.requests().await;
@@ -108,6 +200,40 @@ impl Sandbox {
         assert_eq!(request.url.path(), FEEDBACK_PATH);
         request
     }
+}
+
+/// A whoami response: a 200 wraps `identity` in the API's envelope.
+fn whoami_response(status: u16, identity: Value) -> ResponseTemplate {
+    if status == 200 {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "whoami",
+            "result": identity,
+        }))
+    } else {
+        ResponseTemplate::new(status)
+            .set_body_json(serde_json::json!({"status": status, "error": "refused"}))
+    }
+}
+
+/// Every file under `root` with its contents, to show a run wrote or removed
+/// nothing.
+fn snapshot(root: &std::path::Path) -> Vec<(PathBuf, String)> {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let contents = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+                files.push((path, contents));
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 fn body_of(request: &wiremock::Request) -> Value {
@@ -185,10 +311,21 @@ async fn an_agent_session_sends_one_json_object_with_its_headers() {
     assert_eq!(
         keys,
         [
-            "agent", "arch", "ci", "is_agent", "message", "os", "version"
+            "agent",
+            "arch",
+            "ci",
+            "cloud_auth",
+            "is_agent",
+            "message",
+            "org_ids",
+            "os",
+            "version"
         ]
     );
     assert_eq!(body["message"], message);
+    // No Cloud credentials: no whoami (the feedback POST was the only
+    // request) and no credential kind.
+    assert_eq!(body["cloud_auth"], "none");
 }
 
 #[tokio::test]
@@ -305,4 +442,151 @@ async fn the_telemetry_event_for_feedback_never_carries_the_message() {
             assert!(sandbox.requests().await.is_empty(), "{args:?}");
         }
     }
+}
+
+// ── Cloud identity ──────────────────────────────────────────────────────────
+
+fn user_identity() -> Value {
+    serde_json::json!({
+        "actorType": "user",
+        "userId": "5fae43a3-1211-4000-8000-0000000000aa",
+        "email": "ada@example.com",
+        "organizations": [
+            {"organizationId": ORG_A, "organizationName": "First"},
+            {"organizationId": ORG_B, "organizationName": "Second"},
+        ],
+    })
+}
+
+#[tokio::test]
+async fn a_saved_api_key_sends_the_organization_that_owns_it() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_saved_api_key();
+    sandbox
+        .mount_whoami(
+            200,
+            serde_json::json!({
+                "actorType": "apiKey",
+                "keyId": "c0ffee00-1211-4000-8000-0000000000cc",
+                "organizationId": ORG_A,
+            }),
+        )
+        .await;
+    let output = sandbox.run(&["the gap"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    // No stored-API notice or any other diagnostic.
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let whoami = sandbox.whoami_requests().await;
+    assert_eq!(whoami.len(), 1);
+    assert!(
+        header(&whoami[0], "authorization")
+            .unwrap()
+            .starts_with("Basic ")
+    );
+
+    let feedback = sandbox.the_feedback_request().await;
+    // The feedback endpoint never receives the Cloud credentials.
+    assert!(header(&feedback, "authorization").is_none());
+    let body = body_of(&feedback);
+    assert_eq!(body["cloud_auth"], "api_key");
+    assert_eq!(body["org_ids"], serde_json::json!([ORG_A]));
+}
+
+#[tokio::test]
+async fn an_oauth_login_sends_every_organization() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_oauth_tokens(4102444800); // 2100-01-01
+    sandbox.mount_whoami(200, user_identity()).await;
+    let output = sandbox.run(&["the gap"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let whoami = sandbox.whoami_requests().await;
+    assert_eq!(whoami.len(), 1);
+    assert_eq!(
+        header(&whoami[0], "authorization"),
+        Some("Bearer test-bearer-token")
+    );
+
+    let feedback = sandbox.the_feedback_request().await;
+    assert!(header(&feedback, "authorization").is_none());
+    let body = body_of(&feedback);
+    assert_eq!(body["cloud_auth"], "oauth");
+    assert_eq!(body["org_ids"], serde_json::json!([ORG_A, ORG_B]));
+}
+
+/// Every whoami failure takes the same path, so one per credential kind: a
+/// rejected API key, and an OAuth lookup that outlasts its timeout.
+#[tokio::test]
+async fn a_failed_whoami_keeps_the_credential_kind_and_still_sends() {
+    let api_key = Sandbox::new().await;
+    api_key.write_saved_api_key();
+    api_key.mount_whoami(401, Value::Null).await;
+
+    let oauth = Sandbox::new().await;
+    oauth.write_oauth_tokens(4102444800);
+    oauth
+        .mount_whoami_response(
+            whoami_response(200, user_identity()).set_delay(std::time::Duration::from_secs(2)),
+        )
+        .await;
+
+    for (sandbox, kind, timeout_ms) in [(&api_key, "api_key", None), (&oauth, "oauth", Some("100"))]
+    {
+        let mut command = sandbox.command(&["the gap"]);
+        if let Some(timeout_ms) = timeout_ms {
+            command.env("CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS", timeout_ms);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{kind}: {output:?}");
+        assert!(!output.stdout.is_empty(), "{kind}");
+        assert!(output.stderr.is_empty(), "{kind}: {output:?}");
+        assert_eq!(
+            sandbox.whoami_requests().await.len(),
+            1,
+            "{kind}: whoami is never retried"
+        );
+        let body = body_of(&sandbox.the_feedback_request().await);
+        assert_eq!(body["cloud_auth"], kind);
+        assert_eq!(body["org_ids"], serde_json::json!([]), "{kind}");
+    }
+}
+
+/// Agents run feedback unprompted in any directory, so a login saved by an
+/// old version under `./.clickhouse/` is neither migrated to the global
+/// store, removed, nor used.
+#[tokio::test]
+async fn a_legacy_project_login_is_left_alone_and_unused() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_oauth_tokens_in(sandbox.project.path(), 4102444800);
+    sandbox.mount_whoami(200, user_identity()).await;
+    let home = snapshot(sandbox.home.path());
+    let project = snapshot(sandbox.project.path());
+    let output = sandbox.run(&["the gap"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(snapshot(sandbox.home.path()), home);
+    assert_eq!(snapshot(sandbox.project.path()), project);
+    // The feedback POST was the only request: no whoami.
+    let body = body_of(&sandbox.the_request().await);
+    assert_eq!(body["cloud_auth"], "none");
+    assert_eq!(body["org_ids"], serde_json::json!([]));
+}
+
+/// An expired login is not usable, so feedback treats it as no credentials:
+/// it does not refresh it, rewrite it, or call whoami.
+#[tokio::test]
+async fn an_expired_oauth_login_is_neither_refreshed_nor_used() {
+    let sandbox = Sandbox::new().await;
+    let tokens = sandbox.write_oauth_tokens(1_000_000_000); // 2001
+    let saved = std::fs::read(&tokens).unwrap();
+    sandbox.mount_whoami(200, user_identity()).await;
+    let output = sandbox.run(&["the gap"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    // The feedback POST was the only request: no whoami, no token refresh.
+    let body = body_of(&sandbox.the_request().await);
+    assert_eq!(body["cloud_auth"], "none");
+    assert_eq!(std::fs::read(&tokens).unwrap(), saved);
 }

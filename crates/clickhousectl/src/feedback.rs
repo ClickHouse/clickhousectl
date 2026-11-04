@@ -13,13 +13,22 @@
 //! User-Agent and agent session/trace headers as every other request this CLI
 //! makes. Delivery is decided from the HTTP status alone, never from the
 //! response text.
+//!
+//! When Cloud credentials are active, the payload also names the kind of
+//! credential and the organization IDs whoami reports for it, so feedback can
+//! be grouped by organization. The lookup is best-effort and quiet: any failure
+//! sends an empty list, and nothing about the user or key (name, email, user
+//! ID, key ID, organization names) is read from the response.
 
 use std::time::Duration;
 
+use clickhouse_cloud_api::models::Whoami;
 use unicode_normalization::UnicodeNormalization;
+use uuid::Uuid;
 
 use crate::cli::FeedbackArgs;
 use crate::client_facts::{ClientFacts, real_env_lookup};
+use crate::cloud::client::{AuthSource, CloudClient};
 use crate::error::{Error, Result};
 
 /// Production ingest endpoint (the same Cloudflare worker as telemetry).
@@ -44,6 +53,95 @@ struct Payload<'a> {
     /// `is_agent`, `agent`, `ci`, `version`, `os`, `arch`.
     #[serde(flatten)]
     client: ClientFacts,
+    /// `cloud_auth`, `org_ids`.
+    #[serde(flatten)]
+    cloud: CloudIdentity,
+}
+
+/// The kind of Cloud credential that won precedence, from a closed vocabulary.
+#[derive(serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CloudAuth {
+    #[default]
+    None,
+    ApiKey,
+    Oauth,
+}
+
+impl From<AuthSource> for CloudAuth {
+    fn from(source: AuthSource) -> Self {
+        match source {
+            AuthSource::CliFlags | AuthSource::CredentialsFile | AuthSource::EnvVars => {
+                Self::ApiKey
+            }
+            AuthSource::OAuthTokens => Self::Oauth,
+        }
+    }
+}
+
+/// The only Cloud identity feedback carries: the credential kind and the
+/// organization IDs. Built from [`Whoami`] by [`organization_ids`], never by
+/// serialising it.
+#[derive(serde::Serialize, Debug, Default, PartialEq, Eq)]
+struct CloudIdentity {
+    cloud_auth: CloudAuth,
+    org_ids: Vec<Uuid>,
+}
+
+/// Most organization IDs one message carries. The ingest worker keeps at
+/// most its `MAX_ORG_IDS` (100) after deduplicating, so sending more would
+/// only be dropped there.
+const MAX_ORG_IDS: usize = 100;
+
+/// The organizations a whoami response names: the owning organization for an
+/// API key, every membership for a user, none for an unrecognised caller.
+/// Duplicates are dropped and the list stops at [`MAX_ORG_IDS`], keeping the
+/// order whoami gave.
+fn organization_ids(identity: &Whoami) -> Vec<Uuid> {
+    let ids: Vec<Uuid> = match identity {
+        Whoami::WhoamiApiKey(key) => key.organization_id.into_iter().collect(),
+        Whoami::WhoamiUser(user) => user
+            .organizations
+            .iter()
+            .flatten()
+            .filter_map(|organization| organization.organization_id)
+            .collect(),
+        Whoami::Unknown(_) => Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter()
+        .filter(|id| seen.insert(*id))
+        .take(MAX_ORG_IDS)
+        .collect()
+}
+
+/// Bounds the whoami lookup, as `auth status` bounds its own; tests shorten
+/// it with [`crate::timing::FEEDBACK_WHOAMI_TIMEOUT_ENV`].
+fn whoami_timeout() -> Duration {
+    crate::timing::duration_override(
+        crate::timing::FEEDBACK_WHOAMI_TIMEOUT_ENV,
+        crate::cloud::auth::VERIFY_TIMEOUT,
+    )
+}
+
+/// The active credentials' kind and organizations. No credentials means no
+/// Cloud request. Otherwise one whoami call, bounded by [`whoami_timeout`];
+/// any failure keeps the kind and sends no organizations. This never logs
+/// in, refreshes tokens, retries or prints, and never writes or removes a
+/// token file: credentials resolve read-only, so a legacy project-local
+/// OAuth login is neither migrated nor used.
+async fn cloud_identity() -> CloudIdentity {
+    let Ok(client) = CloudClient::new_read_only_with_timeout(whoami_timeout()) else {
+        return CloudIdentity::default();
+    };
+    let org_ids = match client.get_whoami().await {
+        Ok(identity) => organization_ids(&identity),
+        Err(_) => Vec::new(),
+    };
+    CloudIdentity {
+        cloud_auth: client.auth_source().into(),
+        org_ids,
+    }
 }
 
 /// Why a message is refused before anything is sent.
@@ -159,6 +257,7 @@ pub async fn run(args: FeedbackArgs, json: bool) -> Result<()> {
     let payload = Payload {
         message: &message,
         client: ClientFacts::detect(&real_env_lookup),
+        cloud: cloud_identity().await,
     };
     let url = std::env::var(URL_ENV).unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
     send(&url, &payload).await?;
@@ -317,6 +416,131 @@ mod tests {
         }
     }
 
+    const ORG_A: &str = "0b1c2d3e-1211-4000-8000-00000000000a";
+    const ORG_B: &str = "4f5a6b7c-1211-4000-8000-00000000000b";
+    const USER_ID: &str = "5fae43a3-1211-4000-8000-0000000000aa";
+    const KEY_ID: &str = "c0ffee00-1211-4000-8000-0000000000cc";
+    const EMAIL: &str = "ada@example.com";
+    const PERSON: &str = "Ada Lovelace";
+    const KEY_NAME: &str = "ci-deploy-key";
+    const ORG_NAME: &str = "Analytical Engines Ltd";
+
+    fn whoami(value: serde_json::Value) -> Whoami {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn api_key_identity() -> Whoami {
+        whoami(serde_json::json!({
+            "actorType": "apiKey",
+            "keyId": KEY_ID,
+            "name": KEY_NAME,
+            "organizationId": ORG_A,
+        }))
+    }
+
+    fn user_identity() -> Whoami {
+        whoami(serde_json::json!({
+            "actorType": "user",
+            "userId": USER_ID,
+            "email": EMAIL,
+            "name": PERSON,
+            "organizations": [
+                {"organizationId": ORG_A, "organizationName": ORG_NAME},
+                {"organizationName": "no id"},
+                {"organizationId": ORG_B, "organizationName": "Second"},
+            ],
+        }))
+    }
+
+    fn uuids(ids: &[&str]) -> Vec<Uuid> {
+        ids.iter().map(|id| Uuid::parse_str(id).unwrap()).collect()
+    }
+
+    #[test]
+    fn an_api_key_names_only_the_organization_that_owns_it() {
+        assert!(matches!(api_key_identity(), Whoami::WhoamiApiKey(_)));
+        assert_eq!(organization_ids(&api_key_identity()), uuids(&[ORG_A]));
+        let without_org = whoami(serde_json::json!({"actorType": "apiKey", "keyId": KEY_ID}));
+        assert_eq!(organization_ids(&without_org), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn a_user_names_every_organization_it_belongs_to() {
+        assert!(matches!(user_identity(), Whoami::WhoamiUser(_)));
+        assert_eq!(organization_ids(&user_identity()), uuids(&[ORG_A, ORG_B]));
+        let no_orgs = whoami(serde_json::json!({"actorType": "user", "userId": USER_ID}));
+        assert_eq!(organization_ids(&no_orgs), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn org_ids_are_deduplicated_and_capped_at_the_worker_limit() {
+        let ids: Vec<Uuid> = (0..MAX_ORG_IDS as u128 + 20).map(Uuid::from_u128).collect();
+        // Every ID twice, the second copy straight after the first.
+        let organizations: Vec<serde_json::Value> = ids
+            .iter()
+            .flat_map(|id| [id, id])
+            .map(|id| serde_json::json!({"organizationId": id}))
+            .collect();
+        let identity = whoami(serde_json::json!({
+            "actorType": "user",
+            "userId": USER_ID,
+            "organizations": organizations,
+        }));
+        assert_eq!(organization_ids(&identity), ids[..MAX_ORG_IDS]);
+    }
+
+    #[test]
+    fn an_unrecognised_caller_names_no_organization() {
+        let robot = whoami(serde_json::json!({
+            "actorType": "robot",
+            "organizationId": ORG_A,
+            "organizations": [{"organizationId": ORG_B}],
+        }));
+        assert!(matches!(robot, Whoami::Unknown(_)));
+        assert_eq!(organization_ids(&robot), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn every_credential_source_maps_to_the_closed_vocabulary() {
+        for (source, expected) in [
+            (AuthSource::CliFlags, "api_key"),
+            (AuthSource::CredentialsFile, "api_key"),
+            (AuthSource::EnvVars, "api_key"),
+            (AuthSource::OAuthTokens, "oauth"),
+        ] {
+            let kind = CloudAuth::from(source);
+            assert_eq!(serde_json::to_value(kind).unwrap(), expected, "{source:?}");
+        }
+        assert_eq!(serde_json::to_value(CloudAuth::None).unwrap(), "none");
+    }
+
+    #[test]
+    fn the_payload_carries_org_ids_but_never_who_the_caller_is() {
+        for (identity, kind, expected) in [
+            (api_key_identity(), CloudAuth::ApiKey, vec![ORG_A]),
+            (user_identity(), CloudAuth::Oauth, vec![ORG_A, ORG_B]),
+        ] {
+            let payload = Payload {
+                message: "needs a wait flag",
+                client: ClientFacts::detect(&|_| None),
+                cloud: CloudIdentity {
+                    cloud_auth: kind,
+                    org_ids: organization_ids(&identity),
+                },
+            };
+            let wire = serde_json::to_string(&payload).unwrap();
+            for secret in [USER_ID, KEY_ID, EMAIL, PERSON, KEY_NAME, ORG_NAME] {
+                assert!(!wire.contains(secret), "{secret} leaked into {wire}");
+            }
+            for field in ["userId", "keyId", "email", "name", "actorType"] {
+                assert!(!wire.contains(&format!("\"{field}\"")), "{field} in {wire}");
+            }
+            let value: serde_json::Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(value["org_ids"], serde_json::json!(expected));
+            assert_eq!(value["cloud_auth"], serde_json::to_value(kind).unwrap());
+        }
+    }
+
     #[test]
     fn a_rejection_is_a_feedback_error_naming_the_status() {
         for status in [400, 403, 413, 429, 503] {
@@ -328,10 +552,23 @@ mod tests {
     }
 
     #[test]
+    fn without_credentials_the_payload_says_none_and_names_no_org() {
+        let payload = Payload {
+            message: "needs a wait flag",
+            client: ClientFacts::detect(&|_| None),
+            cloud: CloudIdentity::default(),
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["cloud_auth"], "none");
+        assert_eq!(value["org_ids"], serde_json::json!([]));
+    }
+
+    #[test]
     fn the_payload_keys_follow_the_wire_contract() {
         let payload = Payload {
             message: "m",
             client: ClientFacts::detect(&|_| None),
+            cloud: CloudIdentity::default(),
         };
         let value = serde_json::to_value(&payload).unwrap();
         let keys: Vec<&str> = value
@@ -343,7 +580,15 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "message", "is_agent", "agent", "ci", "version", "os", "arch"
+                "message",
+                "is_agent",
+                "agent",
+                "ci",
+                "version",
+                "os",
+                "arch",
+                "cloud_auth",
+                "org_ids"
             ]
         );
         assert_eq!(value["message"], "m");
