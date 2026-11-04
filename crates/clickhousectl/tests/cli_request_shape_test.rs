@@ -14248,7 +14248,7 @@ fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process
 /// must treat the 400 the way it treats a 404 (see
 /// `forced_service_delete_surfaces_not_found_for_an_absent_service`): carry
 /// on to the delete, rather than aborting on an id `service get` reports as
-/// missing.
+/// missing. The delete's own 400 is then confirmed by a second read (#1226).
 #[tokio::test]
 async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id() {
     let mock = MockServer::start().await;
@@ -14256,7 +14256,7 @@ async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id()
     Mock::given(method("GET"))
         .and(path(service_path.clone()))
         .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
-        .expect(1)
+        .expect(2)
         .mount(&mock)
         .await;
     Mock::given(method("DELETE"))
@@ -14283,13 +14283,14 @@ async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id()
         received_request_shape(&mock).await,
         vec![
             ("GET".to_string(), service_path.clone()),
-            ("DELETE".to_string(), service_path),
+            ("DELETE".to_string(), service_path.clone()),
+            ("GET".to_string(), service_path),
         ]
     );
 }
 
-/// Without `--force` there is no read at all, so the delete's own 400 is what
-/// has to be refined.
+/// Without `--force`, the delete's own 400 is refined to not-found only once a
+/// read of the service rejects the id too (#1226).
 #[tokio::test]
 async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
     let mock = MockServer::start().await;
@@ -14300,6 +14301,7 @@ async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
         .expect(1)
         .mount(&mock)
         .await;
+    mount_invalid_id_400(&mock, service_path.clone(), "service", UNKNOWN_UUID).await;
 
     let output = invoke_unknown_service_delete(&mock, false);
 
@@ -14315,8 +14317,94 @@ async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
     );
     assert_eq!(
         received_request_shape(&mock).await,
-        vec![("DELETE".to_string(), service_path)]
+        vec![
+            ("DELETE".to_string(), service_path.clone()),
+            ("GET".to_string(), service_path),
+        ]
     );
+}
+
+/// The API answers a bare 400 to a DELETE of a service that is still
+/// provisioning. The service exists, so neither `service delete` (with or
+/// without `--force`) nor `postgres delete` may report it as
+/// `resource_not_found`, which automation reads as already gone (#1226).
+#[tokio::test]
+async fn delete_rejected_with_400_for_an_existing_service_is_not_resource_not_found() {
+    let bare_400 = || {
+        ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "BAD_REQUEST: Bad Request",
+        }))
+    };
+    let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+    let postgres_path = unknown_postgres_path("");
+    for (args, resource_path, reads) in [
+        (
+            vec!["service", "delete", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            service_path.clone(),
+            1,
+        ),
+        (
+            vec![
+                "service",
+                "delete",
+                UNKNOWN_UUID,
+                "--org-id",
+                LOOKUP_ORG_ID,
+                "--force",
+            ],
+            service_path.clone(),
+            2,
+        ),
+        (
+            vec![
+                "postgres",
+                "delete",
+                UNKNOWN_UUID,
+                "--org-id",
+                LOOKUP_ORG_ID,
+            ],
+            postgres_path,
+            1,
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(resource_path.clone()))
+            .respond_with(manual_query_endpoint_response(
+                serde_json::json!({"id": UNKNOWN_UUID, "state": "provisioning"}),
+            ))
+            .expect(reads)
+            .mount(&mock)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(resource_path.clone()))
+            .respond_with(bare_400())
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], "http_4xx", "{args:?}: {error}");
+        assert!(error.get("command").is_none(), "{args:?}: {error}");
+        if args[0] == "service" {
+            let message = error["message"].as_str().unwrap();
+            assert!(message.contains(UNKNOWN_UUID), "{message}");
+            assert!(message.contains("'provisioning'"), "{message}");
+        }
+        // No stop was attempted for a provisioning service.
+        assert!(
+            received_request_shape(&mock)
+                .await
+                .iter()
+                .all(|(method, _)| method == "GET" || method == "DELETE"),
+            "{args:?}"
+        );
+    }
 }
 
 // Postgres config files must survive every advertised file-input path, PgConfig

@@ -137,6 +137,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
         Conditional::new("Owned query-key cleanup", &[&op::OPENAPI_KEY_DELETE]),
+        Conditional::new("Diagnosing a rejected delete", &[&op::INSTANCE_GET]),
     ]),
     Permission::api("service update", &[&op::INSTANCE_UPDATE]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),

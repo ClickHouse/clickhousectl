@@ -1,5 +1,8 @@
-use super::lifecycle::{build_service_state_patch_request, service_delete_error};
-use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup};
+use super::lifecycle::{
+    build_service_state_patch_request, service_delete_error, service_delete_rejected,
+};
+use crate::cloud::client::{CloudClient, CloudError, ResourceKind, ResourceLookup};
+use crate::cloud::output::or_absent;
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
     InstanceServiceQueryApiEndpointsPostRequest, JwtProvider, JwtProviderPostRequest,
@@ -475,15 +478,43 @@ impl CloudClient {
         service_id: &str,
         force: bool,
     ) -> crate::cloud::client::Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_delete(org_id, service_id)
-            .await
-            .map_err(|error| service_delete_error(self, error, force, service_id, org_id))?;
+        let response = match self.api().instance_delete(org_id, service_id).await {
+            Ok(response) => response,
+            Err(error @ clickhouse_cloud_api::Error::Api { status: 400, .. }) => {
+                return Err(self
+                    .service_delete_bad_request(error, org_id, service_id)
+                    .await);
+            }
+            Err(error) => return Err(service_delete_error(self, error, force, service_id, org_id)),
+        };
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    /// A 400 from a service DELETE. It names a missing service only once a
+    /// read of the service agrees (#666); for a service that exists, such as
+    /// one still provisioning, it names the state instead (#1226). When the
+    /// read fails too, the original error is reported unchanged.
+    async fn service_delete_bad_request(
+        &self,
+        error: clickhouse_cloud_api::Error,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudError {
+        match self.get_service_if_exists(org_id, service_id).await {
+            Ok(None) => self.convert_error_for_lookup(
+                error,
+                ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+            ),
+            Ok(Some(service)) => service_delete_rejected(
+                self.convert_error_for_organization(error, org_id),
+                service_id,
+                &or_absent(service.state.as_ref()),
+            ),
+            Err(_) => self.convert_error_for_organization(error, org_id),
+        }
     }
 
     pub async fn change_service_state(
