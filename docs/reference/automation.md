@@ -63,7 +63,7 @@ Local and Cloud runtime errors in JSON mode write an envelope to stderr:
 {"error":{"code":"server_not_found","message":"The selected server was not found"}}
 ```
 
-`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. `update` and `skills` failures use the same envelope with the generic codes `transport`, `timeout`, `io`, and `other`; `telemetry` and `feedback` failures keep their text diagnostics.
+`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying error text (from ClickHouse, a managed server's output, Docker, the HTTP client, the OS, or a parser) when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. `update` and `skills` failures use the same envelope with the generic codes `transport`, `timeout`, `io`, and `other`; `telemetry` and `feedback` failures keep their text diagnostics.
 
 Error rendering adds nothing to stdout, but a streaming query or a command that already committed a change may have emitted a result before failing. Do not accept partial output as success or assume nonzero exit means no side effects.
 
@@ -73,7 +73,7 @@ Cloud generic codes are `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `r
 
 `cloud clickpipe start` exits 1 with `clickpipe_still_pausing` when the API answers with `Pausing`: a CDC pipe that is still pausing accepts the start but does not apply it. `command` is the `clickpipe get` to repeat until `state` is `Paused`; then run start again. It exits 1 with `clickpipe_start_not_applied` when the API answers with `Paused`: a pipe that has only just finished pausing drops the start too. `command` is the same start; wait a few seconds and rerun it until it returns `Running`. Only start is checked: a resync answered with `Paused` is applied.
 
-Local errors redact external logs, subprocess output, and OS details where needed. The UDF codes `udf_definition_invalid` (invalid JSON), `udf_rejected`, `udf_reload_blocked`, `udf_query_failed`, and `udf_server_unreachable` keep ClickHouse's, the HTTP client's, or the JSON parser's text out of `message` and return it in `details`. Managed-client failures include `project_scope.path`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command. These identify the exact directory inspected, without searching parent projects. New optional fields and codes may be added compatibly.
+When a local error's text comes from another program, `message` is clickhousectl's own summary and that text is in `details`: the server's startup output or log tail (`startup_exit`, `startup_timeout`), the Docker daemon's (`docker_error`), the HTTP client's, downloader's, or extractor's (`network_error`, `download_failed`), the OS's or serializer's (`io_error`, `sql_input_open_failed`, `sql_input_read_failed`), a failed subprocess's (`local_error`), and ClickHouse's, the HTTP client's, or the JSON parser's for the UDF codes `udf_definition_invalid` (invalid JSON), `udf_rejected`, `udf_reload_blocked`, `udf_query_failed`, and `udf_server_unreachable`. Human mode prints the same text. Telemetry never records it. Managed-client failures include `project_scope.path`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command. These identify the exact directory inspected, without searching parent projects. New optional fields and codes may be added compatibly.
 
 ## Wait for completion and retry deliberately
 
@@ -161,7 +161,7 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | `server_selection_required` | A server name (or, for `clickhouse stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
-| `invalid_server_name` | A stored server name contains path separators or `..`; a name given on the command line is rejected as a usage error |
+| `invalid_server_name` | A stored server name contains path separators or `..`; a name given on the command line is rejected as a usage error, including a Postgres name with a character other than letters, digits, `_`, `.`, and `-` |
 | `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (`--http-port`/`--tcp-port` `0`); a pass-through `--config` or `-C` is a usage error |
 | `config_not_found` | The named `clickhouse start --config` file does not exist, or the name is ambiguous |
 | `invalid_config_name` | The config name is a path rather than a file in the configs dir; `clickhouse start --config` rejects one as a usage error |
@@ -185,4 +185,4 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | `postgres_error` | A Postgres validation or state error; the message carries its recovery guidance |
 | `server_metadata_invalid` | A managed server metadata file contains invalid JSON; the path and conservative recovery guidance are included |
 | `io_error` | A local filesystem, metadata, or serialization operation failed |
-| `local_error` | A redacted fallback for failures whose text cannot be rendered safely |
+| `local_error` | A fallback for other failures, such as a subprocess that could not run; `details` has its text when there is any |

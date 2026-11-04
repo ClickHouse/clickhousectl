@@ -8,6 +8,24 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+/// A Postgres name also becomes part of the Docker container name
+/// `clickhousectl-pg-<name>-<major>`, so it may use only the characters Docker
+/// allows there. Checked at parse time so every invalid name is a usage error.
+fn parse_pg_server_name_arg(name: &str) -> Result<String, String> {
+    let name = parse_server_name_arg(name)?;
+    if name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    {
+        Ok(name)
+    } else {
+        Err(format!(
+            "Invalid Postgres server name '{name}': use only letters, digits, '_', '.' and '-', \
+             as Docker container names allow"
+        ))
+    }
+}
+
 fn parse_config_name_arg(name: &str) -> Result<String, String> {
     crate::local::config::validate_config_name(name)
         .map(|()| name.to_string())
@@ -627,7 +645,7 @@ CONTEXT FOR AGENTS:
   A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -636,7 +654,7 @@ CONTEXT FOR AGENTS:
             value_name = "NAME",
             conflicts_with = "name",
             hide = true,
-            value_parser = parse_server_name_arg
+            value_parser = parse_pg_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -691,7 +709,7 @@ CONTEXT FOR AGENTS:
     /// Stop a running Postgres instance
     Stop {
         /// Name of the instance to stop (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -700,7 +718,7 @@ CONTEXT FOR AGENTS:
             value_name = "NAME",
             conflicts_with = "name",
             hide = true,
-            value_parser = parse_server_name_arg
+            value_parser = parse_pg_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -719,7 +737,7 @@ CONTEXT FOR AGENTS:
   removing a running one errors.")]
     Remove {
         /// Name of the instance to remove (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -728,7 +746,7 @@ CONTEXT FOR AGENTS:
             value_name = "NAME",
             conflicts_with = "name",
             hide = true,
-            value_parser = parse_server_name_arg
+            value_parser = parse_pg_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -750,7 +768,7 @@ CONTEXT FOR AGENTS:
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default")
-        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_pg_server_name_arg)]
         #[arg(display_order = 0)]
         name: Option<String>,
 
@@ -761,7 +779,7 @@ CONTEXT FOR AGENTS:
             value_name = "NAME",
             hide = true,
             conflicts_with_all = ["name", "host", "port"],
-            value_parser = parse_server_name_arg
+            value_parser = parse_pg_server_name_arg
         )]
         #[arg(display_order = 0)]
         name_flag: Option<String>,
@@ -814,7 +832,7 @@ CONTEXT FOR AGENTS:
   Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
         /// Instance name (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -823,7 +841,7 @@ CONTEXT FOR AGENTS:
             value_name = "NAME",
             conflicts_with = "name",
             hide = true,
-            value_parser = parse_server_name_arg
+            value_parser = parse_pg_server_name_arg
         )]
         name_flag: Option<String>,
 
@@ -2135,6 +2153,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A Postgres name becomes part of a Docker container name, so characters
+    /// Docker rejects are a usage error on every Postgres command, in both
+    /// name forms, like path characters are (#1072, #1236).
+    #[test]
+    fn postgres_commands_reject_names_docker_cannot_use_at_clap_time() {
+        let postgres_commands = instance_commands()
+            .into_iter()
+            .filter(|command| command[0] == "postgres");
+        for command in postgres_commands {
+            for flag in [false, true] {
+                let with_name = |name| {
+                    let mut args = command.to_vec();
+                    if flag {
+                        args.push("--name");
+                    }
+                    args.push(name);
+                    args
+                };
+                for name in ["bad name!", "dev:1", "caf\u{e9}"] {
+                    let args = with_name(name);
+                    assert_eq!(
+                        local_parse_error(&args).kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
+                }
+                let args = with_name("Dev_1.test-2");
+                let expected = if flag {
+                    (None, Some("Dev_1.test-2".to_owned()))
+                } else {
+                    (Some("Dev_1.test-2".to_owned()), None)
+                };
+                assert_eq!(instance_names(local_command(&args)), expected, "{args:?}");
+            }
+        }
+        // ClickHouse servers are not Docker containers; their names keep the
+        // path-only rule.
+        assert_eq!(
+            instance_names(local_command(&["clickhouse", "stop", "bad name!"])),
+            (Some("bad name!".to_owned()), None)
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Structured output types for local commands.
 //!
 //! Successful output types support both JSON serialization and human-readable
-//! display. Runtime failures use the redacted stable envelope below.
+//! display. Runtime failures use the stable envelope below, which keeps
+//! foreign text out of `message` and in `details`.
 
 use crate::error::{
     Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
@@ -169,7 +170,8 @@ struct LocalErrorDetail {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<String>,
-    /// The foreign text (ClickHouse's response, the HTTP client's or serde's
+    /// The foreign text (ClickHouse's response, a managed server's stderr or
+    /// log tail, the Docker daemon's, the HTTP client's, the OS's or serde's
     /// error) behind a failure whose `message` is this crate's own summary.
     /// Only the variants that opt in via [`Mapping::details`] carry it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,8 +230,8 @@ impl Mapping {
     }
 
     /// Carry the foreign text the summary left out in a separate `details`
-    /// field, for failures where it is the actionable part (what ClickHouse
-    /// or serde objected to). Never reaches telemetry: only this DTO holds it.
+    /// field: it is the actionable part (what ClickHouse, Docker, the OS or
+    /// serde objected to). Never reaches telemetry: only this DTO holds it.
     fn details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
         self
@@ -243,6 +245,13 @@ impl Mapping {
             details: self.details,
         }
     }
+}
+
+/// The I/O group: one fixed summary, with the OS's or serde's text in
+/// `details`.
+fn io_mapping(source: &dyn std::error::Error) -> Mapping {
+    Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
+        .details(source.to_string())
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -378,14 +387,15 @@ impl LocalErrorOutput {
     ///   rendered verbatim, so a JSON consumer gets exactly the detail and
     ///   remediation human mode prints. This is the default: these messages are
     ///   composed by this crate from its own fields.
-    /// * **Redaction** ([`Mapping::redacted`]) — a curated summary replaces
+    /// * **Summary** ([`Mapping::redacted`]) — a curated summary replaces
     ///   text that interpolates foreign output (subprocess stderr, Docker
-    ///   daemon or OS/serde source strings, download bodies), which can carry
-    ///   paths, SQL or credentials and tells a machine consumer nothing.
-    ///   A few UDF failures, where the foreign text is what the consumer acts
-    ///   on (ClickHouse's or serde's objection), also opt into
-    ///   [`Mapping::details`], which keeps it out of `message` but in the
-    ///   envelope's `details` field.
+    ///   daemon or OS/serde source strings, download bodies), so `message`
+    ///   stays this crate's own text. The foreign text is what a consumer
+    ///   acts on, and human mode prints it to the same stderr, so these arms
+    ///   also opt into [`Mapping::details`], which carries it in the
+    ///   envelope's `details` field (#1072). Telemetry never sees it: it
+    ///   records only the code. A variant that must withhold its foreign
+    ///   text says why at its arm.
     ///
     /// The match is exhaustive on purpose: a new [`Error`] variant must be
     /// classified here rather than silently collapsing to
@@ -650,22 +660,28 @@ impl LocalErrorOutput {
             Error::PostgresResumePortInUse { .. } | Error::PostgresPortNotPublished { .. } => {
                 Mapping::parity(LocalErrorCode::PortInUse)
             }
-            // `details` is the managed server's own stderr or log tail: kept in
-            // human output, summarized here.
-            Error::StartupExit { kind, name, .. } => Mapping::redacted(
+            // `details` is the human text, including the managed server's own
+            // stderr or log tail; the message is a one-line summary.
+            Error::StartupExit {
+                kind,
+                name,
+                details,
+            } => Mapping::redacted(
                 LocalErrorCode::StartupExit,
                 format!("{kind} server '{name}' exited before becoming ready"),
             )
+            .details(details.clone())
             .command(startup_list_command(*kind)),
             Error::StartupTimeout {
                 kind,
                 name,
                 seconds,
-                ..
+                details,
             } => Mapping::redacted(
                 LocalErrorCode::StartupTimeout,
                 format!("{kind} server '{name}' did not become ready within {seconds} seconds"),
             )
+            .details(details.clone())
             .command(startup_list_command(*kind)),
 
             // ── network, downloads and extraction ───────────────────────────
@@ -682,14 +698,23 @@ impl LocalErrorOutput {
             // Version resolution probes: the remote list is the next step.
             Error::Network(_) => Mapping::parity(LocalErrorCode::VersionUnavailable)
                 .command("clickhousectl local list --remote"),
-            Error::Http(_) => {
+            // The HTTP client's, downloader's or extractor's text goes in
+            // `details`.
+            Error::Http(source) => {
                 Mapping::redacted(LocalErrorCode::NetworkError, "HTTP request failed")
+                    .details(source.to_string())
             }
-            Error::Download(_) => {
+            Error::Download(details) => {
                 Mapping::redacted(LocalErrorCode::DownloadFailed, "Download failed")
+                    .details(details.clone())
             }
-            Error::Extract(_) | Error::ExtractArchive { .. } => {
+            Error::Extract(details) => {
                 Mapping::redacted(LocalErrorCode::DownloadFailed, "Extraction failed")
+                    .details(details.clone())
+            }
+            Error::ExtractArchive { source, .. } => {
+                Mapping::redacted(LocalErrorCode::DownloadFailed, "Extraction failed")
+                    .details(source.to_string())
             }
 
             // ── Docker ──────────────────────────────────────────────────────
@@ -697,8 +722,11 @@ impl LocalErrorOutput {
             // and platform guidance; the daemon's own message is used for
             // classification only and never rendered (see `local::docker`).
             Error::DockerNotAvailable(_) => Mapping::parity(LocalErrorCode::DockerUnavailable),
-            Error::DockerError(_) => {
+            // The daemon's text for any other failed operation goes in
+            // `details`.
+            Error::DockerError(details) => {
                 Mapping::redacted(LocalErrorCode::DockerError, "Docker operation failed")
+                    .details(details.clone())
             }
             // Self-composed name-conflict guidance, unlike the daemon text
             // above.
@@ -707,39 +735,43 @@ impl LocalErrorOutput {
             }
 
             // ── filesystem and metadata ─────────────────────────────────────
-            Error::Io(_)
-            | Error::Json(_)
-            | Error::CreateDir { .. }
-            | Error::ServerMetadataPermission { .. }
-            | Error::ServerMetadataRead { .. }
-            | Error::ServerMetadataUtf8 { .. }
-            | Error::ServerMetadataWrite { .. }
-            | Error::ServerLock { .. } => {
-                Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
-            }
+            // The OS's or serde's text goes in `details`; the paths stay out.
+            Error::Io(source) => io_mapping(source),
+            Error::Json(source) => io_mapping(source),
+            Error::CreateDir { source, .. }
+            | Error::ServerMetadataPermission { source, .. }
+            | Error::ServerMetadataRead { source, .. }
+            | Error::ServerMetadataWrite { source, .. }
+            | Error::ServerLock { source, .. } => io_mapping(source),
+            Error::ServerMetadataUtf8 { source, .. } => io_mapping(source),
 
             // ── postgres ────────────────────────────────────────────────────
             // Self-composed validation and state guidance; the foreign-text
             // sibling `Error::Postgres` stays in the fallback below.
             Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
-            Error::SqlInputOpen { .. } => Mapping::redacted(
+            // The OS cause goes in `details`; the path stays out.
+            Error::SqlInputOpen { source, .. } => Mapping::redacted(
                 LocalErrorCode::SqlInputOpenFailed,
                 "Could not open SQL input file; check that --queries-file exists and is readable",
-            ),
-            Error::SqlInputRead(_) => Mapping::redacted(
+            )
+            .details(source.to_string()),
+            Error::SqlInputRead(source) => Mapping::redacted(
                 LocalErrorCode::SqlInputReadFailed,
                 "Could not read SQL input; check the file or stdin source is readable",
-            ),
+            )
+            .details(source.to_string()),
 
             // ── bounded fallback ────────────────────────────────────────────
             // Subprocess text and `Postgres` (OS text from a failed psql
-            // exec) are foreign output. `Cloud`, `CloudDetailed`,
-            // `AuthRequired`, `Skills`, `Feedback` and `UpdateCheck` belong to other command surfaces
-            // and are never printed through this envelope; `ChildExit` passes the child's status through
-            // without an error object at all.
-            Error::Exec(_)
-            | Error::Postgres(_)
-            | Error::Cloud(_)
+            // exec) are foreign output, carried in `details`.
+            Error::Exec(details) | Error::Postgres(details) => {
+                Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
+                    .details(details.clone())
+            }
+            // These belong to other command surfaces and are never printed
+            // through this envelope; `ChildExit` passes the child's status
+            // through without an error object at all.
+            Error::Cloud(_)
             | Error::CloudDetailed(_)
             | Error::AuthRequired(_)
             | Error::Usage(_)
@@ -2779,24 +2811,28 @@ mod tests {
         );
     }
 
+    /// The fallback keeps its summary as `message` and carries the subprocess
+    /// or OS text in `details` (#1072).
     #[test]
-    fn structured_fallback_and_wrapped_errors_never_serialize_raw_details() {
-        let sensitive =
-            "SELECT * FROM private_table; password=hunter2; /Users/al/secret; container=abc";
-        let fallback = error_json(&Error::Exec(sensitive.to_string()));
-        assert_eq!(fallback["error"]["code"], "local_error");
-        assert!(fallback["error"]["message"].is_string());
-        // Only the code and the summary: no command, no details.
-        assert_eq!(fallback["error"].as_object().unwrap().len(), 2);
-        assert!(!fallback.to_string().contains("hunter2"));
+    fn fallback_and_wrapped_errors_carry_foreign_text_in_details() {
+        let foreign = "No such file or directory (os error 2)";
+        for error in [Error::Exec(foreign.into()), Error::Postgres(foreign.into())] {
+            let json = error_json(&error);
+            assert_eq!(json["error"]["code"], "local_error");
+            assert_eq!(json["error"]["details"], foreign);
+            let message = json["error"]["message"].as_str().unwrap();
+            assert!(!message.contains(foreign), "{message}");
+            assert!(json["error"].get("command").is_none());
+        }
 
+        let cleanup = "cleanup-note-token";
         let wrapped = Error::PostgresStartupRollback {
             primary: Box::new(Error::StartupExit {
                 kind: crate::error::StartupKind::Postgres,
                 name: "default".into(),
-                details: sensitive.into(),
+                details: foreign.into(),
             }),
-            cleanup: sensitive.into(),
+            cleanup: cleanup.into(),
         };
         // Classified by the primary failure; the cleanup note is dropped.
         let wrapped = error_json(&wrapped);
@@ -2805,10 +2841,10 @@ mod tests {
             wrapped["error"]["command"],
             "clickhousectl local postgres list"
         );
+        assert_eq!(wrapped["error"]["details"], foreign);
         let message = wrapped["error"]["message"].as_str().unwrap();
         assert!(message.contains("'default'"), "{message}");
-        assert_eq!(wrapped["error"].as_object().unwrap().len(), 3);
-        assert!(!wrapped.to_string().contains("hunter2"));
+        assert!(!wrapped.to_string().contains(cleanup));
     }
 
     /// Name-only errors are raised for either engine, so they point at the
@@ -3012,91 +3048,158 @@ mod tests {
     }
 
     #[test]
-    fn sql_input_errors_keep_categories_without_paths_or_os_messages() {
-        let secret = "password=hunter2; SELECT secret FROM private_table";
+    fn sql_input_errors_carry_the_os_cause_in_details_but_not_the_path() {
+        let path = "private-path-token.sql";
+        let cause = "Permission denied (os error 13)";
         for (error, code) in [
             (
                 Error::SqlInputOpen {
-                    path: secret.into(),
-                    source: std::io::Error::other(secret),
+                    path: path.into(),
+                    source: std::io::Error::other(cause),
                 },
                 "sql_input_open_failed",
             ),
             (
-                Error::SqlInputRead(std::io::Error::other(secret)),
+                Error::SqlInputRead(std::io::Error::other(cause)),
                 "sql_input_read_failed",
             ),
         ] {
-            assert!(error.to_string().contains(secret));
             let json = error_json(&error);
             assert_eq!(json["error"]["code"], code);
-            assert!(!json.to_string().contains(secret));
+            assert_eq!(json["error"]["details"], cause);
+            assert!(!json.to_string().contains(path));
             // A curated summary, not the human text.
-            assert!(json["error"]["message"].is_string());
             assert_ne!(json["error"]["message"], error.to_string());
             assert_eq!(error.exit_code(), 1);
         }
     }
 
     /// The complement of the parity rule: text that interpolates foreign output
-    /// (subprocess, Docker daemon, OS/serde sources) stays summarized.
+    /// (subprocess, Docker daemon, OS/serde sources) keeps a summary as
+    /// `message`, and the foreign text goes in `details` (#1072).
     #[test]
-    fn errors_carrying_foreign_output_stay_summarized() {
-        let secret = "password=hunter2; /Users/al/secret-project";
+    fn errors_carrying_foreign_output_put_it_in_details_beside_a_summary() {
+        let foreign = "foreign-text-token";
+        let path = "private-path-token";
+        let json_source = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("invalid fixture must fail to parse");
+        let utf8_source = String::from_utf8(vec![0xff]).expect_err("invalid UTF-8 fixture");
         // Each summary is fixed per code, so the identifiers it must carry are
         // listed instead of its wording.
-        let cases: [(Error, &[&str]); 9] = [
-            (Error::Exec(secret.into()), &[]),
-            (Error::DockerError(secret.into()), &[]),
-            (Error::Postgres(secret.into()), &[]),
-            (Error::Download(secret.into()), &[]),
-            (Error::Extract(secret.into()), &[]),
-            (Error::Io(std::io::Error::other(secret)), &[]),
+        let cases: Vec<(Error, String, &[&str])> = vec![
+            (Error::Exec(foreign.into()), foreign.into(), &[]),
+            (Error::DockerError(foreign.into()), foreign.into(), &[]),
+            (Error::Postgres(foreign.into()), foreign.into(), &[]),
+            (Error::Download(foreign.into()), foreign.into(), &[]),
+            (Error::Extract(foreign.into()), foreign.into(), &[]),
+            (
+                Error::ExtractArchive {
+                    archive: path.into(),
+                    destination: path.into(),
+                    source: std::io::Error::other(foreign),
+                },
+                foreign.into(),
+                &[],
+            ),
+            (
+                Error::Io(std::io::Error::other(foreign)),
+                foreign.into(),
+                &[],
+            ),
+            (Error::Json(json_source), String::new(), &[]),
+            (
+                Error::CreateDir {
+                    path: path.into(),
+                    source: std::io::Error::other(foreign),
+                },
+                foreign.into(),
+                &[],
+            ),
+            (
+                Error::ServerMetadataPermission {
+                    path: path.into(),
+                    source: std::io::Error::other(foreign),
+                },
+                foreign.into(),
+                &[],
+            ),
+            (
+                Error::ServerMetadataRead {
+                    path: path.into(),
+                    source: std::io::Error::other(foreign),
+                },
+                foreign.into(),
+                &[],
+            ),
+            (
+                Error::ServerMetadataUtf8 {
+                    path: path.into(),
+                    source: utf8_source,
+                },
+                String::new(),
+                &[],
+            ),
             (
                 Error::ServerMetadataWrite {
-                    path: secret.into(),
-                    source: std::io::Error::other(secret),
+                    path: path.into(),
+                    source: std::io::Error::other(foreign),
                 },
+                foreign.into(),
                 &[],
             ),
             (
                 Error::ServerLock {
                     operation: "open the server metadata lock file",
-                    path: secret.into(),
+                    path: path.into(),
                     remediation: "Check access, then retry.",
-                    source: std::io::Error::other(secret),
+                    source: std::io::Error::other(foreign),
                 },
+                foreign.into(),
                 &[],
+            ),
+            (
+                Error::StartupExit {
+                    kind: crate::error::StartupKind::Postgres,
+                    name: "default".into(),
+                    details: foreign.into(),
+                },
+                foreign.into(),
+                &["'default'"],
             ),
             (
                 Error::StartupTimeout {
                     kind: crate::error::StartupKind::ClickHouse,
                     name: "default".into(),
                     seconds: 30,
-                    details: secret.into(),
+                    details: foreign.into(),
                 },
+                foreign.into(),
                 &["'default'", "30"],
             ),
         ];
 
-        for (error, identifiers) in cases {
-            let serialized = serde_json::to_string(&LocalErrorOutput::from_error(&error)).unwrap();
-            let message = error_json(&error)["error"]["message"]
-                .as_str()
-                .unwrap()
-                .to_owned();
+        for (error, expected_details, identifiers) in cases {
+            let json = error_json(&error);
+            let message = json["error"]["message"].as_str().unwrap().to_owned();
             assert_ne!(message, error.to_string(), "{error:?} must be summarized");
             for identifier in identifiers {
                 assert!(message.contains(identifier), "{error:?}: {message}");
             }
             assert!(
-                error_json(&error)["error"].get("details").is_none(),
-                "still-redacted {error:?} must not carry details"
+                !message.contains(foreign) && !message.contains(path),
+                "{error:?}: {message}"
             );
-            assert!(
-                !serialized.contains("hunter2") && !serialized.contains("secret-project"),
-                "leaked foreign output: {serialized}"
-            );
+            let details = json["error"]["details"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{error:?} must carry details"));
+            // The serde fixtures' text is serde's own, so only its presence
+            // in the human line is asserted.
+            if expected_details.is_empty() {
+                assert!(error.to_string().contains(details), "{error:?}: {details}");
+            } else {
+                assert_eq!(details, expected_details, "{error:?}");
+            }
+            assert!(!details.contains(path), "{error:?}: {details}");
         }
     }
 

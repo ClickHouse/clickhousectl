@@ -125,7 +125,7 @@ fn background_start_waits_for_http_and_tcp_readiness() {
 }
 
 #[test]
-fn failed_start_captures_log_without_exposing_its_path_in_json() {
+fn failed_start_captures_log_and_names_it_in_json_details() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
     install_fake_clickhouse(
@@ -143,7 +143,9 @@ fn failed_start_captures_log_without_exposing_its_path_in_json() {
             .unwrap()
             .contains("'default'")
     );
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("server.log"));
+    // The human text, which names the log, travels in `details` (#1072).
+    let details = error["error"]["details"].as_str().expect("startup details");
+    assert!(details.contains("server.log"), "{details}");
 
     let log = project
         .path()

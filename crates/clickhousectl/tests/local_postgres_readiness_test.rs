@@ -906,7 +906,7 @@ fn fresh_start_that_docker_starts_unpublished_rolls_back_with_port_in_use() {
 }
 
 #[test]
-fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise() {
+fn immediate_exit_returns_bounded_logs_in_details_without_setup_success_or_telemetry_noise() {
     let mut logs: Vec<String> = (0..80)
         .map(|index| format!("startup line {index}: {}", "x".repeat(300)))
         .collect();
@@ -942,9 +942,12 @@ fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise(
             .unwrap()
             .contains("'default'")
     );
-    // The bounded log tail stays out of the JSON envelope.
-    assert!(!stderr.contains("FATAL: startup failed before readiness"));
-    assert!(!stderr.contains("startup line"));
+    // The bounded log tail travels in `details` (#1072).
+    let details = error["error"]["details"].as_str().expect("startup details");
+    assert!(
+        details.contains("FATAL: startup failed before readiness"),
+        "{details}"
+    );
     assert!(readiness_requests(&requests).is_empty());
     assert!(
         !project
@@ -1131,8 +1134,8 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
     assert_eq!(output.status.code(), Some(1));
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "docker_error");
-    assert!(error["error"]["message"].is_string());
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("start failed by test"));
+    let details = error["error"]["details"].as_str().expect("daemon details");
+    assert!(details.contains("start failed by test"), "{details}");
     let create = request_index(&requests, "POST", "/containers/create?");
     let start = request_index(&requests, "POST", "/containers/pg-id/start");
     let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
@@ -1167,7 +1170,6 @@ fn initialization_timeout_removes_partial_pgdata() {
     let requests = docker.requests();
 
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "startup_timeout");
     assert!(
@@ -1176,7 +1178,11 @@ fn initialization_timeout_removes_partial_pgdata() {
             .unwrap()
             .contains("'default'")
     );
-    assert!(!stderr.contains("database system is starting up"));
+    let details = error["error"]["details"].as_str().expect("startup details");
+    assert!(
+        details.contains("database system is starting up"),
+        "{details}"
+    );
     // The fake daemon reports a running container that never becomes ready.
     // The wall-clock timeout must therefore trigger rollback, regardless of
     // how many polls the scheduler permits before the deadline.
@@ -1327,7 +1333,7 @@ fn resume_failure_preserves_existing_container_metadata_and_data() {
 }
 
 #[test]
-fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
+fn cleanup_failure_preserves_rollback_behavior_and_omits_the_cleanup_note_from_json() {
     let home = tempfile::tempdir().expect("create home tempdir");
     let project = tempfile::tempdir().expect("create project tempdir");
     let socket_path = home.path().join("docker.sock");
@@ -1355,8 +1361,8 @@ fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "docker_error");
-    assert!(error["error"]["message"].is_string());
-    assert!(!stderr.contains("start failed by test"));
+    let details = error["error"]["details"].as_str().expect("daemon details");
+    assert!(details.contains("start failed by test"), "{details}");
     // The incomplete-rollback detail names the retained paths; JSON omits it.
     assert!(!stderr.contains("default-pg18"), "{stderr}");
     assert!(!stderr.contains("remove failed by test"));
