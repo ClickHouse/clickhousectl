@@ -744,6 +744,8 @@ CONTEXT FOR AGENTS:
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
   with no password; it does not read managed credentials.
   Put wrapper options before `--`; all arguments after it go to psql.
+  Script input (--queries-file or piped stdin) stops at the first failed statement and exits 3;
+  pass `-- -v ON_ERROR_STOP=0` to keep going.
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default")

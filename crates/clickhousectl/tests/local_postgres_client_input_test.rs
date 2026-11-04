@@ -236,7 +236,9 @@ fn relative_and_absolute_host_files_stream_in_query_order() {
                 "-c",
                 "CREATE TABLE data (value text)",
                 "-f",
-                "-"
+                "-",
+                "-v",
+                "ON_ERROR_STOP=1"
             ])
         );
         assert_eq!(config["AttachStdin"], true);
@@ -293,7 +295,15 @@ fn plain_piped_stdin_uses_non_tty_exec_and_reaches_eof() {
     assert_eq!(config["Tty"], false);
     assert_eq!(
         config["Cmd"],
-        json!(["psql", "-U", "postgres", "-d", "postgres"])
+        json!([
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1"
+        ])
     );
 }
 
@@ -313,23 +323,27 @@ fn native_command_passthrough_uses_non_tty_exec() {
     assert_eq!(config["Tty"], false);
     assert_eq!(
         config["Cmd"],
-        json!(["psql", "-U", "postgres", "-d", "postgres", "-c", "SELECT 2"])
+        json!([
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "SELECT 2"
+        ])
     );
 }
 
 #[test]
-fn file_and_stdin_preserve_psql_error_status() {
+fn file_and_stdin_stop_on_error_and_preserve_psql_error_status() {
     for stdin in [false, true] {
         let fixture = Fixture::new(3, false);
         std::fs::write(fixture.project.path().join("bad.sql"), "BAD SQL;\n").unwrap();
         let mut child = fixture
-            .command(&[
-                "--queries-file",
-                if stdin { "-" } else { "bad.sql" },
-                "--",
-                "-v",
-                "ON_ERROR_STOP=1",
-            ])
+            .command(&["--queries-file", if stdin { "-" } else { "bad.sql" }])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -344,7 +358,48 @@ fn file_and_stdin_preserve_psql_error_status() {
         let output = child.wait_with_output().unwrap();
         assert_eq!(output.status.code(), Some(3));
         assert!(String::from_utf8_lossy(&output.stderr).contains("psql diagnostic"));
+        assert_eq!(
+            fixture.execution.lock().unwrap().config.as_ref().unwrap()["Cmd"],
+            json!([
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-f",
+                "-",
+                "-v",
+                "ON_ERROR_STOP=1"
+            ])
+        );
     }
+}
+
+#[test]
+fn native_arguments_follow_and_can_override_on_error_stop() {
+    let fixture = Fixture::new(0, false);
+    std::fs::write(fixture.project.path().join("seed.sql"), "SELECT 1;\n").unwrap();
+    let output = fixture
+        .command(&["--queries-file", "seed.sql", "--", "-v", "ON_ERROR_STOP=0"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        fixture.execution.lock().unwrap().config.as_ref().unwrap()["Cmd"],
+        json!([
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-f",
+            "-",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            "ON_ERROR_STOP=0"
+        ])
+    );
 }
 
 #[test]
@@ -558,10 +613,7 @@ fn real_docker_file_and_stdin_apply_sql_and_propagate_errors() {
     for path in [file.to_str().unwrap(), "-"] {
         let bad_sql = "THIS IS INVALID SQL;\nINSERT INTO qa_files VALUES (99);\n";
         std::fs::write(&file, bad_sql).unwrap();
-        let output = run(
-            &["--queries-file", path, "--", "-v", "ON_ERROR_STOP=1"],
-            Some(bad_sql),
-        );
+        let output = run(&["--queries-file", path], Some(bad_sql));
         assert_eq!(output.status.code(), Some(3), "{output:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("ERROR"));
     }
@@ -571,6 +623,17 @@ fn real_docker_file_and_stdin_apply_sql_and_propagate_errors() {
     );
     assert_success(&rows);
     assert_eq!(String::from_utf8_lossy(&rows.stdout).trim(), "3");
+    // Opting out runs the statements after the failure.
+    assert_success(&run(
+        &["--queries-file", "-", "--", "-v", "ON_ERROR_STOP=0"],
+        Some("THIS IS INVALID SQL;\nINSERT INTO qa_files VALUES (4);\n"),
+    ));
+    let rows = run(
+        &["--query", "SELECT count(*) FROM qa_files", "--", "-tA"],
+        None,
+    );
+    assert_success(&rows);
+    assert_eq!(String::from_utf8_lossy(&rows.stdout).trim(), "4");
 }
 
 #[test]

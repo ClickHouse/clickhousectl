@@ -562,6 +562,43 @@ fn postgres_client_direct_mode_defaults_reach_psql() {
             "postgres",
             "-d",
             "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+        ],
+    );
+    assert_child_args(
+        run(
+            project.path(),
+            home.path(),
+            Some(&bin),
+            &[
+                "local",
+                "postgres",
+                "client",
+                "--port",
+                "65535",
+                "--queries-file",
+                "seed.sql",
+                "--",
+                "-v",
+                "ON_ERROR_STOP=0",
+            ],
+        ),
+        &[
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "65535",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+            "-f",
+            "seed.sql",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            "ON_ERROR_STOP=0",
         ],
     );
 }
