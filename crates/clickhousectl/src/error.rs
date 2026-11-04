@@ -711,6 +711,11 @@ pub enum Error {
     #[error("{0}")]
     Skills(String),
 
+    /// `feedback` could not deliver the message (network, timeout, or a
+    /// rejection by the feedback service).
+    #[error("{0}")]
+    Feedback(String),
+
     #[error("Invalid server name '{0}': must not contain path separators or '..'")]
     InvalidServerName(String),
 

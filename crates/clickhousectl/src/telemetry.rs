@@ -68,6 +68,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::client_facts::{ClientFacts, env_truthy, real_env_lookup};
 use crate::error::{Error, Result};
 use crate::local::output::LocalErrorCode;
 use crate::paths;
@@ -86,8 +87,6 @@ const PAYLOAD_ENV: &str = "CHCTL_TELEMETRY_PAYLOAD";
 const DEBUG_ENV: &str = "CHCTL_TELEMETRY_DEBUG";
 /// donottrack.sh convention: when truthy, telemetry is fully silent.
 const DNT_ENV: &str = "DO_NOT_TRACK";
-/// Standard CI marker, sent as a boolean so pipelines can be filtered out.
-const CI_ENV: &str = "CI";
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -174,22 +173,10 @@ fn save_state_to(path: &Path, disabled: bool) -> std::io::Result<()> {
 /// callers pass a wrapper around `std::env::var`; tests pass a closure over a
 /// synthetic map (edition 2024 makes `set_var` unsafe, so tests never mutate
 /// the real environment).
+///
+/// [`real_env_lookup`] and [`env_truthy`] live in [`crate::client_facts`],
+/// shared with the feedback payload.
 type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
-
-fn real_env_lookup(key: &str) -> Option<String> {
-    // `var_os` + lossy conversion, not `var`: `std::env::var` returns an error
-    // (read here as `None`) for a variable that is set but not valid UTF-8, so
-    // a non-UTF-8 `DO_NOT_TRACK` would look absent and telemetry would fail
-    // open. A set-but-non-UTF-8 value must still count as an opt-out; the
-    // lossy string is non-empty and not "0"/"false", so `env_truthy` sees it
-    // as set.
-    std::env::var_os(key).map(|v| v.to_string_lossy().into_owned())
-}
-
-/// donottrack.sh-style truthiness: set, and not `""`/`"0"`/`"false"`.
-fn env_truthy(value: Option<String>) -> bool {
-    matches!(value.as_deref(), Some(v) if !v.is_empty() && v != "0" && v != "false")
-}
 
 // ---------------------------------------------------------------------------
 // Payload
@@ -198,12 +185,9 @@ fn env_truthy(value: Option<String>) -> bool {
 /// The wire payload. Field names match the ingest worker's contract exactly
 /// (the worker renames `ci`→`is_ci` server-side).
 ///
-/// Agent and version facts are set here, client-side, rather than derived in
-/// the worker from the User-Agent header: the CLI already holds both as
-/// structured values (`is_ai_agent::detect()`, `CARGO_PKG_VERSION`), so
-/// putting them in the payload avoids brittle string extraction on the
-/// ingest side. The User-Agent still carries the same facts as transport
-/// metadata for prefix-based request filtering.
+/// The agent, CI, version and platform facts come from [`ClientFacts`],
+/// flattened in place after `suggestion`, so the wire keys and their order are
+/// the same as when they were declared here.
 #[derive(Debug, serde::Serialize)]
 struct Payload {
     command: String,
@@ -249,14 +233,9 @@ struct Payload {
     /// canonical name (no `--`), for flags and subcommands alike. `null`
     /// when clap made no suggestion or the suggestion matched no definition.
     suggestion: Option<String>,
-    is_agent: bool,
-    /// Canonical id of the detected coding agent (e.g. "claude-code");
-    /// `null` for human invocations.
-    agent: Option<String>,
-    ci: bool,
-    version: &'static str,
-    os: &'static str,
-    arch: &'static str,
+    /// `is_agent`, `agent`, `ci`, `version`, `os`, `arch`.
+    #[serde(flatten)]
+    client: ClientFacts,
     // -- failure classification (#450) --------------------------------------
     //
     // Six fields describing *how* a failure failed, from the closed
@@ -337,7 +316,6 @@ fn build_payload(
     flags.truncate(MAX_FLAGS);
     let mut positionals = invocation.positionals.clone();
     positionals.truncate(MAX_POSITIONALS);
-    let detected = is_ai_agent::detect();
     let outcome = dispatched_outcome(invocation.outcome, exit_code);
     let failure = failure.filter(|_| admits_failure_detail(outcome));
     let local_failure = invocation
@@ -350,12 +328,7 @@ fn build_payload(
         exit_code,
         outcome,
         suggestion: invocation.suggestion.clone(),
-        is_agent: detected.is_some(),
-        agent: detected.map(|a| a.id.as_str().to_string()),
-        ci: env_truthy(env(CI_ENV)),
-        version: env!("CARGO_PKG_VERSION"),
-        os: std::env::consts::OS,
-        arch: std::env::consts::ARCH,
+        client: ClientFacts::detect(env),
         failure_stage: failure.map(|f| f.failure_stage),
         failure_kind: failure
             .map(|f| f.failure_kind)
@@ -1968,10 +1941,11 @@ mod tests {
                  definition-owned"
             );
         }
-        // The passthrough slots are the argv-forwarding ones; they all happen
-        // to be spelled `args`, but the exclusion is by marker, not by name.
+        // The passthrough slots are the argv-forwarding ones, spelled `args`,
+        // and `feedback`'s free-text `message`, which takes every remaining
+        // word the same way; the exclusion is by marker, not by name.
         assert!(
-            passthrough.iter().all(|id| id == "args"),
+            passthrough.iter().all(|id| id == "args" || id == "message"),
             "unexpected passthrough slots: {passthrough:?}"
         );
         assert!(
