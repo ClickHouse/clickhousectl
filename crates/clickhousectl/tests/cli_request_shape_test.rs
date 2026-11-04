@@ -5642,6 +5642,40 @@ async fn org_prometheus_discovery_renders_sparse_human_output() {
 }
 
 #[tokio::test]
+async fn activity_list_sends_the_day_after_to_date_so_the_named_day_is_included() {
+    let mock = MockServer::start().await;
+    // The API reads `to_date` as midnight, so the CLI sends the next day.
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/activities"))
+        .and(query_param("from_date", "2026-02-28"))
+        .and(query_param("to_date", "2026-03-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-activity-list",
+            "result": []
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "activity",
+            "list",
+            "--org-id",
+            "org-1",
+            "--from-date",
+            "2026-02-28",
+            "--to-date",
+            "2026-02-28",
+        ],
+    );
+
+    assert_success(&output);
+}
+
+#[tokio::test]
 async fn org_usage_auto_detects_the_only_organization() {
     let mock = start_mock_org_auto_detection_api().await;
     let output = invoke_cli_with_cloud_credentials(

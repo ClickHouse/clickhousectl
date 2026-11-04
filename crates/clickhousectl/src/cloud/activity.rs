@@ -10,6 +10,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
+use chrono::{Datelike, NaiveDate};
 use clap::Subcommand;
 use clap::builder::NonEmptyStringValueParser;
 use tabled::{Table, Tabled, settings::Style};
@@ -22,7 +23,7 @@ pub enum ActivityCommands {
         #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
-        /// End date in UTC (YYYY-MM-DD)
+        /// End date in UTC, inclusive (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         to_date: Option<String>,
     },
@@ -60,7 +61,10 @@ async fn activity_list(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let activities = client.list_activities(&org_id, from_date, to_date).await?;
+    let to_date = to_date.map(exclusive_end_date);
+    let activities = client
+        .list_activities(&org_id, from_date, to_date.as_deref())
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&activities)?);
@@ -89,6 +93,18 @@ async fn activity_list(
         println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
+}
+
+/// The API reads `to_date` as midnight at the start of that day, so a bare
+/// date would exclude the day it names. Send the following day instead, which
+/// makes `--to-date` inclusive like `org usage --to-date`.
+fn exclusive_end_date(to_date: &str) -> String {
+    NaiveDate::parse_from_str(to_date, "%Y-%m-%d")
+        .ok()
+        .and_then(|date| date.succ_opt())
+        .filter(|next| next.year() <= 9999)
+        .map(|next| next.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| to_date.to_string())
 }
 
 async fn activity_get(client: &CloudClient, activity_id: &str, json: bool) -> CloudResult<()> {
