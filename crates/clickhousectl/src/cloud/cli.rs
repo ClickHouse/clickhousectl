@@ -268,7 +268,8 @@ CONTEXT FOR AGENTS:
     /// View the organization activity log
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Audit log of org and service changes; without --from-date/--to-date the API picks the range.
+  Audit log of org and service changes. `activity list` without --from-date covers the last 7 days;
+  pass an earlier --from-date for older entries.
   Activity IDs for `activity get` come from `activity list`.")]
     Activity {
         #[command(subcommand)]
