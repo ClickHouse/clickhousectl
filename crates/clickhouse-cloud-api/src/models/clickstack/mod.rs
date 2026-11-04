@@ -263,6 +263,81 @@ pub struct ClickStackNumericColorConditionResponse {
     pub value: Option<f64>,
 }
 
+/// `ClickStackPromqlInstantExpression` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlInstantExpression {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub expression: String,
+    #[serde(rename = "queryType", skip_serializing_if = "Option::is_none")]
+    pub query_type: Option<ClickStackPromqlInstantExpressionQuerytype>,
+}
+
+/// `ClickStackPromqlInstantExpression` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPromqlInstantExpression`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlInstantExpressionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(rename = "queryType", skip_serializing_if = "Option::is_none")]
+    pub query_type: Option<ClickStackPromqlInstantExpressionQuerytype>,
+}
+
+/// `ClickStackPromqlRangeExpression` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlRangeExpression {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub expression: String,
+}
+
+/// `ClickStackPromqlRangeExpression` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPromqlRangeExpression`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlRangeExpressionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+}
+
+/// `ClickStackPromqlReducibleExpression` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlReducibleExpression {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub expression: String,
+    #[serde(rename = "queryType", skip_serializing_if = "Option::is_none")]
+    pub query_type: Option<ClickStackPromqlReducibleExpressionQuerytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reducer: Option<ClickStackPromqlReducibleExpressionReducer>,
+}
+
+/// `ClickStackPromqlReducibleExpression` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPromqlReducibleExpression`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlReducibleExpressionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(rename = "queryType", skip_serializing_if = "Option::is_none")]
+    pub query_type: Option<ClickStackPromqlReducibleExpressionQuerytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reducer: Option<ClickStackPromqlReducibleExpressionReducer>,
+}
+
 /// `ClickStackSelectItem` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSelectItem {

@@ -6,6 +6,22 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+ClickStack chart configs gain a PromQL variant that queries a `promql` source.
+Each of the line, stacked-bar, stacked-line, categorical-bar, table, number,
+pie and heatmap chart config unions (and their `*Response` unions) adds a
+`ClickStack{Kind}PromqlChartConfig` arm, selected by `configType: "promql"`, and
+the four alert chart config unions add `ClickStackAlert{Kind}PromqlChartConfig`
+with the alert overlay's `name`, `where` and `whereLanguage`. A PromQL config
+carries `expressions` instead of `select`: `ClickStackPromqlRangeExpression`
+for time series and heatmaps, `ClickStackPromqlInstantExpression` (with
+`query_type`) for tables, and `ClickStackPromqlReducibleExpression` (with
+`query_type` and `reducer`) for number, pie and categorical-bar charts. A
+payload without `configType` that carries `expressions` no longer reaches a
+builder arm; it lands in `Unknown`, as a raw-SQL payload without `configType`
+already did. The heatmap union now dispatches on `configType` before
+`heatmapMode`, so any other `configType` value is `Unknown`. Exhaustive matches
+on these unions without a wildcard arm need the new arms.
+
 The beta service JWT provider methods are `jwt_provider_get_list`,
 `jwt_provider_create`, `jwt_provider_get`, `jwt_provider_update` and
 `jwt_provider_delete`. A JWT provider lets users connect to a service with a

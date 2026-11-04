@@ -1028,33 +1028,42 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
 
     assert_split_strictness!(
         ClickStackAlertBarBuilderChartConfig => ClickStackAlertBarBuilderChartConfigResponse,
+        ClickStackAlertBarPromqlChartConfig => ClickStackAlertBarPromqlChartConfigResponse,
         ClickStackAlertBarRawSqlChartConfig => ClickStackAlertBarRawSqlChartConfigResponse,
         ClickStackAlertLineBuilderChartConfig => ClickStackAlertLineBuilderChartConfigResponse,
+        ClickStackAlertLinePromqlChartConfig => ClickStackAlertLinePromqlChartConfigResponse,
         ClickStackAlertLineRawSqlChartConfig => ClickStackAlertLineRawSqlChartConfigResponse,
         ClickStackAlertNumberBuilderChartConfig => ClickStackAlertNumberBuilderChartConfigResponse,
+        ClickStackAlertNumberPromqlChartConfig => ClickStackAlertNumberPromqlChartConfigResponse,
         ClickStackAlertNumberRawSqlChartConfig => ClickStackAlertNumberRawSqlChartConfigResponse,
         ClickStackAlertStackedLineBuilderChartConfig => ClickStackAlertStackedLineBuilderChartConfigResponse,
+        ClickStackAlertStackedLinePromqlChartConfig => ClickStackAlertStackedLinePromqlChartConfigResponse,
         ClickStackAlertStackedLineRawSqlChartConfig => ClickStackAlertStackedLineRawSqlChartConfigResponse,
         ClickStackAlertChannelEmail => ClickStackAlertChannelEmailResponse,
         ClickStackAlertChannelWebhook => ClickStackAlertChannelWebhookResponse,
         ClickStackBackgroundChart => ClickStackBackgroundChartResponse,
         ClickStackBarBuilderChartConfig => ClickStackBarBuilderChartConfigResponse,
+        ClickStackBarPromqlChartConfig => ClickStackBarPromqlChartConfigResponse,
         ClickStackBarRawSqlChartConfig => ClickStackBarRawSqlChartConfigResponse,
         ClickStackBetweenColorCondition => ClickStackBetweenColorConditionResponse,
         ClickStackCategoricalBarBuilderChartConfig => ClickStackCategoricalBarBuilderChartConfigResponse,
+        ClickStackCategoricalBarPromqlChartConfig => ClickStackCategoricalBarPromqlChartConfigResponse,
         ClickStackCategoricalBarRawSqlChartConfig => ClickStackCategoricalBarRawSqlChartConfigResponse,
         ClickStackDashboardContainer => ClickStackDashboardContainerResponse,
         ClickStackDashboardContainerTab => ClickStackDashboardContainerTabResponse,
         ClickStackEqualityColorCondition => ClickStackEqualityColorConditionResponse,
         ClickStackEventPatternsChartConfig => ClickStackEventPatternsChartConfigResponse,
         ClickStackHeatmapDistributionChartConfig => ClickStackHeatmapDistributionChartConfigResponse,
+        ClickStackHeatmapPromqlChartConfig => ClickStackHeatmapPromqlChartConfigResponse,
         ClickStackHeatmapSeriesChartConfig => ClickStackHeatmapSeriesChartConfigResponse,
         ClickStackHeatmapSelectItem => ClickStackHeatmapSelectItemResponse,
         ClickStackLineBuilderChartConfig => ClickStackLineBuilderChartConfigResponse,
+        ClickStackLinePromqlChartConfig => ClickStackLinePromqlChartConfigResponse,
         ClickStackLineRawSqlChartConfig => ClickStackLineRawSqlChartConfigResponse,
         ClickStackMarkdownChartConfig => ClickStackMarkdownChartConfigResponse,
         ClickStackNumberBuilderChartConfig => ClickStackNumberBuilderChartConfigResponse,
         ClickStackNumberFormat => ClickStackNumberFormatResponse,
+        ClickStackNumberPromqlChartConfig => ClickStackNumberPromqlChartConfigResponse,
         ClickStackNumberRawSqlChartConfig => ClickStackNumberRawSqlChartConfigResponse,
         ClickStackNumericColorCondition => ClickStackNumericColorConditionResponse,
         ClickStackOnClickDashboard => ClickStackOnClickDashboardResponse,
@@ -1064,12 +1073,18 @@ fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
         ClickStackOnClickTargetIdVariant => ClickStackOnClickTargetIdVariantResponse,
         ClickStackOnClickTargetTemplateVariant => ClickStackOnClickTargetTemplateVariantResponse,
         ClickStackPieBuilderChartConfig => ClickStackPieBuilderChartConfigResponse,
+        ClickStackPiePromqlChartConfig => ClickStackPiePromqlChartConfigResponse,
         ClickStackPieRawSqlChartConfig => ClickStackPieRawSqlChartConfigResponse,
+        ClickStackPromqlInstantExpression => ClickStackPromqlInstantExpressionResponse,
+        ClickStackPromqlRangeExpression => ClickStackPromqlRangeExpressionResponse,
+        ClickStackPromqlReducibleExpression => ClickStackPromqlReducibleExpressionResponse,
         ClickStackSearchChartConfig => ClickStackSearchChartConfigResponse,
         ClickStackSelectItem => ClickStackSelectItemResponse,
         ClickStackStackedLineBuilderChartConfig => ClickStackStackedLineBuilderChartConfigResponse,
+        ClickStackStackedLinePromqlChartConfig => ClickStackStackedLinePromqlChartConfigResponse,
         ClickStackStackedLineRawSqlChartConfig => ClickStackStackedLineRawSqlChartConfigResponse,
         ClickStackTableBuilderChartConfig => ClickStackTableBuilderChartConfigResponse,
+        ClickStackTablePromqlChartConfig => ClickStackTablePromqlChartConfigResponse,
         ClickStackTableRawSqlChartConfig => ClickStackTableRawSqlChartConfigResponse,
     );
 }
@@ -4799,5 +4814,576 @@ fn clickstack_alert_response_carries_inline_chart_config_display_name_and_tags()
     assert_eq!(
         serde_json::to_value(&alert).unwrap(),
         serde_json::json!({"id": "alert-1"})
+    );
+}
+
+/// The three variants of one tile chart config union, as `(variant name, payload)`.
+type ClickStackChartConfigVariants = [(&'static str, serde_json::Value); 3];
+
+/// One tile chart config per union variant: `(union name, variants)`. The
+/// heatmap union has no raw-SQL variant; its series variant takes that slot.
+fn clickstack_tile_chart_config_payloads() -> [(&'static str, ClickStackChartConfigVariants); 8] {
+    let range = serde_json::json!([{"expression": "sum(rate(http_requests_total[$__rate_interval]))", "alias": "Requests"}]);
+    let reducible =
+        serde_json::json!([{"expression": "up", "queryType": "instant", "reducer": "max"}]);
+    let instant = serde_json::json!([{"expression": "up", "alias": "Up", "queryType": "instant"}]);
+    let builder = |display_type: &str| serde_json::json!({"displayType": display_type, "sourceId": "src-1", "select": [{"aggFn": "count"}]});
+    let raw = |display_type: &str| {
+        serde_json::json!({
+            "displayType": display_type, "configType": "sql", "connectionId": "conn-1",
+            "sqlTemplate": "SELECT 1"
+        })
+    };
+    [
+        (
+            "Line",
+            [
+                ("Builder", builder("line")),
+                ("RawSql", raw("line")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "line", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": range, "granularity": "5 minute",
+                        "legendTemplate": "{{job}}", "fillNulls": true,
+                        "alignDateRangeToGranularity": false, "seriesLimit": 5,
+                        "compareToPreviousPeriod": true, "lineInterpolation": "step",
+                        "numberFormat": {
+                            "average": false, "currencySymbol": "$", "decimalBytes": false,
+                            "factor": 1.0, "mantissa": 2, "numericUnit": "requests_per_second",
+                            "output": "number", "thousandSeparated": true, "unit": "rps"
+                        }
+                    }),
+                ),
+            ],
+        ),
+        (
+            "Bar",
+            [
+                ("Builder", builder("stacked_bar")),
+                ("RawSql", raw("stacked_bar")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "stacked_bar", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": range, "fillNulls": false, "seriesLimit": 0
+                    }),
+                ),
+            ],
+        ),
+        (
+            "StackedLine",
+            [
+                ("Builder", builder("stacked_line")),
+                ("RawSql", raw("stacked_line")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "stacked_line", "configType": "promql",
+                        "sourceId": "prom-1", "expressions": range, "lineInterpolation": "linear"
+                    }),
+                ),
+            ],
+        ),
+        (
+            "CategoricalBar",
+            [
+                ("Builder", builder("bar")),
+                ("RawSql", raw("bar")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "bar", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": reducible, "legendTemplate": "{{job}}", "limit": 10
+                    }),
+                ),
+            ],
+        ),
+        (
+            "Table",
+            [
+                ("Builder", builder("table")),
+                ("RawSql", raw("table")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "table", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": instant
+                    }),
+                ),
+            ],
+        ),
+        (
+            "Number",
+            [
+                ("Builder", builder("number")),
+                ("RawSql", raw("number")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "number", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": reducible, "color": "chart-green",
+                        "colorRules": [{"operator": "gt", "value": 1.0, "color": "chart-red"}],
+                        "backgroundChart": {"type": "area", "color": "chart-blue"}
+                    }),
+                ),
+            ],
+        ),
+        (
+            "Pie",
+            [
+                ("Builder", builder("pie")),
+                ("RawSql", raw("pie")),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "pie", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": reducible, "legendTemplate": "{{job}}", "limit": 0
+                    }),
+                ),
+            ],
+        ),
+        (
+            "Heatmap",
+            [
+                (
+                    "Distribution",
+                    serde_json::json!({
+                        "displayType": "heatmap", "sourceId": "src-1",
+                        "select": [{"valueExpression": "Duration"}]
+                    }),
+                ),
+                (
+                    "Series",
+                    serde_json::json!({
+                        "displayType": "heatmap", "heatmapMode": "series", "sourceId": "src-1",
+                        "select": [{"aggFn": "count"}], "groupBy": "ServiceName"
+                    }),
+                ),
+                (
+                    "Promql",
+                    serde_json::json!({
+                        "displayType": "heatmap", "configType": "promql", "sourceId": "prom-1",
+                        "expressions": range, "heatmapMode": "histogram",
+                        "heatmapScaleType": "log", "legendTemplate": "{{le}}"
+                    }),
+                ),
+            ],
+        ),
+    ]
+}
+
+/// The `{outer}/{inner}` arm names a request tile config landed in.
+fn clickstack_tile_config_arm(config: &ClickStackTileConfig) -> String {
+    let inner = match config {
+        ClickStackTileConfig::ClickStackLineChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackBarChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackStackedLineChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackTableChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackNumberChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackPieChartConfig(c) => c.to_string(),
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(c) => c.to_string(),
+        other => panic!("not a chart config union: {other}"),
+    };
+    format!("{config}/{inner}")
+}
+
+/// The `{outer}/{inner}` arm names a response tile config landed in.
+fn clickstack_tile_config_response_arm(config: &ClickStackTileConfigResponse) -> String {
+    let inner = match config {
+        ClickStackTileConfigResponse::ClickStackLineChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackBarChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackStackedLineChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackCategoricalBarChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackTableChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackNumberChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackPieChartConfig(c) => c.to_string(),
+        ClickStackTileConfigResponse::ClickStackHeatmapChartConfig(c) => c.to_string(),
+        other => panic!("not a chart config union: {other}"),
+    };
+    format!("{config}/{inner}")
+}
+
+#[test]
+fn clickstack_tile_chart_configs_route_every_variant_to_its_own_arm() {
+    // Adding the PromQL arm must leave the builder and raw-SQL (or heatmap
+    // mode) arms where they were, and every arm must round-trip verbatim in
+    // both positions.
+    for (kind, variants) in clickstack_tile_chart_config_payloads() {
+        for (variant, payload) in variants {
+            let expected =
+                format!("ClickStack{kind}ChartConfig/ClickStack{kind}{variant}ChartConfig");
+
+            let config: ClickStackTileConfig = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(clickstack_tile_config_arm(&config), expected);
+            assert_eq!(serde_json::to_value(&config).unwrap(), payload);
+
+            let response: ClickStackTileConfigResponse =
+                serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(clickstack_tile_config_response_arm(&response), expected);
+            assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+        }
+    }
+}
+
+#[test]
+fn clickstack_tile_promql_chart_configs_keep_payloads_out_of_variants_they_do_not_fit() {
+    for (kind, [_, _, (_, promql)]) in clickstack_tile_chart_config_payloads() {
+        // A PromQL body that lost its `configType` carries the PromQL-only
+        // `expressions`, so it stays out of the total builder (or distribution)
+        // arm, request and response alike, and round-trips verbatim.
+        let mut unmarked = promql.clone();
+        unmarked.as_object_mut().unwrap().remove("configType");
+        let expected = format!("ClickStack{kind}ChartConfig/{unmarked}");
+        let config: ClickStackTileConfig = serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(clickstack_tile_config_arm(&config), expected);
+        assert_eq!(serde_json::to_value(&config).unwrap(), unmarked);
+        let response: ClickStackTileConfigResponse =
+            serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(clickstack_tile_config_response_arm(&response), expected);
+        assert_eq!(serde_json::to_value(&response).unwrap(), unmarked);
+
+        // The request variant keeps the spec's required fields; a response
+        // tolerates their absence, per field.
+        let mut expressionless = promql.clone();
+        expressionless
+            .as_object_mut()
+            .unwrap()
+            .remove("expressions");
+        let config: ClickStackTileConfig = serde_json::from_value(expressionless.clone()).unwrap();
+        assert_eq!(
+            clickstack_tile_config_arm(&config),
+            format!("ClickStack{kind}ChartConfig/{expressionless}")
+        );
+        let response: ClickStackTileConfigResponse =
+            serde_json::from_value(expressionless).unwrap();
+        assert_eq!(
+            clickstack_tile_config_response_arm(&response),
+            format!("ClickStack{kind}ChartConfig/ClickStack{kind}PromqlChartConfig")
+        );
+
+        // A `configType` this crate does not know is Unknown, not a builder.
+        let mut unrecognized = promql.clone();
+        unrecognized["configType"] = serde_json::Value::from("logql");
+        let config: ClickStackTileConfigResponse =
+            serde_json::from_value(unrecognized.clone()).unwrap();
+        assert_eq!(
+            clickstack_tile_config_response_arm(&config),
+            format!("ClickStack{kind}ChartConfig/{unrecognized}")
+        );
+    }
+}
+
+#[test]
+fn clickstack_heatmap_chart_config_dispatches_promql_before_heatmap_mode() {
+    // The PromQL heatmap shares `distribution` and `series` with the builder
+    // variants, so `configType: "promql"` must win over `heatmapMode`.
+    for mode in [
+        Some("distribution"),
+        Some("series"),
+        Some("histogram"),
+        None,
+    ] {
+        let mut payload = serde_json::json!({
+            "displayType": "heatmap", "configType": "promql", "sourceId": "prom-1",
+            "expressions": [{"expression": "rate(latency_bucket[5m])"}]
+        });
+        if let Some(mode) = mode {
+            payload["heatmapMode"] = serde_json::Value::from(mode);
+        }
+        let config: ClickStackHeatmapChartConfig = serde_json::from_value(payload.clone()).unwrap();
+        let ClickStackHeatmapChartConfig::ClickStackHeatmapPromqlChartConfig(p) = &config else {
+            panic!("expected the PromQL variant for {mode:?}, got {config:?}");
+        };
+        assert_eq!(p.expressions[0].expression, "rate(latency_bucket[5m])");
+        assert_eq!(serde_json::to_value(&config).unwrap(), payload);
+        let response: ClickStackHeatmapChartConfigResponse =
+            serde_json::from_value(payload).unwrap();
+        assert!(
+            matches!(
+                response,
+                ClickStackHeatmapChartConfigResponse::ClickStackHeatmapPromqlChartConfig(_)
+            ),
+            "{mode:?}: {response:?}"
+        );
+    }
+
+    // `histogram` is PromQL-only, and no builder heatmap carries `configType`.
+    for json in [
+        r#"{"displayType":"heatmap","heatmapMode":"histogram","sourceId":"s"}"#,
+        r#"{"displayType":"heatmap","configType":"sql","sourceId":"s","select":[{"valueExpression":"d"}]}"#,
+    ] {
+        assert_unknown_variant_round_trips(json, |c: &ClickStackHeatmapChartConfig| {
+            matches!(c, ClickStackHeatmapChartConfig::Unknown(_))
+        });
+        assert_unknown_variant_round_trips(json, |c: &ClickStackHeatmapChartConfigResponse| {
+            matches!(c, ClickStackHeatmapChartConfigResponse::Unknown(_))
+        });
+    }
+
+    // A non-string `configType` is read as absent, as `discriminated_union!`
+    // reads it, so the builder dispatch still applies.
+    let response: ClickStackHeatmapChartConfigResponse =
+        serde_json::from_str(r#"{"configType":7,"heatmapMode":"series"}"#).unwrap();
+    assert!(matches!(
+        response,
+        ClickStackHeatmapChartConfigResponse::ClickStackHeatmapSeriesChartConfig(_)
+    ));
+}
+
+#[test]
+fn clickstack_promql_chart_config_fields_land_on_their_typed_fields() {
+    let [line, _, _, categorical, table, number, _, heatmap] =
+        clickstack_tile_chart_config_payloads();
+
+    let config: ClickStackLinePromqlChartConfig =
+        serde_json::from_value(line.1[2].1.clone()).unwrap();
+    assert_eq!(
+        config.config_type,
+        ClickStackLinePromqlChartConfigConfigtype::Promql
+    );
+    assert_eq!(config.source_id, "prom-1");
+    assert_eq!(config.expressions[0].alias.as_deref(), Some("Requests"));
+    assert_eq!(config.granularity.as_deref(), Some("5 minute"));
+    assert_eq!(config.series_limit, Some(5));
+    assert_eq!(
+        config.line_interpolation,
+        Some(ClickStackLinePromqlChartConfigLineinterpolation::Step)
+    );
+    assert_eq!(config.number_format.unwrap().mantissa, 2);
+
+    let config: ClickStackCategoricalBarPromqlChartConfigResponse =
+        serde_json::from_value(categorical.1[2].1.clone()).unwrap();
+    let expression = &config.expressions.unwrap()[0];
+    assert_eq!(
+        expression.query_type,
+        Some(ClickStackPromqlReducibleExpressionQuerytype::Instant)
+    );
+    assert_eq!(
+        expression.reducer,
+        Some(ClickStackPromqlReducibleExpressionReducer::Max)
+    );
+    assert_eq!(config.limit, Some(10));
+
+    let config: ClickStackTablePromqlChartConfig =
+        serde_json::from_value(table.1[2].1.clone()).unwrap();
+    assert_eq!(
+        config.expressions[0].query_type,
+        Some(ClickStackPromqlInstantExpressionQuerytype::Instant)
+    );
+
+    let config: ClickStackNumberPromqlChartConfig =
+        serde_json::from_value(number.1[2].1.clone()).unwrap();
+    assert_eq!(config.color, Some(ClickStackChartColor::Chart_green));
+    assert!(matches!(
+        config.color_rules.as_deref(),
+        Some([ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(_)])
+    ));
+    assert_eq!(
+        config.background_chart.unwrap().r#type,
+        ClickStackBackgroundChartType::Area
+    );
+
+    let config: ClickStackHeatmapPromqlChartConfigResponse =
+        serde_json::from_value(heatmap.1[2].1.clone()).unwrap();
+    assert_eq!(
+        config.heatmap_mode,
+        Some(ClickStackHeatmapPromqlChartConfigHeatmapmode::Histogram)
+    );
+    assert_eq!(
+        config.heatmap_scale_type,
+        Some(ClickStackHeatmapPromqlChartConfigHeatmapscaletype::Log)
+    );
+
+    // `lastNotNull` keeps its camel-case wire name; an unknown reducer is kept.
+    let reducers: Vec<ClickStackPromqlReducibleExpressionReducer> =
+        serde_json::from_str(r#"["lastNotNull","median"]"#).unwrap();
+    assert_eq!(
+        reducers,
+        [
+            ClickStackPromqlReducibleExpressionReducer::LastNotNull,
+            ClickStackPromqlReducibleExpressionReducer::Unknown("median".into()),
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&reducers).unwrap(),
+        serde_json::json!(["lastNotNull", "median"])
+    );
+}
+
+#[test]
+fn clickstack_promql_types_stay_strict_on_the_request_side() {
+    for (kind, [_, _, (_, promql)]) in clickstack_tile_chart_config_payloads() {
+        // `sourceId` and every expression's `expression` are required in a
+        // request; a response tolerates their absence, per field.
+        let mut sourceless = promql.clone();
+        sourceless.as_object_mut().unwrap().remove("sourceId");
+        let mut blank_expression = promql.clone();
+        blank_expression["expressions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("expression");
+        for payload in [sourceless, blank_expression] {
+            let config: ClickStackTileConfig = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(
+                clickstack_tile_config_arm(&config),
+                format!("ClickStack{kind}ChartConfig/{payload}")
+            );
+            let response: ClickStackTileConfigResponse = serde_json::from_value(payload).unwrap();
+            assert_eq!(
+                clickstack_tile_config_response_arm(&response),
+                format!("ClickStack{kind}ChartConfig/ClickStack{kind}PromqlChartConfig")
+            );
+        }
+    }
+}
+
+#[test]
+fn clickstack_promql_responses_treat_dropped_and_null_fields_as_absent() {
+    macro_rules! assert_absent_and_null_are_none {
+        ($($response:ty),+ $(,)?) => {
+            $(
+                for wire in [
+                    "{}",
+                    r#"{"configType":null,"displayType":null,"sourceId":null,"expressions":null,"granularity":null,"numberFormat":null,"expression":null,"alias":null,"queryType":null}"#,
+                ] {
+                    let parsed: $response = serde_json::from_str(wire).unwrap();
+                    assert_eq!(parsed, <$response>::default(), "{} from {wire}", stringify!($response));
+                    assert_eq!(serde_json::to_value(&parsed).unwrap(), serde_json::json!({}));
+                }
+            )+
+        };
+    }
+    assert_absent_and_null_are_none!(
+        ClickStackAlertBarPromqlChartConfigResponse,
+        ClickStackAlertLinePromqlChartConfigResponse,
+        ClickStackAlertNumberPromqlChartConfigResponse,
+        ClickStackAlertStackedLinePromqlChartConfigResponse,
+        ClickStackBarPromqlChartConfigResponse,
+        ClickStackCategoricalBarPromqlChartConfigResponse,
+        ClickStackHeatmapPromqlChartConfigResponse,
+        ClickStackLinePromqlChartConfigResponse,
+        ClickStackNumberPromqlChartConfigResponse,
+        ClickStackPiePromqlChartConfigResponse,
+        ClickStackPromqlInstantExpressionResponse,
+        ClickStackPromqlRangeExpressionResponse,
+        ClickStackPromqlReducibleExpressionResponse,
+        ClickStackStackedLinePromqlChartConfigResponse,
+        ClickStackTablePromqlChartConfigResponse,
+    );
+
+    // A sparse PromQL payload in a response still lands in the PromQL arm.
+    let response: ClickStackTileConfigResponse = serde_json::from_str(
+        r#"{"displayType":"pie","configType":"promql","expressions":[{"expression":"up","reducer":null}],"limit":null}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        response,
+        ClickStackTileConfigResponse::ClickStackPieChartConfig(
+            ClickStackPieChartConfigResponse::ClickStackPiePromqlChartConfig(
+                ClickStackPiePromqlChartConfigResponse {
+                    config_type: Some(ClickStackPiePromqlChartConfigConfigtype::Promql),
+                    display_type: Some(ClickStackPiePromqlChartConfigDisplaytype::Pie),
+                    expressions: Some(vec![ClickStackPromqlReducibleExpressionResponse {
+                        expression: Some("up".into()),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }
+            )
+        )
+    );
+}
+
+fn clickstack_alert_promql_chart_config_payloads() -> [(&'static str, serde_json::Value); 4] {
+    let range = serde_json::json!([{"expression": "sum(rate(errors_total[$__rate_interval]))"}]);
+    [
+        (
+            "Line",
+            serde_json::json!({
+                "displayType": "line", "configType": "promql", "sourceId": "prom-1",
+                "expressions": range, "lineInterpolation": "smooth",
+                "name": "Error Rate Query", "where": "ServiceName:api", "whereLanguage": "lucene"
+            }),
+        ),
+        (
+            "Bar",
+            serde_json::json!({
+                "displayType": "stacked_bar", "configType": "promql", "sourceId": "prom-1",
+                "expressions": range, "seriesLimit": 3, "name": "Errors by job"
+            }),
+        ),
+        (
+            "StackedLine",
+            serde_json::json!({
+                "displayType": "stacked_line", "configType": "promql", "sourceId": "prom-1",
+                "expressions": range, "legendTemplate": "{{job}}", "name": "Latency bands"
+            }),
+        ),
+        (
+            "Number",
+            serde_json::json!({
+                "displayType": "number", "configType": "promql", "sourceId": "prom-1",
+                "expressions": [{"expression": "up", "reducer": "lastNotNull"}],
+                "color": "chart-red", "name": "Targets up"
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn clickstack_alert_promql_chart_configs_route_to_their_own_arm() {
+    for (kind, payload) in clickstack_alert_promql_chart_config_payloads() {
+        let expected =
+            format!("ClickStackAlert{kind}ChartConfig/ClickStackAlert{kind}PromqlChartConfig");
+        let config: ClickStackAlertChartConfig = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(clickstack_alert_chart_config_arm(&config), expected);
+        assert_eq!(serde_json::to_value(&config).unwrap(), payload);
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_response_arm(&response),
+            expected
+        );
+        assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+
+        // Without `configType` the PromQL-only `expressions` keeps it out of
+        // the builder arm.
+        let mut unmarked = payload.clone();
+        unmarked.as_object_mut().unwrap().remove("configType");
+        let expected = format!("ClickStackAlert{kind}ChartConfig/{unmarked}");
+        let config: ClickStackAlertChartConfig = serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(clickstack_alert_chart_config_arm(&config), expected);
+        let response: ClickStackAlertChartConfigResponse =
+            serde_json::from_value(unmarked.clone()).unwrap();
+        assert_eq!(
+            clickstack_alert_chart_config_response_arm(&response),
+            expected
+        );
+        assert_eq!(serde_json::to_value(&response).unwrap(), unmarked);
+    }
+
+    // The overlay's fields land on the PromQL variant struct itself.
+    let [(_, line), ..] = clickstack_alert_promql_chart_config_payloads();
+    let config: ClickStackAlertChartConfig = serde_json::from_value(line).unwrap();
+    let ClickStackAlertChartConfig::ClickStackAlertLineChartConfig(
+        ClickStackAlertLineChartConfig::ClickStackAlertLinePromqlChartConfig(p),
+    ) = &config
+    else {
+        panic!("expected the line PromQL variant, got {config:?}");
+    };
+    assert_eq!(p.name.as_deref(), Some("Error Rate Query"));
+    assert_eq!(
+        p.where_language,
+        Some(ClickStackAlertChartConfigOverlayWherelanguage::Lucene)
+    );
+    assert_eq!(
+        p.line_interpolation,
+        Some(ClickStackLinePromqlChartConfigLineinterpolation::Smooth)
+    );
+    assert_eq!(
+        p.config_type,
+        ClickStackLinePromqlChartConfigConfigtype::Promql
     );
 }

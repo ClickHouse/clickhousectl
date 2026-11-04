@@ -51,16 +51,17 @@
 ///
 /// Some unions discriminate one variant by the *absence* of the key rather than
 /// by a wire value of it (e.g. a ClickStack chart config carries
-/// `configType: "sql"` when it is a raw-SQL config and carries no `configType`
-/// at all when it is a builder config). Such a union adds a trailing `none` arm
-/// naming the variant the key's absence selects, plus the keys whose presence
-/// disqualifies that variant:
+/// `configType: "sql"` or `configType: "promql"` when it is a raw-SQL or PromQL
+/// config and carries no `configType` at all when it is a builder config). Such
+/// a union adds a trailing `none` arm naming the variant the key's absence
+/// selects, plus the keys whose presence disqualifies that variant:
 ///
 /// ```ignore
 /// discriminated_union! {
 ///     ClickStackLineChartConfig, "configType" {
 ///         "sql" => ClickStackLineRawSqlChartConfig,
-///         none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
+///         "promql" => ClickStackLinePromqlChartConfig,
+///         none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackLineBuilderChartConfig,
 ///     }
 /// }
 /// ```
@@ -73,7 +74,7 @@
 ///   variant — one that cannot fail to deserialize, because none of its fields
 ///   is required — would otherwise absorb any keyless payload, silently
 ///   retyping a raw-SQL config as an empty builder config and discarding its
-///   `connectionId`/`sqlTemplate`. Listing keys that only the other variants
+///   `connectionId`/`sqlTemplate` (or a PromQL config's `expressions`). Listing keys that only the other variants
 ///   carry routes such a payload to `Unknown` instead, where it survives
 ///   intact. Unknown *added* keys are not listed and stay ignored. If the spec
 ///   ever gives the absence variant one of the guard keys, drop that key from
