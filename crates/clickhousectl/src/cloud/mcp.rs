@@ -18,6 +18,25 @@ pub(super) const PERMISSIONS: &[Permission] = &[Permission::non_api(
 /// ClickHouse Cloud's hosted MCP server.
 pub const CLOUD_MCP_URL: &str = "https://mcp.clickhouse.cloud/mcp";
 
+/// Cloud-wide flags that `mcp` commands reject, because the agent signs in to
+/// the MCP server itself (see `CloudArgs::mcp_flag_conflict`).
+const REJECTED_CLOUD_FLAGS: [&str; 5] = ["org_id", "org_name", "api_key", "api_secret", "url"];
+
+/// Hide the rejected Cloud-wide flags from `cloud mcp` help. clap propagates a
+/// global flag only into subcommands without an arg of the same ID, so hidden
+/// copies on `mcp` replace the visible ones there and nowhere else. The copies
+/// stay global, so a value given after `mcp add` still reaches `CloudArgs`.
+pub(crate) fn hide_rejected_cloud_flags(root: clap::Command) -> clap::Command {
+    root.mut_subcommand("cloud", |cloud| {
+        let hidden: Vec<clap::Arg> = cloud
+            .get_arguments()
+            .filter(|arg| REJECTED_CLOUD_FLAGS.contains(&arg.get_id().as_str()))
+            .map(|arg| arg.clone().hide(true))
+            .collect();
+        cloud.mut_subcommand("mcp", |mcp| mcp.args(hidden))
+    })
+}
+
 #[derive(Subcommand, Debug)]
 pub enum McpCommands {
     /// Register the Cloud MCP server in a coding agent and sign in
