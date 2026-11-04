@@ -121,10 +121,10 @@ pub struct SnapshotConfigUpdateOptions {
     /// Enable or disable scheduled snapshots
     #[arg(long, action = clap::ArgAction::Set)]
     enabled: Option<bool>,
-    /// Interval in minutes; requires --time-frame
+    /// Interval in minutes: 10, 20, 30 or 60; requires --time-frame
     #[arg(long, requires = "time_frame")]
     gap: Option<u32>,
-    /// Retention in minutes; requires --gap
+    /// Retention in minutes, a multiple of 1440; requires --gap
     #[arg(long, requires = "gap")]
     time_frame: Option<u32>,
 }
@@ -258,6 +258,20 @@ impl BackupCommands {
     }
 }
 
+const BUCKET_CREATE_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  `bucketProvider` (AWS, GCP or AZURE) selects the body. AWS: bucketPath, iamRoleArn,
+  iamRoleSessionName, iamRoleExternalId. GCP: bucketPath, accessKeyId, secretAccessKey.
+  AZURE: containerName, connectionString.
+  AWS bucketPath is a URL: https://<bucket>.s3.<region>.amazonaws.com/<prefix>.
+  The body holds credentials: use a restricted file or `--file -`.";
+
+const BUCKET_UPDATE_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  Send the provider's complete body, as for `bucket create`; AWS iamRoleSessionName and
+  iamRoleExternalId are optional, and `\"iamRoleExternalId\": null` clears the stored ID.
+  The body holds credentials: use a restricted file or `--file -`.";
+
 #[derive(Subcommand)]
 pub enum BackupBucketCommands {
     /// Get backup bucket details
@@ -268,6 +282,7 @@ pub enum BackupBucketCommands {
     },
 
     /// Create a backup bucket
+    #[command(after_help = BUCKET_CREATE_CONTEXT)]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -279,6 +294,7 @@ pub enum BackupBucketCommands {
     },
 
     /// Update a backup bucket
+    #[command(after_help = BUCKET_UPDATE_CONTEXT)]
     Update {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]

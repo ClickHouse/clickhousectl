@@ -345,6 +345,73 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// A `--file` request body has no clap schema, so the command's agent
+    /// context names the body's required fields.
+    #[test]
+    fn request_body_commands_name_their_required_fields() {
+        let root = Cli::command();
+        let mut failures = Vec::new();
+        for (path, fields) in [
+            (
+                "cloud org role create",
+                "name actors policies allowDeny permissions resources",
+            ),
+            (
+                "cloud backup bucket create",
+                "bucketProvider bucketPath iamRoleArn iamRoleSessionName iamRoleExternalId \
+                 accessKeyId secretAccessKey containerName connectionString",
+            ),
+            ("cloud backup bucket update", "iamRoleExternalId"),
+            (
+                "cloud query-api-endpoint create",
+                "name sql database apiKeyIds roles",
+            ),
+            (
+                "cloud query-api-endpoint update",
+                "name sql database apiKeyIds roles",
+            ),
+            (
+                "cloud clickstack source create",
+                "kind name connection from databaseName tableName timestampValueExpression \
+                 defaultTableSelectExpression traceIdExpression durationPrecision \
+                 metricTables resourceAttributesExpression traceSourceId",
+            ),
+            (
+                "cloud clickstack source update",
+                "kind name connection from databaseName tableName",
+            ),
+            (
+                "cloud clickstack role create",
+                "name permissions action subject integration",
+            ),
+            ("cloud clickstack role update", "permissions"),
+            ("cloud clickstack saved-search create", "name sourceId"),
+            ("cloud clickstack saved-search update", "name sourceId"),
+            ("cloud clickstack webhook create", "name service url"),
+            ("cloud clickstack webhook update", "name service url"),
+            ("cloud clickstack dashboard create", "name tiles"),
+            ("cloud clickstack dashboard update", "name tiles"),
+        ] {
+            let command = path
+                .split(' ')
+                .try_fold(&root, |command, name| command.find_subcommand(name))
+                .unwrap_or_else(|| panic!("missing command {path}"));
+            let context = command
+                .get_after_help()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let words: std::collections::HashSet<_> = context
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .collect();
+            for field in fields.split_whitespace() {
+                if !words.contains(field) {
+                    failures.push(format!("{path}: agent context does not name `{field}`"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// Help lists subcommands in declaration order, so a new command must be placed
     /// deliberately (see "Subcommand order" in the `cli-help-text` skill).
     #[test]

@@ -174,6 +174,11 @@ pub enum RoleCommands {
     },
 
     /// Create a custom organization role
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Requires name, actors (IDs such as user/<uuid> or apiKey/<uuid>) and policies.
+  Each policy needs allowDeny (ALLOW or DENY), permissions and resources (such as instance/<uuid>
+  or instance/*); tags is optional.")]
     Create {
         /// JSON request body path, or `-` for stdin
         #[arg(
