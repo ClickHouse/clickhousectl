@@ -8,6 +8,7 @@ use super::permissions::Declaration as Permission;
 use crate::error::{Error, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
+use std::io::IsTerminal;
 use std::process::{Command, Stdio};
 
 pub(super) const PERMISSIONS: &[Permission] = &[Permission::non_api(
@@ -49,7 +50,8 @@ CONTEXT FOR AGENTS:
   Registers the read-only Cloud MCP server for the user, in all projects, using the agent's own CLI.
   Then starts that agent's OAuth sign-in, which opens a browser and blocks until a human finishes it;
     with an existing Cloud browser session it can finish in seconds.
-  gemini has no sign-in command: run `/mcp auth <name>` inside Gemini CLI afterwards.
+  Sign-in is skipped for gemini (no sign-in command) and for claude when stdin isn't a terminal;
+    the output then names the command to run inside the agent, such as `/mcp`.
   Needs the agent's CLI on PATH, not clickhousectl credentials. Safe to rerun to sign in again.
   The server's tools appear in new agent sessions, not the one that ran this.")]
     Add(AddArgs),
@@ -116,6 +118,12 @@ impl Agent {
 enum SignIn {
     /// A separate command, run after `add`.
     Command(Vec<String>),
+    /// A separate command that the agent's CLI refuses to run unless stdin is
+    /// a terminal. Without one, sign in inside the agent with `in_session`.
+    CommandNeedingTerminal {
+        login: Vec<String>,
+        in_session: String,
+    },
     /// `add` signs in by itself when the server supports OAuth.
     DuringAdd,
     /// Only from inside an agent session, with this slash command.
@@ -151,7 +159,12 @@ fn plan(agent: Agent, name: &str) -> Plan {
                 name,
                 url,
             ]),
-            sign_in: SignIn::Command(argv(&["mcp", "login", name])),
+            // `claude mcp login` exits 1 when stdin isn't a terminal, even
+            // though its browser sign-in doesn't read stdin.
+            sign_in: SignIn::CommandNeedingTerminal {
+                login: argv(&["mcp", "login", name]),
+                in_session: "/mcp".into(),
+            },
         },
         Agent::Codex => Plan {
             exists: None,
@@ -185,6 +198,30 @@ fn plan(agent: Agent, name: &str) -> Plan {
     }
 }
 
+/// What `add` does about sign-in once the server is registered.
+#[derive(Debug, PartialEq, Eq)]
+enum SignInStep {
+    Run(Vec<String>),
+    /// `add` already signed in.
+    Done,
+    /// The user signs in inside the agent with this command.
+    InSession(String),
+    /// Skipped for lack of a terminal; the user signs in inside the agent with
+    /// this command or reruns in a terminal.
+    NoTerminal(String),
+}
+
+fn sign_in_step(sign_in: SignIn, stdin_is_terminal: bool) -> SignInStep {
+    match sign_in {
+        SignIn::Command(login) => SignInStep::Run(login),
+        SignIn::CommandNeedingTerminal { login, .. } if stdin_is_terminal => SignInStep::Run(login),
+        SignIn::CommandNeedingTerminal { in_session, .. } => SignInStep::NoTerminal(in_session),
+        // These agents have no existence check, so `add` always ran.
+        SignIn::DuringAdd => SignInStep::Done,
+        SignIn::InSession(command) => SignInStep::InSession(command),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Registration {
@@ -202,6 +239,9 @@ struct AddOutput {
     /// What the user runs inside the agent to sign in, when the agent's CLI can't.
     #[serde(skip_serializing_if = "Option::is_none")]
     sign_in_command: Option<String>,
+    /// Sign-in was skipped because stdin isn't a terminal.
+    #[serde(skip)]
+    no_terminal: bool,
 }
 
 pub fn run(command: McpCommands, debug: bool, json: bool) -> Result<()> {
@@ -225,18 +265,26 @@ fn add(args: AddArgs, debug: bool, json: bool) -> Result<()> {
         Registration::Added
     };
 
-    let (signed_in, sign_in_command) = match plan.sign_in {
-        SignIn::Command(login) => {
+    let step = sign_in_step(plan.sign_in, std::io::stdin().is_terminal());
+    let (signed_in, sign_in_command, no_terminal) = match step {
+        SignInStep::Run(login) => {
             eprint_line(format!(
                 "Signing in to {} from {}; finish in the browser.",
                 args.name,
                 agent.display_name()
             ));
             check(spawn(agent, &login, debug, ChildOutput::ToStderr)?)?;
-            (true, None)
+            (true, None, false)
         }
-        SignIn::DuringAdd => (registration == Registration::Added, None),
-        SignIn::InSession(command) => (false, Some(command)),
+        SignInStep::Done => (true, None, false),
+        SignInStep::InSession(command) => (false, Some(command), false),
+        SignInStep::NoTerminal(command) => {
+            eprint_line(format!(
+                "Skipped sign-in: {} signs in only from a terminal, and stdin isn't one.",
+                agent.display_name()
+            ));
+            (false, Some(command), true)
+        }
     };
 
     let output = AddOutput {
@@ -246,6 +294,7 @@ fn add(args: AddArgs, debug: bool, json: bool) -> Result<()> {
         registration,
         signed_in,
         sign_in_command,
+        no_terminal,
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -264,7 +313,13 @@ fn print_human(output: &AddOutput) {
         }
     }
     if let Some(command) = &output.sign_in_command {
-        println!("To sign in, run `{command}` in {agent}.");
+        if output.no_terminal {
+            println!(
+                "To sign in, run `{command}` in {agent}, or rerun this command in a terminal."
+            );
+        } else {
+            println!("To sign in, run `{command}` in {agent}.");
+        }
     } else if output.signed_in {
         println!("Signed in. Start a new {agent} session to use it.");
     }
@@ -400,7 +455,10 @@ mod tests {
     fn plans_sign_in_the_way_each_agent_supports() {
         assert_eq!(
             plan(Agent::Claude, "ch").sign_in,
-            SignIn::Command(argv(&["mcp", "login", "ch"]))
+            SignIn::CommandNeedingTerminal {
+                login: argv(&["mcp", "login", "ch"]),
+                in_session: "/mcp".into(),
+            }
         );
         assert_eq!(plan(Agent::Codex, "ch").sign_in, SignIn::DuringAdd);
         assert_eq!(
@@ -414,6 +472,32 @@ mod tests {
         assert_eq!(
             plan(Agent::Pi, "ch").sign_in,
             SignIn::Command(argv(&["mcp", "login", "ch"]))
+        );
+    }
+
+    #[test]
+    fn only_a_terminal_bound_sign_in_depends_on_stdin() {
+        for terminal in [true, false] {
+            assert_eq!(
+                sign_in_step(plan(Agent::Pi, "ch").sign_in, terminal),
+                SignInStep::Run(argv(&["mcp", "login", "ch"]))
+            );
+            assert_eq!(
+                sign_in_step(plan(Agent::Codex, "ch").sign_in, terminal),
+                SignInStep::Done
+            );
+            assert_eq!(
+                sign_in_step(plan(Agent::Gemini, "ch").sign_in, terminal),
+                SignInStep::InSession("/mcp auth ch".into())
+            );
+        }
+        assert_eq!(
+            sign_in_step(plan(Agent::Claude, "ch").sign_in, true),
+            SignInStep::Run(argv(&["mcp", "login", "ch"]))
+        );
+        assert_eq!(
+            sign_in_step(plan(Agent::Claude, "ch").sign_in, false),
+            SignInStep::NoTerminal("/mcp".into())
         );
     }
 

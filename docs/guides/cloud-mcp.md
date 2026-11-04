@@ -16,7 +16,7 @@ The server is registered for your user, so it's available in every project. Sign
 
 | Agent | Registers with | Signs in with |
 | --- | --- | --- |
-| `claude` | `claude mcp add --transport http --scope user` | `claude mcp login` |
+| `claude` | `claude mcp add --transport http --scope user` | `claude mcp login`, from a terminal only. Otherwise run `/mcp` inside Claude Code |
 | `codex` | `codex mcp add --url` | `codex mcp add`, which signs in itself |
 | `opencode` | `opencode mcp add --url --global` | `opencode mcp auth` |
 | `pi` | `pi mcp add --url` | `pi mcp login` |
@@ -32,6 +32,6 @@ To remove the server, use the agent's own command, such as `claude mcp remove cl
 
 ## Use it from scripts and agents
 
-With `--json`, or when clickhousectl detects a coding agent, stdout holds one object with `agent`, `name`, `url`, `registration` (`added` or `already_registered`) and `signed_in`. For Gemini CLI, `sign_in_command` holds the command to run in a session. The agent CLI's own messages, including any sign-in URL, go to stderr. If the agent CLI fails, clickhousectl exits with its exit code.
+With `--json`, or when clickhousectl detects a coding agent, stdout holds one object with `agent`, `name`, `url`, `registration` (`added` or `already_registered`) and `signed_in`. When sign-in is left to the agent, `sign_in_command` holds the command to run in a session. The agent CLI's own messages, including any sign-in URL, go to stderr. If the agent CLI fails, clickhousectl exits with its exit code.
 
-Sign-in blocks until a person finishes it in the browser, including when a coding agent runs the command.
+Sign-in blocks until a person finishes it in the browser, including when a coding agent runs the command. Claude Code signs in only from a terminal, so when stdin isn't one, for example when an agent or script runs the command, clickhousectl registers the server, skips sign-in and returns `/mcp` as `sign_in_command`.

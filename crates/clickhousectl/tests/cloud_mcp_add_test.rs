@@ -1,6 +1,7 @@
 //! `cloud mcp add` drives the agent's own CLI. Fake agent binaries on PATH
 //! record their arguments, so these tests check call order, exit statuses and
-//! that stdout holds only clickhousectl's output.
+//! that stdout holds only clickhousectl's output. stdin is never a terminal
+//! here, so Claude's sign-in is always skipped; unit tests cover the other case.
 #![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
@@ -70,7 +71,7 @@ fn json(run: &Run) -> serde_json::Value {
 }
 
 #[test]
-fn claude_registers_for_the_user_then_signs_in() {
+fn claude_without_a_terminal_registers_and_skips_sign_in() {
     let run = run(
         &["claude"],
         &[("FAKE_GET_EXIT", "1")],
@@ -81,7 +82,6 @@ fn claude_registers_for_the_user_then_signs_in() {
         [
             "claude mcp get clickhouse-cloud".to_owned(),
             format!("claude mcp add --transport http --scope user clickhouse-cloud {URL}"),
-            "claude mcp login clickhouse-cloud".to_owned(),
         ]
     );
     let value = json(&run);
@@ -89,19 +89,19 @@ fn claude_registers_for_the_user_then_signs_in() {
     assert_eq!(value["name"], "clickhouse-cloud");
     assert_eq!(value["url"], URL);
     assert_eq!(value["registration"], "added");
-    assert_eq!(value["signed_in"], true);
-    assert!(value.get("sign_in_command").is_none());
+    assert_eq!(value["signed_in"], false);
+    assert_eq!(value["sign_in_command"], "/mcp");
     // The agent's own output goes to stderr, keeping stdout parseable.
     assert!(String::from_utf8_lossy(&run.output.stderr).contains("fake claude output"));
 }
 
 #[test]
-fn claude_with_an_existing_entry_skips_add_and_signs_in_again() {
+fn claude_with_an_existing_entry_skips_add() {
     let run = run(&["claude"], &[], &["claude", "--name", "ch", "--json"]);
-    assert_eq!(run.calls, ["claude mcp get ch", "claude mcp login ch"]);
+    assert_eq!(run.calls, ["claude mcp get ch"]);
     let value = json(&run);
     assert_eq!(value["registration"], "already_registered");
-    assert_eq!(value["signed_in"], true);
+    assert_eq!(value["signed_in"], false);
 }
 
 #[test]
