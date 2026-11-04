@@ -2,14 +2,16 @@ use super::lifecycle::{
     PostgresListFilter, parse_postgres_ip_access_entry, parse_postgres_list_filter,
 };
 use super::observability::{
-    PostgresLogSeverity, parse_known_postgres_logs_sort_order, parse_postgres_window_datetime,
+    parse_known_postgres_logs_sort_order, parse_postgres_log_severity,
+    parse_postgres_window_datetime,
 };
 use crate::cloud::shared::{NameSelector, SourceSelector, parse_datetime};
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    PgHaType, PgProvider, PgVersion, PostgresIpAccessListEntry, PostgresLogsGetListSortorder,
-    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PgHaType, PgProvider, PgVersion, PostgresIpAccessListEntry, PostgresLogsGetListSeverity,
+    PostgresLogsGetListSortorder, SlowQueryPatternsGetListSortby,
+    SlowQueryPatternsGetListSortorder,
 };
 use std::path::PathBuf;
 
@@ -71,8 +73,14 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         body_contains: Option<String>,
         /// Log severity to match exactly; case-insensitive
-        #[arg(long, value_enum, ignore_case = true)]
-        severity: Option<PostgresLogSeverity>,
+        #[arg(
+            long,
+            ignore_case = true,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                PostgresLogsGetListSeverity::VALUES
+            ).try_map(parse_postgres_log_severity)
+        )]
+        severity: Option<PostgresLogsGetListSeverity>,
         /// Sort order
         #[arg(
             long,
@@ -148,7 +156,7 @@ CONTEXT FOR AGENTS:
         block_public_access: bool,
     },
 
-    /// Update a Postgres service's name, size, HA, tags or access rules
+    /// Update a Postgres service's settings, tags or access rules
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.
@@ -168,6 +176,11 @@ CONTEXT FOR AGENTS:
         /// New high-availability type
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
+        /// Turn deletion protection on or off
+        ///
+        /// Only for organizations with deletion protection enabled.
+        #[arg(long)]
+        deletion_protection: Option<bool>,
         /// Add a tag (repeatable; conflicts with --clear-tags)
         #[arg(long, conflicts_with = "clear_tags")]
         add_tag: Vec<String>,
@@ -197,7 +210,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Irreversible: the service and its data cannot be recovered.
-  Deletes from any state, including running — no stop first, unlike `cloud service delete`.")]
+  Deletes from any state, including running — no stop first, unlike `cloud service delete`.
+  Rejected while deletion protection is on (`cloud postgres update --deletion-protection false`).")]
     Delete {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
@@ -912,7 +926,7 @@ mod tests {
             panic!("expected logs");
         };
         assert_eq!(body_contains.as_deref(), Some("checkpoint complete"));
-        assert_eq!(severity, Some(PostgresLogSeverity::Log));
+        assert_eq!(severity, Some(PostgresLogsGetListSeverity::Log));
         assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(limit, Some(2000));
         assert_eq!(offset, Some(0));
@@ -966,9 +980,6 @@ mod tests {
     fn postgres_logs_severity_accepts_the_supported_levels_in_any_case() {
         use clap::CommandFactory;
 
-        const LEVELS: [&str; 8] = [
-            "DEBUG", "LOG", "INFO", "NOTICE", "WARNING", "ERROR", "FATAL", "PANIC",
-        ];
         let command = PostgresCli::command();
         let severity = command
             .get_subcommands()
@@ -980,9 +991,9 @@ mod tests {
             .into_iter()
             .map(|value| value.get_name().to_string())
             .collect();
-        assert_eq!(possible_values, LEVELS);
+        assert_eq!(possible_values, PostgresLogsGetListSeverity::VALUES);
 
-        for level in LEVELS {
+        for level in PostgresLogsGetListSeverity::VALUES {
             for input in [level.to_string(), level.to_lowercase()] {
                 let cmd = parse_postgres(&[
                     "clickhousectl",
@@ -1000,10 +1011,12 @@ mod tests {
                 let PostgresCommands::Logs { severity, .. } = cmd else {
                     panic!("expected logs");
                 };
-                assert_eq!(
-                    severity.map(|severity| severity.to_api().to_string()),
-                    Some(level.to_string())
+                let severity = severity.expect("severity");
+                assert!(
+                    !matches!(severity, PostgresLogsGetListSeverity::Unknown(_)),
+                    "{input} must map to a known severity"
                 );
+                assert_eq!(severity.to_string(), *level);
             }
         }
     }
@@ -1251,6 +1264,8 @@ mod tests {
             "pg-1",
             "--size",
             "c6gd.large",
+            "--deletion-protection",
+            "true",
             "--add-tag",
             "env=prod",
             "--add-tag",
@@ -1261,6 +1276,7 @@ mod tests {
         let PostgresCommands::Update {
             postgres_id,
             size,
+            deletion_protection,
             add_tag,
             remove_tag,
             clear_tags,
@@ -1271,6 +1287,7 @@ mod tests {
         };
         assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(size.as_deref(), Some("c6gd.large"));
+        assert_eq!(deletion_protection, Some(true));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
         assert!(!clear_tags);

@@ -3578,7 +3578,8 @@ async fn postgres_update_preserves_tags_when_changing_other_fields() {
     Mock::given(method("PATCH"))
         .and(path(&postgres_path))
         .and(body_json(serde_json::json!({
-            "name": "renamed-pg", "size": "c6gd.large", "haType": "async", "tags": tags
+            "name": "renamed-pg", "size": "c6gd.large", "haType": "async",
+            "deletionProtection": false, "tags": tags
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {"id": postgres_id, "tags": tags},
@@ -3600,6 +3601,8 @@ async fn postgres_update_preserves_tags_when_changing_other_fields() {
             "c6gd.large",
             "--ha-type",
             "async",
+            "--deletion-protection",
+            "false",
         ],
     );
     assert_success(&output);
@@ -4111,6 +4114,7 @@ fn postgres_list_response() -> ResponseTemplate {
                 "region": "us-east-1",
                 "provider": "aws",
                 "isPrimary": true,
+                "deletionProtection": true,
             },
             {
                 "id": "66666666-7777-8888-9999-000000000000",
@@ -4119,6 +4123,7 @@ fn postgres_list_response() -> ResponseTemplate {
                 "region": "us-east-1",
                 "provider": "aws",
                 "isPrimary": false,
+                "deletionProtection": false,
             },
             {
                 // Absent `isPrimary`/`state`: must match no filter value.
@@ -4195,11 +4200,23 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
     assert_eq!(
         row_cells("Name"),
         [
-            "Name", "ID", "State", "Provider", "Region", "Size", "PG", "HA", "Primary"
+            "Name",
+            "ID",
+            "State",
+            "Provider",
+            "Region",
+            "Size",
+            "PG",
+            "HA",
+            "Primary",
+            "Deletion protection"
         ]
     );
     assert_eq!(row_cells("primary-pg")[3], "aws");
     assert_eq!(row_cells("unknown-pg")[3], "-");
+    assert_eq!(row_cells("primary-pg")[9], "yes");
+    assert_eq!(row_cells("replica-pg")[9], "no");
+    assert_eq!(row_cells("unknown-pg")[9], "-");
 
     let json = invoke_cli_with_cloud_credentials(&mock, &["postgres", "list", "--org-id", "org-1"]);
     assert_success(&json);
@@ -4213,6 +4230,7 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
                 "region": "us-east-1",
                 "provider": "aws",
                 "isPrimary": true,
+                "deletionProtection": true,
             },
             {
                 "id": "66666666-7777-8888-9999-000000000000",
@@ -4221,6 +4239,7 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
                 "region": "us-east-1",
                 "provider": "aws",
                 "isPrimary": false,
+                "deletionProtection": false,
             },
             {
                 "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",

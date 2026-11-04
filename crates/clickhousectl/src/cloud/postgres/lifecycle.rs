@@ -269,6 +269,10 @@ pub(super) fn render_postgres_service(svc: &PostgresService) {
     ));
     print_line(format!("  HA type: {}", enum_label(svc.ha_type.as_ref())));
     print_line(format!("  Primary: {}", or_absent(svc.is_primary)));
+    print_line(format!(
+        "  Deletion protection: {}",
+        or_absent(svc.deletion_protection)
+    ));
     print_line(format!("  Host: {}", or_absent(svc.hostname.as_deref())));
     print_line(format!(
         "  Username: {}",
@@ -421,6 +425,7 @@ pub struct PostgresUpdateOptions<'a> {
     pub name: Option<&'a str>,
     pub size: Option<&'a str>,
     pub ha_type: Option<&'a str>,
+    pub deletion_protection: Option<bool>,
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
     pub clear_tags: bool,
@@ -470,6 +475,16 @@ pub async fn postgres_list(
         ha: String,
         #[tabled(rename = "Primary")]
         primary: String,
+        #[tabled(rename = "Deletion protection")]
+        deletion_protection: String,
+    }
+
+    fn yes_no(value: Option<bool>) -> String {
+        match value {
+            Some(true) => "yes".to_string(),
+            Some(false) => "no".to_string(),
+            None => ABSENT.to_string(),
+        }
     }
 
     let rows: Vec<Row> = filtered
@@ -483,11 +498,8 @@ pub async fn postgres_list(
             size: enum_label(i.size.as_ref()),
             pg: enum_label(i.postgres_version.as_ref()),
             ha: enum_label(i.ha_type.as_ref()),
-            primary: match i.is_primary {
-                Some(true) => "yes".to_string(),
-                Some(false) => "no".to_string(),
-                None => ABSENT.to_string(),
-            },
+            primary: yes_no(i.is_primary),
+            deletion_protection: yes_no(i.deletion_protection),
         })
         .collect();
 
@@ -626,18 +638,19 @@ pub async fn postgres_create(
 }
 
 /// Builds the `postgres update` PATCH body from the already-parsed pieces
-/// (name, size, HA type, merged tags, access-rule patch). Kept separate from
-/// `postgres_update` so the shape sent on the wire is unit-testable without a
-/// mock server.
+/// (name, size, HA type, deletion protection, merged tags, access-rule patch).
+/// Kept separate from `postgres_update` so the shape sent on the wire is
+/// unit-testable without a mock server.
 pub(super) fn build_postgres_update_request(
     name: Option<&str>,
     size: Option<PgSize>,
     ha_type: Option<PgHaType>,
+    deletion_protection: Option<bool>,
     tags: Option<Vec<ResourceTagsV1>>,
     ip_access_list: Option<PostgresIpAccessListPatch>,
 ) -> PostgresServicePatchRequest {
     PostgresServicePatchRequest {
-        deletion_protection: None,
+        deletion_protection,
         name: name.map(str::to_string),
         size,
         ha_type,
@@ -673,7 +686,14 @@ pub async fn postgres_update(
 
     let ip_access_list =
         build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
-    let req = build_postgres_update_request(opts.name, size, ha_type, tags, ip_access_list);
+    let req = build_postgres_update_request(
+        opts.name,
+        size,
+        ha_type,
+        opts.deletion_protection,
+        tags,
+        ip_access_list,
+    );
 
     let svc = client
         .patch_postgres_service(&org_id, postgres_id, &req)
@@ -947,10 +967,11 @@ pub(super) mod tests {
 
     #[test]
     fn build_postgres_update_request_omits_name_when_not_given() {
-        let req = build_postgres_update_request(None, None, None, None, None);
+        let req = build_postgres_update_request(None, None, None, None, None, None);
         assert!(req.name.is_none());
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
+        assert!(req.deletion_protection.is_none());
         assert!(req.tags.is_none());
         assert!(req.ip_access_list.is_none());
         assert_eq!(serde_json::to_value(req).unwrap(), serde_json::json!({}));
@@ -958,7 +979,7 @@ pub(super) mod tests {
 
     #[test]
     fn build_postgres_update_request_clears_tags_explicitly() {
-        let req = build_postgres_update_request(None, None, None, Some(Vec::new()), None);
+        let req = build_postgres_update_request(None, None, None, None, Some(Vec::new()), None);
 
         assert_eq!(req.tags, Some(Vec::new()));
         assert_eq!(
@@ -973,6 +994,7 @@ pub(super) mod tests {
             Some("renamed-pg"),
             Some(PgSize::C6gd_large),
             Some(PgHaType::Sync),
+            Some(true),
             Some(vec![ResourceTagsV1 {
                 key: "env".into(),
                 value: Some("prod".into()),
@@ -985,6 +1007,7 @@ pub(super) mod tests {
         assert_eq!(req.name.as_deref(), Some("renamed-pg"));
         assert!(req.size.is_some());
         assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.deletion_protection, Some(true));
         assert_eq!(req.tags.as_ref().unwrap().len(), 1);
         assert_eq!(
             serde_json::to_value(&req).unwrap()["ipAccessList"],
@@ -992,6 +1015,16 @@ pub(super) mod tests {
                 "add": [{"source": "203.0.113.0/24", "portRange": "5432", "description": "office"}],
                 "remove": [{"id": "rule-1"}]
             })
+        );
+    }
+
+    #[test]
+    fn build_postgres_update_request_sends_deletion_protection_off() {
+        let req = build_postgres_update_request(None, None, None, Some(false), None, None);
+
+        assert_eq!(
+            serde_json::to_value(req).unwrap(),
+            serde_json::json!({"deletionProtection": false})
         );
     }
 

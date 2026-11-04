@@ -121,3 +121,9 @@ Restore and read-replica creation return a new service ID without a password. Wa
 ```bash
 clickhousectl cloud postgres delete <postgres-id>
 ```
+
+If your organization has deletion protection enabled, `update --deletion-protection true` makes the API reject `delete` for that service until you turn it off with `--deletion-protection false`. `get` and `list` show the current setting:
+
+```bash
+clickhousectl cloud postgres update <postgres-id> --deletion-protection true
+```
