@@ -160,6 +160,8 @@ CONTEXT FOR AGENTS:
     /// Update a Postgres service's settings, tags or access rules
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  --size/--ha-type: exit 0 means accepted; both take minutes. Poll `cloud postgres get <id> --json`
+    until `size` changes; `haType` flips at once, so check `pg_stat_replication` on the primary (psql).
   --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.
   --remove-ip-allow takes rule IDs from `cloud postgres get`; removals apply before additions.
   Access rule changes can partially succeed: after a failure, read the rules with
