@@ -593,6 +593,38 @@ fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
     )
 }
 
+/// Whether `error`, the management key's rejection of a statement, refused
+/// the statement rather than the key (#1240): a role missing a grant, say.
+///
+/// The Query API sends both refusals as the same `403`, so the endpoint is
+/// asked directly with a harmless `SELECT 1` under the same credential. If it
+/// answers, the key is bound and accepted, so binding cannot fix the refusal
+/// and re-running the statement cannot change it. Only a `403` is probed: a
+/// `401` refuses the credential and a `404` means there is no endpoint. A
+/// probe that fails for any reason proves nothing, and the caller binds as
+/// before.
+async fn statement_refused_by_usable_endpoint(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    error: &clickhouse_cloud_api::Error,
+) -> bool {
+    matches!(error, clickhouse_cloud_api::Error::Api { status: 403, .. })
+        && client
+            .run_service_query(
+                service_id,
+                key_id,
+                key_secret,
+                "SELECT 1",
+                None,
+                "TabSeparated",
+                false,
+            )
+            .await
+            .is_ok()
+}
+
 fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Option<u16> {
     match error {
         clickhouse_cloud_api::Error::Api {
@@ -771,7 +803,17 @@ pub(super) async fn service_query(
             )
             .await
             {
-                Err(error) if query_endpoint_readiness_error(&error.error) => {
+                Err(error)
+                    if query_endpoint_readiness_error(&error.error)
+                        && !statement_refused_by_usable_endpoint(
+                            client,
+                            &service_id,
+                            key_id,
+                            key_secret,
+                            &error.error,
+                        )
+                        .await =>
+                {
                     if options.no_auto_enable {
                         failure::set_provisioning_state(ProvisioningState::Refused);
                         return Err(refused_query_provisioning_error(&service_id, &error.error)

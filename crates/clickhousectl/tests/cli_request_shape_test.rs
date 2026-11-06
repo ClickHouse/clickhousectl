@@ -10546,6 +10546,61 @@ async fn first_use_with_no_auto_enable_refuses_before_identifying_the_key() {
 }
 
 #[tokio::test]
+async fn a_statement_refused_by_an_endpoint_that_accepts_the_key_is_a_query_failure() {
+    // The endpoint answers the `SELECT 1` probe, so the 403 refused the
+    // statement (a role missing a grant), not the key (#1240): no bind, no
+    // re-run, and the same failure with or without `--no-auto-enable`.
+    const STATEMENT: &str = "INSERT INTO t VALUES (1)";
+    for extra in [None, Some("--no-auto-enable")] {
+        let control = start_mock_control_plane_with_service().await;
+        mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+        mount_first_use_endpoint_get(&control, Some(serde_json::json!([CALLER_KEY_UUID]))).await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                if body["sql"] == "SELECT 1" {
+                    ResponseTemplate::new(200).set_body_string("1\n")
+                } else {
+                    ResponseTemplate::new(403)
+                        .set_body_string(r#"{"error":"queryEndpoint:ep-1: Not enough privileges"}"#)
+                }
+            })
+            .mount(&query_host)
+            .await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("home")).unwrap();
+        let mut command = first_use_query_process(project.path(), &control, &query_host, STATEMENT);
+        command.arg("--json").args(extra);
+        let output = command
+            .output()
+            .await
+            .expect("failed to spawn clickhousectl");
+
+        assert_eq!(output.status.code(), Some(1), "{extra:?}: {output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(progress_lines(&output).is_empty(), "{extra:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let envelope: Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+        assert_eq!(envelope["error"]["code"], "http_4xx", "{extra:?}");
+        assert_eq!(control_plane_requests_to(&control, "/v1/whoami").await, 0);
+        assert_eq!(
+            control_plane_requests_to(&control, &first_use_endpoint_path()).await,
+            0
+        );
+        let sql: Vec<Value> = query_host
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap()["sql"].clone())
+            .collect();
+        assert_eq!(sql, [STATEMENT, "SELECT 1"], "{extra:?}");
+    }
+}
+
+#[tokio::test]
 async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
     // A 200 endpoint GET that omits `openApiKeys` leaves the bound keys
     // unknown: the upsert replaces the list wholesale, so binding on top of an

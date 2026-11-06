@@ -10,7 +10,7 @@ OAuth queries run as your identity with read-only SQL access. They do not bind a
 
 With API-key authentication and no stored per-service key, the CLI uses the active API key. If needed, it adds that key to the service's Query API endpoint, creating an endpoint with `sql_console_admin` roles when none exists. Existing endpoint roles and allowed origins are preserved, and other live key bindings remain. No new key is created or saved locally. Use `--no-auto-enable` to fail instead of making this change.
 
-Endpoint roles apply to every bound key. Inspect the endpoint's roles and use appropriate key permissions before allowing a first-use bind. The command's help lists the conditional permissions it requires. A key already listed in the endpoint is not rebound: the CLI waits for acceptance, then reports `query_key_bound_rejected` if still refused.
+Endpoint roles apply to every bound key. Inspect the endpoint's roles and use appropriate key permissions before allowing a first-use bind. The command's help lists the conditional permissions it requires. A key already listed in the endpoint is not rebound: the CLI waits for acceptance, then reports `query_key_bound_rejected` if still refused. When the endpoint refuses a statement with HTTP 403 but answers a `SELECT 1` probe with the same key, the endpoint role lacks a grant for that statement. The CLI reports the refusal as a query failure (exit 1) without binding or re-running the statement, with or without `--no-auto-enable`.
 
 ```bash
 clickhousectl cloud service query-endpoint get <service-id>
