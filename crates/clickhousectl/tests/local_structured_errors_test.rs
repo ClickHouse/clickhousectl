@@ -379,10 +379,13 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "does-not-exist",
         ],
     );
-    assert_eq!(
-        String::from_utf8_lossy(&human.stderr),
-        format!("Error: {message}\n"),
-        "JSON and human mode must carry the same detail"
+    // Human mode may first note auto-assigned ports when the host's default
+    // ports are busy; the error line itself must match the JSON message.
+    let human_stderr = String::from_utf8_lossy(&human.stderr);
+    let error_line = format!("Error: {message}\n");
+    assert!(
+        human_stderr == error_line || human_stderr.ends_with(&format!("\n{error_line}")),
+        "JSON and human mode must carry the same detail: {human_stderr}"
     );
 
     // Port 0 would hand the choice to the OS, which managed metadata cannot
