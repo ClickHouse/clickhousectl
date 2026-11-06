@@ -500,9 +500,9 @@ pub async fn run(
     }
 }
 
-/// How long `auth login` and `auth status` wait for whoami, so working
-/// offline never hangs on the identity check.
-const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long `auth login`, `auth status` and `feedback` wait for whoami, so
+/// working offline never hangs on the identity check.
+pub(crate) const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The result of asking whoami about a credential set.
 enum Verification {
@@ -924,6 +924,15 @@ pub fn load_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
     let global = tokens_path().map_err(|_| UnusableTokens)?;
     let legacy = legacy_tokens_path();
     load_tokens_from(&global, &legacy)
+}
+
+/// The global saved login only, for a caller that must never write or remove
+/// a token file (`feedback`, which agents run unprompted in any directory).
+/// Unlike [`load_tokens`] it neither reads nor migrates the legacy
+/// project-local file.
+#[cfg(feature = "feedback")]
+pub(crate) fn load_global_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
+    read_tokens(&tokens_path().map_err(|_| UnusableTokens)?)
 }
 
 fn read_tokens(path: &std::path::Path) -> Result<Option<TokenStore>, UnusableTokens> {

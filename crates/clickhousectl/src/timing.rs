@@ -23,6 +23,9 @@ pub const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
 /// Bounds the `feedback` send.
 #[cfg(feature = "feedback")]
 pub const FEEDBACK_SEND_TIMEOUT_ENV: &str = "CHCTL_FEEDBACK_SEND_TIMEOUT_MS";
+/// Bounds the `feedback` whoami lookup for Cloud organization IDs.
+#[cfg(feature = "feedback")]
+pub const FEEDBACK_WHOAMI_TIMEOUT_ENV: &str = "CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS";
 
 /// `default`, unless `env` holds a whole number of milliseconds.
 ///
