@@ -27,6 +27,7 @@ use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
     Pagination, PublicQueryApiEndpoint, PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
@@ -46,6 +47,7 @@ pub enum QueryApiEndpointCommands {
     /// List Query API endpoints
     List {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Cursor from pagination.nextCursor
         #[arg(long)]
@@ -75,6 +77,7 @@ pub enum QueryApiEndpointCommands {
 #[derive(Args)]
 pub struct QueryApiEndpointTarget {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     service_id: String,
     /// Query API endpoint ID
     #[command(flatten)]
@@ -91,6 +94,7 @@ pub struct QueryApiEndpointConfigArgs {
 #[derive(Args)]
 pub struct QueryApiEndpointCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     service_id: String,
     #[command(flatten)]
     input: QueryApiEndpointConfigArgs,

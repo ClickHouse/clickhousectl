@@ -18,6 +18,7 @@ use crate::cloud::output::{or_absent, print_human, print_line};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
     PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQueryRequest,
@@ -40,6 +41,7 @@ pub enum SavedQueryCommands {
     /// List saved queries
     List {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Cursor from nextCursor
         #[arg(long)]
@@ -53,6 +55,7 @@ pub enum SavedQueryCommands {
     /// Create a saved query
     Create {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Saved query name, unique within the service
         #[arg(long)]
@@ -80,6 +83,7 @@ pub enum SavedQueryCommands {
 #[derive(Args)]
 pub struct SavedQueryTarget {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     service_id: String,
     /// Saved query ID
     #[command(flatten)]

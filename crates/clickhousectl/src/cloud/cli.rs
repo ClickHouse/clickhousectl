@@ -398,6 +398,48 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_cloud_positional_rejects_an_empty_value_before_any_request() {
+        fn walk(command: &clap::Command, path: &str, checked: &mut usize) {
+            for arg in command.get_positionals() {
+                let index = arg.get_index().unwrap();
+                let mut argv = vec![command.get_name().to_string()];
+                argv.extend((1..index).map(|_| "x".to_string()));
+                argv.push(String::new());
+                let kind = command
+                    .clone()
+                    .try_get_matches_from(argv)
+                    .map(|_| None)
+                    .unwrap_or_else(|error| Some(error.kind()));
+                assert!(
+                    matches!(
+                        kind,
+                        Some(clap::error::ErrorKind::InvalidValue)
+                            | Some(clap::error::ErrorKind::ValueValidation)
+                    ),
+                    "{path} <{}> accepted an empty value ({kind:?})",
+                    arg.get_id()
+                );
+                *checked += 1;
+            }
+            for child in command
+                .get_subcommands()
+                .filter(|child| child.get_name() != "help")
+            {
+                walk(child, &format!("{path} {}", child.get_name()), checked);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let mut checked = 0;
+        walk(
+            command.find_subcommand("cloud").unwrap(),
+            "cloud",
+            &mut checked,
+        );
+        assert!(checked > 0);
+    }
+
+    #[test]
     fn org_id_reaches_cloud_args_at_every_command_and_positional_boundary() {
         let cases: &[&[&str]] = &[
             &["service", "get", "svc-1"],

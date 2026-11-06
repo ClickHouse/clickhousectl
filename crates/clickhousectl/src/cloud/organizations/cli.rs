@@ -2,6 +2,7 @@ use super::org::parse_org_private_endpoint_remove_arg;
 use crate::cloud::shared::{
     EmailSelector, NameSelector, parse_date_only, parse_datetime, parse_tag_filter,
 };
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]
@@ -421,6 +422,7 @@ pub enum QuotaCommands {
     /// Get organization quota details
     Get {
         /// Quota code
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         quota_code: String,
     },
 }

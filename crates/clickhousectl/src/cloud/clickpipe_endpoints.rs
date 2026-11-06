@@ -38,6 +38,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
+use clap::builder::NonEmptyStringValueParser;
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -58,15 +59,18 @@ pub enum ReversePrivateEndpointCommands {
     /// List reverse private endpoints for a service
     List {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 
     /// Get reverse private endpoint details
     Get {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Reverse private endpoint ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         endpoint_id: String,
     },
 
@@ -81,9 +85,11 @@ pub enum ReversePrivateEndpointCommands {
     ))]
     Update {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Reverse private endpoint ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         endpoint_id: String,
 
         /// Custom private DNS name (repeatable; replaces the whole list)
@@ -105,9 +111,11 @@ pub enum ReversePrivateEndpointCommands {
     /// Delete a reverse private endpoint
     Delete {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Reverse private endpoint ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         endpoint_id: String,
     },
 }
@@ -115,6 +123,7 @@ pub enum ReversePrivateEndpointCommands {
 #[derive(Args, Debug)]
 pub struct ReversePrivateEndpointCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// Endpoint type

@@ -132,6 +132,7 @@ use crate::cloud::config::{
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use clap::Subcommand;
+use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{
     ClickStackAlertChannelEmail, ClickStackAlertChannelWebhook, ClickStackAlertResponse,
     ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest, ClickStackCreateRoleRequest,
@@ -214,7 +215,8 @@ pub struct AlertSelector {
         id = "resource_id",
         value_name = "ID",
         required_unless_present = "name",
-        conflicts_with = "name"
+        conflicts_with = "name",
+        value_parser = NonEmptyStringValueParser::new(),
     )]
     pub id: Option<String>,
     /// Exact alert displayName or name template
@@ -236,11 +238,13 @@ pub enum AlertCommands {
     /// List ClickStack alerts
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack alert details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: AlertSelector,
@@ -256,6 +260,7 @@ CONTEXT FOR AGENTS:
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -277,6 +282,7 @@ CONTEXT FOR AGENTS:
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: AlertSelector,
@@ -292,6 +298,7 @@ CONTEXT FOR AGENTS:
     /// Delete a ClickStack alert
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: AlertSelector,
@@ -312,11 +319,13 @@ pub enum WebhookCommands {
     /// List ClickStack webhooks
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Create a ClickStack webhook
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -330,6 +339,7 @@ pub enum WebhookCommands {
     /// Replace a ClickStack webhook
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -345,6 +355,7 @@ pub enum WebhookCommands {
     /// Delete a ClickStack webhook
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -356,6 +367,7 @@ CONTEXT FOR AGENTS:
   Uses API key authentication under the CLI's write-command policy.")]
     Validate {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Webhook JSON body path, or `-` for stdin
         #[arg(
@@ -387,11 +399,13 @@ pub enum DashboardCommands {
     /// List ClickStack dashboards
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack dashboard details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -399,6 +413,7 @@ pub enum DashboardCommands {
     /// Create a ClickStack dashboard
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -416,6 +431,7 @@ CONTEXT FOR AGENTS:
   Serialize edits to one dashboard; concurrent updates can overwrite each other.")]
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -431,6 +447,7 @@ CONTEXT FOR AGENTS:
     /// Delete a ClickStack dashboard
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -443,6 +460,7 @@ CONTEXT FOR AGENTS:
   Uses API key authentication under the CLI's write-command policy.")]
     Validate {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Dashboard create JSON body path, or `-` for stdin
         #[arg(
@@ -474,11 +492,13 @@ pub enum SavedSearchCommands {
     /// List ClickStack saved searches
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack saved search details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -486,6 +506,7 @@ pub enum SavedSearchCommands {
     /// Create a ClickStack saved search
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -499,6 +520,7 @@ pub enum SavedSearchCommands {
     /// Replace a ClickStack saved search
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -514,6 +536,7 @@ pub enum SavedSearchCommands {
     /// Delete a ClickStack saved search
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -534,11 +557,13 @@ pub enum SourceCommands {
     /// List ClickStack sources
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack source details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -546,6 +571,7 @@ pub enum SourceCommands {
     /// Create a ClickStack source
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -559,6 +585,7 @@ pub enum SourceCommands {
     /// Replace a ClickStack source
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -574,6 +601,7 @@ pub enum SourceCommands {
     /// Delete a ClickStack source
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -594,11 +622,13 @@ pub enum RoleCommands {
     /// List ClickStack roles
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack role details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -606,6 +636,7 @@ pub enum RoleCommands {
     /// Create a ClickStack role
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -622,6 +653,7 @@ CONTEXT FOR AGENTS:
   `permissions` is the complete role permission set.")]
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,
@@ -637,6 +669,7 @@ CONTEXT FOR AGENTS:
     /// Delete a ClickStack role
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
         target: NameSelector,

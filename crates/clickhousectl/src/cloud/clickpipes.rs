@@ -77,6 +77,7 @@ use crate::cloud::config::{config_source_label, deserialize_strict_config, read_
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
+use clap::builder::NonEmptyStringValueParser;
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -316,12 +317,14 @@ pub enum ClickPipeCommands {
     /// List ClickPipes
     List {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 
     /// Get ClickPipe details
     Get {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -341,6 +344,7 @@ CONTEXT FOR AGENTS:
   Use `-` to read the JSON body from stdin.")]
     Update {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -360,6 +364,7 @@ CONTEXT FOR AGENTS:
     /// Delete a ClickPipe
     Delete {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -374,6 +379,7 @@ CONTEXT FOR AGENTS:
   use Paused. Inspect the current state with `get` before requesting start.")]
     Start {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -388,6 +394,7 @@ CONTEXT FOR AGENTS:
   database CDC pipes transition through Pausing to Paused.")]
     Stop {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -398,6 +405,7 @@ CONTEXT FOR AGENTS:
     /// Resync a ClickPipe (Postgres and MySQL pipes only)
     Resync {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -411,6 +419,7 @@ CONTEXT FOR AGENTS:
     )]
     Scale {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -618,6 +627,7 @@ pub enum ClickPipeContextCommands {
     /// Get GCP workload identity readiness and principal
     Get {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 }
@@ -627,6 +637,7 @@ pub enum ClickPipeCdcScalingCommands {
     /// Get CDC scaling
     Get {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 
@@ -636,6 +647,7 @@ pub enum ClickPipeCdcScalingCommands {
     )]
     Update {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// CPU millicores per replica (1000-32000, in increments of 1000)
@@ -682,6 +694,7 @@ CONTEXT FOR AGENTS:
 #[derive(Args)]
 pub struct KafkaSchemaDiscoverArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     #[command(flatten)]
@@ -691,6 +704,7 @@ pub struct KafkaSchemaDiscoverArgs {
 #[derive(Args)]
 pub struct KinesisSchemaDiscoverArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     #[command(flatten)]
@@ -700,6 +714,7 @@ pub struct KinesisSchemaDiscoverArgs {
 #[derive(Args)]
 pub struct ObjectStorageSchemaDiscoverArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     #[command(flatten)]
@@ -709,6 +724,7 @@ pub struct ObjectStorageSchemaDiscoverArgs {
 #[derive(Args)]
 pub struct PubSubSchemaDiscoverArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     #[command(flatten)]
@@ -720,6 +736,7 @@ pub enum ClickPipeSettingsCommands {
     /// Get ingestion settings (streaming, object-storage pipes)
     Get {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -753,6 +770,7 @@ CONTEXT FOR AGENTS:
   Kafka read-committed is preserved unless explicitly changed.")]
     Update {
         /// Service ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// ClickPipe ID
@@ -1113,6 +1131,7 @@ pub struct ObjectStorageSourceFields {
 #[derive(Args, Debug)]
 pub struct ObjectStorageCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1340,6 +1359,7 @@ pub struct KafkaSourceFields {
 #[derive(Args, Debug)]
 pub struct KafkaCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1440,6 +1460,7 @@ pub struct KinesisSourceFields {
 #[derive(Args, Debug)]
 pub struct KinesisCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1482,6 +1503,7 @@ pub struct KinesisCreateArgs {
 ))]
 pub struct PostgresCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1638,6 +1660,7 @@ pub struct PostgresCreateArgs {
 ))]
 pub struct MySqlCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1797,6 +1820,7 @@ pub struct MySqlCreateArgs {
 ))]
 pub struct MongoDbCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -1912,6 +1936,7 @@ pub struct MongoDbCreateArgs {
 ))]
 pub struct BigQueryCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name
@@ -2107,6 +2132,7 @@ pub struct PubSubSourceFields {
 #[derive(Args, Debug)]
 pub struct PubSubCreateArgs {
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     pub service_id: String,
 
     /// ClickPipe name

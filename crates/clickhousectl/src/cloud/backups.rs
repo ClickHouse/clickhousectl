@@ -47,6 +47,7 @@ use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::types::DeleteResponse;
+use clap::builder::NonEmptyStringValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AwsBackupBucketPatchRequestV1, AwsBackupBucketPostRequestV1, AzureBackupBucketPatchRequestV1,
@@ -227,15 +228,18 @@ pub enum BackupCommands {
     /// List backups for a service
     List {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 
     /// Get backup details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Backup ID
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         backup_id: String,
     },
 
@@ -259,12 +263,14 @@ pub enum BackupBucketCommands {
     /// Get backup bucket details
     Get {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 
     /// Create a backup bucket
     Create {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Provider-specific JSON file, or - to read from stdin
@@ -275,6 +281,7 @@ pub enum BackupBucketCommands {
     /// Update a backup bucket
     Update {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
         /// Provider-specific update JSON file, or - to read from stdin
@@ -285,6 +292,7 @@ pub enum BackupBucketCommands {
     /// Delete a backup bucket
     Delete {
         /// Service ID (from `cloud service list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
 }

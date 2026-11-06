@@ -6,6 +6,7 @@ use super::observability::{
     parse_postgres_window_datetime,
 };
 use crate::cloud::shared::{NameSelector, SourceSelector, parse_datetime};
+use clap::builder::NonEmptyStringValueParser;
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -465,6 +466,7 @@ CONTEXT FOR AGENTS:
   Restore targets a point in time, not a backup key: `cloud postgres restore --restore-target`.")]
     List {
         /// Postgres service ID (from `cloud postgres list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         postgres_id: String,
         /// Cursor from nextCursor
         #[arg(long)]
@@ -492,6 +494,7 @@ pub enum SlowQueryCommands {
     /// List slow query patterns
     List {
         /// Postgres service ID (from `cloud postgres list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         postgres_id: String,
         /// Inclusive start time (RFC 3339, at most millisecond precision)
         #[arg(long, value_parser = parse_postgres_window_datetime)]
@@ -541,8 +544,10 @@ pub enum SlowQueryCommands {
     /// Get a slow query pattern with recent executions
     Get {
         /// Postgres service ID (from `cloud postgres list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         postgres_id: String,
         /// Stable query pattern ID (from `slow-queries list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
         query_id: String,
         /// Database name from the list result
         #[arg(long)]

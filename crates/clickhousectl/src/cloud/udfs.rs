@@ -53,6 +53,7 @@ use crate::cloud::shared::{PollProgress, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
 use crate::udf::{self, DEFINITION_FILE, SourceEntry, UdfDirArg, UdfInputError, UdfRuntimeKind};
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::*;
 use serde::Serialize;
@@ -185,6 +186,7 @@ pub struct UdfAttachmentArgs {
     #[command(flatten)]
     name: UdfNameArgs,
     /// Service ID
+    #[arg(value_parser = NonEmptyStringValueParser::new())]
     service_id: String,
 }
 
