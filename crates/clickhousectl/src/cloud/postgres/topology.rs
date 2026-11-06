@@ -248,7 +248,7 @@ async fn apply_restored_access_rules(
         Some(tags) => merge_response_tags(Some(tags), &[], &[]).map_err(unapplied)?,
         None => requested_tags.unwrap_or_default(),
     };
-    let req = build_postgres_update_request(None, None, None, Some(tags), Some(patch));
+    let req = build_postgres_update_request(None, None, None, None, Some(tags), Some(patch));
     let patched = client
         .patch_postgres_service(org_id, &restored_id, &req)
         .await

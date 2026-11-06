@@ -7,33 +7,18 @@ use clickhouse_cloud_api::models::{
 };
 use tabled::{Table, Tabled, settings::Style};
 
-/// A Postgres log level the logs endpoint filters on, sent in upper case.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "UPPER")]
-pub(crate) enum PostgresLogSeverity {
-    Debug,
-    Log,
-    Info,
-    Notice,
-    Warning,
-    Error,
-    Fatal,
-    Panic,
-}
-
-impl PostgresLogSeverity {
-    pub(super) fn to_api(self) -> PostgresLogsGetListSeverity {
-        match self {
-            Self::Debug => PostgresLogsGetListSeverity::Debug,
-            Self::Log => PostgresLogsGetListSeverity::Log,
-            Self::Info => PostgresLogsGetListSeverity::Info,
-            Self::Notice => PostgresLogsGetListSeverity::Notice,
-            Self::Warning => PostgresLogsGetListSeverity::Warning,
-            Self::Error => PostgresLogsGetListSeverity::Error,
-            Self::Fatal => PostgresLogsGetListSeverity::Fatal,
-            Self::Panic => PostgresLogsGetListSeverity::Panic,
-        }
-    }
+/// Maps a `--severity` value onto the library enum. Clap has already matched it
+/// against `PostgresLogsGetListSeverity::VALUES` ignoring case, so this only
+/// restores the canonical upper-case wire value.
+pub(super) fn parse_postgres_log_severity(
+    value: String,
+) -> Result<PostgresLogsGetListSeverity, String> {
+    let canonical = PostgresLogsGetListSeverity::VALUES
+        .iter()
+        .find(|known| known.eq_ignore_ascii_case(&value))
+        .ok_or_else(|| format!("invalid severity '{value}'"))?;
+    serde_json::from_value(serde_json::Value::String((*canonical).to_string()))
+        .map_err(|error| format!("invalid severity '{value}': {error}"))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +37,7 @@ pub(super) fn build_postgres_logs_query(
     from_date: &str,
     to_date: &str,
     body_contains: Option<&str>,
-    severity: Option<PostgresLogSeverity>,
+    severity: Option<PostgresLogsGetListSeverity>,
     sort_order: Option<&PostgresLogsGetListSortorder>,
     limit: Option<i64>,
     offset: Option<i64>,
@@ -86,7 +71,7 @@ pub(super) fn build_postgres_logs_query(
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
         body_contains: body_contains.map(str::to_string),
-        severity: severity.map(PostgresLogSeverity::to_api),
+        severity,
         sort_order,
         limit,
         offset,
@@ -771,7 +756,7 @@ mod tests {
             "2026-08-01T00:00:00Z",
             "2026-08-31T00:00:00Z",
             Some("checkpoint"),
-            Some(PostgresLogSeverity::Error),
+            Some(PostgresLogsGetListSeverity::Error),
             Some(&PostgresLogsGetListSortorder::Asc),
             Some(2000),
             Some(0),
