@@ -16,6 +16,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("service list", &[&op::INSTANCE_GET_LIST]),
     Permission::api("service get", &[&op::INSTANCE_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service dotenv", &[&op::INSTANCE_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service profile list", &[&op::SERVICE_PROFILES_LIST]),
     Permission::api(
         "service settings list",
@@ -182,9 +184,9 @@ use endpoints::{
 };
 use lifecycle::{
     CreateServiceOptions, ServiceResetPasswordOptions, ServiceScaleOptions, ServiceUpdateOptions,
-    read_backup_encryption_config, service_create, service_delete, service_get, service_list,
-    service_prometheus, service_reset_password, service_scale, service_start, service_stop,
-    service_update, service_wake,
+    read_backup_encryption_config, service_create, service_delete, service_dotenv, service_get,
+    service_list, service_prometheus, service_reset_password, service_scale, service_start,
+    service_stop, service_update, service_wake,
 };
 use query::{ServiceQueryOptions, service_query, service_query_key_repair};
 use scaling_schedule::{scaling_schedule_delete, scaling_schedule_get, scaling_schedule_set};
@@ -204,6 +206,15 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             service_get(
                 client,
                 &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
+        }
+        ServiceCommands::Dotenv { service_id, local } => {
+            service_dotenv(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                local,
                 json,
             )
             .await
@@ -319,6 +330,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
+            dotenv,
         } => {
             let options = CreateServiceOptions {
                 name,
@@ -351,7 +363,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 private_preview_terms_checked,
                 enable_core_dumps,
             };
-            service_create(client, options, json).await
+            service_create(client, options, dotenv.as_deref(), json).await
         }
         ServiceCommands::Delete { service_id, force } => {
             service_delete(
