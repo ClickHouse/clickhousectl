@@ -195,6 +195,7 @@ async fn run_inner(
                     target_table: MONGO_TARGET_TABLE.to_string(),
                     table_engine: None,
                     structured_ingestion: None,
+                    mongo_config: None,
                 }],
                 ..Default::default()
             }),

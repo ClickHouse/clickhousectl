@@ -470,6 +470,7 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                     target_table: "smoke_target".to_string(),
                     table_engine: None,
                     structured_ingestion: None,
+                    mongo_config: None,
                 }],
                 ..Default::default()
             }),

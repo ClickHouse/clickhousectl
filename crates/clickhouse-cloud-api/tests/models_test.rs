@@ -9807,6 +9807,81 @@ fn mongodb_structured_ingestion_response_tolerates_absent_and_null_fields() {
 }
 
 #[test]
+fn mongodb_table_config_request_is_strict_and_round_trips() {
+    let mapping = ClickPipeMongoDBPipeTableMapping {
+        source_database_name: "mydb".to_string(),
+        source_collection: "users".to_string(),
+        target_table: "mydb_users".to_string(),
+        mongo_config: Some(ClickPipeMongoDBTableConfig {
+            persist_deleted_documents: true,
+        }),
+        ..Default::default()
+    };
+    let wire = serde_json::json!({
+        "sourceDatabaseName": "mydb",
+        "sourceCollection": "users",
+        "targetTable": "mydb_users",
+        "mongoConfig": { "persistDeletedDocuments": true }
+    });
+    assert_eq!(serde_json::to_value(&mapping).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMongoDBPipeTableMapping>(wire).unwrap(),
+        mapping
+    );
+
+    // `persistDeletedDocuments` is required in request position, so an
+    // explicit `false` is sent and an empty config is rejected.
+    assert_eq!(
+        serde_json::to_value(ClickPipeMongoDBTableConfig::default()).unwrap(),
+        serde_json::json!({ "persistDeletedDocuments": false })
+    );
+    assert!(serde_json::from_str::<ClickPipeMongoDBTableConfig>("{}").is_err());
+
+    // The mapping itself omits an unset `mongoConfig`.
+    let unset = ClickPipeMongoDBPipeTableMapping {
+        mongo_config: None,
+        ..mapping
+    };
+    assert!(
+        serde_json::to_value(&unset)
+            .unwrap()
+            .get("mongoConfig")
+            .is_none()
+    );
+}
+
+#[test]
+fn mongodb_table_config_response_tolerates_absent_and_null_fields() {
+    for raw in [
+        r#"{"sourceDatabaseName":"mydb"}"#,
+        r#"{"sourceDatabaseName":"mydb","mongoConfig":null}"#,
+    ] {
+        let mapping: ClickPipeMongoDBPipeTableMappingResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(mapping.mongo_config, None);
+    }
+    for raw in [
+        r#"{"mongoConfig":{}}"#,
+        r#"{"mongoConfig":{"persistDeletedDocuments":null}}"#,
+    ] {
+        let mapping: ClickPipeMongoDBPipeTableMappingResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            mapping.mongo_config,
+            Some(ClickPipeMongoDBTableConfigResponse::default())
+        );
+    }
+    let mapping: ClickPipeMongoDBPipeTableMappingResponse =
+        serde_json::from_str(r#"{"mongoConfig":{"persistDeletedDocuments":false}}"#).unwrap();
+    assert_eq!(
+        mapping.mongo_config.unwrap().persist_deleted_documents,
+        Some(false)
+    );
+    assert_eq!(
+        serde_json::to_value(ClickPipeMongoDBTableConfigResponse::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
 fn bigquery_cdc_fields_round_trip_and_write_back() {
     let settings = serde_json::json!({
         "replicationMode": "cdc", "replicationMethod": "query_based",
