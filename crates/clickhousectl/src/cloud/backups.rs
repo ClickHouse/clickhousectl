@@ -41,7 +41,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     ]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
@@ -804,7 +806,12 @@ impl CloudClient {
             self.api()
                 .snapshot_get_list(org_id, service_id, None, cursor.as_deref())
                 .await
-                .map_err(|error| self.convert_error_for_organization(error, org_id))
+                .map_err(|error| {
+                    self.convert_error_for_resource(
+                        error,
+                        ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                    )
+                })
         })
         .await
     }
@@ -815,10 +822,11 @@ impl CloudClient {
         snapshot_id: &str,
     ) -> CloudResult<clickhouse_cloud_api::models::Snapshot> {
         let response = self
-            .api()
-            .snapshot_get(org_id, service_id, snapshot_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::Snapshot, snapshot_id, org_id, service_id),
+                self.api().snapshot_get(org_id, service_id, snapshot_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
     pub async fn get_snapshot_config(
@@ -856,7 +864,12 @@ impl CloudClient {
             .api()
             .backup_get_list(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -867,10 +880,11 @@ impl CloudClient {
         backup_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::Backup> {
         let response = self
-            .api()
-            .backup_get(org_id, service_id, backup_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::Backup, backup_id, org_id, service_id),
+                self.api().backup_get(org_id, service_id, backup_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 

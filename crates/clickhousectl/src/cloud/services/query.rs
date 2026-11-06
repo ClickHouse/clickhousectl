@@ -45,7 +45,8 @@ async fn resolve_service(
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
             let id = crate::cloud::shared::select_named_id(
-                "service",
+                crate::cloud::client::ResourceKind::Service,
+                crate::cloud::client::Scope::Organization(org_id),
                 name,
                 services
                     .iter()

@@ -107,9 +107,10 @@ pub enum CloudErrorCode {
     /// for the whole readiness window; no upsert was made, since rebinding
     /// cannot help (#1043).
     QueryKeyBoundRejected,
-    /// A by-identifier read named a resource that does not exist: the API
-    /// rejected an identifier that is, structurally, a well-formed UUID
-    /// (#666). `command` lists what does exist in the same scope.
+    /// A by-identifier request named a resource that does not exist: the API
+    /// answered 404, or rejected a well-formed UUID on a get or delete
+    /// (#666), or a `--name`/`--email` matched nothing (#1237). `command`
+    /// lists what does exist in the same scope.
     ResourceNotFound,
     /// A UDF definition is not valid JSON or fails validation; the same code
     /// `local udf deploy` reports.

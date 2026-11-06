@@ -125,7 +125,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     ),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, ResourceKind, Result as CloudResult, Scope};
 use crate::cloud::config::{
     deserialize_strict_config, deserialize_strict_value, read_config_value, read_typed_config,
 };
@@ -2908,15 +2908,19 @@ enum ClickStackResource {
 }
 
 impl ClickStackResource {
-    fn kind(self) -> &'static str {
+    fn resource_kind(self) -> ResourceKind {
         match self {
-            Self::Source => "ClickStack source",
-            Self::Role => "ClickStack role",
-            Self::Dashboard => "ClickStack dashboard",
-            Self::Alert => "ClickStack alert",
-            Self::Webhook => "ClickStack webhook",
-            Self::SavedSearch => "ClickStack saved search",
+            Self::Source => ResourceKind::ClickStackSource,
+            Self::Role => ResourceKind::ClickStackRole,
+            Self::Dashboard => ResourceKind::ClickStackDashboard,
+            Self::Alert => ResourceKind::ClickStackAlert,
+            Self::Webhook => ResourceKind::ClickStackWebhook,
+            Self::SavedSearch => ResourceKind::ClickStackSavedSearch,
         }
+    }
+
+    fn kind(self) -> &'static str {
+        self.resource_kind().noun()
     }
 }
 
@@ -3099,7 +3103,8 @@ async fn resolve_clickstack_target(
         }
     };
     select_named_id(
-        kind,
+        resource.resource_kind(),
+        Scope::Service { org_id, service_id },
         &name,
         records
             .iter()
@@ -4542,7 +4547,11 @@ mod tests {
         assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
         assert_eq!(
             select_named_id(
-                "ClickStack alert",
+                ResourceKind::ClickStackAlert,
+                Scope::Service {
+                    org_id: "org-1",
+                    service_id: "service-1",
+                },
                 "last-page-target",
                 records
                     .iter()
@@ -4566,7 +4575,11 @@ mod tests {
         .unwrap();
         assert!(
             select_named_id(
-                "ClickStack alert",
+                ResourceKind::ClickStackAlert,
+                Scope::Service {
+                    org_id: "org-1",
+                    service_id: "service-1",
+                },
                 "name-0",
                 records
                     .iter()
@@ -4727,7 +4740,11 @@ mod tests {
             .map(|alert| alert_name_record(alert, wanted))
             .collect::<Vec<_>>();
         select_named_id(
-            "ClickStack alert",
+            ResourceKind::ClickStackAlert,
+            Scope::Service {
+                org_id: "org-1",
+                service_id: "service-1",
+            },
             wanted,
             records
                 .iter()

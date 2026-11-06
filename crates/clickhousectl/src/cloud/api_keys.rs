@@ -13,7 +13,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::OPENAPI_KEY_GET_LIST])]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::credentials;
 use crate::cloud::output::{eprint_line, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, NamedResource};
@@ -736,7 +738,9 @@ impl CloudClient {
             .api()
             .openapi_key_get_list(org_id, limit, cursor)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         let limit = response.limit;
         let total_count = response.total_count;
         let next_cursor = response.next_cursor.take();
@@ -758,7 +762,9 @@ impl CloudClient {
             self.api()
                 .openapi_key_get_list(org_id, limit, cursor.as_deref())
                 .await
-                .map_err(|error| self.convert_error_for_organization(error, org_id))
+                .map_err(|error| {
+                    self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+                })
         })
         .await
     }
@@ -785,7 +791,12 @@ impl CloudClient {
             .api()
             .openapi_key_get(org_id, key_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::ApiKey, key_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -799,7 +810,12 @@ impl CloudClient {
             .api()
             .openapi_key_update(org_id, key_id, request)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::ApiKey, key_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -812,7 +828,12 @@ impl CloudClient {
             .api()
             .openapi_key_delete(org_id, key_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::ApiKey, key_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,

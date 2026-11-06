@@ -73,7 +73,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 use crate::cloud::client::{
-    CloudClient, CloudError, Result as CloudResult, read_flag_file, read_flag_file_bytes,
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
+    read_flag_file, read_flag_file_bytes,
 };
 use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_flag_config_value,
@@ -2367,7 +2368,11 @@ async fn resolve_clickpipe_id(
     let org = resolve_org_id(client).await?;
     let rows = client.list_clickpipes(&org, service_id).await?;
     select_named_id(
-        "ClickPipe",
+        ResourceKind::ClickPipe,
+        Scope::Service {
+            org_id: &org,
+            service_id,
+        },
         name,
         rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
     )
@@ -6252,7 +6257,12 @@ impl CloudClient {
             self.api()
                 .click_pipe_get_list(org_id, service_id, None, cursor.as_deref())
                 .await
-                .map_err(|error| self.convert_error_for_organization(error, org_id))
+                .map_err(|error| {
+                    self.convert_error_for_resource(
+                        error,
+                        ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                    )
+                })
         })
         .await
     }
@@ -6264,10 +6274,16 @@ impl CloudClient {
         clickpipe_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
         let response = self
-            .api()
-            .click_pipe_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api().click_pipe_get(org_id, service_id, clickpipe_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6278,10 +6294,12 @@ impl CloudClient {
         request: &clickhouse_cloud_api::models::ClickPipePostRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
         let response = self
-            .api()
-            .click_pipe_create(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().click_pipe_create(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6293,10 +6311,17 @@ impl CloudClient {
         request: &clickhouse_cloud_api::models::ClickPipePatchRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
         let response = self
-            .api()
-            .click_pipe_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_update(org_id, service_id, clickpipe_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6307,10 +6332,17 @@ impl CloudClient {
         clickpipe_id: &str,
     ) -> crate::cloud::client::Result<Option<String>> {
         let response = self
-            .api()
-            .click_pipe_delete(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_delete(org_id, service_id, clickpipe_id),
+            )
+            .await?;
         Ok(response.result.and_then(|result| {
             result
                 .get("name")
@@ -6332,10 +6364,17 @@ impl CloudClient {
             command: Some(command),
         };
         let response = self
-            .api()
-            .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_state_update(org_id, service_id, clickpipe_id, &request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6347,10 +6386,17 @@ impl CloudClient {
         request: &clickhouse_cloud_api::models::ClickPipeScalingPatchRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
         let response = self
-            .api()
-            .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6388,10 +6434,17 @@ impl CloudClient {
         clickpipe_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
-            .api()
-            .click_pipe_settings_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_settings_get(org_id, service_id, clickpipe_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6403,10 +6456,17 @@ impl CloudClient {
         request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
-            .api()
-            .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_in_service(
+                ResourceLookup::in_service(
+                    ResourceKind::ClickPipe,
+                    clickpipe_id,
+                    org_id,
+                    service_id,
+                ),
+                self.api()
+                    .click_pipe_settings_update(org_id, service_id, clickpipe_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -6418,10 +6478,13 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse>
     {
         let response = self
-            .api()
-            .click_pipe_schema_discovery(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .click_pipe_schema_discovery(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 }

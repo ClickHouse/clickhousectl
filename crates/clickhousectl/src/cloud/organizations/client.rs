@@ -1,6 +1,8 @@
 use super::cli::NotificationListArgs;
 use super::org::NotificationPage;
-use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
     ByocInfrastructureDetails, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
@@ -44,7 +46,9 @@ impl CloudClient {
             .api()
             .organization_quotas_get_list(org_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -67,7 +71,9 @@ impl CloudClient {
                 args.to_date.as_deref(),
             )
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         let limit = response.limit;
         let next_cursor = response.next_cursor.take();
         Ok(NotificationPage {
@@ -85,7 +91,9 @@ impl CloudClient {
             .api()
             .notification_types_get_list(org_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -97,7 +105,9 @@ impl CloudClient {
             .api()
             .credit_balances_get(org_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -136,7 +146,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_get(org_id, byoc_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -149,7 +164,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_progress_get(org_id, byoc_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -162,7 +182,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_private_endpoint_config_get(org_id, byoc_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -175,7 +200,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_tags_get(org_id, byoc_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -215,7 +245,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_update(org_id, byoc_id, request)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -228,7 +263,12 @@ impl CloudClient {
             .api()
             .organization_byoc_infrastructure_delete(org_id, byoc_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -244,7 +284,9 @@ impl CloudClient {
         self.api()
             .organization_prometheus_get(org_id, filtered_metrics)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })
     }
 
     pub async fn discover_org_prometheus_targets(
@@ -258,7 +300,9 @@ impl CloudClient {
         self.api()
             .organization_prometheus_discovery_get(org_id, filtered_metrics)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })
     }
 
     pub async fn get_org_usage(
@@ -273,7 +317,9 @@ impl CloudClient {
             .api()
             .usage_cost_get(org_id, from_date, to_date, &filters)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -285,7 +331,9 @@ impl CloudClient {
             .api()
             .organization_roles_get_list(org_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -298,7 +346,12 @@ impl CloudClient {
             .api()
             .organization_role_get(org_id, role_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::OrganizationRole, role_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -325,7 +378,12 @@ impl CloudClient {
             .api()
             .organization_role_patch(org_id, role_id, request)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::OrganizationRole, role_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -338,7 +396,12 @@ impl CloudClient {
             .api()
             .organization_role_delete(org_id, role_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::OrganizationRole, role_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -349,11 +412,9 @@ impl CloudClient {
         &self,
         org_id: &str,
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::Member>> {
-        let response = self
-            .api()
-            .member_get_list(org_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        let response = self.api().member_get_list(org_id).await.map_err(|error| {
+            self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+        })?;
         Self::unwrap_response(response)
     }
 
@@ -366,7 +427,12 @@ impl CloudClient {
             .api()
             .member_get(org_id, user_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -380,7 +446,12 @@ impl CloudClient {
             .api()
             .member_update(org_id, user_id, request)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -393,7 +464,12 @@ impl CloudClient {
             .api()
             .member_delete(org_id, user_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -408,7 +484,9 @@ impl CloudClient {
             .api()
             .invitation_get_list(org_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -434,7 +512,12 @@ impl CloudClient {
             .api()
             .invitation_get(org_id, invitation_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Invitation, invitation_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -447,7 +530,12 @@ impl CloudClient {
             .api()
             .invitation_delete(org_id, invitation_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Invitation, invitation_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,

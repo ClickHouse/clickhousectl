@@ -22,7 +22,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     .when(&[Conditional::flag("name", &[&op::QUERY_API_ENDPOINT_LIST])]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
+};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
@@ -259,7 +261,11 @@ async fn resolve_endpoint_id(
         }
     }
     select_named_id(
-        "Query API endpoint",
+        ResourceKind::QueryApiEndpoint,
+        Scope::Service {
+            org_id: &org,
+            service_id: &target.service_id,
+        },
         name,
         rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
     )
@@ -349,10 +355,12 @@ impl CloudClient {
         body: &PublicQueryApiEndpointRequest,
     ) -> CloudResult<PublicQueryApiEndpoint> {
         let response = self
-            .api()
-            .query_api_endpoint_create(org, service, body)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_on_service(
+                org,
+                service,
+                self.api().query_api_endpoint_create(org, service, body),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
     async fn update_query_api_endpoint(
@@ -363,10 +371,12 @@ impl CloudClient {
         body: &PublicQueryApiEndpointRequest,
     ) -> CloudResult<PublicQueryApiEndpoint> {
         let response = self
-            .api()
-            .query_api_endpoint_update(org, service, endpoint, body)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::QueryApiEndpoint, endpoint, org, service),
+                self.api()
+                    .query_api_endpoint_update(org, service, endpoint, body),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
     async fn get_query_api_endpoint(
@@ -376,10 +386,11 @@ impl CloudClient {
         endpoint: &str,
     ) -> CloudResult<PublicQueryApiEndpoint> {
         let response = self
-            .api()
-            .query_api_endpoint_get(org, service, endpoint)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::QueryApiEndpoint, endpoint, org, service),
+                self.api().query_api_endpoint_get(org, service, endpoint),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
     async fn list_query_api_endpoints(
@@ -393,7 +404,12 @@ impl CloudClient {
             .api()
             .query_api_endpoint_list(org, service, cursor, limit)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service, org),
+                )
+            })?;
         let pagination = Pagination {
             current_cursor: cursor.map(str::to_owned),
             limit: response.limit,
@@ -412,10 +428,11 @@ impl CloudClient {
         endpoint: &str,
     ) -> CloudResult<DeleteResponse> {
         let response = self
-            .api()
-            .query_api_endpoint_delete(org, service, endpoint)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
+            .request_in_service(
+                ResourceLookup::in_service(ResourceKind::QueryApiEndpoint, endpoint, org, service),
+                self.api().query_api_endpoint_delete(org, service, endpoint),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
