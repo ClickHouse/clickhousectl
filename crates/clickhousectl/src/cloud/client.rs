@@ -3,7 +3,7 @@ use crate::dotenv::DotenvVars;
 use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use std::env;
 
-const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
+pub(crate) const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CloudErrorKind {
@@ -255,7 +255,7 @@ fn resolve_auth_with_sources(
                 secret: secret.to_owned(),
             },
             source: AuthSource::CredentialsFile,
-            base_url: normalized_default(),
+            base_url: saved_key_base_url(&creds, url_override)?,
         });
     }
 
@@ -289,6 +289,39 @@ fn resolve_auth_with_sources(
     Err(CloudError::auth(
         "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET (also picked up from a `.env` file in the current directory), or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
     ))
+}
+
+/// The API a saved key pair is sent to (#1202). A key only works against the
+/// API it was minted for, so a `--url` naming any other API is refused rather
+/// than sending the key there; it does not fall through to a lower tier.
+fn saved_key_base_url(
+    creds: &crate::cloud::credentials::Credentials,
+    url_override: Option<&str>,
+) -> Result<String> {
+    let saved = creds.api_base_url();
+    match url_override.map(crate::cloud::auth::normalize_api_url) {
+        Some(requested) if requested != saved => Err(CloudError::auth(format!(
+            "The API key in {} is for {saved}, not {requested}. \
+             Pass `--url {saved}` to use it, or save a key for this endpoint with \
+             `clickhousectl cloud auth login --api-key KEY --api-secret SECRET --url {requested}`.",
+            crate::cloud::credentials::credentials_path().display()
+        ))),
+        _ => Ok(saved),
+    }
+}
+
+/// The stderr note for a command that sends a saved key to the non-production
+/// API recorded with it, so the endpoint is never a surprise. `None` when the
+/// user named the URL, or it is production.
+pub(crate) fn stored_api_url_notice(
+    source: AuthSource,
+    url_override: Option<&str>,
+    base_url: &str,
+) -> Option<String> {
+    (source == AuthSource::CredentialsFile
+        && url_override.is_none()
+        && base_url != DEFAULT_BASE_URL)
+        .then(|| format!("note: using {base_url}, the API saved with this project's API key"))
 }
 
 /// Peek which credential source would win precedence right now without
@@ -1707,6 +1740,126 @@ mod tests {
                 assert_eq!(secret, "file_s");
             }
             _ => panic!("expected Basic creds"),
+        }
+    }
+
+    const DEV_URL: &str = "https://api.control-plane.clickhouse-dev.com/v1";
+
+    fn saved_key_for(api_url: Option<&str>) -> crate::cloud::credentials::Credentials {
+        crate::cloud::credentials::Credentials {
+            api_key: Some("file_k".to_string()),
+            api_secret: Some("file_s".to_string()),
+            api_url: api_url.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    /// Every row of the #1202 table: where a saved key is sent for each
+    /// combination of its recorded API and `--url`, or that it is refused.
+    #[test]
+    fn saved_key_goes_only_to_the_api_it_was_saved_for() {
+        let other = "https://api.control-plane.clickhouse-staging.com/v1";
+        let cases: [(Option<&str>, Option<&str>, Option<&str>); 7] = [
+            (None, None, Some(DEFAULT_BASE_URL)),
+            (
+                None,
+                Some("https://api.clickhouse.cloud"),
+                Some(DEFAULT_BASE_URL),
+            ),
+            (None, Some(DEV_URL), None),
+            (Some(DEV_URL), None, Some(DEV_URL)),
+            // `--url` is compared normalized, so a missing `/v1` still matches.
+            (
+                Some(DEV_URL),
+                Some("https://api.control-plane.clickhouse-dev.com/"),
+                Some(DEV_URL),
+            ),
+            (Some(DEV_URL), Some(other), None),
+            (Some(DEV_URL), Some(DEFAULT_BASE_URL), None),
+        ];
+        // Env vars are usable, so a refusal shows the mismatch does not fall
+        // through to a lower tier.
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "env_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
+        ]);
+        for (saved_url, url_override, expected) in cases {
+            let saved = || Some(saved_key_for(saved_url));
+            let result = resolve_auth_with_sources(
+                None,
+                None,
+                url_override,
+                &dotenv_with(&[]),
+                &lookup_from(&env),
+                &saved,
+                &no_tokens,
+            );
+            match expected {
+                Some(base_url) => {
+                    let resolved = result.unwrap_or_else(|error| {
+                        panic!("{saved_url:?} with {url_override:?}: {error}")
+                    });
+                    assert_eq!(resolved.source, AuthSource::CredentialsFile);
+                    assert_eq!(resolved.base_url, base_url);
+                }
+                None => {
+                    let Err(error) = result else {
+                        panic!("{saved_url:?} with {url_override:?} was not refused");
+                    };
+                    assert_eq!(error.kind, CloudErrorKind::Auth);
+                }
+            }
+        }
+    }
+
+    /// CLI-flag and env-var keys carry no URL, so a saved key's URL never
+    /// steers them.
+    #[test]
+    fn unsaved_keys_ignore_a_saved_api_url() {
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "env_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
+        ]);
+        let saved = || Some(saved_key_for(Some(DEV_URL)));
+        let flags = resolve_auth_with_sources(
+            Some("k"),
+            Some("s"),
+            None,
+            &dotenv_with(&[]),
+            &lookup_from(&env),
+            &saved,
+            &no_tokens,
+        )
+        .unwrap();
+        assert_eq!(flags.source, AuthSource::CliFlags);
+        assert_eq!(flags.base_url, DEFAULT_BASE_URL);
+        let env_tier = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv_with(&[]),
+            &lookup_from(&env),
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
+        assert_eq!(env_tier.source, AuthSource::EnvVars);
+        assert_eq!(env_tier.base_url, DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn stored_api_url_notice_only_for_an_implicit_non_prod_saved_key() {
+        assert!(stored_api_url_notice(AuthSource::CredentialsFile, None, DEV_URL).is_some());
+        for (source, url_override, base_url) in [
+            (AuthSource::CredentialsFile, None, DEFAULT_BASE_URL),
+            (AuthSource::CredentialsFile, Some(DEV_URL), DEV_URL),
+            (AuthSource::EnvVars, None, DEV_URL),
+            (AuthSource::OAuthTokens, None, DEV_URL),
+        ] {
+            assert!(
+                stored_api_url_notice(source, url_override, base_url).is_none(),
+                "{source:?} {url_override:?} {base_url}"
+            );
         }
     }
 

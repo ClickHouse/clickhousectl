@@ -924,7 +924,8 @@ fn invoke_cli_without_cloud_credentials(
         .expect("failed to spawn clickhousectl")
 }
 
-fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
+/// A saved key pair for `api_url`, the mock the test sends it to (#1202).
+fn write_project_api_credentials(root: &Path, key: &str, secret: &str, api_url: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();
     std::fs::write(
@@ -932,6 +933,7 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
         serde_json::to_vec(&serde_json::json!({
             "api_key": key,
             "api_secret": secret,
+            "api_url": api_url,
         }))
         .unwrap(),
     )
@@ -977,12 +979,16 @@ async fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
     .unwrap();
     assert_eq!(saved["api_key"], "new-key");
     assert_eq!(saved["api_secret"], "new-secret");
+    // The key was verified against a non-prod API, so that API is saved with
+    // it and later commands go there without `--url` (#1202).
+    let api_url = format!("{}/v1", mock.uri());
+    assert_eq!(saved["api_url"], api_url.as_str());
     let output = Command::new(clickhousectl_binary())
         .isolated_env()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
         .current_dir(dir.path())
-        .args(["cloud", "auth", "status", "--json", "--url", &mock.uri()])
+        .args(["cloud", "auth", "status", "--json"])
         .output()
         .unwrap();
     assert_success(&output);
@@ -993,6 +999,55 @@ async fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
     assert_eq!(saved["status"], "Active");
     assert_eq!(saved["scope"], "read/write");
     assert_eq!(saved["active"], "yes");
+    assert_eq!(saved["api_url"], api_url.as_str());
+}
+
+/// #1202: a command without `--url` uses the API saved with the key and says
+/// so on stderr; a `--url` naming another API is refused with exit 4 before
+/// the key is sent anywhere, even with env credentials to fall back to.
+#[tokio::test]
+async fn saved_key_is_sent_only_to_its_saved_api() {
+    let saved_api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .expect(1)
+        .mount(&saved_api)
+        .await;
+    let other_api = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &saved_api.uri());
+    let command = |args: &[&str]| {
+        Command::new(clickhousectl_binary())
+            .isolated_env()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path().join("home"))
+            .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+            .current_dir(dir.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let output = command(&["cloud", "auth", "whoami"]);
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(&saved_api.uri()), "stderr: {stderr}");
+
+    let other_url = other_api.uri();
+    for json in [true, false] {
+        let mut args = vec!["cloud", "--url", &other_url, "auth", "whoami"];
+        if json {
+            args.push("--json");
+        }
+        let output = command(&args);
+        assert_eq!(output.status.code(), Some(4), "json={json}");
+        if json {
+            assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+        }
+    }
+    assert!(other_api.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1001,7 +1056,7 @@ async fn auth_status_never_selects_empty_saved_credentials() {
     // The empty-field forms are `client::empty_saved_credentials_do_not_shadow_usable_sources`.
     for (key, secret, with_env) in [("", "saved-secret", false), ("saved-key", "", true)] {
         let dir = tempfile::tempdir().unwrap();
-        write_project_api_credentials(dir.path(), key, secret);
+        write_project_api_credentials(dir.path(), key, secret, &mock.uri());
         let mut command = Command::new(clickhousectl_binary());
         command
             .isolated_env()
@@ -2161,7 +2216,7 @@ async fn credentials_file_reports_that_environment_credentials_are_ignored() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
     let url = mock.uri();
     let output = Command::new(clickhousectl_binary())
         .isolated_env()
@@ -2216,7 +2271,7 @@ async fn cloud_command_survives_closed_stderr_with_credential_notice_and_debug()
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
     let mut command = Command::new(clickhousectl_binary());
     clear_inherited_env(&mut command);
     let mut child = command
@@ -2268,7 +2323,7 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
         if configure_other_sources {
-            write_project_api_credentials(dir.path(), "file-key", "file-secret");
+            write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
             let token_dir = home.join(".clickhouse");
             std::fs::create_dir(&token_dir).unwrap();
             write_oauth_tokens(&token_dir, &mock.uri());
@@ -2343,7 +2398,7 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
                 .take_while(|line| !line.is_empty())
                 .map(|line| {
                     let cells: Vec<_> = line.trim_matches('|').split('|').map(str::trim).collect();
-                    assert_eq!(cells.len(), 4, "{line}");
+                    assert_eq!(cells.len(), 5, "{line}");
                     (
                         cells[0].into(),
                         cells[1].into(),
@@ -2405,7 +2460,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
         if configured_source == Some("API key") {
-            write_project_api_credentials(dir.path(), "file-key", "file-secret");
+            write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
         }
         if configured_source == Some("OAuth") {
             let token_dir = home.join(".clickhouse");
@@ -2477,10 +2532,15 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
                 .lines()
                 .skip(2)
                 .map(|line| {
-                    line.trim_matches('|')
+                    // The fifth column, the API URL, has no JSON counterpart
+                    // for these rows.
+                    let cells: Vec<String> = line
+                        .trim_matches('|')
                         .split('|')
                         .map(|cell| cell.trim().to_owned())
-                        .collect()
+                        .collect();
+                    assert_eq!(cells.len(), 5, "{line}");
+                    cells.into_iter().take(4).collect()
                 })
                 .collect()
         };
@@ -2519,7 +2579,7 @@ async fn auth_status_marks_outranked_environment_credentials_inactive() {
         .mount(&mock)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
     let output = Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
         .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
@@ -7383,6 +7443,7 @@ const PRESERVED_QUERY_SERVICE_ID: &str = "preserved-service";
 
 fn write_repair_query_credentials(
     project_dir: &Path,
+    control_url: &str,
     organization_id: Option<&str>,
     api_key_id: Option<&str>,
     endpoint_id: Option<&str>,
@@ -7410,6 +7471,7 @@ fn write_repair_query_credentials(
     let credentials = serde_json::json!({
         "api_key": "project-management-key",
         "api_secret": "project-management-secret",
+        "api_url": control_url,
         "service_query_keys": {
             PRESERVED_QUERY_SERVICE_ID: {
                 "organization_id": "org-1",
@@ -7591,6 +7653,7 @@ async fn run_rejected_stored_key_query(
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         api_key_id,
         Some("ep-1"),
@@ -7848,6 +7911,7 @@ async fn run_query_with_pending_retirements(
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -7958,6 +8022,7 @@ async fn a_failed_retirement_retry_survives_a_closed_stderr() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8324,6 +8389,7 @@ async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentia
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8399,6 +8465,7 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8484,6 +8551,7 @@ async fn repair_with_a_failed_final_cleanup_survives_a_closed_stderr() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8575,6 +8643,7 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8652,6 +8721,7 @@ async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8729,6 +8799,7 @@ async fn failed_repair_records_the_new_key_for_retry_when_its_rollback_delete_fa
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8912,6 +8983,7 @@ async fn repair_with_a_pending_retirement_replaces_the_key_and_deletes_every_ret
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -8962,39 +9034,44 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
     // Two repairs in a row against the same project: each one retires the key
     // the previous one installed, so the endpoint always binds exactly the
     // unrelated key plus the current one and nothing is ever left pending.
+    // Both repairs talk to one server, the API the project key is saved for
+    // (#1202), which is reset between them.
+    let control = MockServer::start().await;
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
         &[],
     );
 
-    let first = MockServer::start().await;
-    mount_running_service_accepting_probes(&first, 1).await;
-    mount_repair_endpoint_get_listing(&first, &["unrelated-key", OLD_QUERY_TEST_KEY_UUID]).await;
-    mount_key_create_returning(&first, QUERY_TEST_KEY_UUID).await;
-    expect_repair_endpoint_upsert(&first, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
-    mount_key_delete(&first, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
-    let output = service_query_key_repair_process(project.path(), &first)
+    mount_running_service_accepting_probes(&control, 1).await;
+    mount_repair_endpoint_get_listing(&control, &["unrelated-key", OLD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&control, QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&control, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &control)
         .output()
         .await
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
     assert_eq!(
-        key_deletes_received(&first).await,
+        key_deletes_received(&control).await,
         [OLD_QUERY_TEST_KEY_UUID]
     );
 
-    let second = MockServer::start().await;
-    mount_running_service_accepting_probes(&second, 1).await;
-    mount_repair_endpoint_get_listing(&second, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
-    mount_key_create_returning(&second, THIRD_QUERY_TEST_KEY_UUID).await;
-    expect_repair_endpoint_upsert(&second, &["unrelated-key", THIRD_QUERY_TEST_KEY_UUID]).await;
-    mount_key_delete(&second, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
-    let output = service_query_key_repair_process(project.path(), &second)
+    // Check the first repair's expectations before the reset discards them.
+    control.verify().await;
+    control.reset().await;
+    mount_running_service_accepting_probes(&control, 1).await;
+    mount_repair_endpoint_get_listing(&control, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&control, THIRD_QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&control, &["unrelated-key", THIRD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&control, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &control)
         .output()
         .await
         .expect("failed to spawn clickhousectl");
@@ -9008,7 +9085,7 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
         serde_json::json!([QUERY_TEST_KEY_UUID])
     );
     assert_eq!(
-        key_deletes_received(&second).await,
+        key_deletes_received(&control).await,
         [QUERY_TEST_KEY_UUID],
         "the second repair deletes only the key the first one installed"
     );
@@ -9124,6 +9201,7 @@ async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9218,6 +9296,7 @@ async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9425,6 +9504,7 @@ async fn repair_exits_zero_only_once_the_query_api_accepts_the_new_key() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9470,6 +9550,7 @@ async fn repair_does_not_probe_a_service_that_is_not_running() {
         std::fs::create_dir(project.path().join("home")).unwrap();
         write_repair_query_credentials(
             project.path(),
+            &control.uri(),
             Some("org-1"),
             Some(OLD_QUERY_TEST_KEY_UUID),
             Some("ep-1"),
@@ -9510,6 +9591,7 @@ async fn repair_skips_verification_when_the_service_state_cannot_be_read() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9551,6 +9633,7 @@ async fn repair_skips_verification_without_a_configured_query_host() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9609,6 +9692,7 @@ async fn a_failed_probe_reports_the_committed_repair_and_exits_zero() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9670,6 +9754,7 @@ async fn repair_skips_verification_when_the_probe_finds_the_service_stopped() {
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9711,6 +9796,7 @@ async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_it
     std::fs::create_dir(project.path().join("home")).unwrap();
     write_repair_query_credentials(
         project.path(),
+        &control.uri(),
         Some("org-1"),
         Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
@@ -9763,7 +9849,14 @@ async fn repair_refuses_legacy_query_key_without_any_cloud_mutation() {
     let control = MockServer::start().await;
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
-    let original = write_repair_query_credentials(project.path(), None, None, Some("ep-1"), &[]);
+    let original = write_repair_query_credentials(
+        project.path(),
+        &control.uri(),
+        None,
+        None,
+        Some("ep-1"),
+        &[],
+    );
     let output = service_query_key_repair_process(project.path(), &control)
         .output()
         .await
@@ -13095,6 +13188,7 @@ async fn invoke_service_query_for_timeout_test(
         "stored" => {
             write_repair_query_credentials(
                 project.path(),
+                &control.uri(),
                 Some("org-1"),
                 Some(QUERY_TEST_KEY_UUID),
                 Some("ep-1"),
@@ -19962,7 +20056,7 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         .await;
     for mode in ["explicit", "agent"] {
         let dir = tempfile::tempdir().unwrap();
-        write_project_api_credentials(dir.path(), "file-key", "file-secret");
+        write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
         let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
             .args(["service", "list", "--org-id", "org-1"])
             .output()
@@ -20105,14 +20199,24 @@ async fn api_key_precedence_skips_oauth_refresh_and_preserves_tokens() {
         match source {
             "flags" => {
                 // Populate lower tiers too, proving the same precedence as the client.
-                write_project_api_credentials(dir.path(), "ignored-file", "ignored-secret");
+                write_project_api_credentials(
+                    dir.path(),
+                    "ignored-file",
+                    "ignored-secret",
+                    &api.uri(),
+                );
                 command
                     .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
                     .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret")
                     .args(["--api-key", "winning-key", "--api-secret", "winning-secret"]);
             }
             "file" => {
-                write_project_api_credentials(dir.path(), "winning-key", "winning-secret");
+                write_project_api_credentials(
+                    dir.path(),
+                    "winning-key",
+                    "winning-secret",
+                    &api.uri(),
+                );
                 command
                     .env("CLICKHOUSE_CLOUD_API_KEY", "ignored-env")
                     .env("CLICKHOUSE_CLOUD_API_SECRET", "ignored-secret");
@@ -20201,7 +20305,7 @@ async fn incomplete_lower_priority_keys_do_not_prevent_oauth_refresh() {
             "partial-env" => {
                 command.env("CLICKHOUSE_CLOUD_API_KEY", "incomplete-key");
             }
-            "empty-file" => write_project_api_credentials(dir.path(), "", ""),
+            "empty-file" => write_project_api_credentials(dir.path(), "", "", &api.uri()),
             _ => unreachable!(),
         }
         let output = command
@@ -20377,7 +20481,7 @@ async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
                 .find(|line| line.contains("| OAuth"))
                 .unwrap();
             let cells: Vec<_> = row.trim_matches('|').split('|').map(str::trim).collect();
-            assert_eq!(cells, ["OAuth", expected, "-", "-"]);
+            assert_eq!(cells, ["OAuth", expected, "-", "-", "-"]);
         } else {
             let status: Value = serde_json::from_str(&stdout).unwrap();
             let row = status["sources"]
@@ -22630,7 +22734,7 @@ async fn auth_status_reports_the_identity_and_never_fails_on_it() {
             std::fs::create_dir_all(&cloud_dir).unwrap();
             write_oauth_tokens(&cloud_dir, &url);
         } else {
-            write_project_api_credentials(project.path(), "file-key", "file-secret");
+            write_project_api_credentials(project.path(), "file-key", "file-secret", &url);
         }
         let output = invoke_auth(project.path(), &url, json, &["status"]);
         assert_success(&output);
