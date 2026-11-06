@@ -1380,15 +1380,9 @@ mod tests {
             wire["iamRoleExternalId"] = invalid;
             assert!(build_backup_bucket_update_request(wire, "test input").is_err());
         }
-        let mut unknown = base.clone();
+        let mut unknown = base;
         unknown["iamRoleExternalIdTypo"] = serde_json::json!("id");
         assert!(build_backup_bucket_update_request(unknown, "test input").is_err());
-
-        let mut create = base;
-        create["iamRoleSessionName"] = serde_json::json!("backups");
-        assert!(build_backup_bucket_create_request(create.clone(), "test input").is_err());
-        create["iamRoleExternalId"] = Value::Null;
-        assert!(build_backup_bucket_create_request(create, "test input").is_err());
     }
 
     #[test]

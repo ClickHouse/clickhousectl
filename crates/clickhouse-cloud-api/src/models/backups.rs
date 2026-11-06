@@ -627,8 +627,9 @@ pub struct AwsBackupBucketPostRequestV1 {
     pub bucket_provider: AwsBackupBucketPostRequestV1Bucketprovider,
     #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(rename = "iamRoleExternalId")]
-    pub iam_role_external_id: String,
+    /// Omit unless the organization has the external-ID feature; the server rejects the field otherwise.
+    #[serde(rename = "iamRoleExternalId", skip_serializing_if = "Option::is_none")]
+    pub iam_role_external_id: Option<String>,
     #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }

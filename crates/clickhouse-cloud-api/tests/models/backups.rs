@@ -26,23 +26,30 @@ fn aws_backup_external_id_response_tolerates_absence_and_null() {
 }
 
 #[test]
-fn aws_backup_external_id_create_and_properties_are_strict() {
+fn aws_backup_external_id_is_optional_on_create_and_strict_on_properties() {
     let mut wire = serde_json::json!({
         "bucketProvider": "AWS", "bucketPath": "s3://backups",
         "iamRoleArn": "arn:aws:iam::123:role/backup", "iamRoleSessionName": "backups",
         "iamRoleExternalId": "trust-policy-id"
     });
     let request: AwsBackupBucketPostRequestV1 = serde_json::from_value(wire.clone()).unwrap();
-    assert_eq!(request.iam_role_external_id, "trust-policy-id");
+    assert_eq!(
+        request.iam_role_external_id.as_deref(),
+        Some("trust-policy-id")
+    );
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
     let properties: AwsBackupBucketProperties = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(properties.iam_role_external_id, "trust-policy-id");
-    wire.as_object_mut().unwrap().remove("iamRoleExternalId");
-    assert!(serde_json::from_value::<AwsBackupBucketPostRequestV1>(wire.clone()).is_err());
-    assert!(serde_json::from_value::<AwsBackupBucketProperties>(wire.clone()).is_err());
+
+    let mut omitted = wire.clone();
+    omitted.as_object_mut().unwrap().remove("iamRoleExternalId");
     wire["iamRoleExternalId"] = serde_json::Value::Null;
-    assert!(serde_json::from_value::<AwsBackupBucketPostRequestV1>(wire.clone()).is_err());
-    assert!(serde_json::from_value::<AwsBackupBucketProperties>(wire).is_err());
+    for input in [&omitted, &wire] {
+        let request: AwsBackupBucketPostRequestV1 = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(request.iam_role_external_id, None);
+        assert_eq!(serde_json::to_value(request).unwrap(), omitted);
+        assert!(serde_json::from_value::<AwsBackupBucketProperties>(input.clone()).is_err());
+    }
 }
 
 #[test]
