@@ -3081,8 +3081,9 @@ fn build_kafka_source_with_exactly_once(
         topics: args.topics.clone(),
         consumer_group: args.consumer_group.clone(),
         exactly_once,
-        authentication: Some(authentication),
-        credentials,
+        authentication,
+        // Always sent, as `null` for IAM_ROLE and workload identity.
+        credentials: Some(credentials),
         iam_role: args.iam_role.clone(),
         offset: Some(ClickPipeKafkaOffset {
             strategy: parse_serde_enum(
@@ -3096,7 +3097,8 @@ fn build_kafka_source_with_exactly_once(
         protobuf_schema,
         tombstone_mode: None,
         ca_certificate,
-        reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
+        // Always sent, as `[]` when no endpoint was given.
+        reverse_private_endpoint_ids: Some(args.reverse_private_endpoint_ids.clone()),
     })
 }
 
@@ -6202,7 +6204,7 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
         let response = self
             .api()
-            .click_pipe_get_list(org_id, service_id)
+            .click_pipe_get_list(org_id, service_id, None, None)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -13875,10 +13877,8 @@ mod tests {
     }
 
     /// Wire value of the built source's authentication.
-    fn kafka_auth(
-        source: &clickhouse_cloud_api::models::ClickPipePostKafkaSource,
-    ) -> Option<String> {
-        source.authentication.as_ref().map(ToString::to_string)
+    fn kafka_auth(source: &clickhouse_cloud_api::models::ClickPipePostKafkaSource) -> String {
+        source.authentication.to_string()
     }
 
     #[test]
@@ -13887,9 +13887,9 @@ mod tests {
         args.username = Some("user".into());
         args.password = Some("password".into());
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
-        assert_eq!(source.credentials["username"], "user");
-        assert_eq!(source.credentials["password"], "password");
+        assert_eq!(kafka_auth(&source), "PLAIN");
+        assert_eq!(source.credentials.as_ref().unwrap()["username"], "user");
+        assert_eq!(source.credentials.as_ref().unwrap()["password"], "password");
     }
 
     #[test]
@@ -13898,9 +13898,9 @@ mod tests {
         args.access_key_id = Some("AKIA".into());
         args.secret_key = Some("secret".into());
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_USER"));
-        assert_eq!(source.credentials["accessKeyId"], "AKIA");
-        assert_eq!(source.credentials["secretKey"], "secret");
+        assert_eq!(kafka_auth(&source), "IAM_USER");
+        assert_eq!(source.credentials.as_ref().unwrap()["accessKeyId"], "AKIA");
+        assert_eq!(source.credentials.as_ref().unwrap()["secretKey"], "secret");
     }
 
     #[test]
@@ -13908,8 +13908,8 @@ mod tests {
         let mut args = kafka_args().source;
         args.iam_role = Some("arn:aws:iam::123:role/Foo".into());
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_ROLE"));
-        assert!(source.credentials.is_null());
+        assert_eq!(kafka_auth(&source), "IAM_ROLE");
+        assert_eq!(source.credentials, Some(serde_json::Value::Null));
         assert_eq!(
             source.iam_role.as_deref(),
             Some("arn:aws:iam::123:role/Foo")
@@ -13929,9 +13929,15 @@ mod tests {
         args.client_key = Some(client_key.to_string_lossy().into_owned());
 
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
-        assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
-        assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
+        assert_eq!(kafka_auth(&source), "MUTUAL_TLS");
+        assert_eq!(
+            source.credentials.as_ref().unwrap()["certificate"],
+            "CLIENT_CERT"
+        );
+        assert_eq!(
+            source.credentials.as_ref().unwrap()["privateKey"],
+            "CLIENT_KEY"
+        );
     }
 
     #[test]
@@ -14004,15 +14010,15 @@ mod tests {
         assert_eq!(source.format.to_string(), "JSONEachRow");
         assert_eq!(source.brokers, "b:9092");
         assert_eq!(source.topics, "t");
-        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
-        assert_eq!(source.credentials["username"], "user");
-        assert_eq!(source.credentials["password"], "password");
+        assert_eq!(kafka_auth(&source), "PLAIN");
+        assert_eq!(source.credentials.as_ref().unwrap()["username"], "user");
+        assert_eq!(source.credentials.as_ref().unwrap()["password"], "password");
         assert_eq!(source.consumer_group, None);
         assert_eq!(source.exactly_once, None);
         assert_eq!(source.iam_role, None);
         assert_eq!(source.ca_certificate, None);
         assert_eq!(source.schema_registry, None);
-        assert!(source.reverse_private_endpoint_ids.is_empty());
+        assert_eq!(source.reverse_private_endpoint_ids, Some(vec![]));
         let offset = source.offset.expect("Kafka offset is always populated");
         assert_eq!(offset.strategy.to_string(), "from_beginning");
         assert_eq!(offset.timestamp, None);
@@ -14105,12 +14111,19 @@ mod tests {
 
         let source = build_kafka_source(&args).unwrap();
         assert_eq!(source.r#type.to_string(), "azureeventhub");
-        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(kafka_auth(&source), "PLAIN");
         assert_eq!(
-            source.credentials["connectionString"],
+            source.credentials.as_ref().unwrap()["connectionString"],
             "Endpoint=sb://events.example/;SharedAccessKey=secret"
         );
-        assert!(source.credentials.get("username").is_none());
+        assert!(
+            source
+                .credentials
+                .as_ref()
+                .unwrap()
+                .get("username")
+                .is_none()
+        );
     }
 
     #[test]
@@ -14171,14 +14184,20 @@ mod tests {
         assert_eq!(source.brokers, "broker-1:9092,broker-2:9092");
         assert_eq!(source.topics, "topic-1,topic-2");
         assert_eq!(source.consumer_group.as_deref(), Some("group"));
-        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
-        assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
-        assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
+        assert_eq!(kafka_auth(&source), "MUTUAL_TLS");
+        assert_eq!(
+            source.credentials.as_ref().unwrap()["certificate"],
+            "CLIENT_CERT"
+        );
+        assert_eq!(
+            source.credentials.as_ref().unwrap()["privateKey"],
+            "CLIENT_KEY"
+        );
         assert_eq!(source.iam_role, None);
         assert_eq!(source.ca_certificate.as_deref(), Some("BROKER_CA"));
         assert_eq!(
             source.reverse_private_endpoint_ids,
-            ["endpoint-1", "endpoint-2"]
+            Some(vec!["endpoint-1".to_string(), "endpoint-2".to_string()])
         );
         let offset = source.offset.expect("Kafka offset is always populated");
         assert_eq!(offset.strategy.to_string(), "from_timestamp");
@@ -14221,7 +14240,7 @@ mod tests {
         args.glue_registry_name = Some("my-registry".into());
 
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_ROLE"));
+        assert_eq!(kafka_auth(&source), "IAM_ROLE");
         let registry = glue_registry(source);
         assert_eq!(
             registry.r#type,
@@ -14245,7 +14264,7 @@ mod tests {
         args.glue_role_arn = Some("arn:aws:iam::123456789012:role/Glue".into());
 
         let source = build_kafka_source(&args).unwrap();
-        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(kafka_auth(&source), "PLAIN");
         assert_eq!(source.iam_role, None);
         let registry = glue_registry(source);
         assert_eq!(registry.glue_region, "eu-west-1");
@@ -14950,9 +14969,9 @@ mod tests {
         let source = build_kafka_source(&args).expect("GCMK workload identity builds");
         assert_eq!(
             source.authentication,
-            Some(ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity)
+            ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity
         );
-        assert!(source.credentials.is_null());
+        assert_eq!(source.credentials, Some(serde_json::Value::Null));
         assert!(source.iam_role.is_none());
     }
 

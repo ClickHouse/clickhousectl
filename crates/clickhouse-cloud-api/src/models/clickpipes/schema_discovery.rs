@@ -13,6 +13,13 @@ pub struct ClickPipeSchemaDiscoveryField {
     pub r#type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
+    #[serde(rename = "isVirtual", skip_serializing_if = "Option::is_none")]
+    pub is_virtual: Option<bool>,
+    #[serde(
+        rename = "isVirtualDisabledDefault",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub is_virtual_disabled_default: Option<bool>,
 }
 
 /// `ClickPipeSchemaDiscoveryRequest` from the ClickHouse Cloud API.

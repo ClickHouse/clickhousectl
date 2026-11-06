@@ -1,6 +1,6 @@
 use clickhouse_cloud_api::models::*;
-use wiremock::Mock;
 use wiremock::matchers::{basic_auth, body_partial_json, method, path};
+use wiremock::{Mock, ResponseTemplate};
 
 use crate::{ok_empty, ok_json, setup};
 
@@ -24,10 +24,88 @@ async fn list_click_pipes() {
         .mount(&s)
         .await;
 
-    let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_pipe_get_list("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
     assert_eq!(pipes[0].name.as_deref(), Some("kafka-pipe"));
+}
+
+#[tokio::test]
+async fn list_click_pipes_pagination_encodes_parameters_and_preserves_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?雪";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/svc/clickpipes"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "req-page", "result": [{"name": "kafka-pipe"}],
+            "limit": 1, "totalCount": 3, "nextCursor": cursor
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    for (limit, cursor_arg) in [
+        (None, None),
+        (Some(1), None),
+        (None, Some(cursor)),
+        (Some(1), Some(cursor)),
+    ] {
+        let response = client
+            .click_pipe_get_list("org", "svc", limit, cursor_arg)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(200));
+        assert_eq!(response.request_id.as_deref(), Some("req-page"));
+        let pipes = response.result.unwrap();
+        assert_eq!(pipes.len(), 1);
+        assert_eq!(pipes[0].name.as_deref(), Some("kafka-pipe"));
+        assert_eq!(response.limit, Some(1));
+        assert_eq!(response.total_count, Some(3));
+        assert_eq!(response.next_cursor.as_deref(), Some(cursor));
+    }
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("limit".into(), "1".into())],
+            vec![("cursor".into(), cursor.into())],
+            vec![
+                ("limit".into(), "1".into()),
+                ("cursor".into(), cursor.into())
+            ],
+        ]
+    );
+}
+
+/// The last page, and a total the server cannot compute, are explicit `null`s.
+#[tokio::test]
+async fn list_click_pipes_last_page_has_null_cursor_and_total() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/svc/clickpipes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "req-last", "result": [],
+            "limit": 50, "totalCount": null, "nextCursor": null
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .click_pipe_get_list("org", "svc", Some(50), Some("page-2"))
+        .await
+        .unwrap();
+    assert_eq!(response.result, Some(vec![]));
+    assert_eq!(response.limit, Some(50));
+    assert_eq!(response.total_count, None);
+    assert_eq!(response.next_cursor, None);
 }
 
 /// Mirror the shape the live API actually returns for a Kafka pipe — including
@@ -82,7 +160,10 @@ async fn list_click_pipes_with_null_array_fields() {
         .mount(&s)
         .await;
 
-    let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_pipe_get_list("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
     assert_eq!(pipes[0].name.as_deref(), Some("kafka-pipe"));

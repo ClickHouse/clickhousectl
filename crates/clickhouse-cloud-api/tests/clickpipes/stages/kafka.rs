@@ -176,11 +176,11 @@ async fn run_scram_tls_inner(
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers,
                 topics: topic.clone(),
-                authentication: Some(ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512),
-                credentials: serde_json::json!({
+                authentication: ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512,
+                credentials: Some(serde_json::json!({
                     "username": clickpipe_user,
                     "password": clickpipe_pass,
-                }),
+                })),
                 consumer_group: Some(consumer_group),
                 ca_certificate: Some(certs.ca_pem.clone()),
                 offset: Some(ClickPipeKafkaOffset {
@@ -301,11 +301,11 @@ async fn run_mtls_inner(
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers,
                 topics: topic.clone(),
-                authentication: Some(ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS),
-                credentials: serde_json::json!({
+                authentication: ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS,
+                credentials: Some(serde_json::json!({
                     "certificate": certs.client_cert_pem,
                     "privateKey": certs.client_key_pem,
-                }),
+                })),
                 consumer_group: Some(consumer_group),
                 ca_certificate: Some(certs.ca_pem.clone()),
                 offset: Some(ClickPipeKafkaOffset {

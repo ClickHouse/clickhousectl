@@ -158,7 +158,7 @@ pub async fn create_pipe_and_wait_running(
     // field returned as `null` instead of `[]`) surface here instead of only
     // affecting `chctl cloud clickpipe list` in production.
     let pipes = client
-        .click_pipe_get_list(&ctx.org_id, &ch.service_id)
+        .click_pipe_get_list(&ctx.org_id, &ch.service_id, None, None)
         .await?
         .result
         .ok_or("clickpipe list returned no result")?;
