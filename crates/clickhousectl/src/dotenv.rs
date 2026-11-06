@@ -195,83 +195,134 @@ pub(crate) fn write_vars(
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
 
-    fn write_env(dir: &Path, contents: &str) {
-        let path = dir.join(".env");
-        let mut f = fs::File::create(path).unwrap();
-        f.write_all(contents.as_bytes()).unwrap();
+    /// One case per load path: a file here, none, one only in a parent, a
+    /// foreign key, a malformed line, and comments with a quoted value.
+    #[test]
+    fn load_from_reads_only_clickhouse_keys_from_this_directory() {
+        for (contents, in_parent, expected) in [
+            (Some("CLICKHOUSE_CLOUD_API_KEY=k\n"), false, Some("k")),
+            (None, false, None),
+            (Some("CLICKHOUSE_CLOUD_API_KEY=from_parent\n"), true, None),
+            (
+                Some("OPENAI_KEY=foo\nCLICKHOUSE_CLOUD_API_KEY=bar\n"),
+                false,
+                Some("bar"),
+            ),
+            (
+                Some("this is not a valid env line\nCLICKHOUSE_CLOUD_API_KEY=ok\n"),
+                false,
+                Some("ok"),
+            ),
+            (
+                Some("# a comment\nCLICKHOUSE_CLOUD_API_KEY=\"value with spaces\"\n"),
+                false,
+                Some("value with spaces"),
+            ),
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let dir = parent.path().join("project");
+            fs::create_dir(&dir).unwrap();
+            let file_dir = if in_parent { parent.path() } else { &dir };
+            if let Some(contents) = contents {
+                fs::write(file_dir.join(".env"), contents).unwrap();
+            }
+            let loaded = load_from(&dir);
+            assert_eq!(
+                loaded.get("CLICKHOUSE_CLOUD_API_KEY"),
+                expected,
+                "{contents:?}"
+            );
+            assert!(loaded.get("OPENAI_KEY").is_none());
+            let read_a_file = contents.is_some() && !in_parent;
+            assert_eq!(
+                loaded.source_path(),
+                read_a_file.then(|| dir.join(".env")).as_deref(),
+                "{contents:?}"
+            );
+        }
     }
 
     #[test]
-    fn finds_env_in_cwd() {
-        let dir = tempfile::tempdir().unwrap();
-        write_env(dir.path(), "CLICKHOUSE_CLOUD_API_KEY=k\n");
-        let loaded = load_from(dir.path());
-        assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("k"));
+    fn dotenv_lines_are_recognised_by_prefix_and_quoted_only_when_needed() {
+        for (line, prefix, expected) in [
+            (
+                "CLICKHOUSE_HOST=localhost",
+                "CLICKHOUSE_",
+                Some("CLICKHOUSE_HOST"),
+            ),
+            (
+                "export CLICKHOUSE_HOST=localhost",
+                "CLICKHOUSE_",
+                Some("CLICKHOUSE_HOST"),
+            ),
+            (
+                "CLICKHOUSE_HOST = localhost",
+                "CLICKHOUSE_",
+                Some("CLICKHOUSE_HOST"),
+            ),
+            (
+                "export CLICKHOUSE_HOST = localhost",
+                "CLICKHOUSE_",
+                Some("CLICKHOUSE_HOST"),
+            ),
+            ("POSTGRES_USER=postgres", "POSTGRES_", Some("POSTGRES_USER")),
+            ("CLICKHOUSE_HOST=x", "POSTGRES_", None),
+            ("DATABASE_URL=postgres://...", "CLICKHOUSE_", None),
+            ("export FOO=bar", "CLICKHOUSE_", None),
+            ("CLICKHOUSE_A.B=x", "CLICKHOUSE_", None),
+            ("# CLICKHOUSE_HOST=localhost", "CLICKHOUSE_", None),
+            ("CLICKHOUSE_HOST", "CLICKHOUSE_", None),
+            ("", "CLICKHOUSE_", None),
+        ] {
+            assert_eq!(extract_dotenv_key(line, prefix), expected, "{line:?}");
+        }
+
+        for (prefix, value, expected) in [
+            ("", "value", "KEY=value"),
+            ("export ", "value", "export KEY=value"),
+            ("", "my secret", r#"KEY="my secret""#),
+            ("", "pass#123", r#"KEY="pass#123""#),
+            ("", "it's", r#"KEY="it's""#),
+            ("", r#"a"b\c"#, r#"KEY="a\"b\\c""#),
+            ("", "line1\nline2", r#"KEY="line1\nline2""#),
+            ("", "", r#"KEY="""#),
+        ] {
+            assert_eq!(
+                format_dotenv_line(prefix, "KEY", value),
+                expected,
+                "{value:?}"
+            );
+        }
+    }
+
+    /// Managed keys are rewritten in place (keeping `export`, dropping spaces
+    /// around `=`, quoting values that need it), every other line survives
+    /// verbatim, and missing keys are appended in order.
+    #[test]
+    fn update_dotenv_rewrites_managed_keys_in_place_and_appends_the_rest() {
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PORT", "9000".to_string()),
+            ("CLICKHOUSE_PASSWORD", "my secret#123".to_string()),
+        ];
+        for (existing, expected) in [
+            (
+                "",
+                "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\nCLICKHOUSE_PASSWORD=\"my secret#123\"\n",
+            ),
+            (
+                "# keep\nexport CLICKHOUSE_HOST = oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_USER=kept\nCLICKHOUSE_PASSWORD=old\n",
+                "# keep\nexport CLICKHOUSE_HOST=localhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_USER=kept\nCLICKHOUSE_PASSWORD=\"my secret#123\"\nCLICKHOUSE_PORT=9000\n",
+            ),
+        ] {
+            assert_eq!(update_dotenv(existing, "CLICKHOUSE_", &vars), expected);
+        }
+
+        let postgres = [("POSTGRES_HOST", "localhost".to_string())];
         assert_eq!(
-            loaded.source_path(),
-            Some(dir.path().join(".env").as_path())
-        );
-    }
-
-    #[test]
-    fn does_not_read_parent_env() {
-        // A `.env` in an ancestor directory must NOT be picked up — we look
-        // only in the directory passed to `load_from`.
-        let parent = tempfile::tempdir().unwrap();
-        write_env(parent.path(), "CLICKHOUSE_CLOUD_API_KEY=from_parent\n");
-        let child = parent.path().join("child");
-        fs::create_dir(&child).unwrap();
-        let loaded = load_from(&child);
-        assert!(loaded.get("CLICKHOUSE_CLOUD_API_KEY").is_none());
-        assert!(loaded.source_path().is_none());
-    }
-
-    #[test]
-    fn missing_env_is_silent() {
-        let dir = tempfile::tempdir().unwrap();
-        // No `.env` written.
-        let loaded = load_from(dir.path());
-        assert!(loaded.get("CLICKHOUSE_CLOUD_API_KEY").is_none());
-        assert!(loaded.source_path().is_none());
-    }
-
-    #[test]
-    fn filters_non_clickhouse_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        write_env(dir.path(), "OPENAI_KEY=foo\nCLICKHOUSE_CLOUD_API_KEY=bar\n");
-        let loaded = load_from(dir.path());
-        assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("bar"));
-        assert!(loaded.get("OPENAI_KEY").is_none());
-    }
-
-    #[test]
-    fn malformed_file_is_silent() {
-        let dir = tempfile::tempdir().unwrap();
-        // No '=' on the first line — dotenvy treats it as an error for that
-        // entry but the iterator yields subsequent valid entries. Either way
-        // we must not panic.
-        write_env(
-            dir.path(),
-            "this is not a valid env line\nCLICKHOUSE_CLOUD_API_KEY=ok\n",
-        );
-        let loaded = load_from(dir.path());
-        // The well-formed line should still come through.
-        assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("ok"));
-    }
-
-    #[test]
-    fn comments_and_quotes_handled() {
-        let dir = tempfile::tempdir().unwrap();
-        write_env(
-            dir.path(),
-            "# a comment\nCLICKHOUSE_CLOUD_API_KEY=\"value with spaces\"\n",
-        );
-        let loaded = load_from(dir.path());
-        assert_eq!(
-            loaded.get("CLICKHOUSE_CLOUD_API_KEY"),
-            Some("value with spaces")
+            update_dotenv("CLICKHOUSE_HOST=localhost\n", "POSTGRES_", &postgres),
+            "CLICKHOUSE_HOST=localhost\nPOSTGRES_HOST=localhost\n"
         );
     }
 
@@ -299,237 +350,5 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "APP=1\nCLICKHOUSE_PASSWORD=kept\nCLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\n"
         );
-    }
-
-    #[test]
-    fn update_dotenv_postgres_prefix_isolates_clickhouse_vars() {
-        let existing = "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\nDATABASE_URL=x\n";
-        let vars = vec![
-            ("POSTGRES_HOST", "localhost".to_string()),
-            ("POSTGRES_PORT", "5432".to_string()),
-        ];
-        let result = update_dotenv(existing, "POSTGRES_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains("CLICKHOUSE_PORT=9000"));
-        assert!(result.contains("POSTGRES_HOST=localhost"));
-        assert!(result.contains("POSTGRES_PORT=5432"));
-    }
-
-    #[test]
-    fn extract_dotenv_key_postgres_prefix() {
-        assert_eq!(
-            extract_dotenv_key("POSTGRES_USER=postgres", "POSTGRES_"),
-            Some("POSTGRES_USER")
-        );
-        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=x", "POSTGRES_"), None);
-    }
-
-    #[test]
-    fn update_dotenv_creates_fresh_content() {
-        let vars = vec![
-            ("CLICKHOUSE_HOST", "localhost".to_string()),
-            ("CLICKHOUSE_PORT", "9000".to_string()),
-        ];
-        let result = update_dotenv("", "CLICKHOUSE_", &vars);
-        assert_eq!(result, "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\n");
-    }
-
-    #[test]
-    fn update_dotenv_replaces_existing_vars() {
-        let existing =
-            "CLICKHOUSE_HOST=oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_PORT=1234\n";
-        let vars = vec![
-            ("CLICKHOUSE_HOST", "localhost".to_string()),
-            ("CLICKHOUSE_PORT", "9000".to_string()),
-        ];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains("CLICKHOUSE_PORT=9000"));
-        assert!(result.contains("DATABASE_URL=postgres://..."));
-        assert!(!result.contains("oldhost"));
-        assert!(!result.contains("1234"));
-    }
-
-    #[test]
-    fn update_dotenv_preserves_non_clickhouse_vars() {
-        let existing = "FOO=bar\nBAZ=qux\n";
-        let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("FOO=bar"));
-        assert!(result.contains("BAZ=qux"));
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-    }
-
-    #[test]
-    fn update_dotenv_appends_missing_vars() {
-        let existing = "CLICKHOUSE_HOST=localhost\n";
-        let vars = vec![
-            ("CLICKHOUSE_HOST", "localhost".to_string()),
-            ("CLICKHOUSE_PORT", "9000".to_string()),
-        ];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains("CLICKHOUSE_PORT=9000"));
-    }
-
-    #[test]
-    fn update_dotenv_handles_export_prefix() {
-        let existing = "export CLICKHOUSE_HOST=oldhost\nexport CLICKHOUSE_PORT=1234\n";
-        let vars = vec![
-            ("CLICKHOUSE_HOST", "localhost".to_string()),
-            ("CLICKHOUSE_PORT", "9000".to_string()),
-        ];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("export CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains("export CLICKHOUSE_PORT=9000"));
-        assert!(!result.contains("oldhost"));
-        assert!(!result.contains("1234"));
-    }
-
-    #[test]
-    fn update_dotenv_handles_spaces_around_equals() {
-        let existing = "CLICKHOUSE_HOST = oldhost\n";
-        let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(!result.contains("oldhost"));
-    }
-
-    #[test]
-    fn update_dotenv_handles_export_with_spaces() {
-        let existing = "export CLICKHOUSE_PORT = 1234\nDATABASE_URL=postgres://...\n";
-        let vars = vec![("CLICKHOUSE_PORT", "9000".to_string())];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("export CLICKHOUSE_PORT=9000"));
-        assert!(result.contains("DATABASE_URL=postgres://..."));
-        assert!(!result.contains("1234"));
-    }
-
-    #[test]
-    fn update_dotenv_preserves_unmanaged_clickhouse_vars() {
-        let existing = "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PASSWORD=secret\n";
-        // Only updating HOST — PASSWORD should be left alone
-        let vars = vec![("CLICKHOUSE_HOST", "newhost".to_string())];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=newhost"));
-        assert!(result.contains("CLICKHOUSE_PASSWORD=secret"));
-    }
-
-    #[test]
-    fn extract_dotenv_key_simple() {
-        assert_eq!(
-            extract_dotenv_key("CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
-            Some("CLICKHOUSE_HOST")
-        );
-    }
-
-    #[test]
-    fn extract_dotenv_key_with_export() {
-        assert_eq!(
-            extract_dotenv_key("export CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
-            Some("CLICKHOUSE_HOST")
-        );
-    }
-
-    #[test]
-    fn extract_dotenv_key_with_spaces() {
-        assert_eq!(
-            extract_dotenv_key("CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"),
-            Some("CLICKHOUSE_HOST")
-        );
-        assert_eq!(
-            extract_dotenv_key("export CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"),
-            Some("CLICKHOUSE_HOST")
-        );
-    }
-
-    #[test]
-    fn extract_dotenv_key_non_clickhouse() {
-        assert_eq!(
-            extract_dotenv_key("DATABASE_URL=postgres://...", "CLICKHOUSE_"),
-            None
-        );
-        assert_eq!(extract_dotenv_key("export FOO=bar", "CLICKHOUSE_"), None);
-    }
-
-    #[test]
-    fn extract_dotenv_key_comment_and_blank() {
-        assert_eq!(
-            extract_dotenv_key("# CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
-            None
-        );
-        assert_eq!(extract_dotenv_key("", "CLICKHOUSE_"), None);
-    }
-
-    #[test]
-    fn format_dotenv_line_plain_value() {
-        assert_eq!(format_dotenv_line("", "KEY", "value"), "KEY=value");
-    }
-
-    #[test]
-    fn format_dotenv_line_with_prefix() {
-        assert_eq!(
-            format_dotenv_line("export ", "KEY", "value"),
-            "export KEY=value"
-        );
-    }
-
-    #[test]
-    fn format_dotenv_line_quotes_spaces() {
-        assert_eq!(
-            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "my secret"),
-            r#"CLICKHOUSE_PASSWORD="my secret""#
-        );
-    }
-
-    #[test]
-    fn format_dotenv_line_quotes_hash() {
-        assert_eq!(
-            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "pass#123"),
-            r#"CLICKHOUSE_PASSWORD="pass#123""#
-        );
-    }
-
-    #[test]
-    fn format_dotenv_line_escapes_quotes_and_backslashes() {
-        assert_eq!(
-            format_dotenv_line("", "CLICKHOUSE_PASSWORD", r#"a"b\c"#),
-            r#"CLICKHOUSE_PASSWORD="a\"b\\c""#
-        );
-    }
-
-    #[test]
-    fn format_dotenv_line_escapes_newlines() {
-        assert_eq!(
-            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "line1\nline2"),
-            r#"CLICKHOUSE_PASSWORD="line1\nline2""#
-        );
-    }
-
-    #[test]
-    fn format_dotenv_line_quotes_empty_value() {
-        assert_eq!(
-            format_dotenv_line("", "CLICKHOUSE_PASSWORD", ""),
-            r#"CLICKHOUSE_PASSWORD="""#
-        );
-    }
-
-    #[test]
-    fn update_dotenv_quotes_special_values() {
-        let vars = vec![
-            ("CLICKHOUSE_HOST", "localhost".to_string()),
-            ("CLICKHOUSE_PASSWORD", "my secret#123".to_string()),
-        ];
-        let result = update_dotenv("", "CLICKHOUSE_", &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains(r#"CLICKHOUSE_PASSWORD="my secret#123""#));
-    }
-
-    #[test]
-    fn update_dotenv_quotes_when_replacing_in_place() {
-        let existing = "CLICKHOUSE_PASSWORD=old\n";
-        let vars = vec![("CLICKHOUSE_PASSWORD", "new pass".to_string())];
-        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
-        assert!(result.contains(r#"CLICKHOUSE_PASSWORD="new pass""#));
     }
 }

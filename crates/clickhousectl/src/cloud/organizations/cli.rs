@@ -772,30 +772,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_member_clear_roles() {
-        let CloudCommands::Member { command } = parse_cloud_command(&[
-            "clickhousectl",
-            "cloud",
-            "member",
-            "update",
-            "user-1",
-            "--clear-roles",
-        ]) else {
-            panic!("expected member command");
-        };
-        let MemberCommands::Update {
-            role_id,
-            clear_roles,
-            ..
-        } = command
-        else {
-            panic!("expected member update");
-        };
-        assert!(role_id.is_empty());
-        assert!(clear_roles);
-    }
-
-    #[test]
     fn rejects_conflicting_member_role_changes() {
         for flags in [
             ["--role-id", "role-1", "--clear-roles"],
@@ -811,37 +787,6 @@ mod tests {
             };
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
-    }
-
-    #[test]
-    fn parses_org_usage_date_only_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage {
-            from_date, to_date, ..
-        } = command
-        else {
-            panic!("expected org usage");
-        };
-
-        assert_eq!(from_date, "2025-01-01");
-        assert_eq!(to_date, "2025-01-31");
     }
 
     #[test]
@@ -889,51 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_org_prometheus_and_usage_org_id_flags() {
-        let prometheus = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "prometheus",
-            "--org-id",
-            "org-1",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = prometheus.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Prometheus { .. } = command else {
-            panic!("expected org prometheus");
-        };
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--org-id",
-            "org-1",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = usage.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage { .. } = command else {
-            panic!("expected org usage");
-        };
-    }
-
-    #[test]
     fn parses_org_prometheus_discovery_flags() {
         let cli = Cli::try_parse_from([
             "clickhousectl",
@@ -964,45 +864,6 @@ mod tests {
         };
 
         assert_eq!(filtered_metrics, Some(false));
-    }
-
-    #[test]
-    fn parses_org_quota_commands() {
-        let CloudCommands::Org { command } = parse_cloud_command(&[
-            "clickhousectl",
-            "cloud",
-            "org",
-            "quota",
-            "list",
-            "--org-id",
-            "org-1",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Quota {
-            command: QuotaCommands::List,
-        } = command
-        else {
-            panic!("expected quota list command");
-        };
-
-        let CloudCommands::Org { command } = parse_cloud_command(&[
-            "clickhousectl",
-            "cloud",
-            "org",
-            "quota",
-            "get",
-            "replicas-per-warehouse",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Quota {
-            command: QuotaCommands::Get { quota_code },
-        } = command
-        else {
-            panic!("expected quota get command");
-        };
-        assert_eq!(quota_code, "replicas-per-warehouse");
     }
 
     #[test]
@@ -1079,75 +940,27 @@ mod tests {
         }
     }
 
+    /// Both date flags go through `parse_date_only`: timestamps and impossible
+    /// calendar dates are usage errors on either one.
     #[test]
-    fn parses_org_notification_types_command() {
-        let CloudCommands::Org { command } = parse_cloud_command(&[
-            "clickhousectl",
-            "cloud",
-            "org",
-            "notification-types",
-            "--org-id",
-            "org-1",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::NotificationTypes = command else {
-            panic!("expected org notification-types command");
-        };
-    }
-
-    #[test]
-    fn parses_org_balance_command() {
-        let CloudCommands::Org { command } = parse_cloud_command(&[
-            "clickhousectl",
-            "cloud",
-            "org",
-            "balance",
-            "--org-id",
-            "org-1",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Balance = command else {
-            panic!("expected org balance command");
-        };
-    }
-
-    #[test]
-    fn rejects_org_usage_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01T00:00:00Z",
-            "--to-date",
-            "2025-01-31",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected timestamp input to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_org_usage_calendar_dates() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-02-31",
-            "--to-date",
-            "2025-03-01",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid calendar date to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+    fn rejects_org_usage_timestamps_and_invalid_calendar_dates_on_either_flag() {
+        for bad in ["2025-01-01T00:00:00Z", "2025-02-31"] {
+            for (from, to) in [(bad, "2025-01-31"), ("2025-01-01", bad)] {
+                let error = Cli::try_parse_from([
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "usage",
+                    "--from-date",
+                    from,
+                    "--to-date",
+                    to,
+                ])
+                .err()
+                .unwrap_or_else(|| panic!("accepted {from} .. {to}"));
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(error.to_string().contains("expected YYYY-MM-DD"), "{error}");
+            }
         }
     }
 

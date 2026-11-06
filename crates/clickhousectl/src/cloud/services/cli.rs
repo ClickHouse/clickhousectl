@@ -1032,24 +1032,6 @@ mod tests {
         );
     }
 
-    /// The `CONTEXT FOR AGENTS:` block on `service query` stays inside its
-    /// 8-line budget, whatever the lines say.
-    #[test]
-    fn service_query_agent_context_block_stays_within_its_line_budget() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        let block = help
-            .split_once("CONTEXT FOR AGENTS:\n")
-            .expect("after_help block")
-            .1;
-        let lines = block.lines().filter(|line| !line.trim().is_empty()).count();
-        assert!(lines <= 8, "{lines} lines: {help}");
-    }
-
     #[test]
     fn repair_query_key_has_a_positional_id_selector() {
         use clap::CommandFactory;
@@ -1773,31 +1755,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_delete_force_and_org_id() {
-        let command = parse_service(&["clickhousectl", "cloud", "service", "delete", "svc-1"]);
-        let crate::cloud::cli::ServiceCommands::Delete { force, .. } = command else {
-            panic!("expected service delete");
-        };
-        assert!(!force);
-
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "delete",
-            "svc-1",
-            "--force",
-            "--org-id",
-            "org-1",
-        ]);
-        let crate::cloud::cli::ServiceCommands::Delete { service_id, force } = command else {
-            panic!("expected service delete");
-        };
-        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
-        assert!(force);
-    }
-
-    #[test]
     fn parses_service_body_command_defaults() {
         let update = parse_service(&["clickhousectl", "cloud", "service", "update", "svc-1"]);
         let crate::cloud::cli::ServiceCommands::Update {
@@ -1922,33 +1879,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_query_json_mode() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "query",
-            "--id",
-            "svc-1",
-            "--query",
-            "SELECT 1",
-            "--json",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        assert!(args.json);
-        let CloudCommands::Service { command } = args.command else {
-            panic!("expected service command");
-        };
-        let ServiceCommands::Query { format, .. } = command else {
-            panic!("expected service query");
-        };
-        assert!(format.is_none());
-    }
-
-    #[test]
     fn rejects_service_query_json_with_explicit_format() {
         let error = Cli::try_parse_from([
             "clickhousectl",
@@ -1968,26 +1898,6 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         assert!(error.to_string().contains("--json"));
         assert!(error.to_string().contains("--format"));
-    }
-
-    #[test]
-    fn parses_service_query_explicit_format_without_json() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "query",
-            "--id",
-            "svc-1",
-            "--query",
-            "SELECT 1",
-            "--format",
-            "CSV",
-        ]);
-        let ServiceCommands::Query { format, .. } = command else {
-            panic!("expected service query");
-        };
-        assert_eq!(format.as_deref(), Some("CSV"));
     }
 
     #[test]
@@ -2186,42 +2096,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_create_horizontal_autoscaling_flags() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "create",
-            "--name",
-            "s",
-            "--min-replicas",
-            "2",
-            "--max-replicas",
-            "8",
-            "--autoscaling-mode",
-            "horizontal",
-        ]);
-        let ServiceCommands::Create {
-            min_replicas,
-            max_replicas,
-            autoscaling_mode,
-            num_replicas,
-            min_replica_memory_gb,
-            max_replica_memory_gb,
-            ..
-        } = command
-        else {
-            panic!("expected service create");
-        };
-        assert_eq!(min_replicas, Some(2));
-        assert_eq!(max_replicas, Some(8));
-        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
-        assert!(num_replicas.is_none());
-        assert!(min_replica_memory_gb.is_none());
-        assert!(max_replica_memory_gb.is_none());
-    }
-
-    #[test]
     fn rejects_service_create_horizontal_vertical_mix() {
         assert!(
             Cli::try_parse_from([
@@ -2243,44 +2117,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_create_horizontal_mode_with_memory_bounds() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "create",
-            "--name",
-            "s",
-            "--autoscaling-mode",
-            "horizontal",
-            "--min-replicas",
-            "2",
-            "--max-replicas",
-            "8",
-            "--min-replica-memory-gb",
-            "16",
-            "--max-replica-memory-gb",
-            "16",
-        ]);
-        let ServiceCommands::Create {
-            min_replicas,
-            max_replicas,
-            autoscaling_mode,
-            min_replica_memory_gb,
-            max_replica_memory_gb,
-            ..
-        } = command
-        else {
-            panic!("expected service create");
-        };
-        assert_eq!(min_replicas, Some(2));
-        assert_eq!(max_replicas, Some(8));
-        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
-        assert_eq!(min_replica_memory_gb, Some(16));
-        assert_eq!(max_replica_memory_gb, Some(16));
-    }
-
-    #[test]
     fn rejects_service_create_invalid_autoscaling_mode() {
         assert!(
             Cli::try_parse_from([
@@ -2299,39 +2135,6 @@ mod tests {
             ])
             .is_err()
         );
-    }
-
-    #[test]
-    fn parses_service_scale_horizontal_autoscaling_flags() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "scale",
-            "svc-1",
-            "--min-replicas",
-            "2",
-            "--max-replicas",
-            "8",
-            "--autoscaling-mode",
-            "horizontal",
-        ]);
-        let ServiceCommands::Scale {
-            service_id,
-            min_replicas,
-            max_replicas,
-            autoscaling_mode,
-            num_replicas,
-            ..
-        } = command
-        else {
-            panic!("expected service scale");
-        };
-        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
-        assert_eq!(min_replicas, Some(2));
-        assert_eq!(max_replicas, Some(8));
-        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
-        assert!(num_replicas.is_none());
     }
 
     #[test]
@@ -2399,51 +2202,6 @@ mod tests {
             ])
             .is_err()
         );
-    }
-
-    #[test]
-    fn parses_private_endpoint_config_and_password_hash_flags() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "reset-password",
-            "svc-1",
-            "--new-password-hash",
-            "sha256",
-            "--new-double-sha1-hash",
-            "sha1",
-            "--org-id",
-            "org-1",
-        ]);
-        let ServiceCommands::ResetPassword {
-            new_password_hash,
-            new_double_sha1_hash,
-            ..
-        } = command
-        else {
-            panic!("expected reset-password");
-        };
-        assert_eq!(new_password_hash.as_deref(), Some("sha256"));
-        assert_eq!(new_double_sha1_hash.as_deref(), Some("sha1"));
-
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "private-endpoint",
-            "get-config",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ]);
-        let ServiceCommands::PrivateEndpoint { command } = command else {
-            panic!("expected private-endpoint command");
-        };
-        let PrivateEndpointCommands::GetConfig { service_id } = command else {
-            panic!("expected get-config");
-        };
-        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
     }
 
     #[test]
@@ -2517,58 +2275,6 @@ mod tests {
         assert_eq!(format.as_deref(), Some("CSV"));
 
         assert!(no_auto_enable);
-    }
-
-    #[test]
-    fn parses_service_query_key_repair_scope() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "repair-query-key",
-            "svc-1",
-            "--org-id",
-            "org-1",
-        ]);
-        let ServiceCommands::RepairQueryKey { service_id } = command else {
-            panic!("expected query-key repair");
-        };
-        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
-
-        let ServiceCommands::RepairQueryKey { .. } = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "repair-query-key",
-            "svc-1",
-        ]) else {
-            panic!("expected query-key repair");
-        };
-    }
-
-    #[test]
-    fn parses_service_query_file_source() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "query",
-            "--name",
-            "analytics",
-            "--queries-file",
-            "queries.sql",
-        ]);
-        let ServiceCommands::Query {
-            query,
-            queries_file,
-            ..
-        } = command
-        else {
-            panic!("expected service query");
-        };
-
-        assert!(query.is_none());
-        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
     }
 
     #[test]

@@ -288,12 +288,15 @@ mod tests {
     use super::*;
     use clickhouse_cloud_api::models::PgBouncerConfig;
 
+    /// Values parse as JSON first and fall back to a string; the last value
+    /// wins on a duplicate key.
     #[test]
-    fn parse_pg_config_overrides_numeric_and_string() {
+    fn parse_pg_config_overrides_reads_json_then_strings_and_keeps_the_last_duplicate() {
         let m = parse_pg_config_overrides(&[
-            "max_connections=500".into(),
+            "max_connections=100".into(),
             "random_page_cost=1.1".into(),
             "statement_timeout=5s".into(),
+            "max_connections=500".into(),
         ])
         .unwrap();
         assert_eq!(m.get("max_connections"), Some(&serde_json::json!(500)));
@@ -305,13 +308,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_pg_config_overrides_rejects_malformed() {
+    fn parse_pg_config_overrides_rejects_malformed_unknown_null_and_invalid_enum_values() {
         assert!(parse_pg_config_overrides(&["no_equals".into()]).is_err());
         assert!(parse_pg_config_overrides(&["=value".into()]).is_err());
-    }
 
-    #[test]
-    fn parse_pg_config_overrides_rejects_unknown_keys_and_enum_values() {
         let err = parse_pg_config_overrides(&["max_conections=500".into()])
             .unwrap_err()
             .to_string();
@@ -341,16 +341,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("null is not supported"), "{err}");
-    }
-
-    #[test]
-    fn parse_pg_config_overrides_last_wins_on_duplicates() {
-        let m = parse_pg_config_overrides(&[
-            "max_connections=100".into(),
-            "max_connections=200".into(),
-        ])
-        .unwrap();
-        assert_eq!(m.get("max_connections"), Some(&serde_json::json!(200)));
     }
 
     #[test]
@@ -458,10 +448,10 @@ mod tests {
         assert_eq!(cfg.pg_bouncer_config["future_parameter"], "on");
     }
 
+    /// A non-object root must not read as "no sections": that would send
+    /// `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
     #[test]
-    fn instance_config_from_json_refuses_a_non_object_root() {
-        // A non-object root must not read as "no sections": that would send
-        // `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
+    fn instance_config_from_json_refuses_non_object_roots_and_invalid_or_unknown_sections() {
         for root in [
             serde_json::Value::Null,
             serde_json::json!([{ "pgConfig": {} }]),
@@ -472,37 +462,30 @@ mod tests {
             let err = instance_config_from_json(&root).unwrap_err().to_string();
             assert_eq!(err, "configuration document must be a JSON object");
         }
-    }
 
-    #[test]
-    fn instance_config_from_json_reports_an_invalid_section() {
-        let err =
-            instance_config_from_json(&serde_json::json!({ "pgConfig": 7, "pgBouncerConfig": {} }))
+        for (document, expected) in [
+            (
+                serde_json::json!({ "pgConfig": 7, "pgBouncerConfig": {} }),
+                "invalid pgConfig",
+            ),
+            (
+                serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": [] }),
+                "invalid pgBouncerConfig",
+            ),
+            (
+                serde_json::json!({
+                    "pgConfig": {},
+                    "pgBouncerConfig": {},
+                    "pgBouncerConfigs": {}
+                }),
+                "unknown configuration section 'pgBouncerConfigs'",
+            ),
+        ] {
+            let err = instance_config_from_json(&document)
                 .unwrap_err()
                 .to_string();
-        assert!(err.contains("invalid pgConfig"), "unexpected error: {err}");
-
-        let err = instance_config_from_json(
-            &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": [] }),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            err.contains("invalid pgBouncerConfig"),
-            "unexpected error: {err}"
-        );
-
-        let err = instance_config_from_json(&serde_json::json!({
-            "pgConfig": {},
-            "pgBouncerConfig": {},
-            "pgBouncerConfigs": {}
-        }))
-        .unwrap_err()
-        .to_string();
-        assert!(
-            err.contains("unknown configuration section 'pgBouncerConfigs'"),
-            "unexpected error: {err}"
-        );
+            assert!(err.contains(expected), "unexpected error: {err}");
+        }
     }
 
     #[test]

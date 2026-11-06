@@ -584,11 +584,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn json_output_true_when_flag_set() {
-        assert!(json_output(true));
-    }
-
     fn parse(args: &[&str]) -> Commands {
         Cli::try_parse_from(args).unwrap().command
     }

@@ -1704,29 +1704,20 @@ mod tests {
     }
 
     #[test]
-    fn credential_pair_is_returned_when_both_halves_are_present() {
+    fn credential_pair_is_returned_only_when_both_halves_are_present() {
         let (key_id, key_secret) =
             require_credential_pair(&key_response(Some("k-1"), Some("s-1"))).unwrap();
-        assert_eq!(key_id, "k-1");
-        assert_eq!(key_secret, "s-1");
-    }
-
-    #[test]
-    fn credential_pair_fails_naming_the_absent_key_id() {
-        let err = require_credential_pair(&key_response(None, Some("s-1"))).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "the API response is missing required field 'keyId'"
-        );
-    }
-
-    #[test]
-    fn credential_pair_fails_naming_the_absent_key_secret() {
-        let err = require_credential_pair(&key_response(Some("k-1"), None)).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "the API response is missing required field 'keySecret'"
-        );
+        assert_eq!((key_id.as_str(), key_secret.as_str()), ("k-1", "s-1"));
+        for (key_id, key_secret, field) in [
+            (None, Some("s-1"), "keyId"),
+            (Some("k-1"), None, "keySecret"),
+        ] {
+            let err = require_credential_pair(&key_response(key_id, key_secret)).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("the API response is missing required field '{field}'")
+            );
+        }
     }
 
     #[test]
@@ -1834,47 +1825,44 @@ mod tests {
         );
     }
 
+    /// Only an API key of the resolved organization is the caller's key;
+    /// every other identity is a generic error naming what was wrong.
     #[test]
-    fn whoami_user_is_refused() {
-        let identity = Whoami::WhoamiUser(clickhouse_cloud_api::models::WhoamiUser::default());
-        let error = caller_key_uuid(&identity, ORG).unwrap_err();
-        assert_eq!(error.kind, CloudErrorKind::Generic);
-        assert!(error.message.contains("user"), "{error}");
-    }
-
-    #[test]
-    fn whoami_unknown_actor_is_refused() {
-        let identity = Whoami::Unknown(serde_json::json!({ "actorType": "robot" }));
-        let error = caller_key_uuid(&identity, ORG).unwrap_err();
-        assert_eq!(error.kind, CloudErrorKind::Generic);
-        assert!(error.message.contains("unrecognized"), "{error}");
-    }
-
-    #[test]
-    fn whoami_without_a_key_id_is_refused() {
-        for key_id in [None, Some("")] {
-            let error = caller_key_uuid(&whoami_key(key_id, Some(ORG)), ORG).unwrap_err();
-            assert!(error.message.contains("'keyId'"), "{error}");
-        }
-    }
-
-    #[test]
-    fn whoami_without_an_organization_is_refused() {
-        let error = caller_key_uuid(&whoami_key(Some("key-uuid-1"), None), ORG).unwrap_err();
-        assert!(error.message.contains("'organizationId'"), "{error}");
-    }
-
-    #[test]
-    fn whoami_key_of_another_organization_is_refused() {
+    fn whoami_identities_other_than_a_key_of_the_resolved_org_are_refused() {
         let other = "5fae43a3-0000-4000-8000-000000000002";
-        let error = caller_key_uuid(&whoami_key(Some("key-uuid-1"), Some(other)), ORG).unwrap_err();
-        assert_eq!(error.kind, CloudErrorKind::Generic);
-        assert!(
-            error.message.contains(other) && error.message.contains(ORG),
-            "{error}"
-        );
-        // An org id that is not a UUID can never match.
-        assert!(caller_key_uuid(&whoami_key(Some("key-uuid-1"), Some(ORG)), "acme").is_err());
+        let cases = [
+            (
+                Whoami::WhoamiUser(clickhouse_cloud_api::models::WhoamiUser::default()),
+                ORG,
+                vec!["user"],
+            ),
+            (
+                Whoami::Unknown(serde_json::json!({ "actorType": "robot" })),
+                ORG,
+                vec!["unrecognized"],
+            ),
+            (whoami_key(None, Some(ORG)), ORG, vec!["'keyId'"]),
+            (whoami_key(Some(""), Some(ORG)), ORG, vec!["'keyId'"]),
+            (
+                whoami_key(Some("key-uuid-1"), None),
+                ORG,
+                vec!["'organizationId'"],
+            ),
+            (
+                whoami_key(Some("key-uuid-1"), Some(other)),
+                ORG,
+                vec![other, ORG],
+            ),
+            // An org id that is not a UUID can never match.
+            (whoami_key(Some("key-uuid-1"), Some(ORG)), "acme", vec![]),
+        ];
+        for (identity, org, needles) in cases {
+            let error = caller_key_uuid(&identity, org).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Generic, "{error}");
+            for needle in needles {
+                assert!(error.message.contains(needle), "{needle}: {error}");
+            }
+        }
     }
 
     #[test]

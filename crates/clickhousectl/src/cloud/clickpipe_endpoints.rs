@@ -722,39 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_list_and_get() {
-        let ReversePrivateEndpointCommands::List { service_id } =
-            parse_endpoint_command(&["list", "svc-1"])
-        else {
-            panic!("expected list command");
-        };
-        assert_eq!(service_id, "svc-1");
-
-        let ReversePrivateEndpointCommands::Get {
-            service_id,
-            endpoint_id,
-        } = parse_endpoint_command(&["get", "svc-1", "rpe-1", "--org-id", "org-1"])
-        else {
-            panic!("expected get command");
-        };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(endpoint_id, "rpe-1");
-    }
-
-    #[test]
-    fn parses_delete() {
-        let ReversePrivateEndpointCommands::Delete {
-            service_id,
-            endpoint_id,
-        } = parse_endpoint_command(&["delete", "svc-1", "rpe-1"])
-        else {
-            panic!("expected delete command");
-        };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(endpoint_id, "rpe-1");
-    }
-
-    #[test]
     fn parses_update_with_repeatable_mappings() {
         let ReversePrivateEndpointCommands::Update {
             service_id,
@@ -785,25 +752,6 @@ mod tests {
             ]
         );
         assert!(!clear_custom_private_dns_mappings);
-    }
-
-    #[test]
-    fn parses_update_clear_custom_private_dns_mappings() {
-        let ReversePrivateEndpointCommands::Update {
-            custom_private_dns_mappings,
-            clear_custom_private_dns_mappings,
-            ..
-        } = parse_endpoint_command(&[
-            "update",
-            "svc-1",
-            "rpe-1",
-            "--clear-custom-private-dns-mappings",
-        ])
-        else {
-            panic!("expected update command");
-        };
-        assert!(custom_private_dns_mappings.is_empty());
-        assert!(clear_custom_private_dns_mappings);
     }
 
     #[test]

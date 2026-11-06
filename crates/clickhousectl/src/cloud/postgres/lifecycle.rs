@@ -1254,71 +1254,55 @@ pub(super) mod tests {
         PgIdProperty::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap()
     }
 
+    /// A sent password (even an empty one) is shown; otherwise the connection
+    /// string, the service ID, or neither decides how the warning says to
+    /// recover. A recoverable password is never reset, and an absent one never
+    /// renders a placeholder credential.
     #[test]
-    fn postgres_credentials_block_shows_the_password_the_api_sent() {
+    fn postgres_credentials_block_shows_a_sent_password_or_how_to_recover_it() {
+        let header = "Credentials (save these — password shown only once):";
+        let id = pg_test_id();
         assert_eq!(
-            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&pg_test_id())),
-            "Credentials (save these — password shown only once):\n  Username: pg_user\n  \
-             Password: s3cret"
+            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&id)),
+            format!("{header}\n  Username: pg_user\n  Password: s3cret")
         );
-    }
-
-    #[test]
-    fn postgres_credentials_block_treats_an_empty_password_as_sent() {
         assert_eq!(
             postgres_credentials_block(None, Some(""), None, None),
-            format!(
-                "Credentials (save these — password shown only once):\n  Username: {ABSENT}\n  \
-                 Password: "
-            )
+            format!("{header}\n  Username: {ABSENT}\n  Password: ")
         );
-    }
 
-    #[test]
-    fn postgres_credentials_block_points_at_the_connection_string_instead_of_a_reset() {
-        // The connection string embeds the password, so the credential isn't
-        // lost and a reset would rotate a working password for nothing.
-        let block = postgres_credentials_block(
-            Some("pg_user"),
-            None,
-            Some("postgresql://pg_user:s3cret@host:5432/postgres"),
-            Some(&pg_test_id()),
-        );
-        assert!(
-            !block.contains("reset-password"),
-            "a recoverable password must not be reset: {block}"
-        );
-        assert!(
-            block.contains("connection string below embeds it"),
-            "the warning should point at the connection string: {block}"
-        );
-    }
-
-    #[test]
-    fn postgres_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
-        let block = postgres_credentials_block(Some("pg_user"), None, None, Some(&pg_test_id()));
-        assert!(
-            !block.contains(&format!("Password: {ABSENT}")),
-            "an absent password must not render a placeholder credential: {block}"
-        );
-        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
-        assert!(
-            block.contains(
-                "clickhousectl cloud postgres reset-password \
-                 a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 --generate"
+        let connection_string = Some("postgresql://pg_user:s3cret@host:5432/postgres");
+        for (connection_string, id, needle) in [
+            (
+                connection_string,
+                Some(&id),
+                "connection string below embeds it",
             ),
-            "the warning should name the exact recovery command: {block}"
-        );
-    }
-
-    #[test]
-    fn postgres_credentials_block_warns_generically_when_the_service_id_is_absent() {
-        let block = postgres_credentials_block(Some("pg_user"), None, None, None);
-        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
-        assert!(
-            block.contains("clickhousectl cloud postgres reset-password <postgres-id> --generate"),
-            "without an id the warning should stay generic: {block}"
-        );
+            (
+                None,
+                Some(&id),
+                "clickhousectl cloud postgres reset-password \
+                 a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 --generate",
+            ),
+            (
+                None,
+                None,
+                "clickhousectl cloud postgres reset-password <postgres-id> --generate",
+            ),
+        ] {
+            let block = postgres_credentials_block(Some("pg_user"), None, connection_string, id);
+            assert!(
+                block.starts_with("WARNING: the API response omitted"),
+                "{block}"
+            );
+            assert!(!block.contains("Password:"), "{block}");
+            assert!(block.contains(needle), "{block}");
+            assert_eq!(
+                block.contains("reset-password"),
+                connection_string.is_none(),
+                "{block}"
+            );
+        }
     }
 
     #[test]
@@ -1377,54 +1361,56 @@ pub(super) mod tests {
         ));
     }
 
+    /// States and providers compare by wire value, case-insensitively, and
+    /// match the `Unknown` catch-all by its text. Multi-word wire values and
+    /// `Unknown` both matched nothing while the comparison used
+    /// `format!("{:?}")` (issue #603). No filters keep every item.
     #[test]
-    fn apply_filter_compares_states_by_wire_value_not_debug_form() {
-        use clickhouse_cloud_api::models::PgStateProperty;
+    fn apply_filter_compares_enums_by_wire_value() {
+        use clickhouse_cloud_api::models::{PgProvider, PgStateProperty};
 
-        // Multi-word wire values and the `Unknown` catch-all both matched
-        // nothing while the comparison used `format!("{:?}")` (issue #603).
-        let restoring = PostgresServiceListItem {
-            state: Some(PgStateProperty::Restoring_backup),
+        let state = |state| PostgresServiceListItem {
+            state: Some(state),
             ..Default::default()
         };
-        assert!(apply_filter(
-            &restoring,
-            &filters(&["state=restoring_backup"])
-        ));
-        assert!(apply_filter(
-            &restoring,
-            &filters(&["state=RESTORING_BACKUP"])
-        ));
-        assert!(!apply_filter(&restoring, &filters(&["state=running"])));
-
-        let unknown = PostgresServiceListItem {
-            state: Some(PgStateProperty::Unknown("hibernating".to_string())),
+        let provider = |provider| PostgresServiceListItem {
+            provider: Some(provider),
             ..Default::default()
         };
-        assert!(apply_filter(&unknown, &filters(&["state=hibernating"])));
-        assert!(!apply_filter(&unknown, &filters(&["state=running"])));
-    }
-
-    #[test]
-    fn apply_filter_compares_providers_by_wire_value() {
-        use clickhouse_cloud_api::models::PgProvider;
-
-        let gcp = PostgresServiceListItem {
-            provider: Some(PgProvider::Gcp),
-            ..Default::default()
-        };
-        assert!(apply_filter(&gcp, &filters(&["provider=gcp"])));
-        assert!(!apply_filter(&gcp, &filters(&["provider=aws"])));
-
-        let unknown = PostgresServiceListItem {
-            provider: Some(PgProvider::Unknown("azure".to_string())),
-            ..Default::default()
-        };
-        assert!(apply_filter(&unknown, &filters(&["provider=azure"])));
-    }
-
-    #[test]
-    fn apply_filter_with_no_filters_keeps_every_item() {
+        let hibernating = || PgStateProperty::Unknown("hibernating".to_string());
+        for (item, filter, expected) in [
+            (
+                state(PgStateProperty::Restoring_backup),
+                "state=restoring_backup",
+                true,
+            ),
+            (
+                state(PgStateProperty::Restoring_backup),
+                "state=RESTORING_BACKUP",
+                true,
+            ),
+            (
+                state(PgStateProperty::Restoring_backup),
+                "state=running",
+                false,
+            ),
+            (state(hibernating()), "state=hibernating", true),
+            (state(hibernating()), "state=running", false),
+            (provider(PgProvider::Gcp), "provider=gcp", true),
+            (provider(PgProvider::Gcp), "provider=GCP", true),
+            (provider(PgProvider::Gcp), "provider=aws", false),
+            (
+                provider(PgProvider::Unknown("azure".to_string())),
+                "provider=azure",
+                true,
+            ),
+        ] {
+            assert_eq!(
+                apply_filter(&item, &filters(&[filter])),
+                expected,
+                "{filter}"
+            );
+        }
         assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
     }
 }

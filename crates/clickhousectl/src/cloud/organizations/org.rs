@@ -536,9 +536,19 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        assert!(table.contains("Backup failed"));
-        assert!(table.contains("future"));
-        assert!(table.contains("-"));
+        let rows: Vec<Vec<&str>> = table
+            .lines()
+            .skip(2)
+            .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                vec!["-", "-", "-", "-", "-", "-", "-"],
+                vec!["-", "-", "future", "-", "-", "-", "Backup failed"],
+            ],
+            "{table}"
+        );
     }
 
     #[test]
