@@ -21423,6 +21423,105 @@ async fn custom_oauth_login_pins_config_through_refresh_and_relogin() {
     assert_eq!(issuer_b.received_requests().await.unwrap().len(), 2);
 }
 
+// ── auth login/logout keep stdout to one JSON object (#1233) ──────────────
+
+#[tokio::test]
+async fn oauth_device_login_in_json_mode_puts_instructions_on_stderr() {
+    let api = MockServer::start().await;
+    let issuer = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(serde_json::json!({
+            "actorType": "user", "email": "test@example.com", "organizations": []
+        })))
+        .expect(1)
+        .mount(&api)
+        .await;
+    // An absent local path makes the best-effort opener fail without
+    // launching a real browser.
+    let verification_uri = dir.path().join("no-browser-target");
+    Mock::given(method("POST"))
+        .and(path("/oauth/device/code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "device_code": "test-device", "user_code": "WXYZ-1234",
+            "verification_uri": verification_uri.to_string_lossy(),
+            "expires_in": 60, "interval": 0
+        })))
+        .expect(1)
+        .mount(&issuer)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "access", "refresh_token": "refresh",
+            "expires_in": 3600, "token_type": "Bearer"
+        })))
+        .expect(1)
+        .mount(&issuer)
+        .await;
+
+    let output = custom_oauth_command(dir.path(), &api.uri())
+        .env("CLICKHOUSECTL_AUTH_URL", issuer.uri())
+        .env("CLICKHOUSECTL_CLIENT_ID", "client")
+        .args(["auth", "login"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout is not one JSON object ({error}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(report["verification"], "verified");
+    assert!(report["saved"].as_str().unwrap().ends_with("tokens.json"));
+    // The code and URL a human must act on are still relayed, on stderr.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("WXYZ-1234"), "{stderr}");
+    assert!(
+        stderr.contains(verification_uri.to_string_lossy().as_ref()),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn logout_in_json_mode_reports_each_credential_source() {
+    for (flags, oauth, api_keys) in [
+        (&[][..], "cleared", "cleared"),
+        (&["--oauth"][..], "cleared", "unchanged"),
+        (&["--api-keys"][..], "unchanged", "cleared"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        let credentials_path = dir.path().join(".clickhouse/credentials.json");
+        for path in [&token_path, &credentials_path] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"{}").unwrap();
+        }
+        let output = invoke_auth(
+            dir.path(),
+            "http://127.0.0.1:9",
+            true,
+            &[&["logout"], flags].concat(),
+        );
+        assert_success(&output);
+        assert!(output.stderr.is_empty(), "{flags:?}: {output:?}");
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report,
+            serde_json::json!({"oauth_tokens": oauth, "api_keys": api_keys}),
+            "{flags:?}"
+        );
+        assert_eq!(token_path.exists(), oauth == "unchanged", "{flags:?}");
+        assert_eq!(
+            credentials_path.exists(),
+            api_keys == "unchanged",
+            "{flags:?}"
+        );
+    }
+}
+
 // A pipe with no reader before spawn makes failure deterministic, even if the
 // scheduler never runs the reader until after the CLI has produced its output.
 fn closed_stdout() -> std::io::PipeWriter {

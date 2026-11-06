@@ -325,6 +325,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
         Commands::Cloud(args) => json_output(args.json),
         _ => false,
     };
+    let management_json = management_error_json(&cli.command);
 
     let result = stdout::finish(run(cli.command).await);
 
@@ -343,12 +344,15 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
             // and cancellation. Usage failures keep clap formatting; child
             // output and exit statuses pass through intact.
             let is_usage_error = matches!(&e, Error::Usage(_));
-            let structured_cloud_error = cloud_json && !is_child_exit && !is_usage_error;
+            let structured_cloud_error =
+                (cloud_json || management_json) && !is_child_exit && !is_usage_error;
             if !is_child_exit {
                 match &e {
                     Error::Usage(error) => stdout::record(error.print()),
                     _ if local_json => local::output::print_error(&e),
-                    _ if cloud_json => cloud::output::print_error(&e),
+                    // `update` and `skills` share the Cloud envelope's generic
+                    // codes (`transport`, `timeout`, `io`, `other`) (#1233).
+                    _ if cloud_json || management_json => cloud::output::print_error(&e),
                     _ => {
                         use std::io::Write;
                         // Not `eprintln!`, which panics on a closed stderr — see
@@ -427,6 +431,16 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Telemetry(args) => Some(args.json),
         #[cfg(feature = "feedback")]
         Commands::Feedback(args) => Some(args.json),
+    }
+}
+
+/// Whether a runtime failure of this management command is reported as a JSON
+/// error object. `telemetry` and `feedback` keep their text diagnostics.
+fn management_error_json(cmd: &Commands) -> bool {
+    match cmd {
+        Commands::Update(args) => json_output(args.json),
+        Commands::Skills(args) => json_output(args.json),
+        _ => false,
     }
 }
 

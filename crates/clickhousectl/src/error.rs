@@ -476,6 +476,11 @@ pub enum Error {
     #[error("Download failed: {0}")]
     Download(String),
 
+    /// `update` could not determine the latest release. Not a download
+    /// failure: `update --check` downloads nothing.
+    #[error("{0}")]
+    UpdateCheck(String),
+
     #[error("{0}")]
     Network(#[from] NetworkFailure),
 

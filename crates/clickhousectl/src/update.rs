@@ -181,7 +181,7 @@ async fn resolve_latest_tag(
     fetch_release_redirect_tag(client, release_page_url)
         .await
         .map_err(|redirect_err| {
-            Error::Download(format!(
+            Error::UpdateCheck(format!(
                 "Could not determine the latest clickhousectl version: {}; {}",
                 manifest_err, redirect_err
             ))
@@ -200,7 +200,9 @@ async fn fetch_latest_tag(timeout: std::time::Duration) -> Result<String> {
         resolve_latest_tag(&client, LATEST_MANIFEST_URL, LATEST_RELEASE_PAGE_URL),
     )
     .await
-    .map_err(|_| Error::Download("Timed out determining the latest clickhousectl version".into()))?
+    .map_err(|_| {
+        Error::UpdateCheck("Timed out determining the latest clickhousectl version".into())
+    })?
 }
 
 /// Extract the `clickhousectl` binary from a `.tar.gz` release archive.
@@ -704,7 +706,7 @@ mod tests {
                 .await;
 
             let err = resolve(&server).await.unwrap_err();
-            assert!(matches!(&err, Error::Download(_)), "got: {err:?}");
+            assert!(matches!(&err, Error::UpdateCheck(_)), "got: {err:?}");
             let msg = err.to_string();
             assert!(msg.contains("403"), "got: {}", msg);
             assert!(msg.contains("429"), "got: {}", msg);
