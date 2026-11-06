@@ -79,7 +79,7 @@ case_orphan_recovery() {
     "$CTL" local postgres stop a >/dev/null 2>&1 || { die "stop"; return 1; }
     rm "$meta"
     # Recovery should re-populate metadata from the container labels.
-    "$CTL" local server list 2>&1 | grep -q "^| a "  || { die "list did not see a"; return 1; }
+    "$CTL" local postgres list 2>&1 | grep -q "^| a "  || { die "list did not see a"; return 1; }
     [[ -f "$meta" ]] || { die "metadata not recovered"; return 1; }
     local cid_after; cid_after=$(jq -r .container_id "$meta")
     [[ "$cid_before" == "$cid_after" ]] || { die "container id changed: $cid_before -> $cid_after"; return 1; }
@@ -178,7 +178,7 @@ EOF
     "$CTL" local postgres remove shared >/dev/null 2>&1
 }
 
-# ── 10. Engine-specific and unified stop-all scopes ──
+# ── 10. Each engine's stop-all stops only that engine ──
 case_stop_all_engine_scopes() (
     sleep 300 &
     local ch_pid; ch_pid=$!
@@ -192,25 +192,28 @@ EOF
     "$CTL" local postgres start --name p --version 18-alpine >/dev/null 2>&1 || { die "start postgres"; return 1; }
 
     "$CTL" local postgres stop-all >/dev/null 2>&1 || { die "postgres stop-all"; return 1; }
-    local list; list=$("$CTL" local --json server list 2>&1) || { die "list after postgres stop-all: $list"; return 1; }
+    local list; list=$("$CTL" local --json status 2>&1) || { die "status after postgres stop-all: $list"; return 1; }
     jq -e '.servers | any(.name == "c" and .engine == "clickhouse" and .running == true)' <<<"$list" >/dev/null \
         || { die "postgres stop-all stopped ClickHouse: $list"; return 1; }
     jq -e '.servers | any(.name == "p" and .engine == "postgres" and .running == false)' <<<"$list" >/dev/null \
         || { die "postgres stop-all did not stop Postgres: $list"; return 1; }
 
     "$CTL" local postgres start --name p --version 18-alpine >/dev/null 2>&1 || { die "restart postgres"; return 1; }
-    local out; out=$("$CTL" local --json server stop-all 2>&1) || { die "server stop-all: $out"; return 1; }
+    local out; out=$("$CTL" local --json clickhouse stop-all 2>&1) || { die "clickhouse stop-all: $out"; return 1; }
     jq -e '.servers | any(.name == "c" and .engine == "clickhouse" and .stopped == true)' <<<"$out" >/dev/null \
-        || { die "server stop-all did not report ClickHouse: $out"; return 1; }
-    jq -e '.servers | any(.name == "p" and .engine == "postgres" and .version == "postgres:18-alpine" and .stopped == true)' <<<"$out" >/dev/null \
-        || { die "server stop-all did not report Postgres: $out"; return 1; }
-    ! kill -0 "$ch_pid" 2>/dev/null || { die "server stop-all left ClickHouse process running"; return 1; }
+        || { die "clickhouse stop-all did not report ClickHouse: $out"; return 1; }
+    jq -e '.servers | all(.engine == "clickhouse")' <<<"$out" >/dev/null \
+        || { die "clickhouse stop-all reported Postgres: $out"; return 1; }
+    ! kill -0 "$ch_pid" 2>/dev/null || { die "clickhouse stop-all left ClickHouse process running"; return 1; }
     trap - EXIT
     wait "$ch_pid" 2>/dev/null || true
 
-    list=$("$CTL" local --json server list 2>&1) || { die "list after server stop-all: $list"; return 1; }
-    jq -e '[.servers[] | select((.name == "c" or .name == "p") and .running == false)] | length == 2' <<<"$list" >/dev/null \
-        || { die "server stop-all left an engine running: $list"; return 1; }
+    list=$("$CTL" local --json status 2>&1) || { die "status after clickhouse stop-all: $list"; return 1; }
+    jq -e '.servers | any(.name == "c" and .engine == "clickhouse" and .running == false)' <<<"$list" >/dev/null \
+        || { die "clickhouse stop-all left ClickHouse running: $list"; return 1; }
+    jq -e '.servers | any(.name == "p" and .engine == "postgres" and .running == true)' <<<"$list" >/dev/null \
+        || { die "clickhouse stop-all stopped Postgres: $list"; return 1; }
+    "$CTL" local postgres stop-all >/dev/null 2>&1 || { die "final postgres stop-all"; return 1; }
     "$CTL" local postgres remove p >/dev/null 2>&1 || { die "remove postgres"; return 1; }
 )
 

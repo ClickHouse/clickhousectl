@@ -58,17 +58,17 @@ fn expected_project_server_error(project: &Path, name: &str) -> String {
                 {
                     "action": "list_project_servers",
                     "message": "List servers after returning to that exact project",
-                    "command": "clickhousectl local server list"
+                    "command": "clickhousectl local clickhouse list"
                 },
                 {
                     "action": "list_global_servers",
                     "message": "Locate running ClickHouse servers across projects",
-                    "command": "clickhousectl local server list --global"
+                    "command": "clickhousectl local clickhouse list --global"
                 },
                 {
                     "action": "stop_global_project_server",
                     "message": "After confirming the project, stop the server with explicit global project selection",
-                    "command": "clickhousectl local server stop <name> --global --project <project-root>"
+                    "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
                 }
             ]
         }
@@ -226,7 +226,7 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
         &expected_error(
             "port_in_use",
             &format!("HTTP port {port} is already in use"),
-            Some("clickhousectl local server start --help"),
+            Some("clickhousectl local clickhouse start --help"),
         ),
     );
     // Keep the occupied port reserved through its assertion. For the fake
@@ -251,7 +251,7 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
         &expected_error(
             "startup_exit",
             "ClickHouse server 'default' exited before becoming ready",
-            Some("clickhousectl local server list"),
+            Some("clickhousectl local clickhouse list"),
         ),
     );
 }
@@ -338,7 +338,7 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
                 "config 'does-not-exist' not found in {} (available: analytics.xml)",
                 configs.display()
             ),
-            Some("clickhousectl local server configs"),
+            Some("clickhousectl local clickhouse configs"),
         ),
     );
 
@@ -384,7 +384,7 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "invalid_config_name",
             "Invalid config name '../outside.xml': must be a file in the configs dir, not a path \
              (no '/', '\\', or '..')",
-            Some("clickhousectl local server configs"),
+            Some("clickhousectl local clickhouse configs"),
         ),
     );
 
@@ -408,9 +408,9 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "unsupported_argument",
             "--config / --config-file / -C cannot be passed through in trailing args. \
              Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
-             (see `clickhousectl local server configs`). \
+             (see `clickhousectl local clickhouse configs`). \
              Individual --setting=value flags are supported.",
-            Some("clickhousectl local server start --help"),
+            Some("clickhousectl local clickhouse start --help"),
         ),
     );
 
@@ -435,7 +435,7 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
         &expected_error(
             "unsupported_argument",
             "--http-port 0 is not allowed; pick a specific port or omit the flag",
-            Some("clickhousectl local server start --help"),
+            Some("clickhousectl local clickhouse start --help"),
         ),
     );
 }
@@ -456,8 +456,8 @@ fn human_and_clap_errors_keep_their_existing_formats() {
         String::from_utf8_lossy(&human.stderr),
         format!(
             "Error: Server 'missing' was not found in project '{}'.\n\
-             Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-             Return to the local project root where the server was started and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`.\n",
+             Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+             Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local clickhouse stop <name> --global --project <project-root>`.\n",
             project.path().canonicalize().unwrap().display()
         )
     );

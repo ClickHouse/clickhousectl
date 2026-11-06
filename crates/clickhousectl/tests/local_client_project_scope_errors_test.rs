@@ -118,7 +118,7 @@ struct ExpectedGuidance {
 fn list_guidance() -> ExpectedGuidance {
     ExpectedGuidance {
         message: "List managed servers in this exact project",
-        command: Some("clickhousectl local server list"),
+        command: Some("clickhousectl local clickhouse list"),
     }
 }
 
@@ -133,12 +133,12 @@ fn start_guidance(selection: &str) -> ExpectedGuidance {
     if selection == "default" {
         ExpectedGuidance {
             message: "Start the default managed server in this project",
-            command: Some("clickhousectl local server start"),
+            command: Some("clickhousectl local clickhouse start"),
         }
     } else {
         ExpectedGuidance {
             message: "Start the selected named managed server in this project",
-            command: Some("clickhousectl local server start <name>"),
+            command: Some("clickhousectl local clickhouse start <name>"),
         }
     }
 }
@@ -210,7 +210,7 @@ fn empty_project_identifies_default_managed_mode_and_exact_scope() {
     let project_path = canonical(project.path());
     let human = format!(
         "Error: Managed client mode: server 'default' was not found in current project '{project_path}'; parent projects are not searched.\n\
-         Run `clickhousectl local server list`; return to the project root if needed; start it with `clickhousectl local server start`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
+         Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `clickhousectl local clickhouse start`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
     );
     let json = expected_json(
         &project_path,
@@ -265,7 +265,7 @@ fn explicit_wrong_name_preserves_named_selection_without_unsafe_command_interpol
     let project_path = canonical(project.path());
     let human = format!(
         "Error: Managed client mode: server 'wrong name' was not found in current project '{project_path}'; parent projects are not searched.\n\
-         Run `clickhousectl local server list`; return to the project root if needed; start it with `clickhousectl local server start <name>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
+         Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `clickhousectl local clickhouse start <name>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
     );
     let json = expected_json(
         &project_path,
@@ -294,7 +294,7 @@ fn stopped_metadata_suggests_starting_the_selected_named_server() {
     let project_path = canonical(project.path());
     let human = format!(
         "Error: Managed client mode: server 'dev' is not running in current project '{project_path}'.\n\
-         Run `clickhousectl local server list`, then `clickhousectl local server start <name>`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
+         Run `clickhousectl local clickhouse list`, then `clickhousectl local clickhouse start <name>`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
     );
     let json = expected_json(
         &project_path,
@@ -322,7 +322,7 @@ fn selected_missing_binary_keeps_managed_scope_and_install_guidance() {
     let project_path = canonical(project.path());
     let human = format!(
         "Error: Managed client mode: server 'dev' in current project '{project_path}' selected ClickHouse version '{VERSION}', but its client binary is missing.\n\
-         Run `clickhousectl local server list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
+         Run `clickhousectl local clickhouse list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.\n"
     );
     let json = expected_json(
         &project_path,
@@ -371,7 +371,7 @@ fn invalid_metadata_lock_path_keeps_managed_scope_in_json_and_human_errors() {
     );
     assert!(stderr.contains(&project_path));
     assert!(stderr.contains("open the server metadata lock file"));
-    assert!(stderr.contains("`clickhousectl local server list`"));
+    assert!(stderr.contains("`clickhousectl local clickhouse list`"));
     assert!(stderr.contains("`clickhousectl local client --host <host> --port <port>`"));
 }
 

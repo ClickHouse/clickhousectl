@@ -121,7 +121,7 @@ impl FromStr for ServerVersionArg {
         let input = input.trim();
         if input.starts_with("postgres@") || input.starts_with("postgres:") {
             return Err(
-                "Postgres image selectors are only supported by `local install`; `local server start --version` requires a ClickHouse version"
+                "Postgres image selectors are only supported by `local install`; `local clickhouse start --version` requires a ClickHouse version"
                     .to_string(),
             );
         }
@@ -215,7 +215,7 @@ CONTEXT FOR AGENTS:
   Auto-installs the version if it is not already present.
   Symlinks `~/.local/bin/clickhouse` to it, putting `clickhouse client`, `clickhouse benchmark`
   and `clickhouse format` on PATH; --no-global skips that.
-  Sets the version used by `clickhousectl local client` and `clickhousectl local server`.")]
+  Sets the version used by `clickhousectl local client` and `clickhousectl local clickhouse`.")]
     Use {
         /// Version to set as default ("latest", "stable", "lts", 25.12, or 25.12.5.44)
         version: UseVersionArg,
@@ -229,7 +229,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Fails if any server is running on this version, in any project — versions are shared, so a server
-  started from another directory blocks removal too (`local server list --global` lists them).
+  started from another directory blocks removal too (`local clickhouse list --global` lists them).
   Fails if the version is the current default; switch with `clickhousectl local use <other-version>` first.
   --force overrides both guards. The exact build may not be re-downloadable.")]
     Remove {
@@ -254,7 +254,7 @@ CONTEXT FOR AGENTS:
   `.clickhouse/` holds runtime data and is git-ignored; the `clickhouse/` and `postgres/` SQL
   scaffolds are meant to be committed.
   Idempotent — re-running only creates what is missing.
-  Next: `clickhousectl local server start`")]
+  Next: `clickhousectl local clickhouse start`")]
     Init,
 
     /// Connect to a running ClickHouse server with clickhouse-client
@@ -262,7 +262,7 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Default mode looks up a server started by `clickhousectl local server start`; the name defaults
+  Default mode looks up a server started by `clickhousectl local clickhouse start`; the name defaults
   to \"default\".
   Put wrapper options before `--`; all arguments after it go to clickhouse-client.
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.
@@ -322,33 +322,41 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// Manage local server instances
-    #[command(after_help = "\
+    /// Manage local ClickHouse servers
+    #[command(
+        visible_alias = "ch",
+        alias = "server",
+        after_help = "\
 CONTEXT FOR AGENTS:
-  `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are
-  ClickHouse-only.
+  Covers ClickHouse only; `local postgres` manages Postgres and `local status` lists both.
   Data persists across stop/start; only `remove` deletes it.
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
-  Custom configs inherit built-in defaults; find available names with `server configs`.
-  Typical flow: `server start dev` -> `local client dev` -> `server stop dev`")]
-    Server {
+  Custom configs inherit built-in defaults; find available names with `clickhouse configs`.
+  Typical flow: `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
+    )]
+    Clickhouse {
         #[command(subcommand)]
         command: ServerCommands,
     },
 
     /// Manage local Postgres instances (Docker-backed)
-    #[command(after_help = "\
+    #[command(
+        visible_alias = "pg",
+        after_help = "\
 CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
-  There is no `postgres list` — `local server list` shows ClickHouse and Postgres together.
-  `local server list --global` only discovers running ClickHouse servers, excluding Postgres.
-  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`")]
+  Covers Postgres only; `local status` lists ClickHouse and Postgres together.
+  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`"
+    )]
     Postgres {
         #[command(subcommand)]
         command: PostgresCommands,
     },
+
+    /// List ClickHouse and Postgres instances in this project
+    Status,
 
     /// Manage executable UDFs for local servers
     #[command(after_help = "\
@@ -416,7 +424,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "foreground")]
         no_wait: bool,
 
-        /// Overlay defaults with a named partial config (see `server configs`)
+        /// Overlay defaults with a named partial config (see `clickhouse configs`)
         ///
         /// Select one file from ~/.clickhouse/configs/; paths are not accepted.
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
@@ -429,16 +437,16 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// List custom config files available to `server start --config`
+    /// List custom config files available to `clickhouse start --config`
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Run this command to find the config directory, then add an XML or YAML file.
   Include only the server, user, profile or quota settings you want to change.
-  Select one file with `server start --config <name>`; its extension is optional.
+  Select one file with `clickhouse start --config <name>`; its extension is optional.
   If names share a stem, specify the extension.")]
     Configs,
 
-    /// List all server instances (running and stopped)
+    /// List ClickHouse servers in this project (running and stopped)
     List {
         /// List running ClickHouse servers across all projects
         #[arg(long)]
@@ -473,7 +481,7 @@ CONTEXT FOR AGENTS:
         project: Option<String>,
     },
 
-    /// Stop all ClickHouse and Postgres servers in this project
+    /// Stop all ClickHouse servers in this project
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   ClickHouse processes get SIGTERM, then SIGKILL if they do not exit in time.")]
@@ -618,6 +626,9 @@ CONTEXT FOR AGENTS:
         )]
         wait_timeout: u16,
     },
+
+    /// List Postgres instances in this project (running and stopped)
+    List,
 
     /// Stop a running Postgres instance
     Stop {
@@ -822,7 +833,7 @@ CONTEXT FOR AGENTS:
     /// Reload executable functions on a running local server
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Not needed after deploy or remove, which reload, or after `local server start`, which loads them.
+  Not needed after deploy or remove, which reload, or after `local clickhouse start`, which loads them.
   Run it after editing deployed files by hand to apply them now and see any rejection.")]
     Reload {
         #[command(flatten)]
@@ -1084,9 +1095,9 @@ mod tests {
             };
             assert_eq!(version.into_spec(), expected);
 
-            let LocalCommands::Server {
+            let LocalCommands::Clickhouse {
                 command: ServerCommands::Start { version, .. },
-            } = local_command(&["server", "start", "--version", input])
+            } = local_command(&["clickhouse", "start", "--version", input])
             else {
                 panic!("expected server version for {input}");
             };
@@ -1102,7 +1113,10 @@ mod tests {
         let expected = "all parts must be numeric";
         assert_version_rejected(&["install", "not.a.version"], expected);
         assert_version_rejected(&["use", "not.a.version"], expected);
-        assert_version_rejected(&["server", "start", "--version", "not.a.version"], expected);
+        assert_version_rejected(
+            &["clickhouse", "start", "--version", "not.a.version"],
+            expected,
+        );
         assert_version_rejected(
             &["client", "--host", "remote", "--version", "not.a.version"],
             expected,
@@ -1114,7 +1128,7 @@ mod tests {
         let expected = "3-part version '25.12.9' is not supported";
         assert_version_rejected(&["install", "25.12.9"], expected);
         assert_version_rejected(&["use", "25.12.9"], expected);
-        assert_version_rejected(&["server", "start", "--version", "25.12.9"], expected);
+        assert_version_rejected(&["clickhouse", "start", "--version", "25.12.9"], expected);
         assert_version_rejected(
             &["client", "--host", "remote", "--version", "25.12.9"],
             expected,
@@ -1126,7 +1140,10 @@ mod tests {
         let expected = "expected 1-2 or 4 parts";
         assert_version_rejected(&["install", "25.12.9.61.2"], expected);
         assert_version_rejected(&["use", "25.12.9.61.2"], expected);
-        assert_version_rejected(&["server", "start", "--version", "25.12.9.61.2"], expected);
+        assert_version_rejected(
+            &["clickhouse", "start", "--version", "25.12.9.61.2"],
+            expected,
+        );
         assert_version_rejected(
             &["client", "--host", "remote", "--version", "25.12.9.61.2"],
             expected,
@@ -1155,8 +1172,8 @@ mod tests {
             "only supported by `local install`; `local use` requires a ClickHouse version",
         );
         assert_version_rejected(
-            &["server", "start", "--version", "  postgres@18  "],
-            "only supported by `local install`; `local server start --version` requires a ClickHouse version",
+            &["clickhouse", "start", "--version", "  postgres@18  "],
+            "only supported by `local install`; `local clickhouse start --version` requires a ClickHouse version",
         );
         assert_version_rejected(
             &["client", "--host", "remote", "--version", "postgres@18"],
@@ -1648,9 +1665,9 @@ mod tests {
 
     #[test]
     fn parses_server_start_config() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Start { config_file, .. },
-        } = local_command(&["server", "start", "--config", "analytics"])
+        } = local_command(&["clickhouse", "start", "--config", "analytics"])
         else {
             panic!("expected server start");
         };
@@ -1659,9 +1676,9 @@ mod tests {
 
     #[test]
     fn parses_server_start_config_file_legacy_alias() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Start { config_file, .. },
-        } = local_command(&["server", "start", "--config-file", "analytics"])
+        } = local_command(&["clickhouse", "start", "--config-file", "analytics"])
         else {
             panic!("expected server start");
         };
@@ -1670,7 +1687,7 @@ mod tests {
 
     #[test]
     fn server_start_config_file_defaults_to_none() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command:
                 ServerCommands::Start {
                     config_file,
@@ -1678,7 +1695,7 @@ mod tests {
                     args,
                     ..
                 },
-        } = local_command(&["server", "start"])
+        } = local_command(&["clickhouse", "start"])
         else {
             panic!("expected server start");
         };
@@ -1689,7 +1706,7 @@ mod tests {
 
     #[test]
     fn server_start_help_renders_default_name_without_escaped_quotes() {
-        let help = rendered_help(&["server", "start", "--help"]);
+        let help = rendered_help(&["clickhouse", "start", "--help"]);
 
         // clap renders the doc comment's quotes literally, never as escaped `\"` sequences.
         assert!(help.contains(r#"(default: "default""#), "{help}");
@@ -1698,7 +1715,7 @@ mod tests {
 
     #[test]
     fn parses_server_start_positional_name_before_clickhousectl_options() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command:
                 ServerCommands::Start {
                     name,
@@ -1707,7 +1724,7 @@ mod tests {
                     args,
                     ..
                 },
-        } = local_command(&["server", "start", "existing", "--version", "25.12.9.61"])
+        } = local_command(&["clickhouse", "start", "existing", "--version", "25.12.9.61"])
         else {
             panic!("expected server start");
         };
@@ -1724,11 +1741,11 @@ mod tests {
 
     #[test]
     fn parses_server_start_name_flag_for_compatibility() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Start {
                 name, name_flag, ..
             },
-        } = local_command(&["server", "start", "--name", "existing"])
+        } = local_command(&["clickhouse", "start", "--name", "existing"])
         else {
             panic!("expected server start");
         };
@@ -1741,7 +1758,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "local",
-            "server",
+            "clickhouse",
             "start",
             "existing",
             "--name",
@@ -1754,7 +1771,7 @@ mod tests {
 
     #[test]
     fn server_start_passthrough_requires_boundary() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command:
                 ServerCommands::Start {
                     name,
@@ -1763,7 +1780,7 @@ mod tests {
                     ..
                 },
         } = local_command(&[
-            "server",
+            "clickhouse",
             "start",
             "existing",
             "--version",
@@ -1790,7 +1807,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "local",
-            "server",
+            "clickhouse",
             "start",
             "existing",
             "--logger.level=trace",
@@ -1802,9 +1819,9 @@ mod tests {
 
     #[test]
     fn parses_server_start_no_wait() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Start { no_wait, .. },
-        } = local_command(&["server", "start", "--no-wait"])
+        } = local_command(&["clickhouse", "start", "--no-wait"])
         else {
             panic!("expected server start");
         };
@@ -1816,7 +1833,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "local",
-            "server",
+            "clickhouse",
             "start",
             "--no-wait",
             "--foreground",
@@ -1828,9 +1845,9 @@ mod tests {
 
     #[test]
     fn parses_server_configs() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Configs,
-        } = local_command(&["server", "configs"])
+        } = local_command(&["clickhouse", "configs"])
         else {
             panic!("expected server configs");
         };
@@ -1838,11 +1855,11 @@ mod tests {
 
     #[test]
     fn server_stop_omitted_name_remains_distinguishable() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Stop {
                 name, name_flag, ..
             },
-        } = local_command(&["server", "stop"])
+        } = local_command(&["clickhouse", "stop"])
         else {
             panic!("expected server stop");
         };
@@ -1852,9 +1869,9 @@ mod tests {
 
     #[test]
     fn server_remove_omitted_name_remains_distinguishable() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Remove { name, name_flag },
-        } = local_command(&["server", "remove"])
+        } = local_command(&["clickhouse", "remove"])
         else {
             panic!("expected server remove");
         };
@@ -1867,7 +1884,7 @@ mod tests {
         for (command, expected_name, expected_name_flag) in [
             (
                 &[
-                    "server",
+                    "clickhouse",
                     "stop",
                     "analytics",
                     "--global",
@@ -1880,7 +1897,7 @@ mod tests {
             ),
             (
                 &[
-                    "server",
+                    "clickhouse",
                     "stop",
                     "--name",
                     "analytics",
@@ -1895,7 +1912,7 @@ mod tests {
         ] {
             let args = local_args(command);
             assert!(args.json);
-            let LocalCommands::Server {
+            let LocalCommands::Clickhouse {
                 command:
                     ServerCommands::Stop {
                         name,
@@ -1918,19 +1935,19 @@ mod tests {
     fn server_remove_name_forms_allow_trailing_options() {
         for (command, expected_name, expected_name_flag) in [
             (
-                &["server", "remove", "analytics", "--json"][..],
+                &["clickhouse", "remove", "analytics", "--json"][..],
                 Some("analytics"),
                 None,
             ),
             (
-                &["server", "remove", "--name", "analytics", "--json"][..],
+                &["clickhouse", "remove", "--name", "analytics", "--json"][..],
                 None,
                 Some("analytics"),
             ),
         ] {
             let args = local_args(command);
             assert!(args.json);
-            let LocalCommands::Server {
+            let LocalCommands::Clickhouse {
                 command: ServerCommands::Remove { name, name_flag },
             } = args.command
             else {
@@ -1947,7 +1964,7 @@ mod tests {
             let error = Cli::try_parse_from([
                 "clickhousectl",
                 "local",
-                "server",
+                "clickhouse",
                 command,
                 "positional",
                 "--name",
@@ -1963,10 +1980,11 @@ mod tests {
     #[test]
     fn server_teardown_help_hides_compatibility_name_flags() {
         for command in ["stop", "remove"] {
-            let help = Cli::try_parse_from(["clickhousectl", "local", "server", command, "--help"])
-                .err()
-                .expect("help should exit through clap")
-                .to_string();
+            let help =
+                Cli::try_parse_from(["clickhousectl", "local", "clickhouse", command, "--help"])
+                    .err()
+                    .expect("help should exit through clap")
+                    .to_string();
 
             assert!(!help.contains("--name"), "{help}");
         }
@@ -2100,20 +2118,20 @@ mod tests {
 
     #[test]
     fn teardown_commands_preserve_explicit_names() {
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Stop {
                 name, name_flag, ..
             },
-        } = local_command(&["server", "stop", "analytics"])
+        } = local_command(&["clickhouse", "stop", "analytics"])
         else {
             panic!("expected server stop");
         };
         assert_eq!(name.as_deref(), Some("analytics"));
         assert_eq!(name_flag, None);
 
-        let LocalCommands::Server {
+        let LocalCommands::Clickhouse {
             command: ServerCommands::Remove { name, name_flag },
-        } = local_command(&["server", "remove", "analytics"])
+        } = local_command(&["clickhouse", "remove", "analytics"])
         else {
             panic!("expected server remove");
         };
@@ -2139,10 +2157,10 @@ mod tests {
 
     fn instance_commands() -> [&'static [&'static str]; 10] {
         [
-            &["server", "start"],
-            &["server", "stop"],
-            &["server", "remove"],
-            &["server", "dotenv"],
+            &["clickhouse", "start"],
+            &["clickhouse", "stop"],
+            &["clickhouse", "remove"],
+            &["clickhouse", "dotenv"],
             &["client"],
             &["postgres", "start"],
             &["postgres", "stop"],
@@ -2157,7 +2175,7 @@ mod tests {
             LocalCommands::Client {
                 name, name_flag, ..
             }
-            | LocalCommands::Server {
+            | LocalCommands::Clickhouse {
                 command:
                     ServerCommands::Start {
                         name, name_flag, ..
@@ -2331,7 +2349,7 @@ mod tests {
         for command in [
             &["client"][..],
             &["postgres", "client"][..],
-            &["server", "start"][..],
+            &["clickhouse", "start"][..],
         ] {
             for selector in [&[][..], &["dev"][..], &["--name", "dev"][..]] {
                 let argv: Vec<_> = command
@@ -2347,7 +2365,7 @@ mod tests {
                     | LocalCommands::Postgres {
                         command: PostgresCommands::Client { args, .. },
                     }
-                    | LocalCommands::Server {
+                    | LocalCommands::Clickhouse {
                         command: ServerCommands::Start { args, .. },
                     } => args,
                     _ => panic!("expected native command"),
@@ -2370,5 +2388,157 @@ mod tests {
                 clap::error::ErrorKind::UnknownArgument
             );
         }
+    }
+
+    /// Every spelling of `local clickhouse`: the name, the visible alias and
+    /// the hidden compatibility alias.
+    const CLICKHOUSE_SPELLINGS: [&str; 3] = ["clickhouse", "ch", "server"];
+
+    #[test]
+    fn clickhouse_spellings_parse_every_subcommand_identically() {
+        for spelling in CLICKHOUSE_SPELLINGS {
+            let parsed = |tail: &[&str]| {
+                let argv: Vec<_> = [spelling].into_iter().chain(tail.iter().copied()).collect();
+                let LocalCommands::Clickhouse { command } = local_command(&argv) else {
+                    panic!("expected local clickhouse for {argv:?}");
+                };
+                command
+            };
+            assert!(matches!(
+                parsed(&["start", "dev", "--http-port", "8124"]),
+                ServerCommands::Start { name: Some(name), http_port: Some(8124), .. } if name == "dev"
+            ));
+            assert!(matches!(parsed(&["configs"]), ServerCommands::Configs));
+            assert!(matches!(
+                parsed(&["list"]),
+                ServerCommands::List { global: false }
+            ));
+            assert!(matches!(
+                parsed(&["list", "--global"]),
+                ServerCommands::List { global: true }
+            ));
+            assert!(matches!(
+                parsed(&["stop", "dev"]),
+                ServerCommands::Stop { name: Some(name), global: false, .. } if name == "dev"
+            ));
+            assert!(matches!(
+                parsed(&["stop-all", "--global"]),
+                ServerCommands::StopAll { global: true }
+            ));
+            assert!(matches!(
+                parsed(&["dotenv", "--local"]),
+                ServerCommands::Dotenv { local: true, .. }
+            ));
+            assert!(matches!(
+                parsed(&["remove", "dev"]),
+                ServerCommands::Remove { name: Some(name), .. } if name == "dev"
+            ));
+            assert!(local_args(&[spelling, "list", "--json"]).json, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn postgres_spellings_parse_every_subcommand_identically() {
+        for spelling in ["postgres", "pg"] {
+            let parsed = |tail: &[&str]| {
+                let argv: Vec<_> = [spelling].into_iter().chain(tail.iter().copied()).collect();
+                let LocalCommands::Postgres { command } = local_command(&argv) else {
+                    panic!("expected local postgres for {argv:?}");
+                };
+                command
+            };
+            assert!(matches!(
+                parsed(&["start", "dev", "--version", "17"]),
+                PostgresCommands::Start { name: Some(name), version: Some(version), .. }
+                    if name == "dev" && version == "17"
+            ));
+            assert!(matches!(
+                parsed(&["stop", "dev"]),
+                PostgresCommands::Stop { name: Some(name), .. } if name == "dev"
+            ));
+            assert!(matches!(parsed(&["list"]), PostgresCommands::List));
+            assert!(local_args(&[spelling, "list", "--json"]).json, "{spelling}");
+            assert!(matches!(parsed(&["stop-all"]), PostgresCommands::StopAll));
+            assert!(matches!(
+                parsed(&["remove", "dev"]),
+                PostgresCommands::Remove { name: Some(name), .. } if name == "dev"
+            ));
+            assert!(matches!(
+                parsed(&["client", "-q", "SELECT 1"]),
+                PostgresCommands::Client { query: Some(_), .. }
+            ));
+            assert!(matches!(
+                parsed(&["dotenv", "--local"]),
+                PostgresCommands::Dotenv { local: true, .. }
+            ));
+            assert!(
+                local_args(&[spelling, "stop-all", "--json"]).json,
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_parses_with_and_without_json() {
+        assert!(matches!(local_command(&["status"]), LocalCommands::Status));
+        assert!(!local_args(&["status"]).json);
+        assert!(local_args(&["status", "--json"]).json);
+        assert!(local_args(&["--json", "status"]).json);
+    }
+
+    /// Names listed in the `Commands:` section of a rendered help screen,
+    /// including the aliases clap shows beside each command.
+    fn listed_command_names(help: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut in_commands = false;
+        for line in help.lines() {
+            if line == "Commands:" {
+                in_commands = true;
+                continue;
+            }
+            if !in_commands {
+                continue;
+            }
+            if line.trim().is_empty() {
+                break;
+            }
+            let entry = line.trim_start();
+            if let Some(name) = entry.split_whitespace().next() {
+                names.push(name.trim_end_matches(',').to_string());
+            }
+            // clap renders shown aliases as `[alias: a]` or `[aliases: a, b]`.
+            if let Some((_, aliases)) = entry
+                .rsplit_once("[alias: ")
+                .or_else(|| entry.rsplit_once("[aliases: "))
+            {
+                names.extend(
+                    aliases
+                        .trim_end_matches(']')
+                        .split(", ")
+                        .map(str::to_string),
+                );
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn local_help_shows_clickhouse_and_ch_but_hides_server() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let local = cli.find_subcommand("local").unwrap();
+        let clickhouse = local.find_subcommand("server").unwrap();
+        assert_eq!(clickhouse.get_name(), "clickhouse");
+        assert_eq!(clickhouse.get_visible_aliases().collect::<Vec<_>>(), ["ch"]);
+        assert!(clickhouse.get_all_aliases().any(|alias| alias == "server"));
+        let postgres = local.find_subcommand("pg").unwrap();
+        assert_eq!(postgres.get_name(), "postgres");
+        assert_eq!(postgres.get_visible_aliases().collect::<Vec<_>>(), ["pg"]);
+
+        let names = listed_command_names(&rendered_help(&["--help"]));
+        for shown in ["clickhouse", "ch", "postgres", "pg", "status"] {
+            assert!(names.iter().any(|name| name == shown), "{shown}: {names:?}");
+        }
+        assert!(!names.iter().any(|name| name == "server"), "{names:?}");
     }
 }

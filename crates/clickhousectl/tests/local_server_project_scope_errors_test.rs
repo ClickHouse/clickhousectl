@@ -1,4 +1,4 @@
-//! Project-scope diagnostics for local server list, stop, and remove.
+//! Project-scope diagnostics for local clickhouse list, stop, and remove.
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -158,7 +158,7 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     assert_exact_scope(&stop["error"]["project_scope"], &child);
     assert_eq!(
         stop["error"]["guidance"][3]["command"],
-        "clickhousectl local server stop <name> --global --project <project-root>"
+        "clickhousectl local clickhouse stop <name> --global --project <project-root>"
     );
 
     let remove = json_error(&run(
@@ -180,7 +180,7 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     let stderr = String::from_utf8_lossy(&human_remove.stderr);
     assert!(stderr.contains(&canonical(&child)), "stderr: {stderr}");
     assert!(
-        stderr.contains("Project-local server remove uses the exact current working directory")
+        stderr.contains("Project-local clickhouse remove uses the exact current working directory")
     );
     assert!(stderr.contains("parent `.clickhouse` directories are not searched"));
     assert!(!stderr.contains("server stop <name> --global"));
@@ -205,7 +205,7 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     assert_exact_scope(&child_list["project_scope"], &child);
     assert_eq!(
         child_list["guidance"][2]["command"],
-        "clickhousectl local server list --global"
+        "clickhousectl local clickhouse list --global"
     );
 
     let human = run(&child, home.path(), &["local", "server", "list"]);
@@ -214,7 +214,7 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     assert!(stdout.contains(&canonical(&child)), "stdout: {stdout}");
     assert!(stdout.contains("exact current working directory"));
     assert!(stdout.contains("parent `.clickhouse` directories are not searched"));
-    assert!(stdout.contains("clickhousectl local server list --global"));
+    assert!(stdout.contains("clickhousectl local clickhouse list --global"));
 
     assert!(
         project

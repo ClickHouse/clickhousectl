@@ -40,7 +40,7 @@ pub async fn install_local_first(
 }
 
 /// Like `install_local_first`, but returns an existing local version silently
-/// (matching `ensure_installed`'s semantics). For `server start -v <spec>`.
+/// (matching `ensure_installed`'s semantics). For `clickhouse start -v <spec>`.
 pub async fn ensure_installed_local_first(
     spec: &VersionSpec,
     platform: &Platform,
@@ -305,7 +305,7 @@ fn commit_staged_install_locked(
 }
 
 /// Like `install_resolved`, but returns the existing version instead of erroring
-/// when already installed. Intended for cases like `server start --version` where
+/// when already installed. Intended for cases like `clickhouse start --version` where
 /// the goal is "make sure this version is available" rather than "install this".
 pub async fn ensure_installed(
     resolved: &ResolvedVersion,

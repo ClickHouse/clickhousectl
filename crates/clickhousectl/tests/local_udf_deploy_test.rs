@@ -899,13 +899,13 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
         error["error"]["message"],
         format!(
             "Server 'default' not found in project '{}'; start it with \
-             `clickhousectl local server start default`",
+             `clickhousectl local clickhouse start default`",
             project_root.display()
         )
     );
     assert_eq!(
         error["error"]["command"],
-        "clickhousectl local server start default"
+        "clickhousectl local clickhouse start default"
     );
     assert!(
         !env.project
@@ -928,7 +928,7 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
         let error = error_json(&run(&env, &args));
         assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
         assert_eq!(
-            error["error"]["command"], "clickhousectl local server start ghost",
+            error["error"]["command"], "clickhousectl local clickhouse start ghost",
             "{args:?}"
         );
     }
@@ -945,7 +945,7 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
     assert_eq!(error["error"]["code"], "server_not_running");
     assert_eq!(
         error["error"]["command"],
-        "clickhousectl local server start default"
+        "clickhousectl local clickhouse start default"
     );
 }
 
@@ -979,7 +979,7 @@ fn a_server_missing_from_a_subdirectory_is_not_started_there() {
         );
         assert!(!message.contains("server start"), "{message}");
         assert_eq!(
-            error["error"]["command"], "clickhousectl local server list --global",
+            error["error"]["command"], "clickhousectl local clickhouse list --global",
             "{args:?}"
         );
     }
@@ -1030,7 +1030,7 @@ fn server_naming_a_local_postgres_instance_is_rejected_before_anything_is_writte
                 "{args:?}"
             );
             assert_eq!(
-                error["error"]["command"], "clickhousectl local server list",
+                error["error"]["command"], "clickhousectl local clickhouse list",
                 "{args:?}"
             );
         }

@@ -58,8 +58,8 @@ pub enum Commands {
 CONTEXT FOR AGENTS:
   Project-scoped commands use `.clickhouse` under the exact current directory; parent directories
   are not searched. Run them from the project root.
-  `clickhousectl local server start` bootstraps from zero — installs `latest` if nothing is set up.
-  Typical flow: `local server start` -> `local client -q 'SELECT 1'`")]
+  `clickhousectl local clickhouse start` bootstraps from zero — installs `latest` if nothing is set up.
+  Typical flow: `local clickhouse start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
     /// Manage ClickHouse and Postgres in ClickHouse Cloud

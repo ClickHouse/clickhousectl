@@ -194,7 +194,7 @@ fn running_server_remove_has_stop_first_error_and_start_keeps_collision_error() 
     assert_eq!(remove.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&remove.stderr);
     assert!(stderr.contains(
-        "Server 'test2' is running; stop it first with `clickhousectl local server stop test2`"
+        "Server 'test2' is running; stop it first with `clickhousectl local clickhouse stop test2`"
     ));
     assert!(!stderr.contains("already running"));
 
@@ -262,8 +262,8 @@ fn stopped_server_connection_commands_fail_without_using_saved_ports() {
     let client_stderr = String::from_utf8_lossy(&client.stderr);
     assert!(client_stderr.contains("Managed client mode: server 'default' is not running"));
     assert!(client_stderr.contains(&project.path().canonicalize().unwrap().display().to_string()));
-    assert!(client_stderr.contains("clickhousectl local server list"));
-    assert!(client_stderr.contains("clickhousectl local server start <name>"));
+    assert!(client_stderr.contains("clickhousectl local clickhouse list"));
+    assert!(client_stderr.contains("clickhousectl local clickhouse start <name>"));
     assert!(!client_stderr.contains("8123"));
     assert!(!client_stderr.contains("9000"));
 

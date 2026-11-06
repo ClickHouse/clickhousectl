@@ -1,7 +1,7 @@
 //! Resolution and listing of custom server config files.
 //!
 //! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
-//! reference them by name with `clickhousectl local server start --config
+//! reference them by name with `clickhousectl local clickhouse start --config
 //! <NAME>`. The file is staged into the server's `config.d/` directory, so it
 //! is merged as an overlay on ClickHouse's built-in defaults. The launcher
 //! writes the data path and ports to its own `config.d/` file, named to merge
@@ -181,7 +181,7 @@ pub fn apply_config_overlay(data_dir: &Path, source: Option<&Path>) -> Result<()
 /// Renders the managed config file for a server listening on these ports.
 fn managed_config_xml(http_port: u16, tcp_port: u16) -> String {
     format!(
-        "<!-- Managed by clickhousectl; rewritten on every `local server start`. -->\n\
+        "<!-- Managed by clickhousectl; rewritten on every `local clickhouse start`. -->\n\
          <clickhouse>\n    \
          <path>./</path>\n    \
          <http_port>{http_port}</http_port>\n    \

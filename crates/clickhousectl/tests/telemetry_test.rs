@@ -457,7 +457,7 @@ async fn server_scope_failure_paths_never_reach_telemetry() {
 
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
-    assert_eq!(event["command"], "local server stop");
+    assert_eq!(event["command"], "local clickhouse stop");
     assert_eq!(event["positionals"], serde_json::json!(["name"]));
     assert_eq!(event["exit_code"], 1);
     let raw_payload = serde_json::to_string(event).unwrap();
@@ -527,7 +527,7 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         stderr_of(&output)
     );
     let payloads = sandbox.wait_for_requests(1).await;
-    assert_eq!(payloads[0]["command"], "local server start");
+    assert_eq!(payloads[0]["command"], "local clickhouse start");
     assert_eq!(payloads[0]["exit_code"], 3);
     assert_eq!(payloads[0]["outcome"], "error");
 }
@@ -965,7 +965,7 @@ async fn positional_presence_distinguishes_bare_from_named_stop() {
         // Whether the stop succeeds is irrelevant here; the event shape is not.
         let payloads = sandbox.wait_for_requests(index + 1).await;
         let event = &payloads[index];
-        assert_eq!(event["command"], "local server stop", "for {args:?}");
+        assert_eq!(event["command"], "local clickhouse stop", "for {args:?}");
         assert_eq!(event["positionals"], *expected, "for {args:?}");
         let raw = serde_json::to_string(event).unwrap();
         assert!(
@@ -1031,7 +1031,7 @@ async fn hostile_positionals_never_appear_on_the_wire() {
     let cases: &[(&[&str], &str, Value)] = &[
         (
             &["local", "server", "stop", HOSTILE],
-            "local server stop",
+            "local clickhouse stop",
             serde_json::json!(["name"]),
         ),
         // Forwarded to clickhouse-client after `--`: not this CLI's shape.
@@ -1191,7 +1191,7 @@ async fn invalid_local_versions_report_invalid_value_without_dispatch_side_effec
         (&["local", "use", "25.12.9"], "local use", "25.12.9"),
         (
             &["local", "server", "start", "--version", "25.12.9.61.2"],
-            "local server start",
+            "local clickhouse start",
             "25.12.9.61.2",
         ),
         (&["local", "use", "postgres@18"], "local use", "postgres@18"),

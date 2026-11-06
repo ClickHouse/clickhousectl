@@ -941,7 +941,7 @@ fn xml_escape(text: &str) -> String {
 // ── layout ──────────────────────────────────────────────────────────────────
 
 /// Write the managed overlay that points the embedded server config at this
-/// server's UDF directories. Idempotent; called by `server start` as well.
+/// server's UDF directories. Idempotent; called by `clickhouse start` as well.
 ///
 /// An unchanged overlay is left untouched: a new mtime makes ClickHouse
 /// reload its main config, which on 26.1 and earlier drops the command-line

@@ -337,7 +337,7 @@ fn the_structured_refusal_names_the_blocking_project_and_the_global_list() {
     }
     assert_eq!(
         error["error"]["command"],
-        "clickhousectl local server list --global"
+        "clickhousectl local clickhouse list --global"
     );
     assert!(fixture.version_dir(RUNNING_VERSION).exists());
     assert!(process_is_alive(pid));

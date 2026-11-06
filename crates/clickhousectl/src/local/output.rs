@@ -428,41 +428,45 @@ impl LocalErrorOutput {
             }
 
             // ── servers ─────────────────────────────────────────────────────
+            // Name-only variants are raised for Postgres instances too, and an
+            // engine's own list cannot show the other engine: `local status`
+            // covers both.
             Error::ServerNotFound(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
-                .command("clickhousectl local server list"),
+                .command("clickhousectl local status"),
             Error::ServerStopSelectionRequired { .. }
             | Error::ServerRemoveSelectionRequired { .. } => {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
-                    .command("clickhousectl local server list")
+                    .command("clickhousectl local clickhouse list")
             }
             // The same ambiguity across projects: the global list shows which
             // project root to pass to `--project`.
             Error::ServerInMultipleProjects { .. } => {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
-                    .command("clickhousectl local server list --global")
+                    .command("clickhousectl local clickhouse list --global")
             }
-            // Deliberately the list, not a `start` command: this variant is
-            // also raised for Postgres servers and for global PID lookups,
-            // where the name is not a `server start` argument.
+            // Deliberately the status list, not a `start` command: this variant
+            // is also raised for Postgres servers and for global PID lookups,
+            // where the name is not a `clickhouse start` argument.
             Error::ServerNotRunning(_) => Mapping::parity(LocalErrorCode::ServerNotRunning)
-                .command("clickhousectl local server list"),
-            Error::ServerAlreadyRunning(_) => Mapping::parity(LocalErrorCode::ServerRunning)
-                .command("clickhousectl local server list"),
-            // Stopping *this* server is the recovery; `server list` only
+                .command("clickhousectl local status"),
+            Error::ServerAlreadyRunning(_) => {
+                Mapping::parity(LocalErrorCode::ServerRunning).command("clickhousectl local status")
+            }
+            // Stopping *this* server is the recovery; `clickhouse list` only
             // restates what the error already says.
             Error::ServerRunningCannotRemove { command, .. } => {
                 Mapping::parity(LocalErrorCode::ServerRunning).command(command.clone())
             }
             Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
-                .command("clickhousectl local server list"),
+                .command("clickhousectl local status"),
             Error::UnsupportedArgument(_) => Mapping::parity(LocalErrorCode::UnsupportedArgument)
-                .command("clickhousectl local server start --help"),
+                .command("clickhousectl local clickhouse start --help"),
 
             // ── server configs ──────────────────────────────────────────────
             Error::ConfigNotFound(_) => Mapping::parity(LocalErrorCode::ConfigNotFound)
-                .command("clickhousectl local server configs"),
+                .command("clickhousectl local clickhouse configs"),
             Error::InvalidConfigName(_) => Mapping::parity(LocalErrorCode::InvalidConfigName)
-                .command("clickhousectl local server configs"),
+                .command("clickhousectl local clickhouse configs"),
 
             // ── local UDFs ──────────────────────────────────────────────────
             Error::UdfDefinitionParse { path, source } => Mapping::redacted(
@@ -523,24 +527,24 @@ impl LocalErrorOutput {
                 format!("Could not reach server '{server}' on port {port}"),
             )
             .details(details.clone())
-            .command("clickhousectl local server list"),
+            .command("clickhousectl local clickhouse list"),
             // Same code as a missing server elsewhere; the remedy differs
             // because `local udf` never creates one. Outside a project root,
-            // `server start` would begin a nested project, so the global list
+            // `clickhouse start` would begin a nested project, so the global list
             // (which finds running servers in other projects) is the lead.
             Error::UdfServerNotFound {
                 name,
                 project_has_state,
                 ..
             } => Mapping::parity(LocalErrorCode::ServerNotFound).command(if *project_has_state {
-                format!("clickhousectl local server start {name}")
+                format!("clickhousectl local clickhouse start {name}")
             } else {
-                "clickhousectl local server list --global".to_owned()
+                "clickhousectl local clickhouse list --global".to_owned()
             }),
             Error::UdfServerNotRunning(name) => Mapping::parity(LocalErrorCode::ServerNotRunning)
-                .command(format!("clickhousectl local server start {name}")),
+                .command(format!("clickhousectl local clickhouse start {name}")),
             Error::UdfServerIsPostgres(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
-                .command("clickhousectl local server list"),
+                .command("clickhousectl local clickhouse list"),
             // `deploy --help` states the Linux amd64/arm64 limit.
             Error::UdfRuntimeUnsupported(_) => {
                 Mapping::parity(LocalErrorCode::UdfRuntimeUnsupported)
@@ -612,9 +616,9 @@ impl LocalErrorOutput {
             }
             // The blocking servers are named — including their project root —
             // because they may live outside the current project, where neither
-            // `server list` nor the caller's own state can find them.
+            // `clickhouse list` nor the caller's own state can find them.
             Error::VersionInUse { .. } => Mapping::parity(LocalErrorCode::ServerRunning)
-                .command("clickhousectl local server list --global"),
+                .command("clickhousectl local clickhouse list --global"),
             Error::VersionIsDefault {
                 recovery_command, ..
             } => {
@@ -637,7 +641,7 @@ impl LocalErrorOutput {
             Error::PortInUse { kind, .. } | Error::PortUnavailable(kind) => {
                 Mapping::parity(LocalErrorCode::PortInUse).command(match kind {
                     PortKind::Postgres => "clickhousectl local postgres start --help",
-                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local clickhouse start --help",
                 })
             }
             // `details` is the managed server's own stderr or log tail: kept in
@@ -646,7 +650,7 @@ impl LocalErrorOutput {
                 LocalErrorCode::StartupExit,
                 format!("{kind} server '{name}' exited before becoming ready"),
             )
-            .command("clickhousectl local server list"),
+            .command(startup_list_command(*kind)),
             Error::StartupTimeout {
                 kind,
                 name,
@@ -656,7 +660,7 @@ impl LocalErrorOutput {
                 LocalErrorCode::StartupTimeout,
                 format!("{kind} server '{name}' did not become ready within {seconds} seconds"),
             )
-            .command("clickhousectl local server list"),
+            .command(startup_list_command(*kind)),
 
             // ── network, downloads and extraction ───────────────────────────
             Error::Network(failure)
@@ -758,7 +762,7 @@ impl ServerMetadataParseErrorDetail {
                 },
                 LocalGuidance {
                     message: "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
-                    command: Some("clickhousectl local server list --global"),
+                    command: Some("clickhousectl local clickhouse list --global"),
                 },
                 LocalGuidance {
                     message: "For Postgres, verify the container state separately before moving the metadata file aside",
@@ -766,7 +770,7 @@ impl ServerMetadataParseErrorDetail {
                 },
                 LocalGuidance {
                     message: "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
-                    command: Some("clickhousectl local server list"),
+                    command: Some("clickhousectl local clickhouse list"),
                 },
             ],
         }
@@ -799,7 +803,7 @@ impl ManagedClientErrorDetail {
         };
         let mut guidance = vec![LocalGuidance {
             message: "List managed servers in this exact project",
-            command: Some("clickhousectl local server list"),
+            command: Some("clickhousectl local clickhouse list"),
         }];
         match &error.kind {
             ManagedClientErrorKind::ServerNotFound => {
@@ -897,12 +901,12 @@ pub(crate) fn project_scope_guidance(
         ProjectServerGuidance {
             action: LocalGuidanceAction::ListProjectServers,
             message: "List servers after returning to that exact project",
-            command: Some("clickhousectl local server list"),
+            command: Some("clickhousectl local clickhouse list"),
         },
         ProjectServerGuidance {
             action: LocalGuidanceAction::ListGlobalServers,
             message: "Locate running ClickHouse servers across projects",
-            command: Some("clickhousectl local server list --global"),
+            command: Some("clickhousectl local clickhouse list --global"),
         },
     ];
     if command == Some(ProjectServerCommand::Stop) {
@@ -910,7 +914,7 @@ pub(crate) fn project_scope_guidance(
             action: LocalGuidanceAction::StopGlobalProjectServer,
             message: "After confirming the project, stop the server with explicit global project selection",
             command: Some(
-                "clickhousectl local server stop <name> --global --project <project-root>",
+                "clickhousectl local clickhouse stop <name> --global --project <project-root>",
             ),
         });
     }
@@ -921,11 +925,11 @@ fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
     match selection {
         ManagedClientSelection::Default => LocalGuidance {
             message: "Start the default managed server in this project",
-            command: Some("clickhousectl local server start"),
+            command: Some("clickhousectl local clickhouse start"),
         },
         ManagedClientSelection::Named => LocalGuidance {
             message: "Start the selected named managed server in this project",
-            command: Some("clickhousectl local server start <name>"),
+            command: Some("clickhousectl local clickhouse start <name>"),
         },
     }
 }
@@ -1369,7 +1373,7 @@ impl fmt::Display for ServerConfigsOutput {
                 "Create an XML or YAML file there with only the settings you want to change.\n\
                  Other settings inherit ClickHouse's built-in defaults.\n\
                  Start with: \
-                 clickhousectl local server start --config <NAME>"
+                 clickhousectl local clickhouse start --config <NAME>"
             )?;
             return Ok(());
         }
@@ -1379,7 +1383,7 @@ impl fmt::Display for ServerConfigsOutput {
         }
         write!(
             f,
-            "Use with: clickhousectl local server start --config <NAME>"
+            "Use with: clickhousectl local clickhouse start --config <NAME>"
         )
     }
 }
@@ -1439,6 +1443,64 @@ pub struct ServerListOutput {
     pub(crate) project_scope: Option<ServerProjectScope>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) guidance: Vec<ProjectServerGuidance>,
+    /// The command that produced this list; selects the empty-list hint.
+    #[serde(skip)]
+    pub(crate) list: ProjectList,
+}
+
+/// A project-scoped list command: one engine's `list`, or `local status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectList {
+    Clickhouse,
+    Postgres,
+    Status,
+}
+
+impl ProjectList {
+    fn command(self) -> &'static str {
+        match self {
+            ProjectList::Clickhouse => "clickhousectl local clickhouse list",
+            ProjectList::Postgres => "clickhousectl local postgres list",
+            ProjectList::Status => "clickhousectl local status",
+        }
+    }
+
+    /// Only ClickHouse has cross-project discovery.
+    fn covers_clickhouse(self) -> bool {
+        self != ProjectList::Postgres
+    }
+}
+
+/// The list that shows the server a startup failure names.
+fn startup_list_command(kind: crate::error::StartupKind) -> &'static str {
+    match kind {
+        crate::error::StartupKind::ClickHouse => ProjectList::Clickhouse.command(),
+        crate::error::StartupKind::Postgres => ProjectList::Postgres.command(),
+    }
+}
+
+/// Hints for an empty project-scoped list.
+pub(crate) fn empty_list_guidance(list: ProjectList) -> Vec<ProjectServerGuidance> {
+    let mut guidance = vec![
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ReturnToProjectRoot,
+            message: "Change to the local project root where the server was started",
+            command: Some("cd <project-root>"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List servers after returning to that exact project",
+            command: Some(list.command()),
+        },
+    ];
+    if list.covers_clickhouse() {
+        guidance.push(ProjectServerGuidance {
+            action: LocalGuidanceAction::ListGlobalServers,
+            message: "Locate running ClickHouse servers across projects",
+            command: Some("clickhousectl local clickhouse list --global"),
+        });
+    }
+    guidance
 }
 
 #[derive(Tabled)]
@@ -1500,12 +1562,20 @@ impl fmt::Display for ServerListOutput {
                 writeln!(f, "No servers found in project '{}'.", scope.path)?;
                 writeln!(
                     f,
-                    "Project-local server list uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                    "Project-local lists use the exact current working directory; parent `.clickhouse` directories are not searched."
                 )?;
-                return write!(
+                write!(
                     f,
-                    "Return to the local project root where the server was started and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
-                );
+                    "Return to the local project root where the server was started and run `{}`",
+                    self.list.command()
+                )?;
+                if self.list.covers_clickhouse() {
+                    write!(
+                        f,
+                        ", or use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects"
+                    )?;
+                }
+                return write!(f, ".");
             }
             write!(f, "No servers")?;
             return Ok(());
@@ -1710,11 +1780,11 @@ impl fmt::Display for ServerStopNoopOutput {
             )?;
             writeln!(
                 f,
-                "Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                "Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
             )?;
             write!(
                 f,
-                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
             )?;
         }
         Ok(())
@@ -2024,7 +2094,7 @@ mod tests {
             (
                 Error::ServerRunningCannotRemove {
                     name: "dev".into(),
-                    command: "clickhousectl local server stop dev".into(),
+                    command: "clickhousectl local clickhouse stop dev".into(),
                 },
                 "server_running",
             ),
@@ -2310,7 +2380,7 @@ mod tests {
         assert_eq!(not_running["error"]["code"], "server_not_running");
         assert_eq!(
             not_running["error"]["command"],
-            "clickhousectl local server start dev"
+            "clickhousectl local clickhouse start dev"
         );
         let not_found = |project_has_state| {
             error_json(&Error::UdfServerNotFound {
@@ -2321,12 +2391,12 @@ mod tests {
                 .clone()
         };
         let root = not_found(true);
-        assert_eq!(root["command"], "clickhousectl local server start dev");
+        assert_eq!(root["command"], "clickhousectl local clickhouse start dev");
         assert!(root["message"].as_str().unwrap().contains("'/work/app'"));
         let subdir = not_found(false);
         assert_eq!(
             subdir["command"],
-            "clickhousectl local server list --global"
+            "clickhousectl local clickhouse list --global"
         );
         let message = subdir["message"].as_str().unwrap();
         assert!(message.contains("'/work/app'"), "{message}");
@@ -2442,7 +2512,7 @@ mod tests {
         assert_eq!(unreachable["error"]["details"], "secret-ish client text");
         assert_eq!(
             unreachable["error"]["command"],
-            "clickhousectl local server list"
+            "clickhousectl local clickhouse list"
         );
 
         let blocked_error = Error::UdfReloadBlocked {
@@ -2535,7 +2605,7 @@ mod tests {
         );
         assert_eq!(
             postgres["error"]["command"],
-            "clickhousectl local server list"
+            "clickhousectl local clickhouse list"
         );
 
         let source = error_json(&Error::UdfSourceInvalid {
@@ -2639,9 +2709,52 @@ mod tests {
         let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
         assert_eq!(
             wrapped,
-            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local server list"}}"#
+            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local postgres list"}}"#
         );
         assert!(!wrapped.contains("hunter2"));
+    }
+
+    /// Name-only errors are raised for either engine, so they point at the
+    /// combined list; startup failures know their engine and point at its list.
+    #[test]
+    fn server_json_errors_point_at_a_list_that_shows_the_server() {
+        let command = |error: Error| error_json(&error)["error"]["command"].clone();
+        for error in [
+            Error::ServerNotFound("app".into()),
+            Error::ServerNotRunning("app".into()),
+            Error::ServerAlreadyRunning("app".into()),
+            Error::InvalidServerName("bad/name".into()),
+        ] {
+            assert_eq!(
+                error_json(&error)["error"]["command"],
+                "clickhousectl local status",
+                "{error:?}"
+            );
+        }
+        for (kind, list) in [
+            (
+                crate::error::StartupKind::ClickHouse,
+                "clickhousectl local clickhouse list",
+            ),
+            (
+                crate::error::StartupKind::Postgres,
+                "clickhousectl local postgres list",
+            ),
+        ] {
+            let exit = command(Error::StartupExit {
+                kind,
+                name: "default".into(),
+                details: String::new(),
+            });
+            assert_eq!(exit, list, "startup_exit for {kind}");
+            let timeout = command(Error::StartupTimeout {
+                kind,
+                name: "default".into(),
+                seconds: 30,
+                details: String::new(),
+            });
+            assert_eq!(timeout, list, "startup_timeout for {kind}");
+        }
     }
 
     #[test]
@@ -2650,11 +2763,11 @@ mod tests {
             serde_json::to_string(&LocalErrorOutput::from_error(
                 &Error::ServerRunningCannotRemove {
                     name: "dev".into(),
-                    command: "clickhousectl local server stop dev".into()
+                    command: "clickhousectl local clickhouse stop dev".into()
                 }
             ))
             .unwrap(),
-            r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local server stop dev`","command":"clickhousectl local server stop dev"}}"#
+            r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local clickhouse stop dev`","command":"clickhousectl local clickhouse stop dev"}}"#
         );
     }
 
@@ -2672,7 +2785,7 @@ mod tests {
                 "error": {
                     "code": "config_not_found",
                     "message": "config 'does-not-exist' not found in /home/dev/.clickhouse/configs (available: analytics.xml)",
-                    "command": "clickhousectl local server configs"
+                    "command": "clickhousectl local clickhouse configs"
                 }
             })
         );
@@ -2713,7 +2826,7 @@ mod tests {
             Error::ServerAlreadyRunning("dev".into()),
             Error::ServerRunningCannotRemove {
                 name: "dev".into(),
-                command: "clickhousectl local server stop dev".into(),
+                command: "clickhousectl local clickhouse stop dev".into(),
             },
             Error::ServerStopSelectionRequired { available: 2 },
             Error::ServerRemoveSelectionRequired { available: 1 },
@@ -3119,6 +3232,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3146,6 +3260,7 @@ mod tests {
             total_running_servers: 0,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: project_scope_guidance(None),
+            list: ProjectList::Clickhouse,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3488,6 +3603,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("Name"));
@@ -3530,6 +3646,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         }
         .to_string();
         let postgres_row = postgres
@@ -3568,6 +3685,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         }
         .to_string();
         let global_row = global
@@ -3599,6 +3717,7 @@ mod tests {
             total_running_servers: 0,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         assert_eq!(output.to_string(), "No servers");
     }
@@ -3611,12 +3730,53 @@ mod tests {
             total_running_servers: 0,
             project_scope: Some(exact_current_project_scope(Path::new("/project"))),
             guidance: project_scope_guidance(None),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("No servers found in project '/project'"));
         assert!(text.contains("exact current working directory"));
         assert!(text.contains("parent `.clickhouse` directories are not searched"));
-        assert!(text.contains("clickhousectl local server list --global"));
+        assert!(text.contains("clickhousectl local clickhouse list --global"));
+    }
+
+    #[test]
+    fn empty_engine_lists_point_at_their_own_command() {
+        for (list, command, global) in [
+            (
+                ProjectList::Clickhouse,
+                "clickhousectl local clickhouse list",
+                true,
+            ),
+            (
+                ProjectList::Postgres,
+                "clickhousectl local postgres list",
+                false,
+            ),
+            (ProjectList::Status, "clickhousectl local status", true),
+        ] {
+            let guidance = empty_list_guidance(list);
+            assert_eq!(guidance[1].action, LocalGuidanceAction::ListProjectServers);
+            assert_eq!(guidance[1].command, Some(command));
+            assert_eq!(
+                guidance
+                    .iter()
+                    .any(|hint| hint.action == LocalGuidanceAction::ListGlobalServers),
+                global,
+                "{list:?}"
+            );
+
+            let output = ServerListOutput {
+                servers: vec![],
+                total_servers: 0,
+                total_running_servers: 0,
+                project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+                guidance,
+                list,
+            };
+            let text = output.to_string();
+            assert!(text.contains(command), "{text}");
+            assert_eq!(text.contains("--global"), global, "{text}");
+        }
     }
 
     #[test]
@@ -3637,6 +3797,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
+            list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
         assert!(text.contains("1 server, 1 running"));

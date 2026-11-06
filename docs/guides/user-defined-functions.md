@@ -34,7 +34,7 @@ For runtime `native`, build a Linux `main` binary into each architecture directo
 ## Test on a local server
 
 ```bash
-clickhousectl local server start
+clickhousectl local clickhouse start
 clickhousectl local udf deploy my_udf
 clickhousectl local client --query "SELECT my_udf(1)"
 clickhousectl local udf list
@@ -47,7 +47,7 @@ Every command except `init` takes `--server NAME` (default `default`). The serve
 
 | Path | Contents |
 | --- | --- |
-| `config.d/chctl-udf.xml` | Managed overlay that points `user_defined_executable_functions_config` and `user_scripts_path` at the directories below. Rewritten on every `server start`; these two settings win over a `--config` overlay. |
+| `config.d/chctl-udf.xml` | Managed overlay that points `user_defined_executable_functions_config` and `user_scripts_path` at the directories below. Rewritten on every `clickhouse start`; these two settings win over a `--config` overlay. |
 | `user_defined_functions/<name>_function.xml` | The rendered `<function>` block, plus the `<name>.json` copy of the definition that `list` reads |
 | `user_scripts/<name>/` | The source directory without `udf.json`, hidden entries and `__pycache__` (for `native`, only the host's `amd64/` or `arm64/`) |
 

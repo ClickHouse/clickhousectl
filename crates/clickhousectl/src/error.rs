@@ -226,8 +226,8 @@ pub enum ManagedClientSelection {
 impl ManagedClientSelection {
     fn start_command(self) -> &'static str {
         match self {
-            Self::Default => "clickhousectl local server start",
-            Self::Named => "clickhousectl local server start <name>",
+            Self::Default => "clickhousectl local clickhouse start",
+            Self::Named => "clickhousectl local clickhouse start <name>",
         }
     }
 }
@@ -253,7 +253,7 @@ impl fmt::Display for ManagedClientError {
                 )?;
                 write!(
                     f,
-                    "Run `clickhousectl local server list`; return to the project root if needed; start it with `{}`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
+                    "Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `{}`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
                     self.selection.start_command()
                 )
             }
@@ -266,7 +266,7 @@ impl fmt::Display for ManagedClientError {
                 )?;
                 write!(
                     f,
-                    "Run `clickhousectl local server list`, then `{}`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
+                    "Run `clickhousectl local clickhouse list`, then `{}`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
                     self.selection.start_command()
                 )
             }
@@ -281,7 +281,7 @@ impl fmt::Display for ManagedClientError {
                 )?;
                 write!(
                     f,
-                    "Run `clickhousectl local server list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`."
+                    "Run `clickhousectl local clickhouse list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`."
                 )
             }
             ManagedClientErrorKind::ProjectStateUnavailable(source) => {
@@ -293,7 +293,7 @@ impl fmt::Display for ManagedClientError {
                 )?;
                 write!(
                     f,
-                    "Repair the project state error above, then run `clickhousectl local server list`; or use direct mode with `clickhousectl local client --host <host> --port <port>`."
+                    "Repair the project state error above, then run `clickhousectl local clickhouse list`; or use direct mode with `clickhousectl local client --host <host> --port <port>`."
                 )
             }
         }
@@ -341,17 +341,17 @@ impl fmt::Display for ProjectServerNotFound {
         )?;
         writeln!(
             f,
-            "Project-local server {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
+            "Project-local clickhouse {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
             self.command
         )?;
         write!(
             f,
-            "Return to the local project root where the server was started and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects"
+            "Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects"
         )?;
         if self.command == ProjectServerCommand::Stop {
             write!(
                 f,
-                "; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`"
+                "; after confirming the project, use `clickhousectl local clickhouse stop <name> --global --project <project-root>`"
             )?;
         }
         write!(f, ".")
@@ -375,12 +375,12 @@ impl fmt::Display for ProjectServerStateMissing {
         )?;
         writeln!(
             f,
-            "Project-local server {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
+            "Project-local clickhouse {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
             self.command
         )?;
         write!(
             f,
-            "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects."
+            "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
         )
     }
 }
@@ -445,7 +445,7 @@ pub enum Error {
     /// deleting the binary breaks a server started elsewhere just as badly.
     #[error(
         "Version {version} is in use by running server(s), in this project or another: {servers}. \
-         Stop them first (`clickhousectl local server stop --global <name>`), or pass --force to stop them and remove the version."
+         Stop them first (`clickhousectl local clickhouse stop --global <name>`), or pass --force to stop them and remove the version."
     )]
     VersionInUse { version: String, servers: String },
 
@@ -607,11 +607,11 @@ pub enum Error {
     ManagedClient(ManagedClientError),
 
     #[error(
-        "No server name was provided and multiple non-default ClickHouse servers exist (available: {available}). Pass a name with `clickhousectl local server stop <name>`, or stop every server with `clickhousectl local server stop-all`."
+        "No server name was provided and multiple non-default ClickHouse servers exist (available: {available}). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every server with `clickhousectl local clickhouse stop-all`."
     )]
     ServerStopSelectionRequired { available: usize },
 
-    /// `server stop --global <name>` matched running servers in more than one
+    /// `clickhouse stop --global <name>` matched running servers in more than one
     /// project, so `--project` is needed to pick one. Self-composed guidance
     /// (the project roots come from process discovery, not foreign output), so
     /// structured output renders it verbatim.
@@ -621,7 +621,7 @@ pub enum Error {
     ServerInMultipleProjects { name: String, projects: String },
 
     #[error(
-        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed. Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
+        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed. Inspect them with `clickhousectl local clickhouse list`; to remove one, pass its name with `clickhousectl local clickhouse remove <name>`."
     )]
     ServerRemoveSelectionRequired { available: usize },
 
@@ -789,7 +789,7 @@ pub enum Error {
     /// `project_has_state` is true when `project_dir` looks like a project
     /// root (it has `clickhouse/` or other servers), so starting the server
     /// there is the remedy; otherwise the command likely ran from a
-    /// subdirectory, where `server start` would begin a nested project.
+    /// subdirectory, where `clickhouse start` would begin a nested project.
     #[error("{}", udf_server_not_found_message(name, project_dir, *project_has_state))]
     UdfServerNotFound {
         name: String,
@@ -799,8 +799,10 @@ pub enum Error {
 
     /// `local udf reload` needs a running server. Unlike
     /// [`Error::ServerNotRunning`], the name is always a ClickHouse server, so
-    /// the remedy names `local server start`.
-    #[error("Server '{0}' is not running; start it with `clickhousectl local server start {0}`")]
+    /// the remedy names `local clickhouse start`.
+    #[error(
+        "Server '{0}' is not running; start it with `clickhousectl local clickhouse start {0}`"
+    )]
     UdfServerNotRunning(String),
 
     /// `--server` names a local Postgres instance. `local udf` must never
@@ -899,7 +901,7 @@ fn udf_server_not_found_message(name: &str, project_dir: &Path, project_has_stat
     if project_has_state {
         format!(
             "Server '{name}' not found in project '{}'; start it with \
-             `clickhousectl local server start {name}`",
+             `clickhousectl local clickhouse start {name}`",
             project_dir.display()
         )
     } else {
