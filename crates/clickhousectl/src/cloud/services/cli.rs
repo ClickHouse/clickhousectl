@@ -83,7 +83,7 @@ CONTEXT FOR AGENTS:
         ///
         /// Overrides the known regions, e.g. for an internal or private region such as
         /// sa-east-1. Cloud still validates it.
-        #[arg(long, conflicts_with = "region")]
+        #[arg(long, value_name = "REGION", conflicts_with = "region")]
         custom_region: Option<String>,
 
         /// Minimum memory per replica in GB
