@@ -313,6 +313,46 @@ impl std::fmt::Display for ClickStackBarBuilderChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackBarPromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBarPromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarPromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackBarPromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBarPromqlChartConfigDisplaytype {
+    #[serde(rename = "stacked_bar")]
+    #[default]
+    Stacked_bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarPromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackBarRawSqlChartConfig.configType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackBarRawSqlChartConfigConfigtype {
@@ -476,6 +516,46 @@ pub enum ClickStackCategoricalBarBuilderChartConfigDisplaytype {
 }
 
 impl std::fmt::Display for ClickStackCategoricalBarBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarPromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarPromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarPromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarPromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarPromqlChartConfigDisplaytype {
+    #[serde(rename = "bar")]
+    #[default]
+    Bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarPromqlChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bar => write!(f, "bar"),
@@ -1018,6 +1098,95 @@ impl std::fmt::Display for ClickStackHeatmapDistributionChartConfigWherelanguage
     }
 }
 
+/// Inline enum for `ClickStackHeatmapPromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapPromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapPromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapPromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapPromqlChartConfigDisplaytype {
+    #[serde(rename = "heatmap")]
+    #[default]
+    Heatmap,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapPromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Heatmap => write!(f, "heatmap"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapPromqlChartConfig.heatmapMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapPromqlChartConfigHeatmapmode {
+    #[serde(rename = "distribution")]
+    #[default]
+    Distribution,
+    #[serde(rename = "series")]
+    Series,
+    #[serde(rename = "histogram")]
+    Histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapPromqlChartConfigHeatmapmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Distribution => write!(f, "distribution"),
+            Self::Series => write!(f, "series"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapPromqlChartConfig.heatmapScaleType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapPromqlChartConfigHeatmapscaletype {
+    #[serde(rename = "log")]
+    #[default]
+    Log,
+    #[serde(rename = "linear")]
+    Linear,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapPromqlChartConfigHeatmapscaletype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Log => write!(f, "log"),
+            Self::Linear => write!(f, "linear"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackHeatmapSelectItem.heatmapScaleType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackHeatmapSelectItemHeatmapscaletype {
@@ -1137,6 +1306,72 @@ pub enum ClickStackLineBuilderChartConfigLineinterpolation {
 }
 
 impl std::fmt::Display for ClickStackLineBuilderChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLinePromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLinePromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLinePromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLinePromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLinePromqlChartConfigDisplaytype {
+    #[serde(rename = "line")]
+    #[default]
+    Line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLinePromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLinePromqlChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLinePromqlChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLinePromqlChartConfigLineinterpolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Smooth => write!(f, "smooth"),
@@ -1748,6 +1983,46 @@ impl std::fmt::Display for ClickStackNumberFormatOutput {
     }
 }
 
+/// Inline enum for `ClickStackNumberPromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackNumberPromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberPromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackNumberPromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackNumberPromqlChartConfigDisplaytype {
+    #[serde(rename = "number")]
+    #[default]
+    Number,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberPromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackNumberRawSqlChartConfig.configType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackNumberRawSqlChartConfigConfigtype {
@@ -2023,6 +2298,46 @@ impl std::fmt::Display for ClickStackPieBuilderChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackPiePromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPiePromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPiePromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackPiePromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPiePromqlChartConfigDisplaytype {
+    #[serde(rename = "pie")]
+    #[default]
+    Pie,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPiePromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pie => write!(f, "pie"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackPieRawSqlChartConfig.configType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackPieRawSqlChartConfigConfigtype {
@@ -2080,6 +2395,87 @@ impl std::fmt::Display for ClickStackPrometheusLabelFilterInputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PROMETHEUS_LABEL => write!(f, "PROMETHEUS_LABEL"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackPromqlInstantExpression.queryType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlInstantExpressionQuerytype {
+    #[serde(rename = "range")]
+    #[default]
+    Range,
+    #[serde(rename = "instant")]
+    Instant,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlInstantExpressionQuerytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Range => write!(f, "range"),
+            Self::Instant => write!(f, "instant"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackPromqlReducibleExpression.queryType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlReducibleExpressionQuerytype {
+    #[serde(rename = "range")]
+    #[default]
+    Range,
+    #[serde(rename = "instant")]
+    Instant,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlReducibleExpressionQuerytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Range => write!(f, "range"),
+            Self::Instant => write!(f, "instant"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackPromqlReducibleExpression.reducer`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlReducibleExpressionReducer {
+    #[serde(rename = "lastNotNull")]
+    #[default]
+    LastNotNull,
+    #[serde(rename = "min")]
+    Min,
+    #[serde(rename = "max")]
+    Max,
+    #[serde(rename = "mean")]
+    Mean,
+    #[serde(rename = "sum")]
+    Sum,
+    #[serde(rename = "count")]
+    Count,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlReducibleExpressionReducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LastNotNull => write!(f, "lastNotNull"),
+            Self::Min => write!(f, "min"),
+            Self::Max => write!(f, "max"),
+            Self::Mean => write!(f, "mean"),
+            Self::Sum => write!(f, "sum"),
+            Self::Count => write!(f, "count"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2637,6 +3033,72 @@ impl std::fmt::Display for ClickStackStackedLineBuilderChartConfigLineinterpolat
     }
 }
 
+/// Inline enum for `ClickStackStackedLinePromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLinePromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLinePromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLinePromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLinePromqlChartConfigDisplaytype {
+    #[serde(rename = "stacked_line")]
+    #[default]
+    Stacked_line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLinePromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_line => write!(f, "stacked_line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackStackedLinePromqlChartConfig.lineInterpolation`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackStackedLinePromqlChartConfigLineinterpolation {
+    #[serde(rename = "smooth")]
+    #[default]
+    Smooth,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "step")]
+    Step,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackStackedLinePromqlChartConfigLineinterpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Smooth => write!(f, "smooth"),
+            Self::Linear => write!(f, "linear"),
+            Self::Step => write!(f, "step"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackStackedLineRawSqlChartConfig.configType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackStackedLineRawSqlChartConfigConfigtype {
@@ -2885,6 +3347,46 @@ impl std::fmt::Display for ClickStackTableChartSeriesWherelanguage {
         match self {
             Self::Sql => write!(f, "sql"),
             Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackTablePromqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackTablePromqlChartConfigConfigtype {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTablePromqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackTablePromqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackTablePromqlChartConfigDisplaytype {
+    #[serde(rename = "table")]
+    #[default]
+    Table,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTablePromqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table => write!(f, "table"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

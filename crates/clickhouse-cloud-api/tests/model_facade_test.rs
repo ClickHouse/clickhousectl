@@ -248,6 +248,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ClickStackHeatmapSeriesChartConfigResponse::default(),
     );
     assert_same_type(
+        api::ClickStackHeatmapPromqlChartConfigResponse::default(),
+        api::models::ClickStackHeatmapPromqlChartConfigResponse::default(),
+    );
+    assert_same_type(
+        api::ClickStackAlertLinePromqlChartConfig::default(),
+        api::models::ClickStackAlertLinePromqlChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackPromqlReducibleExpression::default(),
+        api::models::ClickStackPromqlReducibleExpression::default(),
+    );
+    assert_same_type(
+        api::ClickStackPromqlReducibleExpressionReducer::default(),
+        api::models::ClickStackPromqlReducibleExpressionReducer::default(),
+    );
+    assert_same_type(
         api::ClickStackStackedLineChartConfig::default(),
         api::models::ClickStackStackedLineChartConfig::default(),
     );

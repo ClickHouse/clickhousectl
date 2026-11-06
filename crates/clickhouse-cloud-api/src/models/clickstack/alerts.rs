@@ -3,15 +3,19 @@ use super::{
     ClickStackBackgroundChart, ClickStackBackgroundChartResponse, ClickStackFormula,
     ClickStackFormulaResponse, ClickStackNumberFormat, ClickStackNumberFormatResponse,
     ClickStackNumberTileColorCondition, ClickStackNumberTileColorConditionResponse,
+    ClickStackPromqlRangeExpression, ClickStackPromqlRangeExpressionResponse,
+    ClickStackPromqlReducibleExpression, ClickStackPromqlReducibleExpressionResponse,
     ClickStackSelectItem, ClickStackSelectItemResponse,
 };
 #[cfg(doc)]
 use super::{
-    ClickStackBarBuilderChartConfig, ClickStackBarChartConfig, ClickStackBarRawSqlChartConfig,
-    ClickStackLineBuilderChartConfig, ClickStackLineChartConfig, ClickStackLineRawSqlChartConfig,
+    ClickStackBarBuilderChartConfig, ClickStackBarChartConfig, ClickStackBarPromqlChartConfig,
+    ClickStackBarRawSqlChartConfig, ClickStackLineBuilderChartConfig, ClickStackLineChartConfig,
+    ClickStackLinePromqlChartConfig, ClickStackLineRawSqlChartConfig,
     ClickStackNumberBuilderChartConfig, ClickStackNumberChartConfig,
-    ClickStackNumberRawSqlChartConfig, ClickStackStackedLineBuilderChartConfig,
-    ClickStackStackedLineChartConfig, ClickStackStackedLineRawSqlChartConfig,
+    ClickStackNumberPromqlChartConfig, ClickStackNumberRawSqlChartConfig,
+    ClickStackStackedLineBuilderChartConfig, ClickStackStackedLineChartConfig,
+    ClickStackStackedLinePromqlChartConfig, ClickStackStackedLineRawSqlChartConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -98,13 +102,14 @@ impl std::fmt::Display for ClickStackAlertChannelResponse {
 /// The alert counterpart of [`ClickStackBarChartConfig`]: each variant adds
 /// the alert overlay's fields. Dispatched on the `configType` field (absent or
 /// non-string dispatches to the builder variant, unless the payload carries a
-/// raw-SQL-only key); see the `discriminated_union!` invocation below for the
+/// raw-SQL- or PromQL-only key); see the `discriminated_union!` invocation below for the
 /// wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertBarChartConfig {
     ClickStackAlertBarBuilderChartConfig(ClickStackAlertBarBuilderChartConfig),
     ClickStackAlertBarRawSqlChartConfig(ClickStackAlertBarRawSqlChartConfig),
+    ClickStackAlertBarPromqlChartConfig(ClickStackAlertBarPromqlChartConfig),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -115,7 +120,8 @@ pub enum ClickStackAlertBarChartConfig {
 discriminated_union! {
     ClickStackAlertBarChartConfig, "configType" {
         "sql" => ClickStackAlertBarRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertBarBuilderChartConfig,
+        "promql" => ClickStackAlertBarPromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertBarBuilderChartConfig,
     }
 }
 
@@ -127,6 +133,9 @@ impl std::fmt::Display for ClickStackAlertBarChartConfig {
             }
             Self::ClickStackAlertBarRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertBarRawSqlChartConfig")
+            }
+            Self::ClickStackAlertBarPromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertBarPromqlChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -141,9 +150,9 @@ impl std::fmt::Display for ClickStackAlertBarChartConfig {
 ///
 /// Dispatched on the `configType` field exactly as the request union is (absent
 /// or non-string dispatches to the builder variant, unless the payload carries
-/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// a raw-SQL- or PromQL-only key): dispatch reads the raw JSON rather than trying each
 /// variant's shape, so all-`Option` arms cannot misroute a payload, and the
-/// `unless` guard keeps a raw-SQL payload with a dropped discriminator out of
+/// `unless` guard keeps a raw-SQL or PromQL payload with a dropped discriminator out of
 /// the total builder arm. A payload that does not fit the variant its
 /// discriminator selects lands in `Unknown` with the raw JSON intact.
 ///
@@ -154,6 +163,7 @@ impl std::fmt::Display for ClickStackAlertBarChartConfig {
 pub enum ClickStackAlertBarChartConfigResponse {
     ClickStackAlertBarBuilderChartConfig(ClickStackAlertBarBuilderChartConfigResponse),
     ClickStackAlertBarRawSqlChartConfig(ClickStackAlertBarRawSqlChartConfigResponse),
+    ClickStackAlertBarPromqlChartConfig(ClickStackAlertBarPromqlChartConfigResponse),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -164,7 +174,8 @@ pub enum ClickStackAlertBarChartConfigResponse {
 discriminated_union! {
     ClickStackAlertBarChartConfigResponse, "configType" {
         "sql" => ClickStackAlertBarRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertBarBuilderChartConfig,
+        "promql" => ClickStackAlertBarPromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertBarBuilderChartConfig,
     }
 }
 
@@ -177,6 +188,9 @@ impl std::fmt::Display for ClickStackAlertBarChartConfigResponse {
             Self::ClickStackAlertBarRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertBarRawSqlChartConfig")
             }
+            Self::ClickStackAlertBarPromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertBarPromqlChartConfig")
+            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -188,7 +202,7 @@ impl std::fmt::Display for ClickStackAlertBarChartConfigResponse {
 /// number chart config plus the alert overlay's fields. Dispatched on the
 /// `displayType` field, which every variant requires with its chart's own
 /// single wire value; see the `discriminated_union!` invocation below. Each
-/// arm is itself a builder/raw-SQL union dispatched on `configType`.
+/// arm is itself a builder/raw-SQL/PromQL union dispatched on `configType`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertChartConfig {
@@ -286,13 +300,14 @@ impl std::fmt::Display for ClickStackAlertChartConfigResponse {
 /// The alert counterpart of [`ClickStackLineChartConfig`]: each variant adds
 /// the alert overlay's fields. Dispatched on the `configType` field (absent or
 /// non-string dispatches to the builder variant, unless the payload carries a
-/// raw-SQL-only key); see the `discriminated_union!` invocation below for the
+/// raw-SQL- or PromQL-only key); see the `discriminated_union!` invocation below for the
 /// wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertLineChartConfig {
     ClickStackAlertLineBuilderChartConfig(ClickStackAlertLineBuilderChartConfig),
     ClickStackAlertLineRawSqlChartConfig(ClickStackAlertLineRawSqlChartConfig),
+    ClickStackAlertLinePromqlChartConfig(ClickStackAlertLinePromqlChartConfig),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -303,7 +318,8 @@ pub enum ClickStackAlertLineChartConfig {
 discriminated_union! {
     ClickStackAlertLineChartConfig, "configType" {
         "sql" => ClickStackAlertLineRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertLineBuilderChartConfig,
+        "promql" => ClickStackAlertLinePromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertLineBuilderChartConfig,
     }
 }
 
@@ -315,6 +331,9 @@ impl std::fmt::Display for ClickStackAlertLineChartConfig {
             }
             Self::ClickStackAlertLineRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertLinePromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertLinePromqlChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -329,9 +348,9 @@ impl std::fmt::Display for ClickStackAlertLineChartConfig {
 ///
 /// Dispatched on the `configType` field exactly as the request union is (absent
 /// or non-string dispatches to the builder variant, unless the payload carries
-/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// a raw-SQL- or PromQL-only key): dispatch reads the raw JSON rather than trying each
 /// variant's shape, so all-`Option` arms cannot misroute a payload, and the
-/// `unless` guard keeps a raw-SQL payload with a dropped discriminator out of
+/// `unless` guard keeps a raw-SQL or PromQL payload with a dropped discriminator out of
 /// the total builder arm. A payload that does not fit the variant its
 /// discriminator selects lands in `Unknown` with the raw JSON intact.
 ///
@@ -342,6 +361,7 @@ impl std::fmt::Display for ClickStackAlertLineChartConfig {
 pub enum ClickStackAlertLineChartConfigResponse {
     ClickStackAlertLineBuilderChartConfig(ClickStackAlertLineBuilderChartConfigResponse),
     ClickStackAlertLineRawSqlChartConfig(ClickStackAlertLineRawSqlChartConfigResponse),
+    ClickStackAlertLinePromqlChartConfig(ClickStackAlertLinePromqlChartConfigResponse),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -352,7 +372,8 @@ pub enum ClickStackAlertLineChartConfigResponse {
 discriminated_union! {
     ClickStackAlertLineChartConfigResponse, "configType" {
         "sql" => ClickStackAlertLineRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertLineBuilderChartConfig,
+        "promql" => ClickStackAlertLinePromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertLineBuilderChartConfig,
     }
 }
 
@@ -365,6 +386,9 @@ impl std::fmt::Display for ClickStackAlertLineChartConfigResponse {
             Self::ClickStackAlertLineRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertLineRawSqlChartConfig")
             }
+            Self::ClickStackAlertLinePromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertLinePromqlChartConfig")
+            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -375,13 +399,14 @@ impl std::fmt::Display for ClickStackAlertLineChartConfigResponse {
 /// The alert counterpart of [`ClickStackNumberChartConfig`]: each variant adds
 /// the alert overlay's fields. Dispatched on the `configType` field (absent or
 /// non-string dispatches to the builder variant, unless the payload carries a
-/// raw-SQL-only key); see the `discriminated_union!` invocation below for the
+/// raw-SQL- or PromQL-only key); see the `discriminated_union!` invocation below for the
 /// wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertNumberChartConfig {
     ClickStackAlertNumberBuilderChartConfig(ClickStackAlertNumberBuilderChartConfig),
     ClickStackAlertNumberRawSqlChartConfig(ClickStackAlertNumberRawSqlChartConfig),
+    ClickStackAlertNumberPromqlChartConfig(ClickStackAlertNumberPromqlChartConfig),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -392,7 +417,8 @@ pub enum ClickStackAlertNumberChartConfig {
 discriminated_union! {
     ClickStackAlertNumberChartConfig, "configType" {
         "sql" => ClickStackAlertNumberRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertNumberBuilderChartConfig,
+        "promql" => ClickStackAlertNumberPromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertNumberBuilderChartConfig,
     }
 }
 
@@ -404,6 +430,9 @@ impl std::fmt::Display for ClickStackAlertNumberChartConfig {
             }
             Self::ClickStackAlertNumberRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertNumberRawSqlChartConfig")
+            }
+            Self::ClickStackAlertNumberPromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberPromqlChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -418,9 +447,9 @@ impl std::fmt::Display for ClickStackAlertNumberChartConfig {
 ///
 /// Dispatched on the `configType` field exactly as the request union is (absent
 /// or non-string dispatches to the builder variant, unless the payload carries
-/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// a raw-SQL- or PromQL-only key): dispatch reads the raw JSON rather than trying each
 /// variant's shape, so all-`Option` arms cannot misroute a payload, and the
-/// `unless` guard keeps a raw-SQL payload with a dropped discriminator out of
+/// `unless` guard keeps a raw-SQL or PromQL payload with a dropped discriminator out of
 /// the total builder arm. A payload that does not fit the variant its
 /// discriminator selects lands in `Unknown` with the raw JSON intact.
 ///
@@ -431,6 +460,7 @@ impl std::fmt::Display for ClickStackAlertNumberChartConfig {
 pub enum ClickStackAlertNumberChartConfigResponse {
     ClickStackAlertNumberBuilderChartConfig(ClickStackAlertNumberBuilderChartConfigResponse),
     ClickStackAlertNumberRawSqlChartConfig(ClickStackAlertNumberRawSqlChartConfigResponse),
+    ClickStackAlertNumberPromqlChartConfig(ClickStackAlertNumberPromqlChartConfigResponse),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -441,7 +471,8 @@ pub enum ClickStackAlertNumberChartConfigResponse {
 discriminated_union! {
     ClickStackAlertNumberChartConfigResponse, "configType" {
         "sql" => ClickStackAlertNumberRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertNumberBuilderChartConfig,
+        "promql" => ClickStackAlertNumberPromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertNumberBuilderChartConfig,
     }
 }
 
@@ -454,6 +485,9 @@ impl std::fmt::Display for ClickStackAlertNumberChartConfigResponse {
             Self::ClickStackAlertNumberRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertNumberRawSqlChartConfig")
             }
+            Self::ClickStackAlertNumberPromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertNumberPromqlChartConfig")
+            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -464,13 +498,14 @@ impl std::fmt::Display for ClickStackAlertNumberChartConfigResponse {
 /// The alert counterpart of [`ClickStackStackedLineChartConfig`]: each variant adds
 /// the alert overlay's fields. Dispatched on the `configType` field (absent or
 /// non-string dispatches to the builder variant, unless the payload carries a
-/// raw-SQL-only key); see the `discriminated_union!` invocation below for the
+/// raw-SQL- or PromQL-only key); see the `discriminated_union!` invocation below for the
 /// wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertStackedLineChartConfig {
     ClickStackAlertStackedLineBuilderChartConfig(ClickStackAlertStackedLineBuilderChartConfig),
     ClickStackAlertStackedLineRawSqlChartConfig(ClickStackAlertStackedLineRawSqlChartConfig),
+    ClickStackAlertStackedLinePromqlChartConfig(ClickStackAlertStackedLinePromqlChartConfig),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -481,7 +516,8 @@ pub enum ClickStackAlertStackedLineChartConfig {
 discriminated_union! {
     ClickStackAlertStackedLineChartConfig, "configType" {
         "sql" => ClickStackAlertStackedLineRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertStackedLineBuilderChartConfig,
+        "promql" => ClickStackAlertStackedLinePromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertStackedLineBuilderChartConfig,
     }
 }
 
@@ -493,6 +529,9 @@ impl std::fmt::Display for ClickStackAlertStackedLineChartConfig {
             }
             Self::ClickStackAlertStackedLineRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertStackedLinePromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLinePromqlChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -507,9 +546,9 @@ impl std::fmt::Display for ClickStackAlertStackedLineChartConfig {
 ///
 /// Dispatched on the `configType` field exactly as the request union is (absent
 /// or non-string dispatches to the builder variant, unless the payload carries
-/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// a raw-SQL- or PromQL-only key): dispatch reads the raw JSON rather than trying each
 /// variant's shape, so all-`Option` arms cannot misroute a payload, and the
-/// `unless` guard keeps a raw-SQL payload with a dropped discriminator out of
+/// `unless` guard keeps a raw-SQL or PromQL payload with a dropped discriminator out of
 /// the total builder arm. A payload that does not fit the variant its
 /// discriminator selects lands in `Unknown` with the raw JSON intact.
 ///
@@ -524,6 +563,9 @@ pub enum ClickStackAlertStackedLineChartConfigResponse {
     ClickStackAlertStackedLineRawSqlChartConfig(
         ClickStackAlertStackedLineRawSqlChartConfigResponse,
     ),
+    ClickStackAlertStackedLinePromqlChartConfig(
+        ClickStackAlertStackedLinePromqlChartConfigResponse,
+    ),
     /// Catch-all for unknown or newly-added values.
     ///
     /// Holds the raw payload as `serde_json::Value` so it round-trips
@@ -534,7 +576,8 @@ pub enum ClickStackAlertStackedLineChartConfigResponse {
 discriminated_union! {
     ClickStackAlertStackedLineChartConfigResponse, "configType" {
         "sql" => ClickStackAlertStackedLineRawSqlChartConfig,
-        none unless "connectionId" | "sqlTemplate" => ClickStackAlertStackedLineBuilderChartConfig,
+        "promql" => ClickStackAlertStackedLinePromqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" | "expressions" => ClickStackAlertStackedLineBuilderChartConfig,
     }
 }
 
@@ -546,6 +589,9 @@ impl std::fmt::Display for ClickStackAlertStackedLineChartConfigResponse {
             }
             Self::ClickStackAlertStackedLineRawSqlChartConfig(_) => {
                 write!(f, "ClickStackAlertStackedLineRawSqlChartConfig")
+            }
+            Self::ClickStackAlertStackedLinePromqlChartConfig(_) => {
+                write!(f, "ClickStackAlertStackedLinePromqlChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -623,6 +669,81 @@ pub struct ClickStackAlertBarBuilderChartConfigResponse {
     pub series_limit: Option<i64>,
     #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
     pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarPromqlChartConfig` from the ClickHouse Cloud API.
+///
+/// The spec defines it as `allOf` [`ClickStackBarPromqlChartConfig`] and
+/// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
+/// chart config plus the overlay's `name`, `where` and `whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarPromqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackBarPromqlChartConfigConfigtype,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackBarPromqlChartConfigDisplaytype,
+    pub expressions: Vec<ClickStackPromqlRangeExpression>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertBarPromqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertBarPromqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertBarPromqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackBarPromqlChartConfigConfigtype>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackBarPromqlChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expressions: Option<Vec<ClickStackPromqlRangeExpressionResponse>>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
@@ -811,6 +932,95 @@ pub struct ClickStackAlertLineBuilderChartConfigResponse {
     pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
 }
 
+/// `ClickStackAlertLinePromqlChartConfig` from the ClickHouse Cloud API.
+///
+/// The spec defines it as `allOf` [`ClickStackLinePromqlChartConfig`] and
+/// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
+/// chart config plus the overlay's `name`, `where` and `whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLinePromqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackLinePromqlChartConfigConfigtype,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackLinePromqlChartConfigDisplaytype,
+    pub expressions: Vec<ClickStackPromqlRangeExpression>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLinePromqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertLinePromqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertLinePromqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertLinePromqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackLinePromqlChartConfigConfigtype>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackLinePromqlChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expressions: Option<Vec<ClickStackPromqlRangeExpressionResponse>>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackLinePromqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
 /// `ClickStackAlertLineRawSqlChartConfig` from the ClickHouse Cloud API.
 ///
 /// The spec defines it as `allOf` [`ClickStackLineRawSqlChartConfig`] and
@@ -958,6 +1168,71 @@ pub struct ClickStackAlertNumberBuilderChartConfigResponse {
     pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
 }
 
+/// `ClickStackAlertNumberPromqlChartConfig` from the ClickHouse Cloud API.
+///
+/// The spec defines it as `allOf` [`ClickStackNumberPromqlChartConfig`] and
+/// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
+/// chart config plus the overlay's `name`, `where` and `whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberPromqlChartConfig {
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
+    pub background_chart: Option<ClickStackBackgroundChart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackNumberPromqlChartConfigConfigtype,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackNumberPromqlChartConfigDisplaytype,
+    pub expressions: Vec<ClickStackPromqlReducibleExpression>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertNumberPromqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertNumberPromqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertNumberPromqlChartConfigResponse {
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
+    pub background_chart: Option<ClickStackBackgroundChartResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorConditionResponse>>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackNumberPromqlChartConfigConfigtype>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackNumberPromqlChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expressions: Option<Vec<ClickStackPromqlReducibleExpressionResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
 /// `ClickStackAlertNumberRawSqlChartConfig` from the ClickHouse Cloud API.
 ///
 /// The spec defines it as `allOf` [`ClickStackNumberRawSqlChartConfig`] and
@@ -1095,6 +1370,85 @@ pub struct ClickStackAlertStackedLineBuilderChartConfigResponse {
     pub series_limit: Option<i64>,
     #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
     pub show_operand_series: Option<bool>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLinePromqlChartConfig` from the ClickHouse Cloud API.
+///
+/// The spec defines it as `allOf` [`ClickStackStackedLinePromqlChartConfig`] and
+/// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
+/// chart config plus the overlay's `name`, `where` and `whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLinePromqlChartConfig {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackStackedLinePromqlChartConfigConfigtype,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackStackedLinePromqlChartConfigDisplaytype,
+    pub expressions: Vec<ClickStackPromqlRangeExpression>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLinePromqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackAlertChartConfigOverlayWherelanguage>,
+}
+
+/// `ClickStackAlertStackedLinePromqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertStackedLinePromqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertStackedLinePromqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackStackedLinePromqlChartConfigConfigtype>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackStackedLinePromqlChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expressions: Option<Vec<ClickStackPromqlRangeExpressionResponse>>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "legendTemplate", skip_serializing_if = "Option::is_none")]
+    pub legend_template: Option<String>,
+    #[serde(rename = "lineInterpolation", skip_serializing_if = "Option::is_none")]
+    pub line_interpolation: Option<ClickStackStackedLinePromqlChartConfigLineinterpolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "seriesLimit", skip_serializing_if = "Option::is_none")]
+    pub series_limit: Option<i64>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
