@@ -10,7 +10,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate, Utc};
 use clap::Subcommand;
 use clap::builder::NonEmptyStringValueParser;
 use tabled::{Table, Tabled, settings::Style};
@@ -19,7 +19,7 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum ActivityCommands {
     /// List activity log entries
     List {
-        /// Start date in UTC (YYYY-MM-DD)
+        /// Start date in UTC (YYYY-MM-DD); omit for the 7 days ending on --to-date or today
         #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
@@ -61,9 +61,13 @@ async fn activity_list(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
+    let from_date = from_date.map_or_else(
+        || default_from_date(to_date, Utc::now().date_naive()),
+        str::to_string,
+    );
     let to_date = to_date.map(exclusive_end_date);
     let activities = client
-        .list_activities(&org_id, from_date, to_date.as_deref())
+        .list_activities(&org_id, Some(&from_date), to_date.as_deref())
         .await?;
 
     if json {
@@ -93,6 +97,21 @@ async fn activity_list(
         println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
+}
+
+/// Days `activity list` covers when `--from-date` is absent, counting the end day.
+const DEFAULT_WINDOW_DAYS: u64 = 7;
+
+/// Without a start date the API returns the whole history, so default to the
+/// last `DEFAULT_WINDOW_DAYS` days ending on `--to-date`, or on `today`.
+fn default_from_date(to_date: Option<&str>, today: NaiveDate) -> String {
+    let end = to_date
+        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+        .unwrap_or(today);
+    end.checked_sub_days(Days::new(DEFAULT_WINDOW_DAYS - 1))
+        .unwrap_or(end)
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// The API reads `to_date` as midnight at the start of that day, so a bare
@@ -223,6 +242,12 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains(&format!("'{value}'")), "{message}");
         assert!(message.contains("YYYY-MM-DD"), "{message}");
+    }
+
+    #[test]
+    fn default_from_date_covers_seven_days_ending_today() {
+        let today = NaiveDate::from_ymd_opt(2026, 3, 3).unwrap();
+        assert_eq!(default_from_date(None, today), "2026-02-25");
     }
 
     #[test]
