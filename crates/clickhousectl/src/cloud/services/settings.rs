@@ -302,7 +302,12 @@ mod tests {
             "settings file",
         )
         .unwrap_err();
-        assert!(error.to_string().contains("API request wrapper"));
+        // Names the input and shows the decoded map it should contain instead.
+        assert!(error.message.starts_with("settings file"), "{error}");
+        assert!(
+            error.message.contains(r#"{"compatibility":"24.8"}"#),
+            "{error}"
+        );
     }
 
     #[test]
@@ -353,11 +358,12 @@ mod tests {
                 parse_settings_map_document(&format!("{{\"value\":{literal}}}"), "stdin")
                     .expect_err(literal)
                     .to_string();
-            for message in [assignment, document] {
-                assert!(
-                    message.contains("numeric settings must be integers"),
-                    "{literal}: {message}"
-                );
+            // Each names its input and the accepted integer range.
+            for (source, message) in [("--setting #1 ('value')", assignment), ("stdin", document)] {
+                assert!(message.starts_with(source), "{literal}: {message}");
+                for bound in [i64::MIN.to_string(), u64::MAX.to_string()] {
+                    assert!(message.contains(&bound), "{literal}: {message}");
+                }
             }
         }
     }

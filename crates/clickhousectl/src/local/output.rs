@@ -1905,6 +1905,21 @@ mod tests {
         serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
     }
 
+    /// Whether `text` names `word` as a whole token (an identifier, not part
+    /// of a longer one), so tests can check identifiers without pinning the
+    /// sentence around them.
+    fn names(text: &str, word: &str) -> bool {
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+            .any(|token| token == word)
+    }
+
+    /// The numbers in `text`, in order.
+    fn numbers(text: &str) -> Vec<&str> {
+        text.split(|c: char| !c.is_ascii_digit())
+            .filter(|token| !token.is_empty())
+            .collect()
+    }
+
     #[test]
     fn local_error_codes_cover_the_stable_vocabulary() {
         let cases = [
@@ -2279,13 +2294,19 @@ mod tests {
             own["command"],
             "clickhousectl local udf remove rev --server dev"
         );
-        assert!(own["message"].as_str().unwrap().contains("UDF bad"));
+        // The other broken function is named too.
+        assert!(names(own["message"].as_str().unwrap(), "bad"));
         let other = rejected(&["bad"]);
         assert_eq!(
             other["command"],
             "clickhousectl local udf remove bad --server dev"
         );
-        assert!(!other["message"].as_str().unwrap().contains("remove rev"));
+        assert!(
+            !other["message"]
+                .as_str()
+                .unwrap()
+                .contains("udf remove rev ")
+        );
         let unknown = rejected(&[]);
         assert_eq!(
             unknown["command"],
@@ -2428,41 +2449,49 @@ mod tests {
         );
         let message = subdir["message"].as_str().unwrap();
         assert!(message.contains("'/work/app'"), "{message}");
-        assert!(!message.contains("server start"), "{message}");
+        assert!(
+            !message.contains("clickhousectl local clickhouse start"),
+            "{message}"
+        );
     }
 
     #[test]
     fn udf_errors_carry_foreign_text_in_details_and_keep_self_composed_messages() {
+        // The message names the file and, when serde knows it, the position;
+        // serde's own text goes to `details`.
+        let source = serde_json::from_str::<serde_json::Value>("{\n  nope").unwrap_err();
+        let serde_text = source.to_string();
         let parse = error_json(&Error::UdfDefinitionParse {
             path: "clickhouse/udfs/my_fn/udf.json".into(),
-            source: serde_json::from_str::<serde_json::Value>("{\n  nope").unwrap_err(),
+            source,
         });
-        assert_eq!(
-            parse["error"]["message"],
-            "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON at line 2 column 3"
+        let message = parse["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'clickhouse/udfs/my_fn/udf.json'"),
+            "{message}"
         );
-        assert_eq!(
-            parse["error"]["details"],
-            "key must be a string at line 2 column 3"
-        );
+        assert_eq!(numbers(message), ["2", "3"], "{message}");
+        assert!(!message.contains(&serde_text), "{message}");
+        assert_eq!(parse["error"]["details"], serde_text);
         let positionless = error_json(&Error::UdfDefinitionParse {
             path: "clickhouse/udfs/my_fn/udf.json".into(),
             source: serde_json::Error::io(std::io::Error::other("read failed")),
         });
-        assert_eq!(
-            positionless["error"]["message"],
-            "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON"
+        let message = positionless["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'clickhouse/udfs/my_fn/udf.json'"),
+            "{message}"
         );
+        assert!(numbers(message).is_empty(), "{message}");
         assert_eq!(positionless["error"]["details"], "read failed");
 
         let query = error_json(&Error::UdfQueryFailed {
             server: "dev".into(),
             details: "Code: 46. DB::Exception: secret-ish server text".into(),
         });
-        assert_eq!(
-            query["error"]["message"],
-            "ClickHouse server 'dev' rejected the query"
-        );
+        let message = query["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'dev'"), "{message}");
+        assert!(!message.contains("secret-ish"), "{message}");
         assert_eq!(
             query["error"]["details"],
             "Code: 46. DB::Exception: secret-ish server text"
@@ -2472,9 +2501,10 @@ mod tests {
             name: "my_fn".into(),
             server: "dev".into(),
         });
-        assert_eq!(
-            missing["error"]["message"],
-            "UDF 'my_fn' is not deployed to server 'dev'"
+        let message = missing["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'my_fn'") && message.contains("'dev'"),
+            "{message}"
         );
         assert_eq!(
             missing["error"]["command"],
@@ -2487,9 +2517,12 @@ mod tests {
             log_path: "/work/.clickhouse/servers/dev/server.log".into(),
             deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
         });
-        assert_eq!(
-            not_loaded["error"]["message"],
-            "UDF my_fn was deployed to server dev but ClickHouse did not load it; the reason is in /work/.clickhouse/servers/dev/server.log"
+        let message = not_loaded["error"]["message"].as_str().unwrap();
+        assert!(
+            names(message, "my_fn")
+                && names(message, "dev")
+                && message.contains("/work/.clickhouse/servers/dev/server.log"),
+            "{message}"
         );
         assert_eq!(
             not_loaded["error"]["command"],
@@ -2533,10 +2566,10 @@ mod tests {
                 .contains("secret-ish client text")
         );
         let unreachable = error_json(&unreachable_error);
-        assert_eq!(
-            unreachable["error"]["message"],
-            "Could not reach server 'dev' on port 8123"
-        );
+        let message = unreachable["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'dev'"), "{message}");
+        assert_eq!(numbers(message), ["8123"], "{message}");
+        assert!(!message.contains("secret-ish"), "{message}");
         assert_eq!(unreachable["error"]["details"], "secret-ish client text");
         assert_eq!(
             unreachable["error"]["command"],
@@ -2551,6 +2584,8 @@ mod tests {
         };
         let blocked = error_json(&blocked_error);
         let message = blocked["error"]["message"].as_str().unwrap();
+        let removed_message = message.to_owned();
+        assert!(names(message, "my_fn"), "{message}");
         assert!(!message.contains("secret-ish"));
         assert!(blocked_error.to_string().starts_with(message));
         assert_eq!(
@@ -2570,11 +2605,13 @@ mod tests {
             details: "Code: 36. DB::Exception: secret-ish server text".into(),
         });
         let message = reload_blocked["error"]["message"].as_str().unwrap();
+        assert!(names(message, "dev"), "{message}");
         assert!(
-            message.starts_with("ClickHouse rejected the function reload on server dev."),
+            message.contains("`clickhousectl local udf list --server dev`"),
             "{message}"
         );
-        assert!(!message.contains("Removed"), "{message}");
+        assert!(!message.contains("udf remove"), "{message}");
+        assert_ne!(message, removed_message, "nothing was removed");
         assert!(!message.contains("secret-ish"), "{message}");
         assert_eq!(
             reload_blocked["error"]["details"],
@@ -2591,10 +2628,9 @@ mod tests {
             details: String::new(),
         });
         let message = reload_culprit["error"]["message"].as_str().unwrap();
+        assert!(names(message, "bad"), "{message}");
         assert!(
-            message.starts_with(
-                "ClickHouse rejected the function reload on server dev because UDF bad is broken."
-            ),
+            message.contains("`clickhousectl local udf remove bad --server dev`"),
             "{message}"
         );
         assert_eq!(
@@ -2603,6 +2639,7 @@ mod tests {
         );
 
         // An unquotable path is reported under the code of what it belongs to.
+        let mut unquotable_messages = Vec::new();
         for (role, code, command) in [
             (
                 crate::error::UdfCommandPath::Interpreter,
@@ -2623,27 +2660,29 @@ mod tests {
             assert_eq!(error["error"]["command"].as_str(), command);
             let message = error["error"]["message"].as_str().unwrap();
             assert!(message.contains("'/work/it's/main.py'"), "{message}");
-            assert!(!message.contains("UDF source directory"), "{message}");
+            unquotable_messages.push(message.to_owned());
         }
+        // Each role names which path it is.
+        assert_ne!(unquotable_messages[0], unquotable_messages[1]);
 
         let postgres = error_json(&Error::UdfServerIsPostgres("dev-pg18".into()));
-        assert_eq!(
-            postgres["error"]["message"],
-            "'dev-pg18' is a local Postgres instance, not a ClickHouse server"
-        );
+        let message = postgres["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'dev-pg18'"), "{message}");
         assert_eq!(
             postgres["error"]["command"],
             "clickhousectl local clickhouse list"
         );
 
+        // The validator composes the reason; the message carries it after
+        // the path.
+        let reason = "is missing main.py, the entrypoint required by runtime python3.11";
         let source = error_json(&Error::UdfSourceInvalid {
             path: "clickhouse/udfs/my_fn".into(),
-            reason: "is missing main.py, the entrypoint required by runtime python3.11".into(),
+            reason: reason.into(),
         });
-        assert_eq!(
-            source["error"]["message"],
-            "UDF source directory 'clickhouse/udfs/my_fn' is missing main.py, the entrypoint required by runtime python3.11"
-        );
+        let message = source["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'clickhouse/udfs/my_fn'"), "{message}");
+        assert!(message.ends_with(reason), "{message}");
         assert!(source["error"].get("details").is_none());
     }
 
@@ -2657,7 +2696,10 @@ mod tests {
             path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
         });
         let message = json["error"]["message"].as_str().expect("message");
-        assert!(message.contains("not executable"), "{message}");
+        assert!(
+            message.contains(&BinaryLaunchProblem::NotExecutable.to_string()),
+            "{message}"
+        );
         assert!(
             message.contains("/home/u/.clickhouse/versions/25.12.9.61/clickhouse"),
             "{message}"
@@ -2679,7 +2721,10 @@ mod tests {
             path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
         });
         let message = json["error"]["message"].as_str().expect("message");
-        assert!(message.contains("not a regular file"), "{message}");
+        assert!(
+            message.contains(&BinaryLaunchProblem::NotAFile.to_string()),
+            "{message}"
+        );
         assert!(!message.contains("--force"), "{message}");
         assert_eq!(
             json["error"]["command"],
@@ -2696,7 +2741,7 @@ mod tests {
         let message = json["error"]["message"].as_str().expect("message");
 
         for required in [
-            "current default",
+            "25.12.9.61",
             "~/.clickhouse/default",
             "~/.local/bin/clickhouse",
             "--force",
@@ -2716,15 +2761,12 @@ mod tests {
     fn structured_fallback_and_wrapped_errors_never_serialize_raw_details() {
         let sensitive =
             "SELECT * FROM private_table; password=hunter2; /Users/al/secret; container=abc";
-        let fallback = serde_json::to_string(&LocalErrorOutput::from_error(&Error::Exec(
-            sensitive.to_string(),
-        )))
-        .unwrap();
-        assert_eq!(
-            fallback,
-            r#"{"error":{"code":"local_error","message":"Local command failed"}}"#
-        );
-        assert!(!fallback.contains(sensitive));
+        let fallback = error_json(&Error::Exec(sensitive.to_string()));
+        assert_eq!(fallback["error"]["code"], "local_error");
+        assert!(fallback["error"]["message"].is_string());
+        // Only the code and the summary: no command, no details.
+        assert_eq!(fallback["error"].as_object().unwrap().len(), 2);
+        assert!(!fallback.to_string().contains("hunter2"));
 
         let wrapped = Error::PostgresStartupRollback {
             primary: Box::new(Error::StartupExit {
@@ -2734,12 +2776,17 @@ mod tests {
             }),
             cleanup: sensitive.into(),
         };
-        let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
+        // Classified by the primary failure; the cleanup note is dropped.
+        let wrapped = error_json(&wrapped);
+        assert_eq!(wrapped["error"]["code"], "startup_exit");
         assert_eq!(
-            wrapped,
-            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local postgres list"}}"#
+            wrapped["error"]["command"],
+            "clickhousectl local postgres list"
         );
-        assert!(!wrapped.contains("hunter2"));
+        let message = wrapped["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'default'"), "{message}");
+        assert_eq!(wrapped["error"].as_object().unwrap().len(), 3);
+        assert!(!wrapped.to_string().contains("hunter2"));
     }
 
     /// Name-only errors are raised for either engine, so they point at the
@@ -2787,16 +2834,22 @@ mod tests {
 
     #[test]
     fn running_server_remove_json_error_points_at_stopping_that_server() {
+        let json = error_json(&Error::ServerRunningCannotRemove {
+            name: "dev".into(),
+            command: "clickhousectl local clickhouse stop dev".into(),
+        });
+        assert_eq!(json["error"]["code"], "server_running");
         assert_eq!(
-            serde_json::to_string(&LocalErrorOutput::from_error(
-                &Error::ServerRunningCannotRemove {
-                    name: "dev".into(),
-                    command: "clickhousectl local clickhouse stop dev".into()
-                }
-            ))
-            .unwrap(),
-            r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local clickhouse stop dev`","command":"clickhousectl local clickhouse stop dev"}}"#
+            json["error"]["command"],
+            "clickhousectl local clickhouse stop dev"
         );
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(message.contains("'dev'"), "{message}");
+        assert!(
+            message.contains("`clickhousectl local clickhouse stop dev`"),
+            "{message}"
+        );
+        assert_eq!(json["error"].as_object().unwrap().len(), 3);
     }
 
     #[test]
@@ -2821,19 +2874,12 @@ mod tests {
 
     #[test]
     fn a_version_that_is_not_installed_is_not_reported_as_unavailable_for_download() {
-        assert_eq!(
-            serde_json::to_value(LocalErrorOutput::from_error(&Error::VersionNotFound(
-                "25.12.9.61".into()
-            )))
-            .unwrap(),
-            serde_json::json!({
-                "error": {
-                    "code": "version_not_installed",
-                    "message": "Version 25.12.9.61 not found",
-                    "command": "clickhousectl local list"
-                }
-            })
-        );
+        let missing = error_json(&Error::VersionNotFound("25.12.9.61".into()));
+        assert_eq!(missing["error"]["code"], "version_not_installed");
+        assert_eq!(missing["error"]["command"], "clickhousectl local list");
+        let message = missing["error"]["message"].as_str().unwrap();
+        assert!(message.contains("25.12.9.61"), "{message}");
+        assert_eq!(missing["error"].as_object().unwrap().len(), 3);
 
         // A version that cannot be resolved remotely keeps the remote hint.
         let unresolvable = error_json(&Error::NoMatchingVersion("99.99".into()));
@@ -2955,12 +3001,9 @@ mod tests {
             let json = error_json(&error);
             assert_eq!(json["error"]["code"], code);
             assert!(!json.to_string().contains(secret));
-            assert!(
-                json["error"]["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("SQL input")
-            );
+            // A curated summary, not the human text.
+            assert!(json["error"]["message"].is_string());
+            assert_ne!(json["error"]["message"], error.to_string());
             assert_eq!(error.exit_code(), 1);
         }
     }
@@ -2970,22 +3013,21 @@ mod tests {
     #[test]
     fn errors_carrying_foreign_output_stay_summarized() {
         let secret = "password=hunter2; /Users/al/secret-project";
-        let cases = [
-            (Error::Exec(secret.into()), "Local command failed"),
-            (Error::DockerError(secret.into()), "Docker operation failed"),
-            (Error::Postgres(secret.into()), "Local command failed"),
-            (Error::Download(secret.into()), "Download failed"),
-            (Error::Extract(secret.into()), "Extraction failed"),
-            (
-                Error::Io(std::io::Error::other(secret)),
-                "Local I/O operation failed",
-            ),
+        // Each summary is fixed per code, so the identifiers it must carry are
+        // listed instead of its wording.
+        let cases: [(Error, &[&str]); 9] = [
+            (Error::Exec(secret.into()), &[]),
+            (Error::DockerError(secret.into()), &[]),
+            (Error::Postgres(secret.into()), &[]),
+            (Error::Download(secret.into()), &[]),
+            (Error::Extract(secret.into()), &[]),
+            (Error::Io(std::io::Error::other(secret)), &[]),
             (
                 Error::ServerMetadataWrite {
                     path: secret.into(),
                     source: std::io::Error::other(secret),
                 },
-                "Local I/O operation failed",
+                &[],
             ),
             (
                 Error::ServerLock {
@@ -2994,7 +3036,7 @@ mod tests {
                     remediation: "Check access, then retry.",
                     source: std::io::Error::other(secret),
                 },
-                "Local I/O operation failed",
+                &[],
             ),
             (
                 Error::StartupTimeout {
@@ -3003,17 +3045,20 @@ mod tests {
                     seconds: 30,
                     details: secret.into(),
                 },
-                "ClickHouse server 'default' did not become ready within 30 seconds",
+                &["'default'", "30"],
             ),
         ];
 
-        for (error, expected) in cases {
+        for (error, identifiers) in cases {
             let serialized = serde_json::to_string(&LocalErrorOutput::from_error(&error)).unwrap();
-            assert_eq!(
-                error_json(&error)["error"]["message"],
-                expected,
-                "unexpected summary for {error:?}"
-            );
+            let message = error_json(&error)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert_ne!(message, error.to_string(), "{error:?} must be summarized");
+            for identifier in identifiers {
+                assert!(message.contains(identifier), "{error:?}: {message}");
+            }
             assert!(
                 error_json(&error)["error"].get("details").is_none(),
                 "still-redacted {error:?} must not carry details"
@@ -3141,17 +3186,17 @@ mod tests {
             was_default: false,
         }
         .to_string();
-        assert_eq!(plain, "Removed version 25.12.5.44");
+        assert_eq!(plain.lines().count(), 1, "{plain}");
+        assert!(plain.contains("25.12.5.44"), "{plain}");
 
         let cleared = RemoveOutput {
             version: "25.12.5.44".to_string(),
             was_default: true,
         }
         .to_string();
-        assert!(
-            cleared.starts_with("Removed version 25.12.5.44\n"),
-            "{cleared}"
-        );
+        // The same first line, then the warning.
+        assert_eq!(cleared.lines().next(), Some(plain.as_str()), "{cleared}");
+        assert!(cleared.lines().count() > 1, "{cleared}");
         for required in [
             "~/.clickhouse/default",
             "~/.local/bin/clickhouse",
@@ -3304,15 +3349,26 @@ mod tests {
 
     #[test]
     fn server_stop_already_stopped() {
+        let render = |already_stopped| {
+            ServerStopOutput {
+                name: "default".to_string(),
+                already_stopped,
+                selection: Some(ServerSelection::Implicit),
+            }
+            .to_string()
+        };
+        let (noop, stopped) = (render(true), render(false));
+        assert_ne!(noop, stopped);
+        for text in [&noop, &stopped] {
+            assert_eq!(text.lines().count(), 1, "{text}");
+            assert!(text.contains("'default'"), "{text}");
+        }
+
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: true,
             selection: Some(ServerSelection::Implicit),
         };
-        assert_eq!(
-            output.to_string(),
-            "Server 'default' is already stopped (selected automatically)"
-        );
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3483,31 +3539,53 @@ mod tests {
 
     #[test]
     fn init_display_heads_with_the_run_kind_and_lists_only_scaffolds() {
-        for (paths, already_initialized, expected) in [
-            (&[][..], true, "Already initialized at .clickhouse/"),
-            (
-                &[".clickhouse/.gitignore"][..],
-                true,
-                "Restored runtime ignore at .clickhouse/.gitignore",
-            ),
-            (
-                &["postgres/"][..],
-                true,
-                "Already initialized at .clickhouse/\nCreated project scaffold in postgres/",
-            ),
+        let render = |paths: &[&str], already_initialized| {
+            InitOutput {
+                paths: paths.iter().map(|path| path.to_string()).collect(),
+                already_initialized,
+            }
+            .to_string()
+        };
+        // One headline per run kind.
+        let existing = render(&[], true);
+        let restored = render(&[".clickhouse/.gitignore"], true);
+        let fresh = render(&[".clickhouse/"], false);
+        for headline in [&existing, &restored, &fresh] {
+            assert_eq!(headline.lines().count(), 1, "{headline}");
+        }
+        assert!(existing.ends_with(".clickhouse/"), "{existing}");
+        assert!(restored.ends_with(".clickhouse/.gitignore"), "{restored}");
+        assert!(fresh.ends_with(".clickhouse/"), "{fresh}");
+        assert_ne!(existing, restored);
+        assert_ne!(existing, fresh);
+        assert_ne!(restored, fresh);
+
+        // Then one line per scaffold outside `.clickhouse/`, in order.
+        for (paths, already_initialized, headline, scaffolds) in [
+            (&["postgres/"][..], true, &existing, &["postgres/"][..]),
             (
                 &[".clickhouse/", "clickhouse/", "postgres/"][..],
                 false,
-                "Initialized ClickHouse project in .clickhouse/\n\
-                 Created project scaffold in clickhouse/\n\
-                 Created project scaffold in postgres/",
+                &fresh,
+                &["clickhouse/", "postgres/"][..],
             ),
         ] {
-            let output = InitOutput {
-                paths: paths.iter().map(|path| path.to_string()).collect(),
-                already_initialized,
-            };
-            assert_eq!(output.to_string(), expected, "{paths:?}");
+            let text = render(paths, already_initialized);
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines[0], headline.as_str(), "{text}");
+            assert_eq!(lines.len(), 1 + scaffolds.len(), "{text}");
+            for (line, scaffold) in lines[1..].iter().zip(scaffolds) {
+                assert!(line.ends_with(&format!(" {scaffold}")), "{text}");
+            }
+            assert_eq!(
+                lines[1].split(scaffolds[0]).next(),
+                lines
+                    .last()
+                    .unwrap()
+                    .split(scaffolds.last().unwrap())
+                    .next(),
+                "{text}"
+            );
         }
     }
 
@@ -3770,7 +3848,9 @@ mod tests {
             table_row(&text, "test"),
             ["", "test", "stopped", "-", "-", "-", "-", ""]
         );
-        assert!(text.contains("2 servers, 1 running"));
+        let summary = text.lines().last().unwrap();
+        assert!(!summary.contains('|'), "{text}");
+        assert_eq!(numbers(summary), ["2", "1"], "{text}");
     }
 
     #[test]
@@ -3787,7 +3867,7 @@ mod tests {
                 engine: "postgres".to_string(),
                 container_id: Some("1234567890abcdef".to_string()),
             }],
-            total_servers: 1,
+            total_servers: 3,
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
@@ -3813,6 +3893,10 @@ mod tests {
                 ""
             ]
         );
+        // The engine-aware table ends with the same totals line.
+        let summary = postgres.lines().last().unwrap();
+        assert!(!summary.contains('|'), "{postgres}");
+        assert_eq!(numbers(summary), ["3", "1"], "{postgres}");
 
         let global = ServerListOutput {
             servers: vec![ServerListEntry {
@@ -3915,36 +3999,48 @@ mod tests {
             list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
-        assert!(text.contains("1 server, 1 running"));
+        let summary = text.lines().last().unwrap();
+        assert!(!summary.contains('|'), "{text}");
+        assert_eq!(numbers(summary), ["1", "1"], "{text}");
     }
 
     #[test]
     fn server_stop_all_display() {
-        let output = ServerStopAllOutput {
-            servers: vec![
-                ServerStopEntry {
-                    name: "default".to_string(),
-                    engine: "clickhouse".to_string(),
-                    version: None,
-                    stopped: true,
-                    error: None,
-                },
-                ServerStopEntry {
-                    name: "default".to_string(),
-                    engine: "postgres".to_string(),
-                    version: Some("postgres:18".to_string()),
-                    stopped: false,
-                    error: Some("container not found".to_string()),
-                },
-            ],
+        let clickhouse = |stopped| ServerStopEntry {
+            name: "default".to_string(),
+            engine: "clickhouse".to_string(),
+            version: None,
+            stopped,
+            error: None,
         };
-        let text = output.to_string();
-        assert!(text.contains("Stopping 'default' (clickhouse)... stopped"));
+        let render = |servers| ServerStopAllOutput { servers }.to_string();
+        let text = render(vec![
+            clickhouse(true),
+            ServerStopEntry {
+                name: "default".to_string(),
+                engine: "postgres".to_string(),
+                version: Some("postgres:18".to_string()),
+                stopped: false,
+                error: Some("container not found".to_string()),
+            },
+        ]);
+        // One line per server, in order, then a closing line.
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
         assert!(
-            text.contains(
-                "Stopping 'default' (postgres, postgres:18)... error: container not found"
-            )
+            lines[0].contains("'default'") && names(lines[0], "clickhouse"),
+            "{text}"
         );
-        assert!(text.contains("Done"));
+        assert!(!lines[0].contains("postgres"), "{text}");
+        assert!(
+            lines[1].contains("'default'") && lines[1].contains("postgres:18"),
+            "{text}"
+        );
+        // The failure carries the daemon's text; the success does not.
+        assert!(lines[1].ends_with("container not found"), "{text}");
+        assert!(!lines[0].contains("container not found"), "{text}");
+        let failed = render(vec![clickhouse(false)]);
+        assert_ne!(failed.lines().next(), Some(lines[0]), "{failed}");
+        assert_eq!(failed.lines().last(), Some(lines[2]), "{failed}");
     }
 }

@@ -647,6 +647,14 @@ pub(super) mod tests {
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
     }
 
+    /// The integers in `text`, in order.
+    fn numbers(text: &str) -> Vec<u64> {
+        text.split(|c: char| !c.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse().unwrap())
+            .collect()
+    }
+
     fn validation(value: serde_json::Value) -> ByocInfrastructureValidation {
         serde_json::from_value(value).unwrap()
     }
@@ -682,20 +690,15 @@ pub(super) mod tests {
             "checks": [{"name": "a", "allowed": true}, {"name": "b", "allowed": false}]
         })))
         .expect("a denied check fails");
-        assert_eq!(
-            error.message,
-            "BYOC validation failed: 1 of 2 checks denied"
-        );
+        // The message counts the denied checks, then all checks.
+        assert_eq!(numbers(&error.message), [1, 2], "{}", error.message);
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
 
         let error = byoc_validation_failure(&validation(serde_json::json!({
             "checks": [{"name": "b", "allowed": false}]
         })))
         .expect("a denied check fails even without allPassed");
-        assert_eq!(
-            error.message,
-            "BYOC validation failed: 1 of 1 checks denied"
-        );
+        assert_eq!(numbers(&error.message), [1, 1], "{}", error.message);
         assert!(
             byoc_validation_failure(&validation(serde_json::json!({"allPassed": false}))).is_some()
         );

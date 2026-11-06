@@ -165,9 +165,10 @@ mod tests {
                 to,
             ]);
 
+            let bad = if from.contains('T') { from } else { to };
             match result {
                 Ok(_) => panic!("expected timestamp input to be rejected: {from} {to}"),
-                Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+                Err(error) => assert_date_rejected(&error, bad),
             }
         }
     }
@@ -187,8 +188,16 @@ mod tests {
 
         match result {
             Ok(_) => panic!("expected invalid calendar date to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected YYYY-MM-DD")),
+            Err(error) => assert_date_rejected(&error, "2025-02-31"),
         }
+    }
+
+    /// A date flag's value parser rejected `value`, naming the format to use.
+    fn assert_date_rejected(error: &clap::Error, value: &str) {
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        let message = error.to_string();
+        assert!(message.contains(&format!("'{value}'")), "{message}");
+        assert!(message.contains("YYYY-MM-DD"), "{message}");
     }
 
     #[test]

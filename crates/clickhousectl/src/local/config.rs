@@ -267,7 +267,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = resolve_config_in(tmp.path(), "dev.xml").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("not found"), "got: {msg}");
+        assert!(matches!(err, Error::ConfigNotFound(_)), "got: {msg}");
+        assert!(msg.contains("'dev.xml'"), "got: {msg}");
+        assert!(
+            msg.contains(&tmp.path().display().to_string()),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -277,7 +282,8 @@ mod tests {
         write_file(tmp.path(), "prod.yaml");
         let err = resolve_config_in(tmp.path(), "missing").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("missing"), "got: {msg}");
+        assert!(matches!(err, Error::ConfigNotFound(_)), "got: {msg}");
+        assert!(msg.contains("'missing'"), "got: {msg}");
         assert!(msg.contains("dev.xml"), "got: {msg}");
         assert!(msg.contains("prod.yaml"), "got: {msg}");
     }
@@ -286,7 +292,13 @@ mod tests {
     fn not_found_reports_none_when_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let err = resolve_config_in(tmp.path(), "missing").unwrap_err();
-        assert!(err.to_string().contains("available: none"));
+        let msg = err.to_string();
+        assert!(matches!(err, Error::ConfigNotFound(_)), "got: {msg}");
+        assert!(msg.contains("'missing'"), "got: {msg}");
+        assert!(
+            msg.contains(&tmp.path().display().to_string()),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -296,9 +308,12 @@ mod tests {
         write_file(tmp.path(), "shared.yaml");
         let err = resolve_config_in(tmp.path(), "shared").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("ambiguous"), "got: {msg}");
+        assert!(matches!(err, Error::ConfigNotFound(_)), "got: {msg}");
+        assert!(msg.contains("'shared'"), "got: {msg}");
         assert!(msg.contains("shared.xml"));
         assert!(msg.contains("shared.yaml"));
+        // Not the not-found error, which would list the same two files.
+        assert_ne!(msg, not_found_error(tmp.path(), "shared").to_string());
     }
 
     #[test]

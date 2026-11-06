@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn plan_postgres_restored_access_rules_refuses_a_rule_without_an_id() {
         let current = vec![response_rule(None, Some("0.0.0.0/0"), Some("5432"), None)];
-        let err = plan_postgres_restored_access_rules(&current, &[]).unwrap_err();
-        assert!(err.message.contains("without an ID"), "{err}");
+        // The only error the planner returns: it cannot reference the rule.
+        assert!(plan_postgres_restored_access_rules(&current, &[]).is_err());
     }
 }

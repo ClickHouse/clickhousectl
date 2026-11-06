@@ -875,14 +875,18 @@ mod tests {
         local_args(args).command
     }
 
-    fn assert_version_rejected(args: &[&str], expected: &str) {
+    /// The rejection is a value-validation error carrying each of
+    /// `identifiers` (commands, flags, values, or the spec parser's own text).
+    fn assert_version_rejected(args: &[&str], identifiers: &[&str]) {
         let mut argv = vec!["clickhousectl", "local"];
         argv.extend_from_slice(args);
         let error = Cli::try_parse_from(argv)
             .err()
             .expect("invalid version should fail during clap parsing");
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-        assert!(error.to_string().contains(expected), "{error}");
+        for identifier in identifiers {
+            assert!(error.to_string().contains(identifier), "{error}");
+        }
     }
 
     fn postgres_start_parse_error(args: &[&str]) -> clap::Error {
@@ -1120,7 +1124,7 @@ mod tests {
                 &["clickhouse", "start", "--version", input],
                 &["client", "--host", "remote", "--version", input],
             ] {
-                assert_version_rejected(args, &expected);
+                assert_version_rejected(args, &[&expected]);
             }
         }
     }
@@ -1142,17 +1146,19 @@ mod tests {
             assert_eq!(tag, expected);
         }
 
+        // Each names the command that does take a Postgres selector and the
+        // one that refused it.
         assert_version_rejected(
             &["use", "  postgres@18  "],
-            "only supported by `local install`; `local use` requires a ClickHouse version",
+            &["`local install`", "`local use`"],
         );
         assert_version_rejected(
             &["clickhouse", "start", "--version", "  postgres@18  "],
-            "only supported by `local install`; `local clickhouse start --version` requires a ClickHouse version",
+            &["`local install`", "`local clickhouse start --version`"],
         );
         assert_version_rejected(
             &["client", "--host", "remote", "--version", "postgres@18"],
-            "only supported by `local install`; `local client --version` requires an installed ClickHouse version",
+            &["`local install`", "`local client --version`"],
         );
     }
 
@@ -1182,8 +1188,12 @@ mod tests {
         for input in ["latest", "stable", "lts"] {
             assert_version_rejected(
                 &["client", "--host", "remote", "--version", input],
-                "selects an installed numeric version",
+                &["`local client --version`", input],
             );
+            // Not the Postgres-selector rejection.
+            let error =
+                local_parse_error(&["client", "--host", "remote", "--version", input]).to_string();
+            assert!(!error.contains("`local install`"), "{error}");
         }
     }
 
@@ -1814,14 +1824,14 @@ mod tests {
         ] {
             assert_eq!(local_args(args).postgres_start_validation_error(), None);
         }
-        for (args, expected) in [
+        for (args, identifiers) in [
             (
                 &["--password", "pw", "--env", "POSTGRES_PASSWORD=env"][..],
-                "both --password and --env",
+                &["POSTGRES_PASSWORD", "--password", "--env"][..],
             ),
             (
                 &["-e", "APP_MODE=dev", "--env", "APP_MODE=test"],
-                "'APP_MODE' was provided more than once",
+                &["'APP_MODE'", "--env"],
             ),
         ] {
             let argv: Vec<_> = ["postgres", "start"]
@@ -1831,7 +1841,9 @@ mod tests {
             let error = local_args(&argv)
                 .postgres_start_validation_error()
                 .expect("conflicting env arguments");
-            assert!(error.contains(expected), "{error}");
+            for identifier in identifiers {
+                assert!(error.contains(identifier), "{error}");
+            }
         }
     }
 
@@ -1853,39 +1865,69 @@ mod tests {
 
     #[test]
     fn postgres_start_rejects_invalid_name_tag_port_and_env_at_clap_time() {
-        for (args, expected) in [
-            (vec!["--name", "../unsafe"], "Invalid server name"),
-            (vec!["../unsafe"], "Invalid server name"),
+        use crate::local::postgres::{parse_pg_env_arg, parse_pg_port_arg, parse_pg_tag_arg};
+
+        // Each rejection carries its own parser's diagnostic and the
+        // identifiers that diagnostic must name.
+        for (args, diagnostic, identifiers) in [
+            (
+                vec!["--name", "../unsafe"],
+                parse_server_name_arg("../unsafe"),
+                &["../unsafe"][..],
+            ),
+            (
+                vec!["../unsafe"],
+                parse_server_name_arg("../unsafe"),
+                &["../unsafe"],
+            ),
             (
                 vec!["--version", "18garbage"],
-                "invalid or unsupported postgres version",
+                parse_pg_tag_arg("18garbage"),
+                &["18garbage"],
             ),
             (
                 vec!["--version", "18..1"],
-                "invalid or unsupported postgres version",
+                parse_pg_tag_arg("18..1"),
+                &["18..1"],
             ),
             (
                 vec!["--port", "0"],
-                "--port 0 is not allowed; pick a specific port or omit the flag",
+                parse_pg_port_arg("0").map(|port| port.to_string()),
+                &["--port 0"],
             ),
-            (vec!["--env", "NO_EQUALS"], "expected KEY=VALUE"),
-            (vec!["--env", "1KEY=value"], "do not start with a digit"),
+            (
+                vec!["--env", "NO_EQUALS"],
+                parse_pg_env_arg("NO_EQUALS"),
+                &["'NO_EQUALS'", "KEY=VALUE"],
+            ),
+            (
+                vec!["--env", "1KEY=value"],
+                parse_pg_env_arg("1KEY=value"),
+                &["'1KEY'"],
+            ),
             (
                 vec!["--env", "POSTGRES_USER=admin"],
-                "use --user instead of --env",
+                parse_pg_env_arg("POSTGRES_USER=admin"),
+                &["POSTGRES_USER", "--user"],
             ),
             (
                 vec!["--env", "POSTGRES_DB=app"],
-                "use --database instead of --env",
+                parse_pg_env_arg("POSTGRES_DB=app"),
+                &["POSTGRES_DB", "--database"],
             ),
             (
                 vec!["--env", "PGDATA=/tmp/postgres"],
-                "PGDATA is managed by clickhousectl",
+                parse_pg_env_arg("PGDATA=/tmp/postgres"),
+                &["PGDATA", "--env"],
             ),
         ] {
+            let diagnostic = diagnostic.expect_err("the parser rejects the value");
             let error = postgres_start_parse_error(&args);
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-            assert!(error.to_string().contains(expected), "{error}");
+            assert!(error.to_string().contains(&diagnostic), "{error}");
+            for identifier in identifiers {
+                assert!(diagnostic.contains(identifier), "{diagnostic}");
+            }
         }
     }
 

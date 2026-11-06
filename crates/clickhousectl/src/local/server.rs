@@ -1536,7 +1536,9 @@ mod tests {
 
         let error = load_info_at(&path).unwrap_err();
         assert!(matches!(error, Error::ServerMetadataParse { .. }));
-        assert!(error.to_string().contains("not valid JSON"));
+        // serde's own diagnostic is carried along with the path.
+        let source = std::error::Error::source(&error).unwrap().to_string();
+        assert!(error.to_string().contains(&source));
         assert!(error.to_string().contains("default.json"));
     }
 
@@ -1548,7 +1550,9 @@ mod tests {
 
         let error = load_info_at(&path).unwrap_err();
         assert!(matches!(error, Error::ServerMetadataUtf8 { .. }));
-        assert!(error.to_string().contains("not valid UTF-8"));
+        let source = std::error::Error::source(&error).unwrap().to_string();
+        assert!(error.to_string().contains(&source));
+        assert!(error.to_string().contains("default.json"));
     }
 
     #[test]
@@ -1957,11 +1961,14 @@ mod tests {
             Duration::from_secs(1),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-        assert!(error.contains("did not become ready"));
-        assert!(error.contains("server.log"));
+        assert!(
+            matches!(&error, Error::StartupTimeout { name, seconds: 1, .. }
+                if name == "readiness-timeout-test"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("server.log"), "{error}");
         assert!(!is_process_alive(pid));
     }
 
@@ -1971,10 +1978,17 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let http_error = resolve_ports(Some(port), None).unwrap_err();
-        assert!(http_error.to_string().contains("HTTP port"));
+        assert!(
+            matches!(http_error, Error::PortInUse { kind: PortKind::Http, port: p } if p == port),
+            "{http_error}"
+        );
+        assert!(http_error.to_string().contains(&port.to_string()));
 
         let tcp_error = resolve_ports(None, Some(port)).unwrap_err();
-        assert!(tcp_error.to_string().contains("TCP port"));
+        assert!(
+            matches!(tcp_error, Error::PortInUse { kind: PortKind::Tcp, port: p } if p == port),
+            "{tcp_error}"
+        );
     }
 
     #[test]

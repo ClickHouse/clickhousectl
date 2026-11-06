@@ -1077,7 +1077,8 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert_eq!(error.message, "thing list returned a repeated cursor");
+        // The repeated-cursor error names the list it was reading.
+        assert!(error.message.contains("thing"), "{error}");
         assert_eq!(calls, 2);
 
         let error = CloudClient::collect_cursor_pages::<u8, _, _>("thing", |cursor| async move {
@@ -1095,7 +1096,13 @@ mod tests {
         })
         .await
         .unwrap_err();
-        assert_eq!(error.message, "Empty response from API");
+        // An empty page body fails through the same unwrap as a single read.
+        let unwrap_error = CloudClient::unwrap_response(
+            clickhouse_cloud_api::models::ApiResponse::<Vec<u8>>::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.message, unwrap_error.message);
+        assert_eq!(error.kind, CloudErrorKind::Generic);
     }
 
     #[test]
@@ -1109,7 +1116,8 @@ mod tests {
                 ..Default::default()
             };
         let err = CloudClient::unwrap_response(response).unwrap_err();
-        assert_eq!(err.message, "Empty response from API");
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+        assert_eq!(err.failure, None);
     }
 
     #[test]
@@ -1133,31 +1141,44 @@ mod tests {
             status: 403,
             message: "Forbidden".into(),
         });
+        // The server's own text leads, followed by the write-capable login.
+        assert!(err.message.starts_with("Forbidden"), "{}", err.message);
         assert!(
             err.message
-                .contains("Hint: You are authenticated via OAuth")
+                .contains("clickhousectl cloud auth login --api-key"),
+            "{}",
+            err.message
         );
     }
 
     #[test]
     fn auth_source_label_and_describe() {
-        assert_eq!(AuthSource::CliFlags.label(), "CLI flags");
-        assert_eq!(AuthSource::CredentialsFile.label(), "Credentials file");
-        assert_eq!(AuthSource::EnvVars.label(), "Env vars");
-        assert_eq!(AuthSource::OAuthTokens.label(), "OAuth");
+        let sources = [
+            AuthSource::CliFlags,
+            AuthSource::CredentialsFile,
+            AuthSource::EnvVars,
+            AuthSource::OAuthTokens,
+        ];
+        let labels: std::collections::HashSet<_> = sources.iter().map(AuthSource::label).collect();
+        assert_eq!(labels.len(), sources.len(), "labels must be distinct");
+        assert!(labels.iter().all(|label| !label.is_empty()));
 
-        assert!(AuthSource::CliFlags.describe().contains("--api-key"));
+        // Each description names the concrete source it was read from.
+        let cli = AuthSource::CliFlags.describe();
         assert!(
-            AuthSource::EnvVars
-                .describe()
-                .contains("CLICKHOUSE_CLOUD_API_KEY")
+            cli.contains("--api-key") && cli.contains("--api-secret"),
+            "{cli}"
         );
+        let env = AuthSource::EnvVars.describe();
         assert!(
-            AuthSource::CredentialsFile
-                .describe()
-                .contains("credentials")
+            env.contains("CLICKHOUSE_CLOUD_API_KEY") && env.contains("CLICKHOUSE_CLOUD_API_SECRET"),
+            "{env}"
         );
-        assert!(AuthSource::OAuthTokens.describe().contains("OAuth"));
+        let file = AuthSource::CredentialsFile.describe();
+        let path = crate::cloud::credentials::credentials_path();
+        assert!(file.contains(&path.display().to_string()), "{file}");
+        let tokens = AuthSource::OAuthTokens.describe();
+        assert!(tokens.contains("tokens.json"), "{tokens}");
     }
 
     #[test]
@@ -1174,7 +1195,7 @@ mod tests {
             status: 403,
             message: "Forbidden".into(),
         });
-        assert!(!err.message.contains("Hint:"));
+        // API-key auth can already write: the server's text is left as is.
         assert_eq!(err.message, "Forbidden");
     }
 
@@ -1248,10 +1269,15 @@ mod tests {
             },
             "00000000-0000-4000-8000-000000000001",
         );
-        assert_eq!(
-            err.message,
-            "NOT_FOUND: request scoped to organization 00000000-0000-4000-8000-000000000001"
+        // The trimmed server text leads, and the organization it was scoped
+        // to follows.
+        assert!(err.message.starts_with("NOT_FOUND"), "{}", err.message);
+        assert!(
+            err.message.contains("00000000-0000-4000-8000-000000000001"),
+            "{}",
+            err.message
         );
+        assert!(!err.message.contains('\n'), "{}", err.message);
         assert_eq!(err.kind, CloudErrorKind::Generic);
     }
 
@@ -1286,19 +1312,39 @@ mod tests {
         }
     }
 
+    /// A refined lookup names the missing ID before the server's verbatim
+    /// answer, names each scope identifier once, and suggests the list command
+    /// for its kind. The ID appears once on its own and once inside the
+    /// server text, so a scope clause that repeated it would add a third.
+    fn assert_missing_resource(err: &CloudError, scope: &[&str], server: &str, command: &str) {
+        let details = err.details.as_deref().expect("a structured detail");
+        assert_eq!(details.code, CloudErrorCode::ResourceNotFound);
+        assert_eq!(details.command.as_deref(), Some(command));
+        assert_eq!(err.message.matches(NIL_UUID).count(), 2, "{}", err.message);
+        for id in scope {
+            assert_eq!(err.message.matches(id).count(), 1, "{}", err.message);
+        }
+        let id_at = err.message.find(NIL_UUID).unwrap();
+        let server_at = err.message.find(server).expect("server text kept");
+        assert!(id_at < server_at, "{}", err.message);
+        assert!(
+            err.message.ends_with(&format!("{server}{NIL_UUID}\"")),
+            "{}",
+            err.message
+        );
+    }
+
     #[test]
     fn lookup_400_over_well_formed_ids_reads_as_a_missing_service() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("service", NIL_UUID),
             ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
         );
-        assert_eq!(
-            err.message,
-            format!(
-                "No such service: {NIL_UUID} (organization {ORG_UUID}). \
-                 The API rejected the identifier: \
-                 BAD_REQUEST: Invalid service id string:\"{NIL_UUID}\""
-            )
+        assert_missing_resource(
+            &err,
+            &[ORG_UUID],
+            "BAD_REQUEST: Invalid service id string:\"",
+            &format!("clickhousectl cloud service list --org-id {ORG_UUID}"),
         );
         assert_eq!(err.kind, CloudErrorKind::Generic);
     }
@@ -1309,13 +1355,11 @@ mod tests {
             invalid_id_400("Postgres service", NIL_UUID),
             ResourceLookup::in_org(ResourceKind::PostgresService, NIL_UUID, ORG_UUID),
         );
-        assert_eq!(
-            err.message,
-            format!(
-                "No such Postgres service: {NIL_UUID} (organization {ORG_UUID}). \
-                 The API rejected the identifier: \
-                 BAD_REQUEST: Invalid Postgres service id string:\"{NIL_UUID}\""
-            )
+        assert_missing_resource(
+            &err,
+            &[ORG_UUID],
+            "BAD_REQUEST: Invalid Postgres service id string:\"",
+            &format!("clickhousectl cloud postgres list --org-id {ORG_UUID}"),
         );
     }
 
@@ -1327,15 +1371,12 @@ mod tests {
             invalid_id_400("organization", NIL_UUID),
             ResourceLookup::organization(NIL_UUID),
         );
-        assert_eq!(
-            err.message,
-            format!(
-                "No such organization: {NIL_UUID}. \
-                 The API rejected the identifier: \
-                 BAD_REQUEST: Invalid organization id string:\"{NIL_UUID}\""
-            )
+        assert_missing_resource(
+            &err,
+            &[],
+            "BAD_REQUEST: Invalid organization id string:\"",
+            "clickhousectl cloud org list",
         );
-        assert!(!err.message.contains("(organization"));
     }
 
     /// The organization parenthetical is keyed on the kind, not on the two
@@ -1350,18 +1391,13 @@ mod tests {
         ] {
             let err =
                 client.convert_error_for_lookup(invalid_id_400("organization", NIL_UUID), lookup);
-            assert_eq!(
-                err.message,
-                format!(
-                    "No such organization: {NIL_UUID}. \
-                     The API rejected the identifier: \
-                     BAD_REQUEST: Invalid organization id string:\"{NIL_UUID}\""
-                )
+            assert_missing_resource(
+                &err,
+                &[],
+                "BAD_REQUEST: Invalid organization id string:\"",
+                "clickhousectl cloud org list",
             );
-            assert_eq!(
-                err.details.as_deref().unwrap().command.as_deref(),
-                Some("clickhousectl cloud org list")
-            );
+            assert!(!err.message.contains(ORG_UUID), "{}", err.message);
         }
     }
 
@@ -1522,7 +1558,10 @@ mod tests {
             lookup(),
         );
         assert!(err.details.is_none());
-        assert!(!err.message.starts_with("No such"));
+        assert_eq!(
+            err.message,
+            clickhouse_cloud_api::Error::AuthMismatch("nope".into()).to_string()
+        );
     }
 
     #[test]

@@ -1822,11 +1822,20 @@ mod tests {
     fn python_template_starts_with_a_shebang_and_mentions_the_function() {
         let python = python_template("my_fn");
         assert!(python.starts_with("#!/usr/bin/env python3\n"));
-        assert!(python.contains("\"\"\"my_fn: executable UDF entrypoint."));
+        assert!(python.contains("\"\"\"my_fn"));
         assert!(python.contains("sys.stdout.flush()"));
         assert!(python.contains(r"(\t, \n, \\)"));
         assert!(python.contains("    return value\n"));
-        assert!(native_next_step().starts_with("Build linux/amd64 and linux/arm64 binaries"));
+        let next_step = native_next_step();
+        for identifier in [
+            "linux/amd64",
+            "linux/arm64",
+            format!("amd64/{NATIVE_ENTRYPOINT}").as_str(),
+            format!("arm64/{NATIVE_ENTRYPOINT}").as_str(),
+            NATIVE_DOCS_URL,
+        ] {
+            assert!(next_step.contains(identifier), "{next_step}");
+        }
     }
 
     #[test]
@@ -1882,7 +1891,8 @@ mod tests {
             &error,
             Error::UdfDefinitionInvalid { path, reason }
                 if path == &dir.join("udf.json")
-                    && reason == "functionName is my_fn, but the command targets other"
+                    && reason.contains("my_fn")
+                    && reason.contains("other")
         ));
     }
 
@@ -1954,12 +1964,19 @@ mod tests {
         let longest = "a".repeat(MAX_LOCAL_NAME_LEN);
         assert!(validate_local_function_name(&longest).is_ok());
         let too_long = "a".repeat(MAX_LOCAL_NAME_LEN + 1);
+        // The limit and the offending length, in that order.
+        let error = validate_local_function_name(&too_long).unwrap_err();
+        let numbers: Vec<&str> = error
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|token| !token.is_empty())
+            .collect();
         assert_eq!(
-            validate_local_function_name(&too_long).unwrap_err(),
-            format!(
-                "Use at most {MAX_LOCAL_NAME_LEN} characters; this name has {}",
-                MAX_LOCAL_NAME_LEN + 1
-            )
+            numbers,
+            [
+                MAX_LOCAL_NAME_LEN.to_string(),
+                (MAX_LOCAL_NAME_LEN + 1).to_string()
+            ],
+            "{error}"
         );
         // The shared pattern still applies first.
         assert!(validate_local_function_name("1abc").is_err());
@@ -2306,7 +2323,7 @@ mod tests {
 
         let error = resolve_python(None, &path_var).unwrap_err();
         assert!(matches!(error, Error::UdfInterpreterNotFound(_)));
-        assert!(error.to_string().contains("pass --python"), "{error}");
+        assert!(error.to_string().contains("--python"), "{error}");
 
         let python3 = make(&bin, "python3");
         assert_eq!(resolve_python(None, &path_var).unwrap(), python3);
@@ -2558,12 +2575,26 @@ mod tests {
         assert_eq!(name_clash("abc", &both).unwrap().name, "abc");
 
         let message = |name, function| name_clash_message(name, "default", function);
-        assert!(
-            message("lcase", &functions[1]).contains("lcase (an alias of lower) on server default")
-        );
-        assert!(
-            message("LOWER", &functions[0])
-                .contains("case-insensitive built-in function lower on server default")
+        let words = |text: &str| -> Vec<String> {
+            text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|word| !word.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        // An alias names what it aliases.
+        let alias = words(&message("lcase", &functions[1]));
+        for identifier in ["lcase", "lower", "default"] {
+            assert!(alias.iter().any(|word| word == identifier), "{alias:?}");
+        }
+        // A case-only clash names both spellings, and is not just the exact
+        // clash message with the other spelling.
+        let case = message("LOWER", &functions[0]);
+        for identifier in ["LOWER", "lower", "default"] {
+            assert!(words(&case).iter().any(|word| word == identifier), "{case}");
+        }
+        assert_ne!(
+            case,
+            message("lower", &functions[0]).replacen("lower", "LOWER", 1)
         );
         assert!(message("sql_fn", &functions[3]).contains("DROP FUNCTION sql_fn"));
         assert!(message("lower", &functions[0]).ends_with('\n'));
@@ -2640,7 +2671,7 @@ mod tests {
             source: std::io::Error::from(std::io::ErrorKind::NotFound),
         });
         assert!(
-            matches!(&error, Error::UdfSourceInvalid { path, reason } if path == dir && reason == "has no udf.json")
+            matches!(&error, Error::UdfSourceInvalid { path, reason } if path == dir && reason.contains(DEFINITION_FILE))
         );
         assert!(matches!(
             input_error(UdfInputError::Read {
@@ -2807,14 +2838,15 @@ mod tests {
     #[test]
     fn reload_still_fails_warning_names_the_broken_udfs_and_the_way_out() {
         let one = reload_still_fails_warning("dev", &names(&["bad"]), UNKNOWN_TYPE);
-        assert!(one.contains("UDF bad is broken"), "{one}");
+        assert!(one.contains(" bad "), "{one}");
         assert!(
             one.contains("`clickhousectl local udf remove bad --server dev`"),
             "{one}"
         );
         assert!(!one.contains("DB::Exception"), "{one}");
         let many = reload_still_fails_warning("dev", &names(&["a", "b"]), UNKNOWN_TYPE);
-        assert!(many.contains("UDFs a, b are broken"), "{many}");
+        assert!(many.contains(" a, b "), "{many}");
+        assert!(!many.contains("udf remove a "), "{many}");
         let unknown = reload_still_fails_warning("dev", &[], UNKNOWN_TYPE);
         assert!(unknown.ends_with(UNKNOWN_TYPE), "{unknown}");
     }

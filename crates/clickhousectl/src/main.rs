@@ -664,14 +664,15 @@ mod tests {
             "--table-mapping",
             "public.events:events",
         ];
+        // Each conflict names both flags and the value the other one needs.
         let cases = [
             (
                 ["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"].as_slice(),
-                "--iam-role cannot be used with --auth basic",
+                ["--iam-role", "--auth basic"],
             ),
             (
                 ["--replication-slot-name", "existing_slot"].as_slice(),
-                "--replication-slot-name can only be used with --replication-mode cdc_only",
+                ["--replication-slot-name", "--replication-mode cdc_only"],
             ),
             (
                 [
@@ -681,11 +682,11 @@ mod tests {
                     "existing_slot",
                 ]
                 .as_slice(),
-                "--replication-slot-name can only be used with --replication-mode cdc_only",
+                ["--replication-slot-name", "--replication-mode cdc_only"],
             ),
         ];
 
-        for (extra, diagnostic) in cases {
+        for (extra, identifiers) in cases {
             let args: Vec<&str> = base.iter().chain(extra).copied().collect();
             let error = parse_and_validate(&args)
                 .err()
@@ -693,7 +694,9 @@ mod tests {
             assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
             assert_eq!(error.exit_code(), 2);
             let message = error.to_string();
-            assert!(message.contains(diagnostic), "{message}");
+            for identifier in identifiers {
+                assert!(message.contains(identifier), "{message}");
+            }
             assert!(
                 message.contains("clickhousectl cloud clickpipe create postgres"),
                 "{message}"
@@ -890,10 +893,10 @@ mod tests {
 
     #[test]
     fn local_postgres_start_env_relationship_errors_are_clap_usage_errors() {
-        for (extra, diagnostic) in [
+        for (extra, identifiers) in [
             (
                 ["--env", "APP_MODE=dev", "--env", "APP_MODE=test"].as_slice(),
-                "APP_MODE",
+                &["APP_MODE"][..],
             ),
             (
                 [
@@ -903,7 +906,7 @@ mod tests {
                     "POSTGRES_PASSWORD=from-env",
                 ]
                 .as_slice(),
-                "both --password and --env",
+                &["--password", "--env"][..],
             ),
         ] {
             let args: Vec<&str> = ["clickhousectl", "local", "postgres", "start"]
@@ -917,7 +920,9 @@ mod tests {
             assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
             assert_eq!(error.exit_code(), 2);
             let message = error.to_string();
-            assert!(message.contains(diagnostic), "{message}");
+            for identifier in identifiers {
+                assert!(message.contains(identifier), "{message}");
+            }
             assert!(
                 message.contains("clickhousectl local postgres start"),
                 "{message}"

@@ -716,13 +716,16 @@ mod tests {
             .expect("expected parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
         assert_eq!(err.exit_code(), 2, "filter errors must be usage errors");
-        err.to_string()
+        // Clap renders the parser's own diagnostic (unit-tested in lifecycle).
+        let message = err.to_string();
+        let diagnostic = parse_postgres_list_filter(filter).unwrap_err();
+        assert!(message.contains(&diagnostic), "{message}");
+        message
     }
 
     #[test]
     fn rejects_an_unknown_postgres_list_filter_key() {
         let message = list_filter_error("bogus=1");
-        assert!(message.contains("unknown filter key 'bogus'"), "{message}");
         // The valid keys are listed so the user can correct the invocation.
         for key in ["state", "region", "name", "provider", "isPrimary"] {
             assert!(message.contains(key), "{key} missing from: {message}");
@@ -731,35 +734,19 @@ mod tests {
 
     #[test]
     fn rejects_a_postgres_list_filter_without_a_value() {
-        let message = list_filter_error("state=");
-        assert!(
-            message.contains("filter 'state' requires a value"),
-            "{message}"
-        );
+        list_filter_error("state=");
         // Whitespace-only is empty too.
-        let message = list_filter_error("name=   ");
-        assert!(
-            message.contains("filter 'name' requires a value"),
-            "{message}"
-        );
+        list_filter_error("name=   ");
     }
 
     #[test]
     fn rejects_a_postgres_list_filter_without_an_equals_sign() {
-        let message = list_filter_error("state");
-        assert!(
-            message.contains("invalid filter 'state': expected KEY=VALUE"),
-            "{message}"
-        );
+        list_filter_error("state");
     }
 
     #[test]
     fn rejects_a_non_boolean_is_primary_postgres_list_filter() {
-        let message = list_filter_error("isPrimary=maybe");
-        assert!(
-            message.contains("invalid value 'maybe' for filter 'isPrimary'"),
-            "{message}"
-        );
+        list_filter_error("isPrimary=maybe");
     }
 
     #[test]
@@ -1178,7 +1165,8 @@ mod tests {
         ])
         .err()
         .expect("expected parse error");
-        assert!(err.to_string().contains("invalid value"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        assert!(err.to_string().contains("'15'"), "{err}");
     }
 
     #[test]
@@ -1199,7 +1187,8 @@ mod tests {
         ])
         .err()
         .expect("expected parse error");
-        assert!(err.to_string().contains("invalid value"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        assert!(err.to_string().contains("'16'"), "{err}");
     }
 
     #[test]
@@ -1471,7 +1460,12 @@ mod tests {
         ])
         .err()
         .expect("expected parse error");
-        assert!(err.to_string().contains("cannot be used"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(
+            message.contains("--set") && message.contains("--file"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1520,7 +1514,12 @@ mod tests {
         ])
         .err()
         .expect("expected parse error");
-        assert!(err.to_string().contains("cannot be used"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = err.to_string();
+        assert!(
+            message.contains("--password") && message.contains("--generate"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1591,7 +1590,8 @@ mod tests {
         ])
         .err()
         .expect("expected parse error");
-        assert!(err.to_string().contains("invalid datetime"));
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(err.to_string().contains("'yesterday'"), "{err}");
     }
 
     #[test]

@@ -1557,10 +1557,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let binary = dir.path().join("versions/25.12.9.61/clickhouse");
         write_with_mode(&binary, "#!/bin/sh\nexit 0\n", 0o644);
-        let message = ensure_launchable(&binary, "25.12.9.61")
-            .expect_err("a non-executable binary cannot be launched")
-            .to_string();
-        assert!(message.contains("not executable"), "{message}");
+        let error = ensure_launchable(&binary, "25.12.9.61")
+            .expect_err("a non-executable binary cannot be launched");
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::BinaryNotLaunchable {
+                    problem: crate::error::BinaryLaunchProblem::NotExecutable,
+                    ..
+                }
+            ),
+            "{message}"
+        );
         assert!(message.contains(&binary.display().to_string()), "{message}");
         assert!(
             message.contains("clickhousectl local install --force 25.12.9.61"),
@@ -1576,10 +1585,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let directory = dir.path().join("versions/26.8.1.1760/clickhouse");
         std::fs::create_dir_all(&directory).expect("create directory");
-        let message = ensure_launchable(&directory, "26.8.1.1760")
-            .expect_err("a directory cannot be launched")
-            .to_string();
-        assert!(message.contains("not a regular file"), "{message}");
+        let error = ensure_launchable(&directory, "26.8.1.1760")
+            .expect_err("a directory cannot be launched");
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::BinaryNotLaunchable {
+                    problem: crate::error::BinaryLaunchProblem::NotAFile,
+                    ..
+                }
+            ),
+            "{message}"
+        );
         assert!(
             message.contains(
                 "clickhousectl local remove 26.8.1.1760 && clickhousectl local install 26.8.1.1760"
@@ -1683,9 +1701,10 @@ mod tests {
         assert_eq!(output.servers[0].engine, "clickhouse");
         assert_eq!(output.servers[0].version, None);
         assert!(!output.servers[0].stopped);
+        // The entry carries the stop failure's own rendering.
         assert_eq!(
-            output.servers[0].error.as_deref(),
-            Some("Failed to execute ClickHouse: process stop failed")
+            output.servers[0].error,
+            Some(Error::Exec("process stop failed".to_string()).to_string())
         );
         assert_eq!(output.servers[1].name, "default");
         assert_eq!(output.servers[1].engine, "postgres");

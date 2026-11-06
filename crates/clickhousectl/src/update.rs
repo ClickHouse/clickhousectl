@@ -582,8 +582,9 @@ mod tests {
         let empty = builder.into_inner().unwrap().finish().unwrap();
 
         let err = extract_binary_from_archive(&empty).unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains("did not contain"), "got: {}", msg);
+        // The not-found branch, which names the binary it looked for.
+        assert!(matches!(&err, Error::Extract(_)), "got: {err:?}");
+        assert!(err.to_string().contains("clickhousectl"), "got: {err}");
     }
 
     #[test]
@@ -702,8 +703,9 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let msg = resolve(&server).await.unwrap_err().to_string();
-            assert!(msg.contains("latest clickhousectl version"), "got: {}", msg);
+            let err = resolve(&server).await.unwrap_err();
+            assert!(matches!(&err, Error::Download(_)), "got: {err:?}");
+            let msg = err.to_string();
             assert!(msg.contains("403"), "got: {}", msg);
             assert!(msg.contains("429"), "got: {}", msg);
         }

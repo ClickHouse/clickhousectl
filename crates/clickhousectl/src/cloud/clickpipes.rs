@@ -6385,6 +6385,23 @@ mod tests {
     use crate::cloud::cli::CloudCommands;
     use clap::Parser;
 
+    /// Asserts `message` names every identifier in `names` (a flag, field,
+    /// value or suggested command) without pinning the prose around them.
+    #[track_caller]
+    fn assert_names(message: &str, names: &[&str]) {
+        for name in names {
+            assert!(message.contains(name), "expected `{name}` in: {message}");
+        }
+    }
+
+    /// Whether `message` carries `value` as a whole word, so a number such as
+    /// `8` is not matched inside `2000`.
+    fn names_word(message: &str, value: &str) -> bool {
+        message
+            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+            .any(|word| word.trim_end_matches('.') == value)
+    }
+
     fn parse_cloud_command(args: &[&str]) -> CloudCommands {
         let cli = Cli::try_parse_from(
             ["clickhousectl", "cloud", "clickpipe"]
@@ -7057,10 +7074,11 @@ mod tests {
             memory_gb: Some(4.0),
         })
         .unwrap_err();
-        assert_eq!(
-            error.message,
-            "--memory-gb must be 8 when --cpu-millicores is 2000"
-        );
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_names(&error.message, &["--memory-gb", "--cpu-millicores"]);
+        // The user's CPU value and the memory it requires.
+        assert!(names_word(&error.message, "2000"), "{}", error.message);
+        assert!(names_word(&error.message, "8"), "{}", error.message);
     }
 
     #[test]
@@ -7490,11 +7508,11 @@ mod tests {
             replicas: Some(1),
             ..Default::default()
         };
-        assert!(
-            build_create_request_args(&partial_scaling, ClickPipeSourceKind::Kafka)
+        assert_names(
+            &build_create_request_args(&partial_scaling, ClickPipeSourceKind::Kafka)
                 .unwrap_err()
-                .message
-                .contains("requires --replicas, --cpu-millicores, and --memory-gb")
+                .message,
+            &["--replicas", "--cpu-millicores", "--memory-gb"],
         );
 
         let unknown_mapping_field = ClickPipeCreateRequestArgs {
@@ -7503,11 +7521,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(
-            build_create_request_args(&unknown_mapping_field, ClickPipeSourceKind::Kafka)
+        assert_names(
+            &build_create_request_args(&unknown_mapping_field, ClickPipeSourceKind::Kafka)
                 .unwrap_err()
-                .message
-                .contains("unknown field `typo`")
+                .message,
+            &["--field-mapping #1: ", "`typo`"],
         );
 
         let non_kafka = ClickPipeCreateRequestArgs {
@@ -7517,11 +7535,11 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(
-            build_create_request_args(&non_kafka, ClickPipeSourceKind::PubSub)
+        assert_names(
+            &build_create_request_args(&non_kafka, ClickPipeSourceKind::PubSub)
                 .unwrap_err()
-                .message
-                .contains("only be used with clickpipe create kafka")
+                .message,
+            &["--kafka-read-committed", "clickpipe create kafka"],
         );
     }
 
@@ -7791,13 +7809,19 @@ mod tests {
         };
         let error = ensure_clickpipe_has_ingestion_settings(&mysql, "svc-1", "pipe-1")
             .expect_err("a MySQL CDC pipe has no ingestion settings");
-        assert_eq!(
-            error.message,
-            "ClickPipe pipe-1 is a MySQL CDC pipe; `clickpipe settings get` and \
-             `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
-             pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
-             itself: see `clickhousectl cloud clickpipe get svc-1 pipe-1`."
+        let suggested = "clickhousectl cloud clickpipe get svc-1 pipe-1";
+        assert_names(
+            &error.message,
+            &[
+                "pipe-1",
+                ClickPipeSourceKind::MySql.database_source_label().unwrap(),
+                "`clickpipe settings get`",
+                "`settings update`",
+                &format!("`{suggested}`"),
+            ],
         );
+        // The suggested command is a real one.
+        Cli::try_parse_from(suggested.split_whitespace()).expect("suggested command parses");
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
 
         // Streaming, object-storage and unclassifiable pipes are not refused.
@@ -9011,20 +9035,27 @@ mod tests {
         );
         assert!(error.to_string().contains("--table-mapping"));
 
-        for (mapping, diagnostic) in [
-            ("public.events", "expected schema.table:target_table"),
-            ("events:target", "expected schema.table:target_table"),
-            (".events:target", "source schema must not be empty"),
-            ("public.:target", "source table must not be empty"),
-            ("public.events:", "target table must not be empty"),
-            (" .events:target", "source schema must not be empty"),
-            ("public. :target", "source table must not be empty"),
-            ("public.events: ", "target table must not be empty"),
+        // Each malformed part fails on its own input; the error names the
+        // flag, the rejected value and, for a shape error, the expected syntax.
+        for (mapping, syntax) in [
+            ("public.events", Some("schema.table:target_table")),
+            ("events:target", Some("schema.table:target_table")),
+            (".events:target", None),
+            ("public.:target", None),
+            ("public.events:", None),
+            (" .events:target", None),
+            ("public. :target", None),
+            ("public.events: ", None),
         ] {
             let error = clickpipe_parse_error(&postgres_cli_args(Some(mapping)));
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             let message = error.to_string();
-            assert!(message.contains(diagnostic), "{message}");
+            assert_names(&message, &["--table-mapping", &format!("'{mapping}'")]);
+            assert_eq!(
+                message.contains("schema.table:target_table"),
+                syntax.is_some(),
+                "{message}"
+            );
         }
     }
 
@@ -9121,7 +9152,7 @@ mod tests {
                 .clickpipe_create_validation_error()
                 .map(|(source, message)| (
                     source,
-                    message.contains("--table-mapping-json #1: invalid JSON")
+                    message.starts_with("--table-mapping-json #1: ")
                 )),
             Some(("postgres", true))
         );
@@ -9178,9 +9209,14 @@ mod tests {
         // basic auth rejects --iam-role.
         args.extend(["--username", "user", "--password", "password"]);
         let command = parse_clickpipe(&args);
-        assert_eq!(
-            clickpipe_validation_message(&command).as_deref(),
-            Some("--username and --password cannot be used with --auth IAM_ROLE; use --auth basic")
+        assert_names(
+            &clickpipe_validation_message(&command).expect("pair is rejected"),
+            &[
+                "--username",
+                "--password",
+                "--auth IAM_ROLE",
+                "--auth basic",
+            ],
         );
     }
 
@@ -9245,10 +9281,16 @@ mod tests {
         assert_eq!(parsed.password, None);
 
         let command = parse_clickpipe(&args);
-        assert_eq!(
-            clickpipe_validation_message(&command).as_deref(),
-            Some("--auth basic requires --username <USERNAME> and --password <PASSWORD>")
+        let message = clickpipe_validation_message(&command).expect("basic auth needs the pair");
+        assert_names(
+            &message,
+            &[
+                "--auth basic",
+                "--username <USERNAME>",
+                "--password <PASSWORD>",
+            ],
         );
+        assert!(!message.contains("IAM_ROLE"), "{message}");
     }
 
     #[test]
@@ -9295,10 +9337,9 @@ mod tests {
         let mut basic_with_role = postgres_cli_args(Some("public.events:events"));
         basic_with_role.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
         let command = parse_clickpipe(&basic_with_role);
-        assert_eq!(
-            clickpipe_validation_message(&command).as_deref(),
-            Some("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE")
-        );
+        let message = clickpipe_validation_message(&command).expect("role on basic auth");
+        assert_names(&message, &["--iam-role", "--auth basic", "--auth IAM_ROLE"]);
+        assert!(!message.contains("--username"), "{message}");
 
         for mode in ["cdc", "snapshot"] {
             let mut args = postgres_cli_args(Some("public.events:events"));
@@ -9309,9 +9350,9 @@ mod tests {
                 "existing_slot",
             ]);
             let command = parse_clickpipe(&args);
-            assert_eq!(
-                clickpipe_validation_message(&command).as_deref(),
-                Some("--replication-slot-name can only be used with --replication-mode cdc_only")
+            assert_names(
+                &clickpipe_validation_message(&command).expect("slot outside cdc_only"),
+                &["--replication-slot-name", "--replication-mode cdc_only"],
             );
         }
 
@@ -9643,13 +9684,18 @@ mod tests {
         // The pair is rejected rather than silently dropped, the same way
         // basic auth rejects --iam-role.
         args.extend(["--username", "user", "--password", "password"]);
-        assert_eq!(
-            parse_clickpipe(&args).clickpipe_create_validation_error(),
-            Some((
-                "mysql",
-                "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
-                    .to_string()
-            ))
+        let (source, message) = parse_clickpipe(&args)
+            .clickpipe_create_validation_error()
+            .expect("pair is rejected");
+        assert_eq!(source, "mysql");
+        assert_names(
+            &message,
+            &[
+                "--username",
+                "--password",
+                "--auth IAM_ROLE",
+                "--auth basic",
+            ],
         );
     }
 
@@ -9687,13 +9733,19 @@ mod tests {
         assert_eq!(parsed.username, None);
         assert_eq!(parsed.password, None);
 
-        assert_eq!(
-            parse_clickpipe(&args).clickpipe_create_validation_error(),
-            Some((
-                "mysql",
-                "--auth basic requires --username <USERNAME> and --password <PASSWORD>".to_string()
-            ))
+        let (source, message) = parse_clickpipe(&args)
+            .clickpipe_create_validation_error()
+            .expect("basic auth needs the pair");
+        assert_eq!(source, "mysql");
+        assert_names(
+            &message,
+            &[
+                "--auth basic",
+                "--username <USERNAME>",
+                "--password <PASSWORD>",
+            ],
         );
+        assert!(!message.contains("IAM_ROLE"), "{message}");
     }
 
     #[test]
@@ -9729,13 +9781,12 @@ mod tests {
             "--iam-role",
             "arn:aws:iam::123456789012:role/clickpipe",
         ]);
-        assert_eq!(
-            parse_clickpipe(&args).clickpipe_create_validation_error(),
-            Some((
-                "mysql",
-                "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE".to_string()
-            ))
-        );
+        let (source, message) = parse_clickpipe(&args)
+            .clickpipe_create_validation_error()
+            .expect("role on basic auth");
+        assert_eq!(source, "mysql");
+        assert_names(&message, &["--iam-role", "--auth basic", "--auth IAM_ROLE"]);
+        assert!(!message.contains("--username"), "{message}");
     }
 
     #[test]
@@ -10034,8 +10085,7 @@ mod tests {
             ]);
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             let message = error.to_string();
-            assert!(message.contains(flag), "{message}");
-            assert!(message.contains("finite number"), "{message}");
+            assert_names(&message, &[flag, &format!("'{value}'")]);
         }
 
         assert_eq!(parse_finite_f64("-1.5"), Ok(-1.5));
@@ -10643,12 +10693,14 @@ mod tests {
                 let patch = serde_json::json!({"source": {
                     (provider): {"host": "db.example.com", "port": port}
                 }});
-                let error = build_clickpipe_update_request(patch, "test").unwrap_err();
-                assert!(
-                    error.message.contains(&format!(
-                        "source.{provider}.port` must be in the range 1..=65535"
-                    )),
-                    "{error}"
+                let error = build_clickpipe_update_request(patch, "patch.json").unwrap_err();
+                assert_names(
+                    &error.message,
+                    &[
+                        "patch.json",
+                        &format!("`source.{provider}.port`"),
+                        "1..=65535",
+                    ],
                 );
             }
         }
@@ -10670,9 +10722,25 @@ mod tests {
             "test",
         )
         .unwrap_err();
-        assert!(error.message.contains("`source.bigquery`"), "{error}");
-        assert!(error.message.contains("cannot be updated"), "{error}");
+        assert_names(&error.message, &["`source.bigquery`"]);
         assert!(!error.message.contains(".?."), "{error}");
+        // The dedicated rejection, not the generic unknown-field one that the
+        // typed body would also produce: the pre-deserialization check refuses
+        // BigQuery while it lets another unknown source key through to serde.
+        assert!(
+            validate_clickpipe_patch_required_fields(
+                &serde_json::json!({"source": {"bigquery": {}}}),
+                "test"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_clickpipe_patch_required_fields(
+                &serde_json::json!({"source": {"warehouse": {}}}),
+                "test"
+            )
+            .is_ok()
+        );
 
         // The error names the config source and the full field path, with no
         // serde path placeholders.
@@ -10681,17 +10749,12 @@ mod tests {
             crate::cloud::config::config_source_label("-"),
         )
         .unwrap_err();
-        assert!(
-            unknown
-                .message
-                .contains("invalid request body in config stdin"),
-            "{unknown}"
-        );
-        assert!(
-            unknown
-                .message
-                .contains("unknown field `source.kafka.unknownOption`"),
-            "{unknown}"
+        assert_names(
+            &unknown.message,
+            &[
+                crate::cloud::config::config_source_label("-"),
+                "`source.kafka.unknownOption`",
+            ],
         );
         assert!(!unknown.message.contains(".?"), "{unknown}");
     }
@@ -10764,12 +10827,10 @@ mod tests {
                 "validateSamples": false
             }}),
         ] {
-            let error = build_clickpipe_update_request(invalid.clone(), "test")
+            let error = build_clickpipe_update_request(invalid.clone(), "patch.json")
                 .expect_err(&format!("accepted invalid patch: {invalid}"));
-            assert!(
-                error.message.contains("invalid request body"),
-                "{invalid}: {error}"
-            );
+            // Every rejection is attributed to the config source it came from.
+            assert!(error.message.contains("patch.json"), "{invalid}: {error}");
         }
     }
 
@@ -11100,9 +11161,13 @@ mod tests {
         mismatched.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
         let error = build_pubsub_source(&parse_pubsub_create(&mismatched).source)
             .expect_err("earliest seek with a timestamp is refused");
-        assert_eq!(
-            error.to_string(),
-            "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type earliest"
+        assert_names(
+            &error.to_string(),
+            &[
+                "--seek-timestamp",
+                "--seek-type timestamp",
+                "--seek-type earliest",
+            ],
         );
 
         // A malformed timestamp never reaches the builder.
@@ -11121,8 +11186,8 @@ mod tests {
         ];
         args.extend(malformed);
         let error = clickpipe_parse_error(&args);
-        assert_eq!(error.exit_code(), 2, "{error}");
-        assert!(error.to_string().contains("ISO 8601 / RFC 3339"), "{error}");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_names(&error.to_string(), &["--seek-timestamp", "'yesterday'"]);
     }
 
     #[test]
@@ -11180,7 +11245,13 @@ mod tests {
         args.extend(flags);
         let error = clickpipe_parse_error(&args);
         assert_eq!(error.exit_code(), 2, "{error}");
-        assert!(error.to_string().contains("257 characters"), "{error}");
+        // The error names the flag and the rejected length.
+        let message = error.to_string();
+        assert_names(&message, &["--filter"]);
+        assert!(
+            names_word(&message, &(PUBSUB_FILTER_MAX_LENGTH + 1).to_string()),
+            "{message}"
+        );
     }
 
     #[test]
@@ -11336,10 +11407,7 @@ mod tests {
         flags = pubsub_source_flags(&empty_path);
         let args = parse_pubsub_create(&flags);
         let error = build_pubsub_source(&args.source).expect_err("empty key file fails");
-        assert_eq!(
-            error.to_string(),
-            format!("service account key file '{empty_path}' was empty")
-        );
+        assert_names(&error.to_string(), &[&format!("'{empty_path}'")]);
 
         // The happy path still reads the same file the other tests use.
         let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
@@ -11440,10 +11508,9 @@ mod tests {
             enhanced_fan_out: false,
         };
         let error = build_kinesis_source(&args).unwrap_err();
-        assert!(
-            error.to_string().contains("out of range"),
-            "error should mention the range: {}",
-            error
+        assert_names(
+            &error.to_string(),
+            &["--iterator-timestamp", &u64::MAX.to_string()],
         );
 
         let args = KinesisSourceFields {
@@ -11811,78 +11878,101 @@ mod tests {
 
     #[test]
     fn parse_postgres_table_mapping_json_rejects_invalid_objects() {
-        let cases = [
+        let fields = POSTGRES_TABLE_MAPPING_JSON_FIELDS;
+        // serde's own diagnostic for a value, which the error passes through.
+        let serde_detail = |raw: &str| {
+            serde_json::from_value::<PostgresTableMappingJson>(serde_json::from_str(raw).unwrap())
+                .err()
+                .expect("the value has the wrong type")
+                .to_string()
+        };
+        let wrong_type = r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":"id"}"#;
+        // Each input breaks one rule, so each fails on its own branch; the
+        // error names what it rejected.
+        let cases: Vec<(&str, Vec<String>)> = vec![
             // Not JSON, and not an object.
-            ("{ nope", "invalid JSON"),
+            (
+                "{ nope",
+                vec![
+                    serde_json::from_str::<serde_json::Value>("{ nope")
+                        .unwrap_err()
+                        .to_string(),
+                ],
+            ),
             (
                 r#"["public.users"]"#,
-                "expected a JSON object with the fields sourceSchemaName",
+                fields.iter().map(|field| field.to_string()).collect(),
             ),
             // A typo in a field name is rejected instead of being ignored.
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
-                "unknown field excludeColumns; valid fields are sourceSchemaName",
+                std::iter::once("excludeColumns")
+                    .chain(fields.iter().copied())
+                    .map(str::to_string)
+                    .collect(),
             ),
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","engine":"Null","order":"id"}"#,
-                "unknown fields engine, order",
+                vec!["engine".into(), "order".into()],
             ),
             // Wrong JSON type for a known field.
-            (
-                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":"id"}"#,
-                "invalid type: string \"id\", expected a sequence",
-            ),
+            (wrong_type, vec![serde_detail(wrong_type)]),
             // Required fields, absent or empty.
             (
                 r#"{"sourceTable":"users","targetTable":"users"}"#,
-                "sourceSchemaName is required and must not be empty",
+                vec!["sourceSchemaName".into()],
             ),
             (
                 r#"{"sourceSchemaName":"public","targetTable":"users"}"#,
-                "sourceTable is required and must not be empty",
+                vec!["sourceTable".into()],
             ),
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
-                "targetTable is required and must not be empty",
+                vec!["targetTable".into()],
             ),
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"  "}"#,
-                "targetTable is required and must not be empty",
+                vec!["targetTable".into()],
             ),
             // Empty list entries.
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludedColumns":["ssn",""]}"#,
-                "excludedColumns must not contain an empty entry",
+                vec!["excludedColumns".into()],
             ),
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":[" "]}"#,
-                "sortingKeys must not contain an empty entry",
+                vec!["sortingKeys".into()],
             ),
             // The two contradictions between sortingKeys and its flag.
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","useCustomSortingKey":true}"#,
-                "useCustomSortingKey is true but sortingKeys is empty",
+                vec!["useCustomSortingKey".into(), "sortingKeys".into()],
             ),
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
-                "sortingKeys is set but useCustomSortingKey is false",
+                vec!["useCustomSortingKey".into(), "sortingKeys".into()],
             ),
             // An unknown table engine is caught here rather than reaching the
-            // API, because the engine cannot be changed after creation.
+            // API, because the engine cannot be changed after creation. The
+            // error names the field, the value and every accepted engine.
             (
                 r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
-                "invalid tableEngine: unknown value 'MergeTre', expected one of: \
-                 MergeTree, ReplacingMergeTree, Null",
+                ["tableEngine", "'MergeTre'"]
+                    .into_iter()
+                    .chain(
+                        ClickPipePostgresPipeTableMappingTableengine::VALUES
+                            .iter()
+                            .copied(),
+                    )
+                    .map(str::to_string)
+                    .collect(),
             ),
         ];
 
-        for (raw, diagnostic) in cases {
+        for (raw, names) in cases {
             let error = parse_postgres_table_mapping_json(0, raw).unwrap_err();
-            assert!(
-                error.message.contains(diagnostic),
-                "expected `{diagnostic}` in: {}",
-                error.message
-            );
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            assert_names(&error.message, &names);
             // Every diagnostic names the offending flag occurrence.
             assert!(
                 error.message.starts_with("--table-mapping-json #1: "),
@@ -11890,6 +11980,44 @@ mod tests {
                 error.message
             );
         }
+
+        // A missing or blank field names only that field, unlike the
+        // not-an-object error that lists them all.
+        for (raw, field) in [
+            (
+                r#"{"sourceTable":"users","targetTable":"users"}"#,
+                "sourceSchemaName",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"  "}"#,
+                "targetTable",
+            ),
+        ] {
+            let message = parse_postgres_table_mapping_json(0, raw)
+                .unwrap_err()
+                .message;
+            let named: Vec<_> = fields
+                .iter()
+                .filter(|name| names_word(&message, name))
+                .collect();
+            assert_eq!(named, [&field], "{message}");
+        }
+
+        // The two sortingKeys contradictions are told apart.
+        let contradiction = |use_custom: &str, keys: &str| {
+            parse_postgres_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","useCustomSortingKey":{use_custom},"sortingKeys":{keys}}}"#
+                ),
+            )
+            .unwrap_err()
+            .message
+        };
+        assert_ne!(
+            contradiction("true", "[]"),
+            contradiction("false", r#"["id"]"#)
+        );
 
         // The occurrence number is one-based over the flag's own values.
         let error = parse_postgres_table_mapping_json(2, "{ nope").unwrap_err();
@@ -12053,35 +12181,37 @@ mod tests {
     #[test]
     fn mongodb_table_mapping_json_rejects_invalid_structured_ingestion() {
         let base = r#""sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t""#;
-        let cases = [
-            (r#"{}"#, "missing field `enabled`"),
-            (r#"{"enabled":true,"sortKeys":[]}"#, "unknown field"),
+        // Each input breaks one rule; the error names the offending field
+        // (and the duplicated entry).
+        let cases: [(&str, &[&str]); 7] = [
+            (r#"{}"#, &["`enabled`"]),
             (
-                r#"{"enabled":true,"columns":[{"name":"a"}]}"#,
-                "missing field `type`",
+                r#"{"enabled":true,"sortKeys":[]}"#,
+                &["`structuredIngestion.sortKeys`"],
             ),
+            (r#"{"enabled":true,"columns":[{"name":"a"}]}"#, &["`type`"]),
             (
                 r#"{"enabled":true,"columns":[{"name":"","type":"String"}]}"#,
-                "structuredIngestion.columns[].name is required",
+                &["structuredIngestion.columns[].name"],
             ),
             (
                 r#"{"enabled":true,"excludedColumns":["a","a"]}"#,
-                "structuredIngestion.excludedColumns must not contain duplicate entry 'a'",
+                &["structuredIngestion.excludedColumns", "'a'"],
             ),
             (
                 r#"{"enabled":true,"sortingKeys":["_id",""]}"#,
-                "structuredIngestion.sortingKeys must not contain an empty entry",
+                &["structuredIngestion.sortingKeys"],
             ),
             (
                 r#"{"enabled":true,"partitionByExpr":" "}"#,
-                "structuredIngestion.partitionByExpr is required",
+                &["structuredIngestion.partitionByExpr"],
             ),
         ];
-        for (ingestion, diagnostic) in cases {
+        for (ingestion, names) in cases {
             let raw = format!(r#"{{{base},"structuredIngestion":{ingestion}}}"#);
             let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
             assert!(error.message.starts_with("--table-mapping-json #1: "));
-            assert!(error.message.contains(diagnostic), "{}", error.message);
+            assert_names(&error.message, names);
         }
     }
 
@@ -12105,18 +12235,19 @@ mod tests {
             );
         }
 
-        for (config, diagnostic) in [
-            (r#"{}"#, "missing field `persistDeletedDocuments`"),
+        // serde's diagnostics pass through; each names the field or value.
+        for (config, name) in [
+            (r#"{}"#, "`persistDeletedDocuments`"),
             (
                 r#"{"persistDeletedDocuments":true,"preImages":true}"#,
-                "unknown field",
+                "`mongoConfig.preImages`",
             ),
-            (r#"{"persistDeletedDocuments":"yes"}"#, "invalid type"),
+            (r#"{"persistDeletedDocuments":"yes"}"#, "\"yes\""),
         ] {
             let raw = format!(r#"{{{base},"mongoConfig":{config}}}"#);
             let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
             assert!(error.message.starts_with("--table-mapping-json #1: "));
-            assert!(error.message.contains(diagnostic), "{}", error.message);
+            assert_names(&error.message, &[name]);
         }
     }
 
@@ -12156,42 +12287,46 @@ mod tests {
 
     #[test]
     fn non_postgres_table_mapping_json_rejects_invalid_objects() {
-        let mysql_cases = [
-            ("{ nope", "invalid JSON"),
-            (r#"["db.t"]"#, "expected a JSON object"),
+        let not_json = serde_json::from_str::<serde_json::Value>("{ nope")
+            .unwrap_err()
+            .to_string();
+        // Each input breaks one rule; the error names what it rejected.
+        let mysql_cases: [(&str, &[&str]); 9] = [
+            ("{ nope", &[&not_json]),
+            (r#"["db.t"]"#, MYSQL_TABLE_MAPPING_JSON_FIELDS),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludeColumns":[]}"#,
-                "unknown field excludeColumns",
+                &["excludeColumns"],
             ),
             (
                 r#"{"sourceTable":"t","targetTable":"t"}"#,
-                "missing field `sourceSchemaName`",
+                &["`sourceSchemaName`"],
             ),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludedColumns":["id",""]}"#,
-                "excludedColumns must not contain an empty entry",
+                &["excludedColumns"],
             ),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id","id"]}"#,
-                "sortingKeys must not contain duplicate entry 'id'",
+                &["sortingKeys", "'id'"],
             ),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","useCustomSortingKey":true}"#,
-                "useCustomSortingKey is true but sortingKeys is empty",
+                &["useCustomSortingKey", "sortingKeys"],
             ),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id"],"useCustomSortingKey":false}"#,
-                "sortingKeys is set but useCustomSortingKey is false",
+                &["useCustomSortingKey", "sortingKeys"],
             ),
             (
                 r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","tableEngine":"MergeTre"}"#,
-                "invalid tableEngine: unknown value 'MergeTre'",
+                &["tableEngine", "'MergeTre'"],
             ),
         ];
-        for (raw, diagnostic) in mysql_cases {
+        for (raw, names) in mysql_cases {
             let error = parse_mysql_table_mapping_json(1, raw).unwrap_err();
             assert!(error.message.starts_with("--table-mapping-json #2: "));
-            assert!(error.message.contains(diagnostic), "{}", error.message);
+            assert_names(&error.message, names);
         }
 
         let mongodb = parse_mongodb_table_mapping_json(
@@ -12199,13 +12334,13 @@ mod tests {
             r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","sortingKeys":[]}"#,
         )
         .unwrap_err();
-        assert!(mongodb.message.contains("unknown field sortingKeys"));
+        assert_names(&mongodb.message, &["sortingKeys"]);
         let bigquery = parse_bigquery_table_mapping_json(
             0,
             r#"{"sourceDatasetName":"ds","sourceTable":"","targetTable":"t"}"#,
         )
         .unwrap_err();
-        assert!(bigquery.message.contains("sourceTable is required"));
+        assert_names(&bigquery.message, &["sourceTable"]);
     }
 
     #[test]
@@ -12318,71 +12453,71 @@ mod tests {
             {
                 let mut args = postgres_builder_args();
                 args.port = 0;
-                (args, "--port must be in the range 1..=65535")
+                (args, &["--port", "1..=65535"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.table_mappings.clear();
                 (
                     args,
-                    "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
-                     --table-mapping-json <JSON> is required",
+                    &[
+                        "--table-mapping <SCHEMA.TABLE:TARGET_TABLE>",
+                        "--table-mapping-json <JSON>",
+                    ][..],
                 )
             },
             {
                 let mut args = postgres_builder_args();
                 args.table_mappings_json = vec!["{}".into()];
-                (
-                    args,
-                    "--table-mapping-json #1: sourceSchemaName is required",
-                )
+                (args, &["--table-mapping-json #1: ", "sourceSchemaName"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.table_mappings = vec![".events:events".into()];
-                (args, "source schema must not be empty")
+                (args, &["'.events:events'"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.auth = "IAM_ROLE".into();
-                (args, "--auth IAM_ROLE requires --iam-role")
+                (args, &["--auth IAM_ROLE", "--iam-role <IAM_ROLE>"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.iam_role = Some("arn:role".into());
-                (args, "--iam-role cannot be used with --auth basic")
+                (args, &["--iam-role", "--auth basic"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.replication_slot_name = Some("slot".into());
-                (args, "--replication-slot-name can only be used")
+                (
+                    args,
+                    &["--replication-slot-name", "--replication-mode cdc_only"][..],
+                )
             },
             {
                 let mut args = postgres_builder_args();
                 args.disable_tls = true;
                 args.tls_host = Some("postgres.internal.example".into());
-                (args, "--tls-host cannot be used with --disable-tls")
+                (args, &["--tls-host", "--disable-tls"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.disable_tls = true;
                 args.ca_certificate = Some("secret-ca-path".into());
-                (args, "--ca-certificate cannot be used with --disable-tls")
+                (args, &["--ca-certificate", "--disable-tls"][..])
             },
             {
                 let mut args = postgres_builder_args();
                 args.disable_tls = true;
                 args.skip_cert_verification = true;
-                (
-                    args,
-                    "--skip-cert-verification cannot be used with --disable-tls",
-                )
+                (args, &["--skip-cert-verification", "--disable-tls"][..])
             },
         ];
 
-        for (args, diagnostic) in cases {
+        // Each case breaks one rule; the error names the flags involved.
+        for (args, names) in cases {
             let error = build_postgres_request(&args).unwrap_err();
-            assert!(error.message.contains(diagnostic), "{}", error.message);
+            assert_names(&error.message, names);
         }
     }
 
@@ -12585,12 +12720,12 @@ mod tests {
             {
                 let mut args = mysql_builder_args();
                 args.auth = "IAM_ROLE".into();
-                (args, "--auth IAM_ROLE requires --iam-role <IAM_ROLE>")
+                (args, &["--auth IAM_ROLE", "--iam-role <IAM_ROLE>"][..])
             },
             {
                 let mut args = mysql_builder_args();
                 args.iam_role = Some("arn:role".into());
-                (args, "--iam-role cannot be used with --auth basic")
+                (args, &["--iam-role", "--auth basic"][..])
             },
             {
                 let mut args = mysql_builder_args();
@@ -12598,7 +12733,12 @@ mod tests {
                 args.iam_role = Some("arn:role".into());
                 (
                     args,
-                    "--username and --password cannot be used with --auth IAM_ROLE",
+                    &[
+                        "--username",
+                        "--password",
+                        "--auth IAM_ROLE",
+                        "--auth basic",
+                    ][..],
                 )
             },
             {
@@ -12607,31 +12747,42 @@ mod tests {
                 args.password = None;
                 (
                     args,
-                    "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+                    &[
+                        "--auth basic",
+                        "--username <USERNAME>",
+                        "--password <PASSWORD>",
+                    ][..],
                 )
             },
             {
                 let mut args = mysql_builder_args();
                 args.table_mappings = vec!["source.events".into()];
-                (args, "invalid table mapping")
+                (args, &["'source.events'"][..])
             },
             {
                 let mut args = mysql_builder_args();
                 args.sync_interval_seconds = Some(0);
-                (args, "--sync-interval-seconds must be at least 1")
+                (args, &["--sync-interval-seconds"][..])
             },
             {
                 let mut args = mysql_builder_args();
                 args.disable_tls = true;
                 args.skip_cert_verification = true;
-                (args, "--disable-tls cannot be combined")
+                (args, &["--disable-tls", "--skip-cert-verification"][..])
             },
         ];
 
-        for (args, diagnostic) in cases {
+        // Each case breaks one rule; the error names the flags involved.
+        for (args, names) in cases {
             let error = build_mysql_request(&args).unwrap_err();
-            assert!(error.message.contains(diagnostic), "{}", error.message);
+            assert_names(&error.message, names);
         }
+
+        // A minimum names its bound.
+        let mut args = mysql_builder_args();
+        args.sync_interval_seconds = Some(0);
+        let message = build_mysql_request(&args).unwrap_err().message;
+        assert!(names_word(&message, "1"), "{message}");
     }
 
     #[test]
@@ -12685,12 +12836,9 @@ mod tests {
         }
         let mut args = mongodb_builder_args();
         args.initial_load_parallelism = Some(0);
-        assert!(
-            build_mongodb_request(&args)
-                .unwrap_err()
-                .message
-                .contains("--initial-load-parallelism must be at least 1")
-        );
+        let message = build_mongodb_request(&args).unwrap_err().message;
+        assert_names(&message, &["--initial-load-parallelism"]);
+        assert!(names_word(&message, "1"), "{message}");
     }
 
     fn mongodb_builder_args() -> MongoDbCreateArgs {
@@ -12806,17 +12954,14 @@ mod tests {
         let mut args = mongodb_builder_args();
         args.snapshot_rows_per_partition = Some(999);
         let error = build_mongodb_request(&args).unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("--snapshot-rows-per-partition must be at least 1000")
-        );
+        assert_names(&error.message, &["--snapshot-rows-per-partition"]);
+        assert!(names_word(&error.message, "1000"), "{}", error.message);
 
         args.snapshot_rows_per_partition = None;
         args.disable_tls = true;
         args.tls_host = Some("mongo.internal".into());
         let error = build_mongodb_request(&args).unwrap_err();
-        assert!(error.message.contains("--disable-tls cannot be combined"));
+        assert_names(&error.message, &["--disable-tls", "--tls-host"]);
     }
 
     fn bigquery_builder_args(service_account_file: String) -> BigQueryCreateArgs {
@@ -12975,7 +13120,8 @@ mod tests {
 
             let error = build_bigquery_request(&args).unwrap_err().to_string();
 
-            assert_eq!(error, format!("invalid {flag}: expected a finite number"));
+            // Validation runs before the (missing) key file is read.
+            assert_names(&error, &[flag]);
         }
     }
 
@@ -13055,7 +13201,7 @@ mod tests {
     fn parse_columns_missing_colon_errors() {
         let columns = vec!["id_without_type".to_string()];
         let error = parse_columns(&columns).unwrap_err();
-        assert!(error.message.contains("expected name:type"));
+        assert_names(&error.message, &["id_without_type", "name:type"]);
     }
 
     #[test]
@@ -13337,7 +13483,10 @@ mod tests {
         for blank in ["", "   ", "\t"] {
             let error = parse_destination_role_name(blank)
                 .expect_err("a blank role name must be rejected client-side");
-            assert!(error.message.contains("must not be empty"), "{error:?}");
+            // Not the reserved-name rejection, which lists the reserved names.
+            for name in RESERVED_DESTINATION_ROLES {
+                assert!(!error.message.contains(name), "{error:?}");
+            }
         }
     }
 
@@ -13351,11 +13500,7 @@ mod tests {
         ] {
             let error = parse_destination_role_name(reserved)
                 .expect_err("reserved role names must be rejected client-side");
-            assert!(
-                error.message.contains("reserved by ClickPipes"),
-                "{error:?}"
-            );
-            assert!(error.message.contains("clickpipes_system"), "{error:?}");
+            assert_names(&error.message, RESERVED_DESTINATION_ROLES);
         }
     }
 
@@ -13600,10 +13745,7 @@ mod tests {
             let error = clickpipe_parse_error(&reserved);
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             assert_eq!(error.exit_code(), 2);
-            assert!(
-                error.to_string().contains("reserved by ClickPipes"),
-                "{subcommand}: {error}"
-            );
+            assert_names(&error.to_string(), RESERVED_DESTINATION_ROLES);
         }
     }
 
@@ -13739,10 +13881,7 @@ mod tests {
             let mut args = kafka_args().source;
             args.auth = Some(auth.into());
             let error = build_kafka_source(&args).unwrap_err();
-            assert_eq!(
-                error.message,
-                format!("{auth} requires --username and --password")
-            );
+            assert_names(&error.message, &[auth, "--username", "--password"]);
         }
 
         let mut args = kafka_args().source;
@@ -13858,12 +13997,17 @@ mod tests {
         let mut args = kafka_args().source;
         args.protobuf_schema_file = Some("/file/that/does/not/exist".into());
         let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("--format Protobuf"), "{error:?}");
+        assert_names(
+            &error.message,
+            &["--protobuf-schema-file", "--format Protobuf"],
+        );
 
+        // Already Protobuf, so this rejects the registry flags instead.
         args.format = "Protobuf".into();
         args.schema_registry_url = Some("https://registry.example".into());
-        let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("schema registry flags"), "{error:?}");
+        let registry = build_kafka_source(&args).unwrap_err();
+        assert_names(&registry.message, &["--protobuf-schema-file"]);
+        assert_ne!(registry.message, error.message);
     }
 
     #[test]
@@ -13876,7 +14020,13 @@ mod tests {
         args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
 
         let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("1048576 bytes"), "{error:?}");
+        assert!(
+            names_word(
+                &error.message,
+                &PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH.to_string()
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -13889,7 +14039,7 @@ mod tests {
         args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
 
         let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("was empty"), "{error:?}");
+        assert_names(&error.message, &[&format!("'{}'", schema.display())]);
     }
 
     #[test]
@@ -13914,12 +14064,21 @@ mod tests {
         let mut args = kafka_args().source;
         args.event_hubs_connection_string = Some("Endpoint=sb://events.example/".into());
         let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("--kafka-type azureeventhub"));
+        assert_names(
+            &error.message,
+            &[
+                "--event-hubs-connection-string",
+                "--kafka-type azureeventhub",
+            ],
+        );
 
         args.kafka_type = "azureeventhub".into();
         args.auth = Some("SCRAM-SHA-256".into());
         let error = build_kafka_source(&args).unwrap_err();
-        assert!(error.message.contains("only --auth PLAIN"));
+        assert_names(
+            &error.message,
+            &["--event-hubs-connection-string", "--auth PLAIN"],
+        );
     }
 
     #[test]
@@ -14111,7 +14270,7 @@ mod tests {
         protobuf.protobuf_schema_file = Some("/file/that/does/not/exist".into());
         protobuf.schema_registry_type = Some("glue".into());
         let error = build_kafka_source(&protobuf).unwrap_err();
-        assert!(error.message.contains("schema registry flags"), "{error:?}");
+        assert_names(&error.message, &["--protobuf-schema-file"]);
     }
 
     #[test]
@@ -14705,11 +14864,11 @@ mod tests {
             "--auth",
             "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
         ]);
-        assert!(
-            build_object_storage_source(&wrong_provider)
+        assert_names(
+            &build_object_storage_source(&wrong_provider)
                 .unwrap_err()
-                .message
-                .contains("--storage-type gcs")
+                .message,
+            &["SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "--storage-type gcs"],
         );
 
         let with_key = parse_object_storage_discovery(&[
@@ -14724,11 +14883,10 @@ mod tests {
             "--service-account-file",
             "/missing/must-not-be-read.json",
         ]);
-        assert!(
-            build_object_storage_source(&with_key)
-                .unwrap_err()
-                .message
-                .contains("cannot be combined")
+        // Rejected before the key file is read, so the error is not an I/O one.
+        assert_names(
+            &build_object_storage_source(&with_key).unwrap_err().message,
+            &["--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY"],
         );
     }
 
@@ -14750,22 +14908,17 @@ mod tests {
     fn kafka_workload_identity_rejects_provider_and_credentials() {
         let mut args = kafka_args().source;
         args.auth = Some("SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into());
-        assert!(
-            build_kafka_source(&args)
-                .unwrap_err()
-                .message
-                .contains("--kafka-type gcmk")
+        assert_names(
+            &build_kafka_source(&args).unwrap_err().message,
+            &["SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "--kafka-type gcmk"],
         );
 
         args.kafka_type = "gcmk".into();
         args.username = Some("user".into());
         args.password = Some("password".into());
-        assert!(
-            build_kafka_source(&args)
-                .unwrap_err()
-                .message
-                .contains("cannot be combined")
-        );
+        let message = build_kafka_source(&args).unwrap_err().message;
+        assert_names(&message, &["--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY"]);
+        assert!(!message.contains("--kafka-type"), "{message}");
     }
 
     #[test]
@@ -14811,11 +14964,15 @@ mod tests {
             "--service-account-file",
             "/missing/must-not-be-read.json",
         ]);
-        assert!(
-            build_pubsub_source(&workload_with_key.source)
+        // Rejected before the key file is read, so the error is not an I/O one.
+        assert_names(
+            &build_pubsub_source(&workload_with_key.source)
                 .unwrap_err()
-                .message
-                .contains("cannot be used")
+                .message,
+            &[
+                "--service-account-file",
+                "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ],
         );
 
         let service_account_without_key = parse_pubsub_create(&[
@@ -14828,12 +14985,14 @@ mod tests {
             "--seek-type",
             "earliest",
         ]);
-        assert!(
-            build_pubsub_source(&service_account_without_key.source)
-                .unwrap_err()
-                .message
-                .contains("requires --service-account-file")
+        let message = build_pubsub_source(&service_account_without_key.source)
+            .unwrap_err()
+            .message;
+        assert_names(
+            &message,
+            &["--auth SERVICE_ACCOUNT", "--service-account-file"],
         );
+        assert!(!message.contains("WORKLOAD_IDENTITY"), "{message}");
     }
 
     #[test]
@@ -14857,30 +15016,33 @@ mod tests {
     fn bigquery_authentication_validates_project_and_key_before_file_io() {
         let mut workload = bigquery_builder_args("/missing/must-not-be-read.json".into());
         workload.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
-        assert!(
-            build_bigquery_request(&workload)
-                .unwrap_err()
-                .message
-                .contains("cannot be used")
+        assert_names(
+            &build_bigquery_request(&workload).unwrap_err().message,
+            &[
+                "--service-account-file",
+                "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ],
         );
 
         workload.service_account_file = None;
-        assert!(
-            build_bigquery_request(&workload)
-                .unwrap_err()
-                .message
-                .contains("requires --project-id")
+        let message = build_bigquery_request(&workload).unwrap_err().message;
+        assert_names(
+            &message,
+            &["--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "--project-id"],
         );
+        assert!(!message.contains("--service-account-file"), "{message}");
 
         let service_account = bigquery_builder_args("/missing/key.json".into());
         let mut service_account_without_key = service_account;
         service_account_without_key.service_account_file = None;
-        assert!(
-            build_bigquery_request(&service_account_without_key)
-                .unwrap_err()
-                .message
-                .contains("requires --service-account-file")
+        let message = build_bigquery_request(&service_account_without_key)
+            .unwrap_err()
+            .message;
+        assert_names(
+            &message,
+            &["--auth SERVICE_ACCOUNT", "--service-account-file"],
         );
+        assert!(!message.contains("WORKLOAD_IDENTITY"), "{message}");
     }
     #[test]
     fn parses_bigquery_cdc_controls_and_rejects_invalid_values() {
@@ -15024,9 +15186,9 @@ mod tests {
             assert_eq!(args.replication_mode, "snapshot");
             let error = build_bigquery_request(&args).unwrap_err();
             assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
-            assert_eq!(
-                error.message,
-                "--sync-cron cannot be used with --replication-mode snapshot"
+            assert_names(
+                &error.message,
+                &["--sync-cron", "--replication-mode snapshot"],
             );
         }
     }
@@ -15139,28 +15301,42 @@ mod tests {
                 error.message
             );
         }
-        for (flag, minimum) in [("sync", 1), ("parallelism", 1), ("delay", 0), ("window", 1)] {
+        for (flag, minimum) in [
+            ("--sync-interval-seconds", 1),
+            ("--query-cdc-pull-sync-parallelism", 1),
+            ("--sync-delay-seconds", 0),
+            ("--pull-window-size-seconds", 1),
+        ] {
             let mut args = bigquery_builder_args("/missing/key.json".into());
             match flag {
-                "sync" => args.sync_interval_seconds = Some(minimum - 1),
-                "parallelism" => args.query_cdc_pull_sync_parallelism = Some(minimum - 1),
-                "delay" => args.sync_delay_seconds = Some(minimum - 1),
+                "--sync-interval-seconds" => args.sync_interval_seconds = Some(minimum - 1),
+                "--query-cdc-pull-sync-parallelism" => {
+                    args.query_cdc_pull_sync_parallelism = Some(minimum - 1)
+                }
+                "--sync-delay-seconds" => args.sync_delay_seconds = Some(minimum - 1),
                 _ => args.pull_window_size_seconds = Some(minimum - 1),
             }
+            // The minimum, not the snapshot-mode rejection the same value
+            // would also hit.
+            let error = build_bigquery_request(&args).unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            assert_names(&error.message, &[flag]);
             assert!(
-                build_bigquery_request(&args)
-                    .unwrap_err()
-                    .message
-                    .contains("must be at least")
+                names_word(&error.message, &minimum.to_string()),
+                "{}",
+                error.message
+            );
+            assert!(
+                !error.message.contains("--replication-mode"),
+                "{}",
+                error.message
             );
         }
         let mut args = bigquery_builder_args("/missing/key.json".into());
         args.sync_delay_seconds = Some(0);
-        assert!(
-            build_bigquery_request(&args)
-                .unwrap_err()
-                .message
-                .contains("snapshot")
+        assert_names(
+            &build_bigquery_request(&args).unwrap_err().message,
+            &["--sync-delay-seconds", "--replication-mode snapshot"],
         );
     }
 }

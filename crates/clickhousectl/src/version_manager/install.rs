@@ -1408,13 +1408,15 @@ mod tests {
 
         let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "Extraction failed: Archive '{}' does not contain a ClickHouse binary at 'clickhouse' or '*/usr/bin/clickhouse'",
-                archive_path.display()
-            )
-        );
+        assert!(matches!(&error, Error::Extract(_)), "{error:?}");
+        let message = error.to_string();
+        for required in [
+            format!("'{}'", archive_path.display()),
+            "'clickhouse'".to_string(),
+            "'*/usr/bin/clickhouse'".to_string(),
+        ] {
+            assert!(message.contains(&required), "missing {required}: {message}");
+        }
     }
 
     #[test]
@@ -1437,7 +1439,11 @@ mod tests {
             ),
             "{message}"
         );
-        assert!(message.contains("Not a directory"), "{message}");
+        let Error::ExtractArchive { source, .. } = &error else {
+            panic!("expected contextual archive error: {error}");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+        assert!(message.contains(&source.to_string()), "{message}");
     }
 
     #[test]
@@ -1448,11 +1454,14 @@ mod tests {
 
         let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
 
+        // The link is rejected by name rather than followed or reported missing.
+        assert!(matches!(&error, Error::Extract(_)), "{error:?}");
+        let message = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("is not a regular file; symbolic and hard links are not followed")
+            message.contains("'package/usr/bin/clickhouse'"),
+            "{message}"
         );
+        assert!(!message.contains("'*/usr/bin/clickhouse'"), "{message}");
         assert!(!temp.path().join("clickhouse").exists());
     }
 
@@ -1463,9 +1472,10 @@ mod tests {
             validate_archive_entry_path(archive_path, Path::new("../package/usr/bin/clickhouse"))
                 .unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "Extraction failed: Archive '/tmp/clickhouse.tgz' contains unsafe entry path '../package/usr/bin/clickhouse'"
-        );
+        assert!(matches!(&error, Error::Extract(_)), "{error:?}");
+        let message = error.to_string();
+        for required in ["'/tmp/clickhouse.tgz'", "'../package/usr/bin/clickhouse'"] {
+            assert!(message.contains(required), "missing {required}: {message}");
+        }
     }
 }

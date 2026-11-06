@@ -328,10 +328,10 @@ mod tests {
                 .contains("removed-command")
         );
         let duplicate = declarations().next().unwrap();
+        let error = decorate_with(raw_command(), declarations().chain([duplicate])).unwrap_err();
         assert!(
-            decorate_with(raw_command(), declarations().chain([duplicate]))
-                .unwrap_err()
-                .contains("duplicate")
+            error.starts_with(&format!("{}: ", duplicate.path)),
+            "{error}"
         );
         assert!(validate_declaration(&Declaration::api("empty", &[])).is_err());
         assert!(validate_declaration(&Declaration::non_api("empty", " ")).is_err());

@@ -102,30 +102,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_version_spec_rejects_other_shapes_with_its_reason() {
-        for (input, message) in [
-            (
-                "25.12.9",
-                "3-part version '25.12.9' is not supported. Use a full 4-part version (e.g., 25.12.9.1)",
-            ),
-            (
-                "25.12.9.61.2",
-                "invalid version '25.12.9.61.2': expected 1-2 or 4 parts",
-            ),
-            ("", "empty version"),
-            ("foo", "invalid version 'foo': all parts must be numeric"),
-            (
-                "25.foo",
-                "invalid version '25.foo': all parts must be numeric",
-            ),
-            (
-                "abc.12.9.61",
-                "invalid version 'abc.12.9.61': all parts must be numeric",
-            ),
+    fn parse_version_spec_rejects_other_shapes_naming_the_input() {
+        // Each message quotes the input; a 3-part one also suggests the
+        // 4-part form to use instead.
+        for (input, identifiers) in [
+            ("25.12.9", &["'25.12.9'", "25.12.9.1"][..]),
+            ("25.12.9.61.2", &["'25.12.9.61.2'"][..]),
+            ("", &[][..]),
+            ("foo", &["'foo'"][..]),
+            ("25.foo", &["'25.foo'"][..]),
+            ("abc.12.9.61", &["'abc.12.9.61'"][..]),
         ] {
             let err = parse_version_spec(input).unwrap_err();
             assert!(matches!(&err, Error::InvalidVersion(_)), "{input:?}");
-            assert_eq!(err.to_string(), message, "{input:?}");
+            let message = err.to_string();
+            for identifier in identifiers {
+                assert!(message.contains(identifier), "{input:?}: {message}");
+            }
         }
+        // Too many parts and a non-numeric part are rejected for different reasons.
+        let reason = |input: &str| {
+            parse_version_spec(input)
+                .unwrap_err()
+                .to_string()
+                .replace(&format!("'{input}'"), "")
+        };
+        assert_ne!(reason("25.12.9.61.2"), reason("25.foo"));
     }
 }

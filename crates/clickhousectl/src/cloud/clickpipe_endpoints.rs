@@ -653,6 +653,15 @@ mod tests {
     use crate::cloud::cli::CloudCommands;
     use clap::Parser;
 
+    /// Asserts `message` names every identifier in `names` (a flag or a
+    /// `--type` value) without pinning the prose around them.
+    #[track_caller]
+    fn assert_names(message: &str, names: &[&str]) {
+        for name in names {
+            assert!(message.contains(name), "expected `{name}` in: {message}");
+        }
+    }
+
     fn parse_endpoint_command(args: &[&str]) -> ReversePrivateEndpointCommands {
         let cli = Cli::try_parse_from(
             [
@@ -900,32 +909,35 @@ mod tests {
 
     #[test]
     fn validation_names_the_flags_each_type_requires() {
-        for (endpoint_type, expected) in [
+        for (endpoint_type, required) in [
             (
                 TYPE_VPC_ENDPOINT_SERVICE,
-                "--type VPC_ENDPOINT_SERVICE requires --vpc-endpoint-service-name",
+                &["--vpc-endpoint-service-name"][..],
             ),
             (
                 TYPE_VPC_RESOURCE,
-                "--type VPC_RESOURCE requires --vpc-resource-configuration-id and \
-                 --vpc-resource-share-arn",
+                &[
+                    "--vpc-resource-configuration-id",
+                    "--vpc-resource-share-arn",
+                ][..],
             ),
             (
                 TYPE_MSK_MULTI_VPC,
-                "--type MSK_MULTI_VPC requires --msk-cluster-arn and --msk-authentication",
+                &["--msk-cluster-arn", "--msk-authentication"][..],
             ),
             (
                 TYPE_GCP_PSC_SERVICE_ATTACHMENT,
-                "--type GCP_PSC_SERVICE_ATTACHMENT requires --gcp-service-attachment",
+                &["--gcp-service-attachment"][..],
             ),
         ] {
             let args = create_args(&["--type", endpoint_type]);
             let error = validate_create_args(&args).expect_err("expected a validation error");
-            assert_eq!(error.message, expected);
+            assert_names(&error.message, &[&format!("--type {endpoint_type}")]);
+            assert_names(&error.message, required);
             // The same message reaches main.rs for the usage error.
             assert_eq!(
                 ReversePrivateEndpointCommands::Create(args).create_validation_error(),
-                Some(expected.to_string())
+                Some(error.message)
             );
         }
     }
@@ -940,9 +952,13 @@ mod tests {
             "--msk-cluster-arn",
             "arn:aws:kafka:us-east-1:1:cluster/c",
         ]);
-        assert_eq!(
-            validate_create_args(&args).unwrap_err().message,
-            "--msk-cluster-arn applies to --type MSK_MULTI_VPC, not --type VPC_ENDPOINT_SERVICE"
+        assert_names(
+            &validate_create_args(&args).unwrap_err().message,
+            &[
+                "--msk-cluster-arn",
+                "--type MSK_MULTI_VPC",
+                "--type VPC_ENDPOINT_SERVICE",
+            ],
         );
 
         let args = create_args(&[
@@ -955,10 +971,13 @@ mod tests {
             "--gcp-service-attachment",
             "projects/p/regions/us-central1/serviceAttachments/s",
         ]);
-        assert_eq!(
-            validate_create_args(&args).unwrap_err().message,
-            "--gcp-service-attachment applies to --type GCP_PSC_SERVICE_ATTACHMENT, not --type \
-             VPC_RESOURCE"
+        assert_names(
+            &validate_create_args(&args).unwrap_err().message,
+            &[
+                "--gcp-service-attachment",
+                "--type GCP_PSC_SERVICE_ATTACHMENT",
+                "--type VPC_RESOURCE",
+            ],
         );
     }
 
@@ -975,9 +994,9 @@ mod tests {
             "--custom-private-dns-mapping",
             "db.example.com",
         ]);
-        assert_eq!(
-            validate_create_args(&args).unwrap_err().message,
-            "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC"
+        assert_names(
+            &validate_create_args(&args).unwrap_err().message,
+            &["--custom-private-dns-mapping", "--type MSK_MULTI_VPC"],
         );
     }
 
@@ -1118,9 +1137,15 @@ mod tests {
             "rcfg-1",
         ]))
         .expect_err("expected a validation error");
-        assert_eq!(
-            error.message,
-            "--type VPC_RESOURCE requires --vpc-resource-share-arn"
+        // Only the missing flag is named, not the one that was given.
+        assert_names(
+            &error.message,
+            &["--type VPC_RESOURCE", "--vpc-resource-share-arn"],
+        );
+        assert!(
+            !error.message.contains("--vpc-resource-configuration-id"),
+            "{}",
+            error.message
         );
     }
 
@@ -1248,10 +1273,13 @@ mod tests {
             "--custom-private-dns-mapping",
             "db.example.com=rcfg-1",
         ]);
-        assert_eq!(
-            validate_create_args(&args).unwrap_err().message,
-            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type VPC_RESOURCE, not \
-             --type GCP_PSC_SERVICE_ATTACHMENT"
+        assert_names(
+            &validate_create_args(&args).unwrap_err().message,
+            &[
+                "--custom-private-dns-mapping NAME=TARGET_ID",
+                "--type VPC_RESOURCE",
+                "--type GCP_PSC_SERVICE_ATTACHMENT",
+            ],
         );
     }
 

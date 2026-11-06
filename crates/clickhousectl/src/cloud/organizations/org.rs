@@ -523,8 +523,23 @@ fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// The endpoint keys a removal error names outside its quoted input.
+    pub(in crate::cloud::organizations) fn missing_endpoint_keys(
+        message: &str,
+        value: &str,
+    ) -> Vec<&'static str> {
+        let rest = message.replace(&format!("'{value}'"), "");
+        let tokens: Vec<&str> = rest
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .collect();
+        ["id", "cloud-provider", "region"]
+            .into_iter()
+            .filter(|key| tokens.contains(key))
+            .collect()
+    }
 
     #[test]
     fn notifications_table_tolerates_absent_fields() {
@@ -628,8 +643,9 @@ mod tests {
     fn parse_org_private_endpoint_remove_requires_non_empty_id() {
         for value in ["", "description=old", "id="] {
             let error = parse_org_private_endpoint_remove(value).unwrap_err();
-            assert!(
-                error.to_string().contains("requires a non-empty id"),
+            assert_eq!(
+                missing_endpoint_keys(&error.message, value),
+                ["id"],
                 "unexpected error for {value:?}: {error}"
             );
         }
@@ -637,21 +653,22 @@ mod tests {
 
     #[test]
     fn parse_org_private_endpoint_remove_requires_provider_and_region() {
-        for (value, required) in [
-            ("pe-1,region=us-east-1", "requires cloud-provider"),
-            ("pe-1,cloud-provider=aws", "requires region"),
-            ("pe-1", "requires cloud-provider and region"),
+        for (value, missing) in [
+            ("pe-1,region=us-east-1", &["cloud-provider"][..]),
+            ("pe-1,cloud-provider=aws", &["region"][..]),
+            ("pe-1", &["cloud-provider", "region"][..]),
             (
                 "pe-1,cloud-provider= ,region=us-east-1",
-                "requires a non-empty cloud-provider",
+                &["cloud-provider"][..],
             ),
-            (
-                "pe-1,cloud-provider=aws,region= ",
-                "requires a non-empty region",
-            ),
+            ("pe-1,cloud-provider=aws,region= ", &["region"][..]),
         ] {
             let error = parse_org_private_endpoint_remove(value).unwrap_err();
-            assert!(error.to_string().contains(required), "{error}");
+            assert_eq!(
+                missing_endpoint_keys(&error.message, value),
+                missing,
+                "{error}"
+            );
         }
     }
 

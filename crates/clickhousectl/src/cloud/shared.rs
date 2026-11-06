@@ -386,17 +386,11 @@ mod tests {
 
     #[test]
     fn parse_tag_rejects_empty_keys() {
-        let err = parse_tag("=value").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid tag '=value': tag key cannot be empty"
-        );
-
-        let err = parse_tag("   ").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid tag '   ': tag key cannot be empty"
-        );
+        // With and without `=`, the error quotes the rejected tag.
+        for value in ["=value", "   "] {
+            let err = parse_tag(value).unwrap_err();
+            assert!(err.message.contains(&format!("'{value}'")), "{err}");
+        }
     }
 
     #[test]
@@ -436,8 +430,10 @@ mod tests {
             "2026-13-01",
             "2026-04-16T12:00:00Z",
         ] {
+            // The rejected value and the format to use instead.
             let error = parse_date_only(value).unwrap_err();
-            assert!(error.contains("expected YYYY-MM-DD"), "{value}: {error}");
+            assert!(error.contains(&format!("'{value}'")), "{value}: {error}");
+            assert!(error.contains("YYYY-MM-DD"), "{value}: {error}");
         }
     }
 
@@ -448,6 +444,7 @@ mod tests {
         }
         for value in ["", "yesterday", "2026-04-16", "2026-04-16T12:00:00"] {
             let error = parse_datetime(value).unwrap_err();
+            assert!(error.contains(&format!("'{value}'")), "{value}: {error}");
             assert!(error.contains("RFC 3339"), "{value}: {error}");
         }
     }

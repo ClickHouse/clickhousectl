@@ -12419,7 +12419,7 @@ async fn key_create_json_prints_the_raw_response() {
 }
 
 #[tokio::test]
-async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
+async fn key_create_human_output_shows_the_secret_and_warns_about_deny_all() {
     let output = run_key_create(
         serde_json::json!({
             "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
@@ -12429,26 +12429,11 @@ async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
         &[],
     )
     .await;
-    // Each generated value is shown once, on its own line, under the label
-    // that tells the two IDs apart.
+    // Which label each value sits under is unit-tested on `render_key_created`
+    // in `api_keys`; here the confirmation must reach stdout with the secret.
     assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    for (label, value) in [
-        ("Name", "ci"),
-        (
-            "Management resource ID",
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        ),
-        ("Authentication key ID", "generated-key-id"),
-        ("Key Secret", "generated-key-secret"),
-    ] {
-        let lines: Vec<&str> = stdout
-            .lines()
-            .filter(|line| line.ends_with(&format!(": {value}")))
-            .collect();
-        assert_eq!(lines.len(), 1, "{value}: {stdout}");
-        assert_eq!(lines[0].trim(), format!("{label}: {value}"), "{stdout}");
-    }
+    assert!(stdout.contains("generated-key-secret"), "{stdout}");
     // No --ip-allow: one warning naming the flag and the command that adds one.
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(stderr.lines().count(), 1, "{stderr}");

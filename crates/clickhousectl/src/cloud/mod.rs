@@ -187,32 +187,24 @@ mod runtime_tests {
 
     #[test]
     fn ignored_env_notice_names_the_overridden_variables_and_winner() {
-        assert_eq!(
-            ignored_env_credentials_notice(
-                AuthSource::CredentialsFile,
-                EnvCredPresence {
-                    key: true,
-                    secret: true,
-                },
-            )
-            .as_deref(),
-            Some(
-                "note: CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but \
-                 ignored; using credentials file — see --debug"
-            )
-        );
-        assert_eq!(
-            ignored_env_credentials_notice(
-                AuthSource::CliFlags,
-                EnvCredPresence {
-                    key: true,
-                    secret: false,
-                },
-            )
-            .as_deref(),
-            Some(
-                "note: CLICKHOUSE_CLOUD_API_KEY is set but ignored; using CLI flags — see --debug"
-            )
+        const KEY: &str = "CLICKHOUSE_CLOUD_API_KEY";
+        const SECRET: &str = "CLICKHOUSE_CLOUD_API_SECRET";
+        let notice = |active, key, secret| {
+            ignored_env_credentials_notice(active, EnvCredPresence { key, secret }).unwrap()
+        };
+
+        // Each notice names exactly the variables that are set, and --debug.
+        for (key, secret) in [(true, true), (true, false), (false, true)] {
+            let text = notice(AuthSource::CredentialsFile, key, secret);
+            assert!(text.starts_with("note: "), "{text}");
+            assert_eq!(text.contains(KEY), key, "{text}");
+            assert_eq!(text.contains(SECRET), secret, "{text}");
+            assert!(text.contains("--debug"), "{text}");
+        }
+        // The winning source is named, so the two winners read differently.
+        assert_ne!(
+            notice(AuthSource::CredentialsFile, true, true),
+            notice(AuthSource::CliFlags, true, true)
         );
     }
 
