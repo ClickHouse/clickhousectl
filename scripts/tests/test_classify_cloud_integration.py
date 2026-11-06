@@ -66,6 +66,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/models/udfs.rs",
                 "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/client/backups.rs",
+                "crates/clickhouse-cloud-api/src/client/query.rs",
                 "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
                 "crates/clickhouse-cloud-api/src/client/saved_queries.rs",
                 "crates/clickhouse-cloud-api/src/models/backups.rs",

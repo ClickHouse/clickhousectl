@@ -1,4 +1,5 @@
-use super::{Auth, Client, query_api_error};
+use super::query::query_api_error;
+use super::{Auth, Client};
 use crate::error::Error;
 use crate::models::*;
 
