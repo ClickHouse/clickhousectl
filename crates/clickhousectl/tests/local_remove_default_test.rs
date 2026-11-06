@@ -169,9 +169,8 @@ fn removing_the_default_version_is_refused_and_changes_nothing() {
 
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
-    let named_default = format!("{DEFAULT_VERSION} is the current default");
     for required in [
-        named_default.as_str(),
+        DEFAULT_VERSION,
         "~/.clickhouse/default",
         "~/.local/bin/clickhouse",
         concat!("clickhousectl local use ", "25.12.9.61"),
@@ -200,7 +199,7 @@ fn refusing_to_remove_the_default_version_emits_the_structured_error() {
     assert_eq!(error["error"]["code"], "version_is_default");
     let message = error["error"]["message"].as_str().expect("message");
     for required in [
-        "current default",
+        DEFAULT_VERSION,
         "~/.clickhouse/default",
         "~/.local/bin/clickhouse",
         "--force",
@@ -267,15 +266,14 @@ fn force_removes_the_default_version_and_warns_about_the_marker_and_symlink() {
         output.status
     );
     assert!(
-        stderr.contains("Warning:")
-            && stderr.contains("is the default version")
+        stderr.starts_with("Warning: ")
+            && stderr.contains(DEFAULT_VERSION)
             && stderr.contains("~/.clickhouse/default")
             && stderr.contains("~/.local/bin/clickhouse"),
         "missing prominent warning: {stderr}"
     );
     assert!(
-        stdout.contains(&format!("Removed version {DEFAULT_VERSION}"))
-            && stdout.contains("clickhousectl local use latest"),
+        stdout.contains(DEFAULT_VERSION) && stdout.contains("clickhousectl local use latest"),
         "missing removal confirmation and recovery hint: {stdout}"
     );
 
@@ -354,8 +352,11 @@ fn a_stale_default_marker_still_guards_and_is_cleared_by_force() {
         "stderr: {}",
         stderr_of(&refused)
     );
+    // The default guard (not the running-server guard) refused: it names the
+    // default marker and the override.
     assert!(
-        stderr_of(&refused).contains("is the current default"),
+        stderr_of(&refused).contains("~/.clickhouse/default")
+            && stderr_of(&refused).contains("--force"),
         "stale marker must still guard: {}",
         stderr_of(&refused)
     );

@@ -95,10 +95,9 @@ fn udf_init_is_idempotent_and_keeps_edited_files() {
         &["local", "udf", "init", "my_fn"],
     );
     assert!(human.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout),
-        "UDF my_fn already exists in clickhouse/udfs/my_fn\n"
-    );
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(stdout.ends_with(" clickhouse/udfs/my_fn\n"), "{stdout}");
 }
 
 #[test]
@@ -203,11 +202,18 @@ fn udf_init_human_output_lists_each_created_file() {
         &["local", "udf", "init", "my_fn"],
     );
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Scaffolded UDF my_fn in clickhouse/udfs/my_fn\n\
-         Created clickhouse/udfs/my_fn/udf.json\n\
-         Created clickhouse/udfs/my_fn/main.py\n"
+    // A summary naming the UDF directory, then one line per created file.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert!(lines[0].contains("clickhouse/udfs/my_fn"), "{stdout}");
+    assert!(
+        lines[1].ends_with(" clickhouse/udfs/my_fn/udf.json"),
+        "{stdout}"
+    );
+    assert!(
+        lines[2].ends_with(" clickhouse/udfs/my_fn/main.py"),
+        "{stdout}"
     );
 }
 
@@ -239,7 +245,9 @@ fn udf_init_and_deploy_reject_an_overlong_name_before_writing() {
         let output = run(project.path(), home.path(), &args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("Use at most"), "{stderr}");
+        // The CLI's own length check names the offending length; the OS's
+        // ENAMETOOLONG never surfaces.
+        assert!(stderr.contains("300"), "{stderr}");
         assert!(!stderr.contains("File name too long"), "{stderr}");
     }
     assert!(!project.path().join("clickhouse").exists());

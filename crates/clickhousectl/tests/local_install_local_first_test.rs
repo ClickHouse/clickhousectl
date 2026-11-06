@@ -5,15 +5,10 @@
 //!
 //! Strategy: spawn the binary with `HOME=<tempdir>`, pre-seed a fake installed
 //! version, run both partial and exact `local install` commands in human-output
-//! mode, and assert that:
-//!   - the command exits 0,
-//!   - stderr says "already installed",
-//!   - stdout has no generic "Installed version" confirmation,
-//!   - stderr does NOT say "Resolving" (which only prints on the remote path).
-//!
-//! Network calls aren't mocked because the version-manager URLs aren't currently
-//! overridable; the timing + stderr-content assertions are sufficient to detect
-//! a regression where the remote path runs when it shouldn't.
+//! mode with every proxy variable pointed at a closed port, and assert that:
+//!   - the command exits 0, which it cannot if any remote request is made,
+//!   - stderr names the requested spec, the installed version and `--force`,
+//!   - stdout has no generic "Installed version" confirmation.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -45,6 +40,10 @@ fn install_with_existing_version(installed_version: &str, requested_spec: &str) 
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", tempdir.path())
+        // Any remote resolve fails fast through this closed port.
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
         .args(["local", "install", requested_spec])
         .output()
         .expect("run clickhousectl");
@@ -71,20 +70,12 @@ fn local_install_minor_with_existing_match_does_not_hit_network() {
         output.status,
         stderr
     );
-    assert!(
-        stderr.contains("already installed"),
-        "expected 'already installed' in stderr, got: {}",
-        stderr
-    );
+    assert!(stderr.contains("25.12.9.61"), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
     assert!(
         output.stdout.is_empty(),
         "expected no generic install confirmation, got: {}",
         String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        !stderr.contains("Resolving"),
-        "expected no remote-resolve message, got: {}",
-        stderr
     );
 }
 
@@ -100,26 +91,11 @@ fn local_install_exact_with_existing_match_is_a_successful_no_op() {
         output.status,
         stderr
     );
-    assert!(
-        stderr.contains(&format!(
-            "ClickHouse {version} is already installed as {version}"
-        )),
-        "expected exact-version no-op message, got: {}",
-        stderr
-    );
-    assert!(
-        stderr.contains("Use --force to re-download the latest build"),
-        "expected --force hint, got: {}",
-        stderr
-    );
+    assert!(stderr.contains(version), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
     assert!(
         output.stdout.is_empty(),
         "expected no generic install confirmation, got: {}",
         String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        !stderr.contains("Resolving"),
-        "expected no remote-resolve message, got: {}",
-        stderr
     );
 }

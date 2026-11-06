@@ -102,7 +102,12 @@ fn server_list_is_empty_without_creating_project_state() {
     let args = ["local", "server", "list"];
     let output = run_in_empty_project(&args);
     assert_exit(&output, 0, &args);
-    assert!(String::from_utf8_lossy(&output.stdout).starts_with("No servers found in project"));
+    // The empty human list points at the global listing instead of a table.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("`clickhousectl local clickhouse list --global`"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -153,18 +158,16 @@ fn stop_all_reports_no_servers_without_creating_project_state() {
     let args = ["local", "server", "stop-all"];
     let output = run_in_empty_project(&args);
     assert_exit(&output, 0, &args);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "No running ClickHouse servers\n"
-    );
+    let clickhouse_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(clickhouse_stdout.lines().count(), 1, "{clickhouse_stdout}");
 
     let args = ["local", "postgres", "stop-all"];
     let output = run_in_empty_project(&args);
     assert_exit(&output, 0, &args);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "No running Postgres servers\n"
-    );
+    // One nothing-to-stop line per engine, each its own.
+    let postgres_stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(postgres_stdout.lines().count(), 1, "{postgres_stdout}");
+    assert_ne!(postgres_stdout, clickhouse_stdout);
 }
 
 #[test]

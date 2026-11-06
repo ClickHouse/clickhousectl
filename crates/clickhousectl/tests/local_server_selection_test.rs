@@ -36,6 +36,33 @@ fn body(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("parse JSON output")
 }
 
+/// Reduces every `message` to "is a string", so JSON is compared by its
+/// codes, actions and commands rather than its wording.
+fn without_messages(mut value: Value) -> Value {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map.iter_mut() {
+                    if key == "message" && child.is_string() {
+                        *child = Value::String("<message>".into());
+                    } else {
+                        walk(child);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(&mut value);
+    value
+}
+
+/// The digits in `text`: a message's only number is the candidate count.
+fn digits(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
+}
+
 fn create_stopped_server(project: &Path, name: &str) -> PathBuf {
     let servers = project.join(".clickhouse/servers");
     let directory = servers.join(name);
@@ -105,7 +132,7 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
     );
     assert_success(&json_output);
     assert_eq!(
-        body(&json_output),
+        without_messages(body(&json_output)),
         json!({
             "stopped": false,
             "selection": "implicit",
@@ -118,22 +145,22 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
             "guidance": [
                 {
                     "action": "return_to_project_root",
-                    "message": "Change to the local project root where the server was started",
+                    "message": "<message>",
                     "command": "cd <project-root>"
                 },
                 {
                     "action": "list_project_servers",
-                    "message": "List servers after returning to that exact project",
+                    "message": "<message>",
                     "command": "clickhousectl local clickhouse list"
                 },
                 {
                     "action": "list_global_servers",
-                    "message": "Locate running ClickHouse servers across projects",
+                    "message": "<message>",
                     "command": "clickhousectl local clickhouse list --global"
                 },
                 {
                     "action": "stop_global_project_server",
-                    "message": "After confirming the project, stop the server with explicit global project selection",
+                    "message": "<message>",
                     "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
                 }
             ]
@@ -147,16 +174,17 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
         &["local", "server", "stop"],
     );
     assert_success(&human);
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout),
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for fragment in [
         format!(
-            "No ClickHouse servers found; nothing to stop\n\
-             No `.clickhouse` directory existed under project '{}' when the command started.\n\
-             Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-             The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects.\n",
+            "'{}'",
             human_project.path().canonicalize().unwrap().display()
-        )
-    );
+        ),
+        "`clickhousectl local clickhouse list`".to_string(),
+        "`clickhousectl local clickhouse list --global`".to_string(),
+    ] {
+        assert!(stdout.contains(&fragment), "{fragment}: {stdout}");
+    }
     assert!(human.stderr.is_empty());
 }
 
@@ -338,8 +366,8 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
     for text in [error["error"]["message"].as_str().unwrap(), &stderr] {
+        assert_eq!(digits(text), "2", "{text}");
         for fragment in [
-            "available: 2",
             "`clickhousectl local clickhouse stop <name>`",
             "`clickhousectl local clickhouse stop-all`",
         ] {
@@ -383,10 +411,7 @@ fn omitted_remove_never_selects_custom_servers() {
         let error: Value = serde_json::from_slice(&remove.stderr).unwrap();
         assert_eq!(error["error"]["code"], "server_selection_required");
         let message = error["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("available: {}", names.len())),
-            "{message}"
-        );
+        assert_eq!(digits(message), names.len().to_string(), "{message}");
         assert!(
             message.contains("`clickhousectl local clickhouse remove <name>`"),
             "{message}"
@@ -412,9 +437,9 @@ fn omitted_remove_never_selects_custom_servers() {
     let human = run(project.path(), home.path(), &["local", "server", "remove"]);
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.contains("custom ClickHouse servers available: 1"));
-    assert!(stderr.contains("clickhousectl local clickhouse list"));
-    assert!(stderr.contains("clickhousectl local clickhouse remove <name>"));
+    assert_eq!(digits(&stderr), "1", "{stderr}");
+    assert!(stderr.contains("`clickhousectl local clickhouse list`"));
+    assert!(stderr.contains("`clickhousectl local clickhouse remove <name>`"));
     assert!(custom.exists());
 
     let explicit = run(

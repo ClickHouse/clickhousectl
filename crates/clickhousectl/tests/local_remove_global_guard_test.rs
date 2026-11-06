@@ -361,8 +361,7 @@ fn force_stops_the_other_projects_server_before_removing_the_version() {
         output.status
     );
     assert!(
-        stdout.contains("Stopped server 'dev' in")
-            && stdout.contains(&canonical(&fixture.project_b)),
+        stdout.contains("'dev'") && stdout.contains(&canonical(&fixture.project_b)),
         "--force must report which project's server it stopped: {stdout}"
     );
     wait_for_process_exit(pid);

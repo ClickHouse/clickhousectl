@@ -332,10 +332,11 @@ fn corrupt_metadata_keeps_managed_scope_and_redacts_source_from_json() {
         ),
     );
     // The serde source reaches the human error only.
+    let source = serde_json::from_str::<Value>("{").unwrap_err().to_string();
     let json_output = run(project.path(), home.path(), true, &[]);
-    assert!(!String::from_utf8_lossy(&json_output.stderr).contains("not valid JSON"));
+    assert!(!String::from_utf8_lossy(&json_output.stderr).contains(&source));
     let human = run(project.path(), home.path(), false, &[]);
-    assert!(String::from_utf8_lossy(&human.stderr).contains("not valid JSON"));
+    assert!(String::from_utf8_lossy(&human.stderr).contains(&source));
 }
 
 #[cfg(unix)]

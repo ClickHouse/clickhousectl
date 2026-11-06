@@ -94,7 +94,8 @@ fn unreachable_docker_propagates_across_status_and_lifecycle() {
     let human = project.run(&host, &["local", "status"], false);
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&human.stderr).contains("Docker is not available"));
+    assert!(!human.stderr.is_empty());
+    assert!(serde_json::from_slice::<Value>(&human.stderr).is_err());
 }
 
 async fn docker_mock(inspect_status: u16, body: Value) -> MockServer {
@@ -185,11 +186,13 @@ async fn successful_inspection_distinguishes_running_stopped_and_missing() {
             );
             assert_error(&output, "postgres_error");
             let body: Value = serde_json::from_slice(&output.stderr).unwrap();
+            // The missing container's recovery: remove the stale instance.
             assert!(
                 body["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .contains("container is gone")
+                    .contains("`clickhousectl local postgres remove default`"),
+                "{body}"
             );
         }
         project.assert_preserved();

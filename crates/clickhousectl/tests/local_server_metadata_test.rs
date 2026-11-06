@@ -104,9 +104,25 @@ fn selected_partial_json_is_not_reported_as_not_running() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not valid JSON"), "stderr: {stderr}");
+    // The parser's own diagnostic reaches the human error, naming the file.
+    let source = serde_json::from_slice::<Value>(br#"{"name":"default","pid":123"#).unwrap_err();
+    assert!(stderr.contains(&source.to_string()), "stderr: {stderr}");
     assert!(stderr.contains("default.json"), "stderr: {stderr}");
-    assert!(!stderr.contains("is not running"), "stderr: {stderr}");
+    assert_json_code(
+        project.path(),
+        home.path(),
+        &["local", "--json", "client", "--name", "default"],
+        "managed_client_project_state_unavailable",
+    );
+}
+
+/// Runs `args` and returns the JSON error code, so a human-mode test can
+/// confirm which error branch the same case takes.
+fn assert_json_code(project: &Path, home: &Path, args: &[&str], code: &str) {
+    let output = run(project, home, args);
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).expect("parse JSON error");
+    assert_eq!(error["error"]["code"], code, "{error}");
 }
 
 #[test]
@@ -123,8 +139,15 @@ fn selected_invalid_utf8_is_actionable() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not valid UTF-8"), "stderr: {stderr}");
-    assert!(!stderr.contains("is not running"), "stderr: {stderr}");
+    let source = String::from_utf8(vec![0xff, 0xfe, 0xfd]).unwrap_err();
+    assert!(stderr.contains(&source.to_string()), "stderr: {stderr}");
+    assert!(stderr.contains("default.json"), "stderr: {stderr}");
+    assert_json_code(
+        project.path(),
+        home.path(),
+        &["local", "--json", "client", "--name", "default"],
+        "managed_client_project_state_unavailable",
+    );
 }
 
 #[cfg(unix)]
@@ -145,16 +168,24 @@ fn selected_permission_failure_is_actionable() {
         &["local", "client", "--name", "default"],
     );
 
+    let json = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "client", "--name", "default"],
+    );
     std::fs::set_permissions(&metadata, std::fs::Permissions::from_mode(0o600))
         .expect("restore metadata permissions");
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Permission denied reading server metadata"),
-        "stderr: {stderr}"
+    let source = std::io::Error::from_raw_os_error(libc::EACCES);
+    assert!(stderr.contains(&source.to_string()), "stderr: {stderr}");
+    assert!(stderr.contains("default.json"), "stderr: {stderr}");
+    assert_eq!(json.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&json.stderr).expect("parse JSON error");
+    assert_eq!(
+        error["error"]["code"], "managed_client_project_state_unavailable",
+        "{error}"
     );
-    assert!(stderr.contains("Check ownership and file permissions"));
-    assert!(!stderr.contains("is not running"), "stderr: {stderr}");
 }
 
 #[test]
@@ -194,31 +225,24 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
     );
     assert_eq!(corrupt.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&corrupt.stderr).expect("parse metadata error JSON");
+    let error = &error["error"];
+    assert_eq!(error["code"], "server_metadata_invalid");
+    assert!(error["message"].is_string(), "{error}");
     assert_eq!(
-        error,
-        json!({
-            "error": {
-                "code": "server_metadata_invalid",
-                "message": "Server metadata is not valid JSON",
-                "path": directory.canonicalize().unwrap().join("default.json"),
-                "guidance": [
-                    {
-                        "message": "Repair the metadata file, then retry"
-                    },
-                    {
-                        "message": "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
-                        "command": "clickhousectl local clickhouse list --global"
-                    },
-                    {
-                        "message": "For Postgres, verify the container state separately before moving the metadata file aside"
-                    },
-                    {
-                        "message": "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
-                        "command": "clickhousectl local clickhouse list"
-                    }
-                ]
-            }
-        })
+        error["path"],
+        json!(directory.canonicalize().unwrap().join("default.json"))
+    );
+    let guidance = error["guidance"].as_array().expect("guidance list");
+    assert!(guidance.iter().all(|item| item["message"].is_string()));
+    let commands: Vec<&Value> = guidance.iter().map(|item| &item["command"]).collect();
+    assert_eq!(
+        commands,
+        [
+            &Value::Null,
+            &json!("clickhousectl local clickhouse list --global"),
+            &Value::Null,
+            &json!("clickhousectl local clickhouse list"),
+        ]
     );
     let stderr = String::from_utf8_lossy(&corrupt.stderr);
     assert!(!stderr.contains("private SQL"));
@@ -255,6 +279,15 @@ fn corrupt_unrelated_metadata_does_not_block_start() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(metadata).unwrap(), b"not json");
+}
+
+fn assert_success_or_codes(output: &Output, codes: &[&str]) {
+    if output.status.success() {
+        return;
+    }
+    let error: Value = serde_json::from_slice(&output.stderr).expect("parse JSON error");
+    let code = error["error"]["code"].as_str().expect("error code");
+    assert!(codes.contains(&code), "{error}");
 }
 
 #[test]
@@ -301,6 +334,7 @@ fn concurrent_start_client_and_stop_leave_valid_metadata() {
     restart
         .args([
             "local",
+            "--json",
             "server",
             "start",
             "--name",
@@ -316,7 +350,7 @@ fn concurrent_start_client_and_stop_leave_valid_metadata() {
     let mut client = command(project.path(), home.path());
     client
         .args([
-            "local", "client", "--name", "default", "--query", "SELECT 1",
+            "local", "--json", "client", "--name", "default", "--query", "SELECT 1",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -346,19 +380,9 @@ fn concurrent_start_client_and_stop_leave_valid_metadata() {
     keep_reading.store(false, Ordering::Release);
     reader.join().expect("join metadata reader");
 
-    assert!(
-        restart.status.success()
-            || String::from_utf8_lossy(&restart.stderr).contains("already running")
-            || String::from_utf8_lossy(&restart.stderr).contains("exited immediately"),
-        "restart stderr: {}",
-        String::from_utf8_lossy(&restart.stderr)
-    );
-    assert!(
-        client.status.success()
-            || String::from_utf8_lossy(&client.stderr).contains("is not running"),
-        "client stderr: {}",
-        String::from_utf8_lossy(&client.stderr)
-    );
+    // Losing a race is allowed; a metadata error is not.
+    assert_success_or_codes(&restart, &["server_running", "local_error"]);
+    assert_success_or_codes(&client, &["managed_client_server_not_running"]);
     assert!(
         stop.status.success(),
         "stop stderr: {}",

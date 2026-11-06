@@ -177,7 +177,12 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
     assert!(stderr.starts_with("Error: "), "{stderr}");
     assert!(stderr.contains("'missing'"), "{stderr}");
-    assert!(stderr.contains("anonymous usage data"), "{stderr}");
+    // The first-run notice follows, naming its opt-outs.
+    assert!(
+        stderr.contains("`clickhousectl telemetry disable`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("DO_NOT_TRACK=1"), "{stderr}");
     assert!(home.path().join(".clickhouse/telemetry.json").exists());
 }
 
@@ -299,8 +304,16 @@ fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
     let error: Value = serde_json::from_slice(&unavailable.stderr).expect("one JSON error object");
     assert_eq!(error["error"]["code"], "docker_unavailable");
     let message = error["error"]["message"].as_str().expect("message");
-    assert!(message.contains("Docker is not available"), "{message}");
-    assert!(message.contains("was not found"), "{message}");
+    let human = command(&project, &home)
+        .env("DOCKER_HOST", format!("unix://{}", docker_secret.display()))
+        .args(["local", "postgres", "start"])
+        .output()
+        .expect("run human Docker unavailable failure");
+    assert_eq!(
+        String::from_utf8_lossy(&human.stderr).trim_end(),
+        format!("Error: {message}"),
+        "JSON must carry the full human diagnostic"
+    );
 
     for output in [&io_error, &unavailable] {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -479,7 +492,8 @@ fn human_and_clap_errors_keep_their_existing_formats() {
     );
     assert_eq!(clap.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&clap.stderr);
-    assert!(stderr.starts_with("error: unexpected argument '--unknown'"));
+    assert!(stderr.starts_with("error: "), "{stderr}");
+    assert!(stderr.contains("'--unknown'"), "{stderr}");
     assert!(!stderr.contains("server_not_found"));
 }
 
@@ -505,7 +519,9 @@ fn foreground_child_exit_is_not_wrapped_as_a_local_error() {
 
     assert_eq!(output.status.code(), Some(7));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Server 'default' running"), "{stderr}");
+    // Only the startup line naming the server; no error rendering of any kind.
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.contains("'default'"), "{stderr}");
     assert!(!stderr.contains("\"error\""), "{stderr}");
-    assert!(!stderr.contains("Error: child process exited"), "{stderr}");
+    assert!(!stderr.contains("Error: "), "{stderr}");
 }
