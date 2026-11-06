@@ -5735,8 +5735,7 @@ async fn org_usage_marks_uuid_only_entities_as_unknown_only_in_human_output() {
 // `src/cloud/clickpipes.rs`. These tests cover what only the real handler
 // reaches: the assembled body on the wire, stdin reads, and error output.
 
-/// Kafka create args carrying no authentication flag of any kind.
-fn kafka_args_without_auth() -> Vec<&'static str> {
+fn kafka_args_minimal() -> Vec<&'static str> {
     vec![
         "clickpipe",
         "create",
@@ -5760,13 +5759,13 @@ fn kafka_args_without_auth() -> Vec<&'static str> {
         "kafka",
         "--org-id",
         "org",
+        "--auth",
+        "PLAIN",
+        "--username",
+        "u",
+        "--password",
+        "p",
     ]
-}
-
-fn kafka_args_minimal() -> Vec<&'static str> {
-    let mut args = kafka_args_without_auth();
-    args.extend(["--auth", "PLAIN", "--username", "u", "--password", "p"]);
-    args
 }
 
 fn append_initial_scaling_and_validation(args: &mut Vec<String>) {
@@ -6108,15 +6107,14 @@ async fn create_minimal_invocations_send_exact_request_bodies() {
             }),
         ),
         (
-            owned(&kafka_args_without_auth()),
+            owned(&kafka_args_minimal()),
             serde_json::json!({
                 "name": "t",
                 "destination": streaming_destination("id"),
-                // No `authentication` for a broker that needs none, and no
-                // credential body either.
                 "source": {"kafka": {
+                    "authentication": "PLAIN",
                     "brokers": "broker:9092",
-                    "credentials": null,
+                    "credentials": {"password": "p", "username": "u"},
                     "format": "JSONEachRow",
                     "offset": {"strategy": "from_beginning"},
                     "reversePrivateEndpointIds": [],
@@ -12029,14 +12027,18 @@ async fn schema_discover_kafka_posts_the_source_without_create_only_fields() {
             "topic",
             "--format",
             "JSONEachRow",
+            "--iam-role",
+            "arn:role",
         ],
     )
     .await;
     assert_eq!(
         body,
         serde_json::json!({"source": {"kafka": {
+            "authentication": "IAM_ROLE",
             "brokers": "broker:9092",
             "credentials": null,
+            "iamRole": "arn:role",
             "format": "JSONEachRow",
             "offset": {"strategy": "from_beginning"},
             "reversePrivateEndpointIds": [],

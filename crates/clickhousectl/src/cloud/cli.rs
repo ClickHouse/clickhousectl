@@ -448,6 +448,8 @@ pub(crate) mod tests {
                 "events",
                 "--format",
                 "JSONEachRow",
+                "--iam-role",
+                "arn:role",
             ],
             &[
                 "clickpipe",
