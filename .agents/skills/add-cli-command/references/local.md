@@ -18,4 +18,5 @@ Local commands run on this machine and never call the Cloud API.
    SQL or credentials.
 6. **Tests.** Test behaviour that needs the real binary in a new `tests/local_<area>_<concern>_test.rs`. This
    covers files, processes, exit codes, and JSON on stdout or stderr. Don't add local tests to
-   `tests/cli_request_shape_test.rs`, which is for Cloud only. Test pure helpers in an inline `mod tests`.
+   `tests/cli_request_shape_test.rs`, which is for Cloud only. Test pure helpers and clap rejections in an
+   inline `mod tests`, not by spawning the binary (root `AGENTS.md` → Tests).

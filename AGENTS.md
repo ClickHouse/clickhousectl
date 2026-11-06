@@ -77,7 +77,8 @@ flag, or any help text. It holds the help standard and its test rule.
 
 ## Tests
 
-Test coverage is non-negotiable.
+Test coverage is non-negotiable. Test each behaviour in **one** layer: the cheapest one that reaches it, which is
+the unit layer by default. Where a unit test and a subprocess test overlap, keep the unit test.
 
 - **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning
   `src/cloud/<domain>.rs` or `src/cloud/<domain>/cli.rs`, `src/cloud/cli.rs`, `src/local/cli.rs`). Assert flag
@@ -85,13 +86,21 @@ Test coverage is non-negotiable.
 - **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on
   library request-struct fields with minimal + maximal inputs.
 - **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
-  server and assert on requests, auth, errors, and output; use it when handler runtime behavior is not covered by
-  clap or request-builder tests.
-- **Local subprocess** — one `local_*` binary per concern under `crates/clickhousectl/tests/`. Add a new file
-  rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
+  server. It is the only layer that runs handlers, so a test belongs here only if it exercises: a handler making
+  two or more calls or a read-modify-write; a distinct error path's exit code or JSON error; process behaviour
+  (stdout/stderr, closed pipes, files, env, credentials); auth-mode wiring, once rather than per command; or one
+  wiring test per command family (method, path, org, builder body on the wire). Not here: input validation
+  (including "fails before HTTP" when clap rejects), field-by-field bodies, per-command repeats of shared
+  behaviour (`convert_error`, the OAuth write check), or wording.
+- **Local subprocess** — one `local_*` binary per concern under `crates/clickhousectl/tests/`, for what needs the
+  real binary: files, processes, locks, signals, exit codes, JSON on stdout/stderr. Add a new file rather than
+  growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
 - **Help and README text** — structural assertions only (see the `cli-help-text` skill). No wording pins.
+- **Not worth a test** — clap, serde or std behaviour on its own (a derive parsing, a `PossibleValuesParser`
+  rejecting); flags that don't exist; assertions that cannot fail. Subprocess tests never wait out a production
+  timeout; use the overrides in `src/timing.rs` (`docs/development.md`).
 
 ## CI gates
 
