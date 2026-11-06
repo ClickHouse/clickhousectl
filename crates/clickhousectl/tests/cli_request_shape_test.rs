@@ -18906,6 +18906,73 @@ async fn clickpipe_list_renders_source_destination_table_and_preserves_json() {
     }
 }
 
+#[tokio::test]
+async fn clickpipe_list_and_name_lookup_read_every_page() {
+    // The first request carries no `limit` or `cursor`; a `nextCursor` in any
+    // response is followed until absent. Used by `list` and by `--name`.
+    const CLICKPIPES_PATH: &str = "/v1/organizations/org-1/services/svc-1/clickpipes";
+    const SECOND_ID: &str = "00000000-0000-0000-0000-0000000000c2";
+    let mock = MockServer::start().await;
+    let first = serde_json::json!({"id": "00000000-0000-0000-0000-0000000000c1", "name": "first"});
+    let second = serde_json::json!({"id": SECOND_ID, "name": "target"});
+    mount_cursor_page(
+        &mock,
+        CLICKPIPES_PATH,
+        None,
+        serde_json::json!({"result": [first], "nextCursor": "pipe page /+?", "limit": 1}),
+        3,
+    )
+    .await;
+    mount_cursor_page(
+        &mock,
+        CLICKPIPES_PATH,
+        Some("pipe page /+?"),
+        serde_json::json!({"result": [second], "nextCursor": null}),
+        3,
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{CLICKPIPES_PATH}/{SECOND_ID}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": second})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let args = ["clickpipe", "list", "svc-1", "--org-id", "org-1"];
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([first, second])
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    for id in ["00000000-0000-0000-0000-0000000000c1", SECOND_ID] {
+        assert!(stdout.contains(id), "{stdout}");
+    }
+
+    let lookup = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "get",
+            "svc-1",
+            "--name",
+            "target",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&lookup);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&lookup.stdout).unwrap(),
+        second
+    );
+}
+
 async fn invoke_clickpipe_delete(result: Value, json: bool) -> std::process::Output {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
