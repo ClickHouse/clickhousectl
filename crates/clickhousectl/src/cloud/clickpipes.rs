@@ -1396,8 +1396,13 @@ pub struct KafkaCreateArgs {
     #[arg(long)]
     pub table: String,
 
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column", value_parser = parse_destination_column)]
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -1493,8 +1498,13 @@ pub struct KinesisCreateArgs {
     #[arg(long)]
     pub table: String,
 
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column", value_parser = parse_destination_column)]
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -2165,8 +2175,13 @@ pub struct PubSubCreateArgs {
     #[arg(long)]
     pub table: String,
 
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column", value_parser = parse_destination_column)]
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -6713,6 +6728,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ]
     }
 
@@ -6841,6 +6858,9 @@ mod tests {
             "events",
         ];
         args.extend(flags.iter().copied());
+        if !flags.contains(&"--column") {
+            args.extend(["--column", "id:UInt64"]);
+        }
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::PubSub(args),
         } = parse_clickpipe(&args)
@@ -6935,6 +6955,8 @@ mod tests {
                 "db",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
                 "--iam-role",
                 "arn:role",
             ]);
@@ -6956,6 +6978,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
             "--iam-role",
             "arn:role",
             flag,
@@ -6981,6 +7005,8 @@ mod tests {
                 "db",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
             ];
             if value == "Protobuf" {
                 args.extend(["--protobuf-schema-file", "schema.proto"]);
@@ -7004,6 +7030,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
             flag,
             value,
         ]);
@@ -7678,6 +7706,8 @@ mod tests {
             "default",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
             "--start-paused",
         ])
         else {
@@ -8103,14 +8133,58 @@ mod tests {
     }
 
     #[test]
-    fn object_storage_create_requires_columns_during_parsing() {
-        let error = clickpipe_parse_error(&object_storage_create_cli_args());
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
-        assert_eq!(error.exit_code(), 2);
-        assert!(error.to_string().contains("--column <NAME:TYPE>"));
+    fn streaming_creates_require_columns_during_parsing() {
+        let mut kafka = kafka_create_cli_args();
+        let column = kafka
+            .iter()
+            .position(|arg| *arg == "--column")
+            .expect("baseline --column");
+        kafka.drain(column..=column + 1);
+        let kinesis = vec![
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "events",
+            "--region",
+            "eu-west-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        let mut pubsub = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+
+        for args in [object_storage_create_cli_args(), kafka, kinesis, pubsub] {
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{}",
+                args[1]
+            );
+            assert_eq!(error.exit_code(), 2);
+            assert!(
+                error.to_string().contains("--column <NAME:TYPE>"),
+                "{}",
+                args[1]
+            );
+        }
 
         let mut args = object_storage_create_cli_args();
         args.extend([
@@ -8463,6 +8537,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
             "--kafka-type",
             "gcmk",
             "--auth",
@@ -8490,7 +8566,6 @@ mod tests {
         assert_eq!(args.source.schema_registry_ca_certificate, None);
         assert!(args.source.reverse_private_endpoint_ids.is_empty());
         assert_eq!(args.exactly_once, None);
-        assert!(args.columns.is_empty());
     }
 
     #[test]
@@ -8736,6 +8811,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ])
         else {
             panic!("expected kinesis create");
@@ -8747,7 +8824,6 @@ mod tests {
         assert_eq!(args.source.iterator_type, "TRIM_HORIZON");
         assert_eq!(args.source.iterator_timestamp, None);
         assert!(!args.source.enhanced_fan_out);
-        assert!(args.columns.is_empty());
     }
 
     #[test]
@@ -10634,6 +10710,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         for pair in [
             ["--username", "user"],
@@ -10662,6 +10740,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         for pair in [["--access-key-id", "access"], ["--secret-key", "secret"]] {
             let mut args = kinesis_base.to_vec();
@@ -10745,6 +10825,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         pubsub_create.extend(pubsub_source_flags("./sa-key.json"));
         assert_write(&pubsub_create, true);
@@ -11412,7 +11494,6 @@ mod tests {
         assert_eq!(args.source.filter, None);
         assert!(!args.source.enable_ordering);
         assert_eq!(args.source.ack_deadline, None);
-        assert!(args.columns.is_empty());
         assert!(args.destination_roles.roles.is_empty());
     }
 
@@ -11436,6 +11517,8 @@ mod tests {
                 "db",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
             ];
             args.extend(
                 flags
@@ -11471,6 +11554,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         args.extend(flags.iter().copied());
         let error = clickpipe_parse_error(&args);
@@ -11522,6 +11607,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         args.extend(malformed);
         let error = clickpipe_parse_error(&args);
@@ -11553,6 +11640,8 @@ mod tests {
                 "db",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
             ];
             args.extend(flags);
             assert_rejected(&args);
@@ -11580,6 +11669,8 @@ mod tests {
             "db",
             "--table",
             "events",
+            "--column",
+            "id:UInt64",
         ];
         args.extend(flags);
         let error = clickpipe_parse_error(&args);
@@ -13868,7 +13959,14 @@ mod tests {
     fn streaming_destination_options_parse_on_every_streaming_create() {
         let mut pubsub = vec!["create", "pubsub", "svc-1", "--name", "pipe-1"];
         pubsub.extend(pubsub_source_flags("./sa-key.json"));
-        pubsub.extend(["--database", "db", "--table", "events"]);
+        pubsub.extend([
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+        ]);
 
         for mut args in [
             vec![
@@ -13905,6 +14003,8 @@ mod tests {
                 "db",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
             ],
             pubsub,
         ] {
@@ -13998,6 +14098,8 @@ mod tests {
                     "db",
                     "--table",
                     "events",
+                    "--column",
+                    "id:Int64",
                     "--iam-role",
                     "arn:role",
                 ],
@@ -14015,6 +14117,8 @@ mod tests {
                     "db",
                     "--table",
                     "events",
+                    "--column",
+                    "id:Int64",
                 ],
             ),
             (
@@ -14071,7 +14175,14 @@ mod tests {
             ),
             ("pubsub", {
                 let mut flags = pubsub_source_flags("./sa-key.json");
-                flags.extend(["--database", "db", "--table", "events"]);
+                flags.extend([
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                    "--column",
+                    "id:Int64",
+                ]);
                 flags
             }),
         ] {
@@ -14805,6 +14916,8 @@ mod tests {
                     "default",
                     "--table",
                     "events",
+                    "--column",
+                    "id:UInt64",
                 ]);
             }
             let source_args = match parse_clickpipe(&args) {
@@ -14849,6 +14962,8 @@ mod tests {
                     "default",
                     "--table",
                     "events",
+                    "--column",
+                    "id:UInt64",
                 ]);
             }
             assert_eq!(
@@ -14921,6 +15036,8 @@ mod tests {
                 "default",
                 "--table",
                 "events",
+                "--column",
+                "id:UInt64",
             ]);
         }
         args.extend(flags);
