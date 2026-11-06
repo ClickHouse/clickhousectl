@@ -29,9 +29,9 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
         .expect("run clickhousectl")
 }
 
-/// Expected envelopes compare by field. Every `message` only has to be a
-/// string here (wording is unit-tested beside `LocalErrorOutput`); callers
-/// check the values a message must carry.
+/// Expected envelopes compare by field. Every `message` and `details` only
+/// has to be a string here (wording is unit-tested beside `LocalErrorOutput`);
+/// callers check the values a message must carry.
 const ANY_MESSAGE: &str = "<message>";
 
 fn without_messages(mut value: Value) -> Value {
@@ -39,7 +39,7 @@ fn without_messages(mut value: Value) -> Value {
         match value {
             Value::Object(map) => {
                 for (key, child) in map.iter_mut() {
-                    if key == "message" && child.is_string() {
+                    if (key == "message" || key == "details") && child.is_string() {
                         *child = ANY_MESSAGE.into();
                     } else {
                         walk(child);
@@ -62,6 +62,12 @@ fn expected_error(code: &str, recovery: Option<&str>) -> Value {
         error.insert("command".into(), command.into());
     }
     json!({ "error": error })
+}
+
+/// `expected` plus the `details` field that carries the foreign text (#1072).
+fn with_details(mut expected: Value) -> Value {
+    expected["error"]["details"] = ANY_MESSAGE.into();
+    expected
 }
 
 fn expected_project_server_error(project: &Path, name: &str) -> Value {
@@ -271,13 +277,16 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
     );
     let message = assert_structured_failure(
         &startup,
-        &expected_error("startup_exit", Some("clickhousectl local clickhouse list")),
+        &with_details(expected_error(
+            "startup_exit",
+            Some("clickhousectl local clickhouse list"),
+        )),
     );
     assert!(message.contains("'default'"), "{message}");
 }
 
 #[test]
-fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
+fn io_and_docker_errors_keep_paths_and_secrets_out_of_json() {
     let root = tempfile::tempdir().expect("create root");
     let project = root.path().join("project-private-token");
     let home = root.path().join("home-private-token");
@@ -287,7 +296,7 @@ fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
     std::fs::write(&invalid_servers_dir, b"private SQL and password=hunter2").unwrap();
 
     let io_error = run(&project, &home, &["local", "--json", "server", "list"]);
-    assert_structured_failure(&io_error, &expected_error("io_error", None));
+    assert_structured_failure(&io_error, &with_details(expected_error("io_error", None)));
     std::fs::remove_file(invalid_servers_dir).unwrap();
 
     // Docker unavailability is classified and described by clickhousectl
