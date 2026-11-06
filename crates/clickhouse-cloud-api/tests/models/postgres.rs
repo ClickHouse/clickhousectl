@@ -165,6 +165,26 @@ fn postgres_gcp_sizes_roundtrip_as_known_variants() {
         "c4d-standard-lssd-96",
         "c4d-standard-lssd-192",
         "c4d-standard-lssd-384",
+        "c3-standard-lssd-4",
+        "c3-standard-lssd-8",
+        "c3-standard-lssd-22",
+        "c3-standard-lssd-44",
+        "c3-standard-lssd-88",
+        "c3-standard-lssd-176",
+        "c3d-highmem-lssd-8",
+        "c3d-highmem-lssd-16",
+        "c3d-highmem-lssd-30",
+        "c3d-highmem-lssd-60",
+        "c3d-highmem-lssd-90",
+        "c3d-highmem-lssd-180",
+        "c3d-highmem-lssd-360",
+        "c3d-standard-lssd-8",
+        "c3d-standard-lssd-16",
+        "c3d-standard-lssd-30",
+        "c3d-standard-lssd-60",
+        "c3d-standard-lssd-90",
+        "c3d-standard-lssd-180",
+        "c3d-standard-lssd-360",
         "z3-highmem-highlssd-8",
         "z3-highmem-highlssd-16",
         "z3-highmem-highlssd-22",
@@ -176,6 +196,35 @@ fn postgres_gcp_sizes_roundtrip_as_known_variants() {
         "z3-highmem-standardlssd-44",
         "z3-highmem-standardlssd-88",
         "z3-highmem-standardlssd-176",
+        "n2-highmem-2xlssd-4",
+        "n2-highmem-2xlssd-8",
+        "n2-highmem-2xlssd-16",
+        "n2-highmem-2xlssd-32",
+        "n2-highmem-2xlssd-48",
+        "n2-highmem-2xlssd-64",
+        "n2-highmem-2xlssd-96",
+        "n2-standard-2xlssd-4",
+        "n2-standard-2xlssd-8",
+        "n2-standard-2xlssd-16",
+        "n2-standard-2xlssd-32",
+        "n2-standard-2xlssd-48",
+        "n2-standard-2xlssd-64",
+        "n2-standard-2xlssd-96",
+        "n2-highmem-4xlssd-2",
+        "n2-highmem-4xlssd-4",
+        "n2-highmem-4xlssd-8",
+        "n2-highmem-4xlssd-16",
+        "n2-highmem-4xlssd-32",
+        "n2-highmem-4xlssd-48",
+        "n2-highmem-8xlssd-2",
+        "n2-highmem-8xlssd-4",
+        "n2-highmem-8xlssd-8",
+        "n2-highmem-8xlssd-16",
+        "n2-highmem-8xlssd-32",
+        "n2-highmem-16xlssd-2",
+        "n2-highmem-16xlssd-4",
+        "n2-highmem-16xlssd-8",
+        "n2-highmem-16xlssd-16",
     ];
 
     for wire_value in sizes {
@@ -187,6 +236,27 @@ fn postgres_gcp_sizes_roundtrip_as_known_variants() {
         assert_eq!(size.to_string(), wire_value);
         assert_eq!(serde_json::to_value(&size).unwrap(), wire_value);
     }
+}
+
+#[test]
+fn postgres_log_severity_values_roundtrip_as_known_variants() {
+    for value in PostgresLogsGetListSeverity::VALUES {
+        let parsed: PostgresLogsGetListSeverity =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PostgresLogsGetListSeverity::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), *value);
+    }
+
+    let future: PostgresLogsGetListSeverity = serde_json::from_str(r#""DEBUG5""#).unwrap();
+    assert_eq!(
+        future,
+        PostgresLogsGetListSeverity::Unknown("DEBUG5".to_string())
+    );
+    assert_eq!(future.to_string(), "DEBUG5");
 }
 
 #[test]
@@ -651,6 +721,37 @@ fn postgres_service_access_list_and_restore_time_tolerate_missing_and_null() {
 }
 
 #[test]
+fn postgres_deletion_protection_tolerates_missing_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"deletionProtection": null}),
+    ] {
+        let pg: PostgresService = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(pg.deletion_protection, None);
+        assert_eq!(serde_json::to_value(pg).unwrap(), serde_json::json!({}));
+
+        let item: PostgresServiceListItem = serde_json::from_value(wire).unwrap();
+        assert_eq!(item.deletion_protection, None);
+        assert_eq!(serde_json::to_value(item).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn postgres_deletion_protection_round_trips_both_values() {
+    for value in [true, false] {
+        let wire = serde_json::json!({"deletionProtection": value});
+
+        let pg: PostgresService = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(pg.deletion_protection, Some(value));
+        assert_eq!(serde_json::to_value(pg).unwrap(), wire);
+
+        let item: PostgresServiceListItem = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(item.deletion_protection, Some(value));
+        assert_eq!(serde_json::to_value(item).unwrap(), wire);
+    }
+}
+
+#[test]
 fn postgres_service_round_trips_access_list_and_restore_time() {
     let wire = serde_json::json!({
         "earliestRestoreTime": "2026-03-31T18:17:37Z",
@@ -816,6 +917,20 @@ fn postgres_service_patch_request_serializes_the_access_list_patch() {
             }
         })
     );
+}
+
+#[test]
+fn postgres_service_patch_request_serializes_deletion_protection() {
+    for value in [true, false] {
+        let patch = PostgresServicePatchRequest {
+            deletion_protection: Some(value),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"deletionProtection": value})
+        );
+    }
 }
 
 #[test]

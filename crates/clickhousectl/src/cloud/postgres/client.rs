@@ -424,7 +424,7 @@ impl CloudClient {
                 &query.from_date,
                 &query.to_date,
                 query.body_contains.as_deref(),
-                query.severity.as_deref(),
+                query.severity.as_ref(),
                 query.sort_order.as_ref(),
                 query.limit,
                 query.offset,
