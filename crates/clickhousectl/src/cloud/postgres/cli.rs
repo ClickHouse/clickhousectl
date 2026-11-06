@@ -117,7 +117,10 @@ CONTEXT FOR AGENTS:
         /// Cloud region (e.g. us-east-1)
         #[arg(long)]
         region: String,
-        /// Instance size (e.g. c6gd.xlarge); validated by the server
+        /// Instance size, e.g. r6gd.medium (AWS) or c4-standard-lssd-4 (GCP)
+        ///
+        /// Both are small sizes. The server validates the value and lists the
+        /// valid sizes when it rejects one.
         #[arg(long)]
         size: String,
         /// Cloud provider
@@ -173,7 +176,10 @@ CONTEXT FOR AGENTS:
         /// New service name
         #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
-        /// New instance size (e.g. c6gd.xlarge); validated by the server
+        /// New instance size, e.g. r6gd.medium (AWS) or c4-standard-lssd-4 (GCP)
+        ///
+        /// Both are small sizes. The server validates the value and lists the
+        /// valid sizes when it rejects one.
         #[arg(long)]
         size: Option<String>,
         /// New high-availability type
