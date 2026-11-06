@@ -246,6 +246,7 @@ Structured commands support `--json` and select it automatically for detected co
 | [ClickPipe configuration](docs/reference/clickpipe-configuration.md) | Partial updates, table mappings, source credentials, and private connectivity |
 | [Automation and output contracts](docs/reference/automation.md) | JSON output, exit codes, asynchronous operations, and retries |
 | [Telemetry](docs/reference/telemetry.md) | Recorded fields, opt-out, and local inspection |
+| [Feedback](docs/reference/feedback.md) | What `feedback` sends, the length limit, and errors |
 | [Contributing](CONTRIBUTING.md) | Build, checks, and documentation placement |
 | [CLI development](docs/development.md) | Code layout, tests, live integration suites, and debugging |
 | [Rust API library](crates/clickhouse-cloud-api/README.md) | Typed Cloud API client, usage examples, and API coverage |
@@ -260,6 +261,8 @@ clickhousectl telemetry status
 ```
 
 `DO_NOT_TRACK=1` also disables collection. See [telemetry details and controls](docs/reference/telemetry.md).
+
+Tell the team what the CLI could not do with `clickhousectl feedback "<message>"`; see [what feedback sends](docs/reference/feedback.md).
 
 ## Contribute
 

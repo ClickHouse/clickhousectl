@@ -20,6 +20,9 @@ pub const QUERY_READINESS_TIMEOUT_ENV: &str = "CHCTL_QUERY_READINESS_TIMEOUT_MS"
 pub const KEY_PROPAGATION_TIMEOUT_ENV: &str = "CHCTL_KEY_PROPAGATION_TIMEOUT_MS";
 /// Bounds the background update check; `0` skips it.
 pub const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
+/// Bounds the `feedback` send.
+#[cfg(feature = "feedback")]
+pub const FEEDBACK_SEND_TIMEOUT_ENV: &str = "CHCTL_FEEDBACK_SEND_TIMEOUT_MS";
 
 /// `default`, unless `env` holds a whole number of milliseconds.
 ///

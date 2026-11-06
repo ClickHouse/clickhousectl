@@ -1,8 +1,8 @@
 //! Canonical construction of outbound HTTP clients.
 //!
 //! Every `reqwest::Client` the CLI builds — Cloud API, OAuth, the updater, the
-//! version manager — goes through [`client_builder`], so they uniformly carry
-//! the `User-Agent` (built in `crate::user_agent`) and the agent
+//! version manager, `feedback` — goes through [`client_builder`], so they
+//! uniformly carry the `User-Agent` (built in `crate::user_agent`) and the agent
 //! session/trace correlation headers, and any future builder picks these up
 //! for free.
 //!

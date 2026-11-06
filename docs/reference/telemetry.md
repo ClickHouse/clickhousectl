@@ -29,3 +29,7 @@ CHCTL_TELEMETRY_DEBUG=1 clickhousectl local list
 The debug payload is printed to stderr and nothing is sent. Apart from read-only `telemetry status`, each invocation records one event when enabled. Native-client handoffs record `exec_attempt` with code 0 before execution; this means handoff was reached, not that the native client succeeded. Failures the wrapper detects before handoff retain their actual failure status.
 
 Sending runs in a short-lived detached process. Distribution packagers can remove telemetry, including its subcommand, with `cargo build -p clickhousectl --no-default-features`.
+
+## Feedback
+
+`clickhousectl feedback` sends a message you write, so it is not blocked by `telemetry disable` or `DO_NOT_TRACK`. Its telemetry event records the command and the flags given before the message, never the message: the message slot takes every remaining word, so telemetry treats it like other free-form argument lists and records nothing from it. See [feedback](feedback.md) for what it sends.

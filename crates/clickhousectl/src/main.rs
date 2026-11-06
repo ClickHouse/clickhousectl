@@ -2,10 +2,14 @@
 mod stdout;
 
 mod cli;
+#[cfg(any(feature = "telemetry", feature = "feedback"))]
+mod client_facts;
 mod cloud;
 mod dotenv;
 mod error;
 mod failure;
+#[cfg(feature = "feedback")]
+mod feedback;
 mod http;
 mod init;
 mod local;
@@ -418,6 +422,8 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Skills(args) => Some(args.json),
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(args) => Some(args.json),
+        #[cfg(feature = "feedback")]
+        Commands::Feedback(args) => Some(args.json),
     }
 }
 
@@ -450,6 +456,11 @@ async fn run(cmd: Commands) -> Result<()> {
         Commands::Update(args) => run_update(args).await,
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(args) => telemetry::run_command(args.command, json_output(args.json)),
+        #[cfg(feature = "feedback")]
+        Commands::Feedback(args) => {
+            let json = json_output(args.json);
+            feedback::run(args, json).await
+        }
     }
 }
 
@@ -979,6 +990,16 @@ mod tests {
         #[cfg(feature = "telemetry")]
         assert_eq!(
             command_json_flag(&parse(&["clickhousectl", "telemetry", "status", "--json"])),
+            Some(true)
+        );
+        #[cfg(feature = "feedback")]
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "feedback", "hi"])),
+            Some(false)
+        );
+        #[cfg(feature = "feedback")]
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "feedback", "--json", "hi"])),
             Some(true)
         );
     }

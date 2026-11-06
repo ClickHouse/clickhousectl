@@ -20,6 +20,7 @@ Start with the [README](../README.md) for installation and product examples. The
 - [ClickPipe configuration](reference/clickpipe-configuration.md): partial updates, mappings, source authentication, private connectivity.
 - [Automation and output contracts](reference/automation.md): JSON shapes, stderr, exit codes, asynchronous operations.
 - [Telemetry](reference/telemetry.md): recorded fields, notice, opt-out, local inspection.
+- [Feedback](reference/feedback.md): what `feedback` sends, the length limit, errors.
 
 ## Development
 

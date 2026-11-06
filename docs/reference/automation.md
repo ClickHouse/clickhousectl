@@ -56,7 +56,7 @@ Local and Cloud runtime errors in JSON mode write an envelope to stderr:
 {"error":{"code":"server_not_found","message":"The selected server was not found"}}
 ```
 
-`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. Management-command failures (`skills`, `telemetry`, `update`) keep their existing diagnostics rather than sharing this runtime envelope.
+`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. Management-command failures (`skills`, `telemetry`, `update`, `feedback`) keep their existing diagnostics rather than sharing this runtime envelope.
 
 Error rendering adds nothing to stdout, but a streaming query or a command that already committed a change may have emitted a result before failing. Do not accept partial output as success or assume nonzero exit means no side effects.
 
@@ -93,6 +93,7 @@ Successful JSON output from each management invocation is one object:
 | `telemetry status/enable/disable` | `action`, saved `preference`, effective `enabled`, `reason`, and available `config_path` |
 | `update --check` | `current_version`, `latest_version`, `action` (`up_to_date` or `update_available`) |
 | `update` | Version fields and `action` (`up_to_date` or `updated`); current version is the pre-replacement version |
+| `feedback` | `sent` (always `true`) and `length`, the sent message's length in characters |
 
 Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission without a TTY exits 2. Scope defaults to the current project; `--global` uses the home directory. The common `.agents/skills/` path is always included. Telemetry's saved enabled preference can still be overridden by `DO_NOT_TRACK`.
 
