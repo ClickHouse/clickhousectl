@@ -39,7 +39,7 @@ work on a branch, with an associated issue and a PR.
 - New Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not
   `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence,
   error conversion, and response unwrapping.
-- One deliberate exception to wrapper error conversion: `run_service_query{,_bearer}` in `src/cloud/services.rs`
+- One deliberate exception to wrapper error conversion: `run_service_query{,_bearer}` in `src/cloud/services/client.rs`
   return the raw library error and an unread `reqwest::Response`, because the query paths stream the body and
   classify the error themselves before `convert_query_error`. Do not copy that shape for other endpoints.
 - Cloud handlers support `--json` unless there is good reason not to. JSON is emitted automatically when `--json`
@@ -66,7 +66,9 @@ work on a branch, with an associated issue and a PR.
 
 To add or change a local or Cloud command or flag, use the `add-cli-command` skill
 (`.agents/skills/add-cli-command/SKILL.md`). Local clap definitions live in `src/local/cli.rs`. Each Cloud
-domain keeps its definitions, handlers and tests together in `src/cloud/<domain>.rs`.
+domain keeps its definitions, handlers and tests together in `src/cloud/<domain>.rs`, or `src/cloud/<domain>/` for
+large domains (clap definitions in `cli.rs`, `CloudClient` wrappers in `client.rs`, one file per command family,
+tests beside the code they test).
 
 ## Writing help text
 
@@ -78,7 +80,8 @@ flag, or any help text. It holds the help standard and its test rule.
 Test coverage is non-negotiable.
 
 - **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning
-  `src/cloud/<domain>.rs`, `src/cloud/cli.rs`, `src/local/cli.rs`). Assert flag names, types, defaults, repeatability.
+  `src/cloud/<domain>.rs` or `src/cloud/<domain>/cli.rs`, `src/cloud/cli.rs`, `src/local/cli.rs`). Assert flag
+  names, types, defaults, repeatability.
 - **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on
   library request-struct fields with minimal + maximal inputs.
 - **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
