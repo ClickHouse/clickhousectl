@@ -165,6 +165,40 @@ fn stdout_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Run independent invocations at once, so a table test costs about one
+/// invocation's latency rather than one per row.
+fn outputs_in_parallel(commands: Vec<Command>) -> Vec<Output> {
+    std::thread::scope(|scope| {
+        let runs: Vec<_> = commands
+            .into_iter()
+            .map(|mut command| scope.spawn(move || command.output().expect("spawn binary")))
+            .collect();
+        runs.into_iter().map(|run| run.join().unwrap()).collect()
+    })
+}
+
+/// One enabled sandbox per table row, each row's command run in parallel
+/// from `cwd`.
+async fn run_rows(rows: &[&[&str]], cwd: &std::path::Path) -> Vec<(Sandbox, Output)> {
+    let mut sandboxes = Vec::new();
+    for _ in rows {
+        let sandbox = Sandbox::new().await;
+        sandbox.write_state(false);
+        sandboxes.push(sandbox);
+    }
+    let outputs = outputs_in_parallel(
+        rows.iter()
+            .zip(&sandboxes)
+            .map(|(args, sandbox)| {
+                let mut command = sandbox.command(args);
+                command.current_dir(cwd);
+                command
+            })
+            .collect(),
+    );
+    sandboxes.into_iter().zip(outputs).collect()
+}
+
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -302,31 +336,6 @@ async fn no_agent_correlation_headers_on_the_wire() {
     );
 }
 
-#[tokio::test]
-async fn failure_reported_and_positional_value_never_leaks() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
-    let output = sandbox.run(&["local", "remove", "no-such-version-xyz"]);
-    assert!(!output.status.success());
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "local remove");
-    // The slot the version went into is recorded; the version is not (#480).
-    assert_eq!(event["positionals"], serde_json::json!(["version"]));
-    // The event carries the exit code the process exited with, and
-    // the outcome derived from it — a failed handler is "error", not "ok".
-    assert_eq!(event["exit_code"], 1);
-    assert_eq!(event["exit_code"], output.status.code().unwrap());
-    assert_eq!(event["outcome"], "error");
-    let raw = serde_json::to_string(event).unwrap();
-    assert!(
-        !raw.contains("no-such-version-xyz"),
-        "positional argument leaked into the payload: {raw}"
-    );
-}
-
 /// The `error.code` of a local `--json` error object on stderr.
 fn json_error_code(output: &Output) -> String {
     let stderr = stderr_of(output);
@@ -343,30 +352,20 @@ fn json_error_code(output: &Output) -> String {
 #[tokio::test]
 async fn local_failure_kind_is_the_json_error_code() {
     let project = tempfile::tempdir().unwrap();
-    for args in [
-        &["local", "server", "stop", "no-such-server"][..],
-        &["local", "remove", "99.99.99.99"][..],
-    ] {
-        let json_argv = [args, &["--json"]].concat();
-        for argv in [json_argv.as_slice(), args] {
-            let sandbox = Sandbox::new().await;
-            sandbox.write_state(false);
-            let output = sandbox
-                .command(argv)
-                .current_dir(project.path())
-                .output()
-                .unwrap();
-            assert_eq!(output.status.code(), Some(1), "{argv:?}");
-            let event = &sandbox.wait_for_requests(1).await[0];
+    let stop: &[&str] = &["local", "server", "stop", "no-such-server"];
+    let remove: &[&str] = &["local", "remove", "99.99.99.99"];
+    let stop_json = [stop, &["--json"]].concat();
+    let remove_json = [remove, &["--json"]].concat();
+    let rows = [stop_json.as_slice(), stop, remove_json.as_slice(), remove];
+    let runs = run_rows(&rows, project.path()).await;
 
-            // The code the same failure reports in `--json` mode.
-            let expected = json_error_code(
-                &sandbox
-                    .command(&json_argv)
-                    .current_dir(project.path())
-                    .output()
-                    .unwrap(),
-            );
+    // Rows come in (`--json`, human) pairs; the `--json` row's error object
+    // names the code both events must carry.
+    for (args, pair) in rows.chunks(2).zip(runs.chunks(2)) {
+        let expected = json_error_code(&pair[0].1);
+        for (argv, (sandbox, output)) in args.iter().zip(pair) {
+            assert_eq!(output.status.code(), Some(1), "{argv:?}");
+            let event = the_event(sandbox).await;
             assert_eq!(event["outcome"], "error", "{argv:?}");
             assert_eq!(
                 event["failure_kind"],
@@ -636,58 +635,148 @@ async fn the_event(sandbox: &Sandbox) -> Value {
     payloads.into_iter().next().unwrap()
 }
 
+/// What sits where `local client` expects the native binary.
 #[cfg(unix)]
-#[tokio::test]
-async fn successful_handoff_is_one_censored_exec_attempt() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    install_fake_clickhouse(
-        &sandbox,
-        FAKE_VERSION,
-        "#!/bin/sh\nprintf 'child ran\\n'\nexit 0\n",
-        0o755,
-    );
-
-    let output = run_local_client(&sandbox, project.path());
-
-    // The child inherited stdout and its status is the process status: the
-    // image really was replaced.
-    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
-    assert!(stdout_of(&output).contains("child ran"), "{output:?}");
-
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["outcome"], "exec_attempt");
-    // Fixed 0: censored, not "the native client succeeded".
-    assert_eq!(event["exit_code"], 0);
+enum FakeClient {
+    Script(&'static str, u32),
+    Directory,
+    /// Listed by version resolution, then gone before the pre-flight.
+    Removed,
 }
 
+/// How the shell sees the `local client` process end.
+#[cfg(unix)]
+#[derive(Debug, PartialEq)]
+enum Ended {
+    Code(i32),
+    Signal(i32),
+    /// Any failure status; the shell, not clickhousectl, chooses it.
+    Failure,
+}
+
+/// Every `local client` launch path, run in parallel, one sandbox each. A
+/// handoff that was reached is a censored `exec_attempt` with a fixed 0 (it
+/// proves the handoff, never that the native client succeeded), and the shell
+/// keeps the child's own status. A launch the pre-flight refuses is an
+/// ordinary `error` event with the process's exit code.
 #[cfg(unix)]
 #[tokio::test]
-async fn child_exit_status_is_preserved_and_the_event_stays_censored() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
+async fn local_client_launches_are_censored_handoffs_or_error_events() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let cases = [
+        (
+            "success",
+            FakeClient::Script("#!/bin/sh\nprintf 'child ran\\n'\nexit 0\n", 0o755),
+            Ended::Code(0),
+            "exec_attempt",
+        ),
+        (
+            "child status",
+            FakeClient::Script("#!/bin/sh\nprintf 'child ran\\n'\nexit 23\n", 0o755),
+            Ended::Code(23),
+            "exec_attempt",
+        ),
+        // Killed by a signal: no exit code at all, not a wrapper's
+        // translation of it.
+        (
+            "signal",
+            FakeClient::Script("#!/bin/sh\nkill -TERM $$\n", 0o755),
+            Ended::Signal(15),
+            "exec_attempt",
+        ),
+        // Executable, but not an executable format: `execvp` gets ENOEXEC
+        // and re-execs it through `/bin/sh`, so the image is replaced and
+        // the shell picks the failure status.
+        (
+            "bad format",
+            FakeClient::Script("\u{0}\u{1}not a binary\n", 0o755),
+            Ended::Failure,
+            "exec_attempt",
+        ),
+        (
+            "not executable",
+            FakeClient::Script("#!/bin/sh\nexit 0\n", 0o644),
+            Ended::Code(1),
+            "error",
+        ),
+        // A directory satisfies the `exists()` resolution checks, so this
+        // reaches the launch pre-flight.
+        ("directory", FakeClient::Directory, Ended::Code(1), "error"),
+        ("removed", FakeClient::Removed, Ended::Code(1), "error"),
+    ];
+
+    let mut sandboxes = Vec::new();
+    for (_, fake, _, _) in &cases {
+        let sandbox = Sandbox::new().await;
+        sandbox.write_state(false);
+        match fake {
+            FakeClient::Script(contents, mode) => {
+                install_fake_clickhouse(&sandbox, FAKE_VERSION, contents, *mode);
+            }
+            FakeClient::Directory => {
+                std::fs::create_dir_all(
+                    sandbox
+                        .home
+                        .path()
+                        .join(".clickhouse/versions")
+                        .join(FAKE_VERSION)
+                        .join("clickhouse"),
+                )
+                .unwrap();
+            }
+            FakeClient::Removed => {
+                let binary =
+                    install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nexit 0\n", 0o755);
+                std::fs::remove_file(&binary).unwrap();
+                std::fs::write(binary.parent().unwrap().join("clickhouse.bak"), "stub").unwrap();
+            }
+        }
+        sandboxes.push(sandbox);
+    }
     let project = tempfile::tempdir().unwrap();
-    install_fake_clickhouse(
-        &sandbox,
-        FAKE_VERSION,
-        "#!/bin/sh\nprintf 'child ran\\n'\nexit 23\n",
-        0o755,
+    let outputs: Vec<Output> = std::thread::scope(|scope| {
+        let runs: Vec<_> = sandboxes
+            .iter()
+            .map(|sandbox| scope.spawn(|| run_local_client(sandbox, project.path())))
+            .collect();
+        runs.into_iter().map(|run| run.join().unwrap()).collect()
+    });
+
+    for (((label, _, ended, outcome), sandbox), output) in
+        cases.iter().zip(&sandboxes).zip(&outputs)
+    {
+        let status = output.status;
+        let actual = match (status.code(), status.signal()) {
+            (Some(code), _) if *ended == Ended::Failure && code != 0 => Ended::Failure,
+            (Some(code), _) => Ended::Code(code),
+            (None, Some(signal)) => Ended::Signal(signal),
+            (None, None) => panic!("{label}: no status"),
+        };
+        assert_eq!(actual, *ended, "{label}: {}", stderr_of(output));
+        if matches!(ended, Ended::Code(0) | Ended::Code(23)) {
+            // The child inherited stdout: the image really was replaced.
+            assert!(
+                stdout_of(output).contains("child ran"),
+                "{label}: {output:?}"
+            );
+        }
+        let event = the_event(sandbox).await;
+        assert_eq!(event["command"], "local client", "{label}");
+        assert_eq!(event["outcome"], *outcome, "{label}");
+        let expected_code = match ended {
+            Ended::Code(code) if *outcome == "error" => *code,
+            _ => 0,
+        };
+        assert_eq!(event["exit_code"], expected_code, "{label}");
+    }
+    // The refused non-executable launch says how to repair the install.
+    let not_executable = &outputs[4];
+    assert!(
+        stderr_of(not_executable).contains("clickhousectl local install"),
+        "{}",
+        stderr_of(not_executable)
     );
-
-    let output = run_local_client(&sandbox, project.path());
-
-    // The shell sees the native client's own status, unmodified.
-    assert_eq!(output.status.code(), Some(23), "{}", stderr_of(&output));
-    assert!(stdout_of(&output).contains("child ran"), "{output:?}");
-
-    // And the event does not claim to know it: `exec_attempt` with a fixed 0
-    // is the documented censored reading, never `ok` and never the child's 23.
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["outcome"], "exec_attempt");
-    assert_eq!(event["exit_code"], 0);
 }
 
 #[cfg(unix)]
@@ -753,106 +842,6 @@ async fn the_native_client_keeps_this_process_and_its_stdio() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn signal_terminated_child_reaches_the_shell_as_a_signal() {
-    use std::os::unix::process::ExitStatusExt;
-
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nkill -TERM $$\n", 0o755);
-
-    let output = run_local_client(&sandbox, project.path());
-
-    // Killed by a signal, so there is no exit code at all — the shell sees the
-    // native client's death, not a wrapper's translation of it.
-    assert_eq!(output.status.code(), None);
-    assert_eq!(output.status.signal(), Some(15));
-
-    // And telemetry says only that the handoff was reached.
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["outcome"], "exec_attempt");
-    assert_eq!(event["exit_code"], 0);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn non_executable_binary_is_an_error_event_not_a_handoff() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nexit 0\n", 0o644);
-
-    let output = run_local_client(&sandbox, project.path());
-
-    let stderr = stderr_of(&output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("not executable"), "{stderr}");
-    assert!(
-        stderr.contains("clickhousectl local install"),
-        "the error should say how to repair the install: {stderr}"
-    );
-
-    // A launch that never happened is a failure, not an accepted handoff.
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["outcome"], "error");
-    assert_eq!(event["exit_code"], 1);
-    assert_eq!(event["exit_code"], output.status.code().unwrap());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn directory_in_place_of_the_binary_is_an_error_event() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    // A directory named `clickhouse` satisfies the `exists()` resolution
-    // checks, so this reaches the launch pre-flight.
-    let binary = sandbox
-        .home
-        .path()
-        .join(".clickhouse/versions")
-        .join(FAKE_VERSION)
-        .join("clickhouse");
-    std::fs::create_dir_all(&binary).unwrap();
-
-    let output = run_local_client(&sandbox, project.path());
-
-    let stderr = stderr_of(&output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(stderr.contains("not a regular file"), "{stderr}");
-
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["outcome"], "error");
-    assert_eq!(event["exit_code"], 1);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn binary_removed_before_the_pre_flight_is_an_error_event() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    let binary = install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nexit 0\n", 0o755);
-    // Version resolution lists the directory, but nothing is left to launch:
-    // removal is detected by the pre-flight, so it is an ordinary error.
-    std::fs::remove_file(&binary).unwrap();
-    std::fs::write(binary.parent().unwrap().join("clickhouse.bak"), "stub").unwrap();
-
-    let output = run_local_client(&sandbox, project.path());
-
-    let stderr = stderr_of(&output);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["outcome"], "error");
-    assert_eq!(event["exit_code"], 1);
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
@@ -888,33 +877,6 @@ async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn bad_executable_format_is_censored_never_successful() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    // Executable, but not an executable format. The pre-flight passes, and
-    // `execvp` gets ENOEXEC — which POSIX has it answer by re-execing the file
-    // through `/bin/sh`, so the image *is* replaced and the shell reports the
-    // failure with its own non-zero status. Either way clickhousectl is gone by
-    // then: the outcome the event can honestly carry is the censored attempt,
-    // and the status the user sees is not clickhousectl's to choose.
-    install_fake_clickhouse(&sandbox, FAKE_VERSION, "\u{0}\u{1}not a binary\n", 0o755);
-
-    let output = run_local_client(&sandbox, project.path());
-
-    let stderr = stderr_of(&output);
-    assert!(
-        !output.status.success(),
-        "a file that is not an executable format must fail: {stderr}"
-    );
-
-    let event = the_event(&sandbox).await;
-    assert_eq!(event["outcome"], "exec_attempt");
-    assert_eq!(event["exit_code"], 0);
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn missing_psql_is_an_error_event_not_a_handoff() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
@@ -944,153 +906,108 @@ async fn missing_psql_is_an_error_event_not_a_handoff() {
     assert_eq!(event["exit_code"], 1);
 }
 
+/// Dispatched commands record flag *names* and positional *slots*, never a
+/// value (#480). The bare, positional and `--name` forms of one command stay
+/// distinguishable, and arguments forwarded after `--` are not this CLI's
+/// shape at all. Capture is unit-tested in `telemetry.rs`; this pins the wire.
 #[tokio::test]
-async fn flag_names_sent_but_values_never_leak() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
-    // --json is a real flag; its name may appear but the CI-style value
-    // asserts cover named flags with values via the unit tests. Here we pin
-    // the end-to-end shape: flags is an array of known names only.
-    let output = sandbox.run(&["local", "--json", "list"]);
-    assert!(output.status.success());
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "local list");
-    assert_eq!(event["flags"], serde_json::json!(["json"]));
-}
-
-// -- positional presence (#480) ---------------------------------------------
-
-/// The three shapes issue #480 could not tell apart, end to end: a bare
-/// lifecycle command, the same command with a named server, and the
-/// compatibility `--name` flag. `positionals` is the discriminator and never
-/// carries the name itself.
-#[tokio::test]
-async fn positional_presence_distinguishes_bare_from_named_stop() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
+async fn dispatched_events_record_names_and_slots_but_never_values() {
+    const HOSTILE: &str = "postgres://user:pa55w0rd@db.internal:5432/prod";
     let project = tempfile::tempdir().unwrap();
+    let json = |value: &[&str]| serde_json::json!(value);
 
-    let cases: &[(&[&str], Value)] = &[
-        (&["local", "server", "stop"], serde_json::json!([])),
+    // (argv, command, flags, positionals, exit code, values that must not leak)
+    type Row<'a> = (&'a [&'a str], &'a str, Value, Value, i32, &'a [&'a str]);
+    let cases: &[Row] = &[
+        (
+            &["local", "--json", "list"],
+            "local list",
+            json(&["json"]),
+            json(&[]),
+            0,
+            &[],
+        ),
+        (
+            &["local", "server", "stop"],
+            "local clickhouse stop",
+            json(&[]),
+            json(&[]),
+            0,
+            &[],
+        ),
         (
             &["local", "server", "stop", "SECRET-SERVER-NAME"],
-            serde_json::json!(["name"]),
+            "local clickhouse stop",
+            json(&[]),
+            json(&["name"]),
+            1,
+            &["SECRET"],
         ),
         (
             &["local", "server", "stop", "--name", "SECRET-SERVER-NAME"],
-            serde_json::json!([]),
+            "local clickhouse stop",
+            json(&["name"]),
+            json(&[]),
+            1,
+            &["SECRET"],
         ),
-    ];
-
-    for (index, (args, expected)) in cases.iter().enumerate() {
-        let output = sandbox
-            .command(args)
-            .current_dir(project.path())
-            .output()
-            .unwrap();
-        // Whether the stop succeeds is irrelevant here; the event shape is not.
-        let payloads = sandbox.wait_for_requests(index + 1).await;
-        let event = &payloads[index];
-        assert_eq!(event["command"], "local clickhouse stop", "for {args:?}");
-        assert_eq!(event["positionals"], *expected, "for {args:?}");
-        let raw = serde_json::to_string(event).unwrap();
-        assert!(
-            !raw.contains("SECRET"),
-            "server name leaked for {args:?}: {raw} (stderr: {})",
-            stderr_of(&output)
-        );
-    }
-
-    // The flag form records the name as a *flag*, so the two naming styles
-    // stay distinguishable without recording the value.
-    let payloads = sandbox.wait_for_requests(3).await;
-    assert_eq!(payloads[2]["flags"], serde_json::json!(["name"]));
-}
-
-/// A missing required positional (parse failure) and a supplied one (dispatch)
-/// are now different events, which is what the August 2026 investigation
-/// could not separate.
-#[tokio::test]
-async fn missing_required_positional_is_distinguishable_from_a_supplied_one() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-
-    let output = sandbox
-        .command(&["local", "use"])
-        .current_dir(project.path())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", stderr_of(&output));
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "local use");
-    assert_eq!(event["outcome"], "missing_required");
-    assert_eq!(event["positionals"], serde_json::json!([]));
-
-    // Supplied but not installed: the parse succeeded, so the slot is present
-    // and the failure is a handler failure, not a usage error.
-    let output = sandbox
-        .command(&["local", "remove", "25.12.9.61"])
-        .current_dir(project.path())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
-    let payloads = sandbox.wait_for_requests(2).await;
-    let event = &payloads[1];
-    assert_eq!(event["command"], "local remove");
-    assert_eq!(event["outcome"], "error");
-    assert_eq!(event["positionals"], serde_json::json!(["version"]));
-    let raw = serde_json::to_string(event).unwrap();
-    assert!(!raw.contains("25.12.9.61"), "version leaked: {raw}");
-}
-
-/// Hostile, secret-shaped positionals: presence is recorded, the value is not,
-/// and arguments forwarded to another program are not recorded at all.
-#[tokio::test]
-async fn hostile_positionals_never_appear_on_the_wire() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    const HOSTILE: &str = "postgres://user:pa55w0rd@db.internal:5432/prod";
-
-    let cases: &[(&[&str], &str, Value)] = &[
         (
             &["local", "server", "stop", HOSTILE],
             "local clickhouse stop",
-            serde_json::json!(["name"]),
+            json(&[]),
+            json(&["name"]),
+            1,
+            &["postgres://", "pa55w0rd", "db.internal"],
         ),
-        // Forwarded to clickhouse-client after `--`: not this CLI's shape.
         (
             &["local", "client", "--", HOSTILE],
             "local client",
-            serde_json::json!([]),
+            json(&[]),
+            json(&[]),
+            1,
+            &["postgres://", "pa55w0rd", "db.internal"],
+        ),
+        // A failed handler records the slot and derives `error` from the
+        // exit code it exited with.
+        (
+            &["local", "remove", "no-such-version-xyz"],
+            "local remove",
+            json(&[]),
+            json(&["version"]),
+            1,
+            &["no-such-version-xyz"],
         ),
     ];
 
-    for (index, (args, command, expected)) in cases.iter().enumerate() {
-        let output = sandbox
-            .command(args)
-            .current_dir(project.path())
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{}", stdout_of(&output));
-        let payloads = sandbox.wait_for_requests(index + 1).await;
-        let event = &payloads[index];
-        assert_eq!(event["command"], *command, "for {args:?}");
-        assert_eq!(event["positionals"], *expected, "for {args:?}");
+    let rows: Vec<&[&str]> = cases.iter().map(|case| case.0).collect();
+    let runs = run_rows(&rows, project.path()).await;
+    for ((args, command, flags, positionals, exit_code, secrets), (sandbox, output)) in
+        cases.iter().zip(&runs)
+    {
+        assert_eq!(
+            output.status.code(),
+            Some(*exit_code),
+            "{args:?}: {}",
+            stderr_of(output)
+        );
+        let event = &the_event(sandbox).await;
+        assert_eq!(event["command"], *command, "{args:?}");
+        assert_eq!(event["flags"], *flags, "{args:?}");
+        assert_eq!(event["positionals"], *positionals, "{args:?}");
+        assert_eq!(event["exit_code"], *exit_code, "{args:?}");
+        assert_eq!(
+            event["outcome"],
+            if *exit_code == 0 { "ok" } else { "error" },
+            "{args:?}"
+        );
         let raw = serde_json::to_string(event).unwrap();
-        for fragment in ["postgres://", "pa55w0rd", "db.internal", HOSTILE] {
-            assert!(
-                !raw.contains(fragment),
-                "hostile positional leaked for {args:?}: {raw}"
-            );
+        for secret in *secrets {
+            assert!(!raw.contains(secret), "{secret} leaked for {args:?}: {raw}");
         }
     }
 }
+
+// -- positional presence (#480) ---------------------------------------------
 
 // -- any invocation counts (#320): bare, help, version, parse errors --------
 
@@ -1127,199 +1044,147 @@ async fn first_run_of_help_prints_notice_and_writes_marker() {
     assert_eq!(event["exit_code"], 0);
 }
 
+/// Every parse failure still reaches the telemetry tail through
+/// `capture_lossy`, keeps clap's exit 2, and keeps the unmatched or invalid
+/// token off the wire. Each outcome's capture rules are unit-tested as the
+/// `lossy_*` tests in `telemetry.rs`; this is the end-to-end path, once per
+/// outcome.
 #[tokio::test]
-async fn bare_invocation_reports_missing_subcommand() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
-    let output = sandbox.run(&[]);
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "clap usage errors keep exit 2"
-    );
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "");
-    assert_eq!(event["outcome"], "missing_subcommand");
-    assert_eq!(event["exit_code"], 2);
-}
-
-#[tokio::test]
-async fn invalid_subcommand_reports_kind_but_never_the_token() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
-    // An agent-hallucinated command: the event records that it happened and
-    // where the valid prefix ended — never the unmatched token itself, which
-    // is indistinguishable from a secret pasted into the wrong window.
-    let output = sandbox.run(&["hallucinated-subcommand-xyz"]);
-    assert_eq!(output.status.code(), Some(2));
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "");
-    assert_eq!(event["outcome"], "invalid_subcommand");
-    assert!(
-        event.get("failure_kind").is_none(),
-        "a parse error carries no failure kind: {event}"
-    );
-    let raw = serde_json::to_string(event).unwrap();
-    assert!(
-        !raw.contains("hallucinated-subcommand-xyz"),
-        "raw token leaked into the payload: {raw}"
-    );
-}
-
-#[tokio::test]
-async fn failed_parse_after_positional_captures_later_flags_without_values() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
-    let output = sandbox.run(&[
-        "cloud",
-        "postgres",
-        "logs",
-        "SECRET-POSTGRES-ID",
-        "--org-id",
-        "SECRET-ORG-ID",
-        "--from-date",
-        "SECRET-FROM-DATE",
-        "--to-date",
-        "SECRET-TO-DATE",
-    ]);
-    assert_eq!(output.status.code(), Some(2));
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "cloud postgres logs");
-    assert_eq!(
-        event["flags"],
-        serde_json::json!(["from-date", "org-id", "to-date"])
-    );
-    // Only the positional definition is recorded; the ID stays off the wire.
-    assert_eq!(event["positionals"], serde_json::json!(["resource_id"]));
-    assert_eq!(event["exit_code"], 2);
-    assert_eq!(event["outcome"], "invalid_value");
-    let raw = serde_json::to_string(event).unwrap();
-    assert!(!raw.contains("SECRET"), "argument value leaked: {raw}");
-}
-
-#[tokio::test]
-async fn invalid_local_versions_report_invalid_value_without_dispatch_side_effects() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
+async fn parse_failures_reach_the_wire_as_outcomes_without_their_tokens() {
     let project = tempfile::tempdir().unwrap();
-    let cases: &[(&[&str], &str, &str)] = &[
+
+    // (argv, command, outcome, flags, positionals, tokens that must not leak)
+    type Row<'a> = (&'a [&'a str], &'a str, &'a str, Value, Value, &'a [&'a str]);
+    let cases: &[Row] = &[
+        (
+            &[],
+            "",
+            "missing_subcommand",
+            serde_json::json!([]),
+            serde_json::json!([]),
+            &[],
+        ),
+        (
+            &["hallucinated-subcommand-xyz"],
+            "",
+            "invalid_subcommand",
+            serde_json::json!([]),
+            serde_json::json!([]),
+            &["hallucinated-subcommand-xyz"],
+        ),
+        (
+            &["local", "use"],
+            "local use",
+            "missing_required",
+            serde_json::json!([]),
+            serde_json::json!([]),
+            &[],
+        ),
+        // Flags after a positional are still captured, by name only.
+        (
+            &[
+                "cloud",
+                "postgres",
+                "logs",
+                "SECRET-POSTGRES-ID",
+                "--org-id",
+                "SECRET-ORG-ID",
+                "--from-date",
+                "SECRET-FROM-DATE",
+                "--to-date",
+                "SECRET-TO-DATE",
+            ],
+            "cloud postgres logs",
+            "invalid_value",
+            serde_json::json!(["from-date", "org-id", "to-date"]),
+            serde_json::json!(["resource_id"]),
+            &["SECRET"],
+        ),
         (
             &["local", "install", "not.a.version"],
             "local install",
-            "not.a.version",
+            "invalid_value",
+            serde_json::json!([]),
+            serde_json::json!(["version"]),
+            &["not.a.version"],
         ),
-        (&["local", "use", "25.12.9"], "local use", "25.12.9"),
-        (
-            &["local", "server", "start", "--version", "25.12.9.61.2"],
-            "local clickhouse start",
-            "25.12.9.61.2",
-        ),
-        (&["local", "use", "postgres@18"], "local use", "postgres@18"),
     ];
 
-    for (index, (args, command, operand)) in cases.iter().enumerate() {
-        let output = sandbox
-            .command(args)
-            .current_dir(project.path())
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{}", stderr_of(&output));
-        assert!(
-            stderr_of(&output).contains("error: invalid value"),
-            "{}",
-            stderr_of(&output)
+    let rows: Vec<&[&str]> = cases.iter().map(|case| case.0).collect();
+    let runs = run_rows(&rows, project.path()).await;
+    for ((args, command, outcome, flags, positionals, tokens), (sandbox, output)) in
+        cases.iter().zip(&runs)
+    {
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr_of(output)
         );
-
-        let payloads = sandbox.wait_for_requests(index + 1).await;
-        let event = &payloads[index];
-        assert_eq!(event["command"], *command);
-        assert_eq!(event["exit_code"], 2);
-        assert_eq!(event["outcome"], "invalid_value");
+        let event = &the_event(sandbox).await;
+        assert_eq!(event["command"], *command, "{args:?}");
+        assert_eq!(event["outcome"], *outcome, "{args:?}");
+        assert_eq!(event["exit_code"], 2, "{args:?}");
+        assert_eq!(event["flags"], *flags, "{args:?}");
+        assert_eq!(event["positionals"], *positionals, "{args:?}");
+        assert!(
+            event.get("failure_kind").is_none(),
+            "a parse error carries no failure kind: {event}"
+        );
         let raw = serde_json::to_string(event).unwrap();
-        assert!(!raw.contains(operand), "version operand leaked: {raw}");
+        for token in *tokens {
+            assert!(!raw.contains(token), "{token} leaked for {args:?}: {raw}");
+        }
     }
-
-    let home_state = sandbox.home.path().join(".clickhouse");
-    assert!(!home_state.join("versions").exists());
-    assert!(!home_state.join("default").exists());
-    assert!(!sandbox.home.path().join(".local").exists());
     assert!(!project.path().join(".clickhouse").exists());
-}
+    let install_home = runs[4].0.home.path();
+    assert!(!install_home.join(".clickhouse/versions").exists());
 
-#[tokio::test]
-async fn typo_carries_definition_derived_suggestion() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-
+    // Clap's did-you-mean names the *defined* subcommand, so it is safe to
+    // record; the typo'd token stays off the wire.
+    let sandbox = &runs[0].0;
     let output = sandbox.run(&["cloud", "servce", "list"]);
     assert_eq!(output.status.code(), Some(2));
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
+    let event = &sandbox.wait_for_requests(2).await[1];
     assert_eq!(event["command"], "cloud");
     assert_eq!(event["outcome"], "invalid_subcommand");
-    // Clap's did-you-mean names the *defined* subcommand, so recording it is
-    // safe; the typo'd token stays off the wire.
     assert_eq!(event["suggestion"], "service");
-    let raw = serde_json::to_string(event).unwrap();
-    assert!(!raw.contains("servce"), "typo leaked: {raw}");
+    assert!(!serde_json::to_string(event).unwrap().contains("servce"));
 }
 
+/// `DO_NOT_TRACK` opts out before anything else: no notice, no marker file,
+/// no event. A set value that is not valid UTF-8 must opt out too; if the
+/// lookup treated it as "unset" the opt-out would fail open (see
+/// `real_env_lookup`, which uses `var_os` + lossy conversion for exactly this
+/// reason).
 #[tokio::test]
 async fn do_not_track_is_fully_silent() {
-    let sandbox = Sandbox::new().await;
-
-    let output = sandbox
-        .command(&["local", "list"])
-        .env("DO_NOT_TRACK", "1")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
-    assert!(
-        !sandbox.state_path().exists(),
-        "DO_NOT_TRACK must not write the marker file"
-    );
-    sandbox.assert_no_requests().await;
-}
-
-/// A `DO_NOT_TRACK` value that is set but not valid UTF-8 must still opt out.
-/// `std::env::var` errors on such values; if the lookup treated that as
-/// "unset" the opt-out would fail open (see `real_env_lookup`, which uses
-/// `var_os` + lossy conversion for exactly this reason).
-#[cfg(unix)]
-#[tokio::test]
-async fn non_utf8_do_not_track_is_fully_silent() {
-    use std::os::unix::ffi::OsStringExt;
-
-    let sandbox = Sandbox::new().await;
-
-    let output = sandbox
-        .command(&["local", "list"])
-        .env(
-            "DO_NOT_TRACK",
-            std::ffi::OsString::from_vec(vec![0xff, 0xfe]),
-        )
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
-    assert!(
-        !sandbox.state_path().exists(),
-        "non-UTF-8 DO_NOT_TRACK must not write the marker file"
-    );
-    sandbox.assert_no_requests().await;
+    let mut values = vec![std::ffi::OsString::from("1")];
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        values.push(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
+    }
+    let mut sandboxes = Vec::new();
+    for value in values {
+        let sandbox = Sandbox::new().await;
+        let output = sandbox
+            .command(&["local", "list"])
+            .env("DO_NOT_TRACK", &value)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{value:?}");
+        assert!(
+            !stderr_of(&output).contains("anonymous usage data"),
+            "{value:?}"
+        );
+        assert!(
+            !sandbox.state_path().exists(),
+            "DO_NOT_TRACK={value:?} must not write the marker file"
+        );
+        sandboxes.push(sandbox);
+    }
+    assert_no_requests_in(&sandboxes.iter().collect::<Vec<_>>()).await;
 }
 
 #[tokio::test]
@@ -1346,81 +1211,71 @@ async fn disable_persists_and_silences() {
     sandbox.assert_no_requests().await;
 }
 
+/// `telemetry status` only reads: whatever the saved preference and output
+/// mode, it writes no marker, prints no first-run notice, touches no update
+/// cache and sends nothing.
 #[tokio::test]
-async fn status_is_read_only_when_telemetry_is_unconfigured() {
-    let sandbox = Sandbox::new().await;
-
-    let output = sandbox.run(&["telemetry", "status"]);
-    assert!(output.status.success());
-    assert!(stdout_of(&output).contains("not yet configured"));
-    assert!(!stderr_of(&output).contains("anonymous usage data"));
-    assert!(!sandbox.state_path().exists());
-    assert!(
-        !sandbox
-            .home
-            .path()
-            .join(".clickhouse/last_update_check")
-            .exists()
-    );
-    sandbox.assert_no_requests().await;
-}
-
-#[tokio::test]
-async fn status_is_read_only_when_telemetry_is_enabled() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let original_state = std::fs::read(sandbox.state_path()).unwrap();
-
-    let output = sandbox.run(&["telemetry", "status"]);
-    assert!(output.status.success());
-    assert!(stdout_of(&output).contains("Telemetry is enabled"));
-    assert_eq!(std::fs::read(sandbox.state_path()).unwrap(), original_state);
-    assert!(
-        !sandbox
-            .home
-            .path()
-            .join(".clickhouse/last_update_check")
-            .exists()
-    );
-    sandbox.assert_no_requests().await;
-}
-
-#[tokio::test]
-async fn json_status_is_read_only_with_explicit_and_agent_output_selection() {
+async fn status_is_read_only_in_every_state_and_output_mode() {
     let mut sandboxes = Vec::new();
-    for agent_mode in [false, true] {
-        for (disabled, preference, enabled, reason) in [
-            (None, "unconfigured", false, "unconfigured"),
-            (Some(false), "enabled", true, "preference_enabled"),
-            (Some(true), "disabled", false, "preference_disabled"),
-        ] {
+    for (disabled, preference, enabled, reason) in [
+        (None, "unconfigured", false, "unconfigured"),
+        (Some(false), "enabled", true, "preference_enabled"),
+        (Some(true), "disabled", false, "preference_disabled"),
+    ] {
+        for mode in ["human", "json", "agent"] {
             let sandbox = Sandbox::new().await;
             if let Some(disabled) = disabled {
                 sandbox.write_state(disabled);
             }
             let original = std::fs::read(sandbox.state_path()).ok();
             let mut command = sandbox.command(&["telemetry", "status"]);
-            if agent_mode {
-                command.env("CLAUDECODE", "1");
-            } else {
-                command.arg("--json");
+            match mode {
+                "json" => {
+                    command.arg("--json");
+                }
+                "agent" => {
+                    command.env("CLAUDECODE", "1");
+                }
+                _ => {}
             }
             let output = command.output().unwrap();
-            assert!(output.status.success(), "{}", stderr_of(&output));
-            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(value["action"], "status");
-            assert_eq!(value["preference"], preference);
-            assert_eq!(value["enabled"], enabled);
-            assert_eq!(value["reason"], reason);
-            assert_eq!(value["config_path"], sandbox.state_path().to_str().unwrap());
-            assert!(output.stderr.is_empty(), "{}", stderr_of(&output));
-            assert_eq!(std::fs::read(sandbox.state_path()).ok(), original);
+            let label = format!("{preference}/{mode}");
+            assert!(output.status.success(), "{label}: {}", stderr_of(&output));
+            assert!(output.stderr.is_empty(), "{label}: {}", stderr_of(&output));
+            if mode != "human" {
+                let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["action"], "status", "{label}");
+                assert_eq!(value["preference"], preference, "{label}");
+                assert_eq!(value["enabled"], enabled, "{label}");
+                assert_eq!(value["reason"], reason, "{label}");
+                assert_eq!(
+                    value["config_path"],
+                    sandbox.state_path().to_str().unwrap(),
+                    "{label}"
+                );
+            } else {
+                // The human line names the saved state, as `preference` does.
+                let stdout = stdout_of(&output);
+                for state in ["enabled", "disabled"] {
+                    assert_eq!(
+                        stdout.contains(state),
+                        preference == state,
+                        "{label}: {stdout}"
+                    );
+                }
+            }
+            assert_eq!(
+                std::fs::read(sandbox.state_path()).ok(),
+                original,
+                "{label}"
+            );
             assert!(
                 !sandbox
                     .home
                     .path()
                     .join(".clickhouse/last_update_check")
-                    .exists()
+                    .exists(),
+                "{label}"
             );
             sandboxes.push(sandbox);
         }

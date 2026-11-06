@@ -144,4 +144,16 @@ mod tests {
 
         assert!(dir.join("tables").join(".gitkeep").is_file());
     }
+
+    #[test]
+    fn scaffold_repair_of_any_one_subdir_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("postgres");
+        let subdirs = ["tables", "views", "functions"];
+        assert!(create_project_scaffold(dir.clone(), &subdirs).unwrap());
+
+        std::fs::remove_dir_all(dir.join("views")).unwrap();
+        assert!(create_project_scaffold(dir.clone(), &subdirs).unwrap());
+        assert!(dir.join("views").join(".gitkeep").is_file());
+    }
 }

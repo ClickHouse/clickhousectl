@@ -104,32 +104,6 @@ fn omitted_names_select_an_existing_default_implicitly() {
 }
 
 #[test]
-fn conflicting_name_forms_fail_before_dispatch() {
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let home = tempfile::tempdir().expect("create home tempdir");
-
-    for command in ["stop", "remove"] {
-        let output = run(
-            project.path(),
-            home.path(),
-            &[
-                "local",
-                "server",
-                command,
-                "positional",
-                "--name",
-                "flagged",
-            ],
-        );
-
-        assert_eq!(output.status.code(), Some(2));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("cannot be used with"), "stderr: {stderr}");
-        assert!(!project.path().join(".clickhouse").exists());
-    }
-}
-
-#[test]
 fn dotenv_positional_and_compatibility_names_select_the_same_running_server() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();

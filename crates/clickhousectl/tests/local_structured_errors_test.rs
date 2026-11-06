@@ -1,5 +1,6 @@
 //! Subprocess coverage for the stable local structured-error contract.
 
+use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -28,22 +29,47 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
         .expect("run clickhousectl")
 }
 
-fn expected_error(code: &str, message: &str, recovery: Option<&str>) -> String {
+/// Expected envelopes compare by field. Every `message` only has to be a
+/// string here (wording is unit-tested beside `LocalErrorOutput`); callers
+/// check the values a message must carry.
+const ANY_MESSAGE: &str = "<message>";
+
+fn without_messages(mut value: Value) -> Value {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map.iter_mut() {
+                    if key == "message" && child.is_string() {
+                        *child = ANY_MESSAGE.into();
+                    } else {
+                        walk(child);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(&mut value);
+    value
+}
+
+fn expected_error(code: &str, recovery: Option<&str>) -> Value {
     let mut error = serde_json::Map::new();
     error.insert("code".into(), code.into());
-    error.insert("message".into(), message.into());
+    error.insert("message".into(), ANY_MESSAGE.into());
     if let Some(command) = recovery {
         error.insert("command".into(), command.into());
     }
-    let value = serde_json::json!({ "error": error });
-    format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+    json!({ "error": error })
 }
 
-fn expected_project_server_error(project: &Path, name: &str) -> String {
-    let value = serde_json::json!({
+fn expected_project_server_error(project: &Path, name: &str) -> Value {
+    let guidance = |action: &str, command: &str| json!({ "action": action, "message": ANY_MESSAGE, "command": command });
+    json!({
         "error": {
             "code": "server_not_found",
-            "message": format!("Server '{name}' was not found in the current project"),
+            "message": ANY_MESSAGE,
             "project_scope": {
                 "kind": "exact_current_project",
                 "path": project.canonicalize().unwrap(),
@@ -51,33 +77,21 @@ fn expected_project_server_error(project: &Path, name: &str) -> String {
             },
             "server": { "name": name },
             "guidance": [
-                {
-                    "action": "return_to_project_root",
-                    "message": "Change to the local project root where the server was started",
-                    "command": "cd <project-root>"
-                },
-                {
-                    "action": "list_project_servers",
-                    "message": "List servers after returning to that exact project",
-                    "command": "clickhousectl local clickhouse list"
-                },
-                {
-                    "action": "list_global_servers",
-                    "message": "Locate running ClickHouse servers across projects",
-                    "command": "clickhousectl local clickhouse list --global"
-                },
-                {
-                    "action": "stop_global_project_server",
-                    "message": "After confirming the project, stop the server with explicit global project selection",
-                    "command": "clickhousectl local clickhouse stop <name> --global --project <project-root>"
-                }
+                guidance("return_to_project_root", "cd <project-root>"),
+                guidance("list_project_servers", "clickhousectl local clickhouse list"),
+                guidance("list_global_servers", "clickhousectl local clickhouse list --global"),
+                guidance(
+                    "stop_global_project_server",
+                    "clickhousectl local clickhouse stop <name> --global --project <project-root>",
+                ),
             ]
         }
-    });
-    format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+    })
 }
 
-fn assert_structured_failure(output: &Output, expected: &str) {
+/// Exit 1, nothing on stdout, and stderr is exactly one pretty-printed JSON
+/// error matching `expected`. Returns the actual message.
+fn assert_structured_failure(output: &Output, expected: &Value) -> String {
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -85,8 +99,15 @@ fn assert_structured_failure(output: &Output, expected: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stdout.is_empty(), "runtime errors belong on stderr");
-    assert_eq!(String::from_utf8_lossy(&output.stderr), expected);
-    serde_json::from_slice::<serde_json::Value>(&output.stderr).expect("one JSON error object");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let actual: Value = serde_json::from_str(&stderr).expect("one JSON error object");
+    assert_eq!(
+        stderr,
+        format!("{}\n", serde_json::to_string_pretty(&actual).unwrap()),
+        "pretty-printed with a trailing newline"
+    );
+    assert_eq!(without_messages(actual.clone()), *expected, "{stderr}");
+    actual["error"]["message"].as_str().unwrap().to_owned()
 }
 
 fn install_fake_clickhouse(home: &Path, script: &str) {
@@ -139,7 +160,7 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
         .expect("run structured failure");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    let parsed: serde_json::Value =
+    let parsed: Value =
         serde_json::from_slice(&output.stderr).expect("all stderr is exactly one JSON value");
     assert_eq!(parsed["error"]["code"], "server_not_found");
     assert!(
@@ -154,10 +175,8 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
-    assert!(
-        stderr.contains("Error: Server 'missing' was not found in project"),
-        "{stderr}"
-    );
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(stderr.contains("'missing'"), "{stderr}");
     assert!(stderr.contains("anonymous usage data"), "{stderr}");
     assert!(home.path().join(".clickhouse/telemetry.json").exists());
 }
@@ -196,14 +215,11 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
         home.path(),
         &["local", "--json", "remove", "99.99.1.1"],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &not_installed,
-        &expected_error(
-            "version_not_installed",
-            "Version 99.99.1.1 not found",
-            Some("clickhousectl local list"),
-        ),
+        &expected_error("version_not_installed", Some("clickhousectl local list")),
     );
+    assert!(message.contains("99.99.1.1"), "{message}");
 
     install_fake_clickhouse(home.path(), "#!/bin/sh\nexit 7\n");
     let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy HTTP port");
@@ -223,14 +239,14 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
             &port_arg,
         ],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &port_error,
         &expected_error(
             "port_in_use",
-            &format!("HTTP port {port} is already in use"),
             Some("clickhousectl local clickhouse start --help"),
         ),
     );
+    assert!(message.contains(&port_arg), "{message}");
     // Keep the occupied port reserved through its assertion. For the fake
     // child below, let the CLI choose ports: it never binds a socket, so
     // handing it bind-then-drop ephemeral ports only introduces a race.
@@ -248,14 +264,11 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
             "--no-wait",
         ],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &startup,
-        &expected_error(
-            "startup_exit",
-            "ClickHouse server 'default' exited before becoming ready",
-            Some("clickhousectl local clickhouse list"),
-        ),
+        &expected_error("startup_exit", Some("clickhousectl local clickhouse list")),
     );
+    assert!(message.contains("'default'"), "{message}");
 }
 
 #[test]
@@ -269,10 +282,7 @@ fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
     std::fs::write(&invalid_servers_dir, b"private SQL and password=hunter2").unwrap();
 
     let io_error = run(&project, &home, &["local", "--json", "server", "list"]);
-    assert_structured_failure(
-        &io_error,
-        &expected_error("io_error", "Local I/O operation failed", None),
-    );
+    assert_structured_failure(&io_error, &expected_error("io_error", None));
     std::fs::remove_file(invalid_servers_dir).unwrap();
 
     // Docker unavailability is classified and described by clickhousectl
@@ -286,8 +296,7 @@ fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
         .expect("run Docker unavailable failure");
     assert_eq!(unavailable.status.code(), Some(1));
     assert!(unavailable.stdout.is_empty());
-    let error: serde_json::Value =
-        serde_json::from_slice(&unavailable.stderr).expect("one JSON error object");
+    let error: Value = serde_json::from_slice(&unavailable.stderr).expect("one JSON error object");
     assert_eq!(error["error"]["code"], "docker_unavailable");
     let message = error["error"]["message"].as_str().expect("message");
     assert!(message.contains("Docker is not available"), "{message}");
@@ -332,17 +341,17 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "does-not-exist",
         ],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &missing_config,
         &expected_error(
             "config_not_found",
-            &format!(
-                "config 'does-not-exist' not found in {} (available: analytics.xml)",
-                configs.display()
-            ),
             Some("clickhousectl local clickhouse configs"),
         ),
     );
+    let configs_dir = configs.display().to_string();
+    for value in ["'does-not-exist'", configs_dir.as_str(), "analytics.xml"] {
+        assert!(message.contains(value), "{value}: {message}");
+    }
 
     let human = run(
         project.path(),
@@ -359,10 +368,7 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
     );
     assert_eq!(
         String::from_utf8_lossy(&human.stderr),
-        format!(
-            "Error: config 'does-not-exist' not found in {} (available: analytics.xml)\n",
-            configs.display()
-        ),
+        format!("Error: {message}\n"),
         "JSON and human mode must carry the same detail"
     );
 
@@ -380,15 +386,14 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "../outside.xml",
         ],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &escaping_config,
         &expected_error(
             "invalid_config_name",
-            "Invalid config name '../outside.xml': must be a file in the configs dir, not a path \
-             (no '/', '\\', or '..')",
             Some("clickhousectl local clickhouse configs"),
         ),
     );
+    assert!(message.contains("'../outside.xml'"), "{message}");
 
     let passthrough = run(
         project.path(),
@@ -408,10 +413,6 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
         &passthrough,
         &expected_error(
             "unsupported_argument",
-            "--config / --config-file / -C cannot be passed through in trailing args. \
-             Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
-             (see `clickhousectl local clickhouse configs`). \
-             Individual --setting=value flags are supported.",
             Some("clickhousectl local clickhouse start --help"),
         ),
     );
@@ -432,14 +433,14 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             "0",
         ],
     );
-    assert_structured_failure(
+    let message = assert_structured_failure(
         &zero_port,
         &expected_error(
             "unsupported_argument",
-            "--http-port 0 is not allowed; pick a specific port or omit the flag",
             Some("clickhousectl local clickhouse start --help"),
         ),
     );
+    assert!(message.contains("--http-port"), "{message}");
 }
 
 #[test]
@@ -454,15 +455,22 @@ fn human_and_clap_errors_keep_their_existing_formats() {
     );
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
-    assert_eq!(
-        String::from_utf8_lossy(&human.stderr),
-        format!(
-            "Error: Server 'missing' was not found in project '{}'.\n\
-             Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-             Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local clickhouse stop <name> --global --project <project-root>`.\n",
-            project.path().canonicalize().unwrap().display()
-        )
-    );
+    // The human form names the scope and every recovery command the JSON
+    // guidance carries.
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    let project_path = format!("'{}'", project.path().canonicalize().unwrap().display());
+    assert!(stderr.contains(&project_path), "{stderr}");
+    let guidance = &expected_project_server_error(project.path(), "missing")["error"]["guidance"];
+    for item in guidance.as_array().unwrap() {
+        let command = item["command"].as_str().unwrap();
+        if command.starts_with("clickhousectl") {
+            assert!(
+                stderr.contains(&format!("`{command}`")),
+                "{command}: {stderr}"
+            );
+        }
+    }
 
     let clap = run(
         project.path(),

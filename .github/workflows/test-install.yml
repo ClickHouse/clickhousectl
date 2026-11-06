@@ -20,7 +20,6 @@ on:
       - "crates/clickhousectl/src/http.rs"
       - "crates/clickhousectl/src/user_agent.rs"
       - "crates/clickhousectl/tests/local_install_local_first_test.rs"
-      - "crates/clickhousectl/tests/local_version_error_test.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/clickhousectl/Cargo.toml"

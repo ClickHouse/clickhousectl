@@ -1,6 +1,7 @@
 //! Subprocess coverage for `local init`: the `--json` payload must report the
-//! full set of paths the command created, and the human output must report
-//! each created path exactly once (issue #609).
+//! full set of paths the command created (issue #609), and the runtime ignore
+//! file is created, preserved or reported as an error on disk. The human
+//! wording is unit-tested beside `InitOutput` and `init_output`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -79,69 +80,33 @@ fn init_json_reports_runtime_gitignore_repair() {
     );
 }
 
+/// Without `--json` the dispatcher renders the same result as text on stdout,
+/// one line per created path.
 #[test]
-fn init_human_output_reports_each_created_path_exactly_once() {
+fn init_human_output_is_text_on_stdout_naming_each_created_path() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
 
     let output = run(project.path(), home.path(), &["local", "init"]);
     assert!(output.status.success());
-
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for path in [".clickhouse/", "clickhouse/", "postgres/"] {
-        // `.clickhouse/` is a substring match of itself only; `clickhouse/`
-        // also matches inside `.clickhouse/`, so count line-anchored mentions.
-        let mentions = combined
-            .lines()
-            .filter(|line| line.ends_with(&format!(" {path}")))
-            .count();
-        assert_eq!(
-            mentions, 1,
-            "expected one line mentioning {path}: {combined}"
-        );
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&stdout).is_err(),
+        "{stdout}"
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    for (line, path) in lines
+        .iter()
+        .zip([".clickhouse/", "clickhouse/", "postgres/"])
+    {
+        assert!(line.ends_with(&format!(" {path}")), "{stdout}");
     }
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Initialized ClickHouse project in .clickhouse/\n\
-         Created project scaffold in clickhouse/\n\
-         Created project scaffold in postgres/\n"
-    );
-}
-
-#[test]
-fn init_human_output_second_run_reports_already_initialized() {
-    let project = tempfile::tempdir().expect("create project");
-    let home = tempfile::tempdir().expect("create home");
-
-    run(project.path(), home.path(), &["local", "init"]);
-    let output = run(project.path(), home.path(), &["local", "init"]);
-
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Already initialized at .clickhouse/\n"
-    );
-}
-
-#[test]
-fn init_human_output_reports_a_scaffold_only_repair() {
-    let project = tempfile::tempdir().expect("create project");
-    let home = tempfile::tempdir().expect("create home");
-
-    run(project.path(), home.path(), &["local", "init"]);
-    std::fs::remove_dir_all(project.path().join("postgres/views"))
-        .expect("remove one scaffold directory");
-    let output = run(project.path(), home.path(), &["local", "init"]);
-
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Already initialized at .clickhouse/\nCreated project scaffold in postgres/\n"
-    );
 }
 
 #[test]

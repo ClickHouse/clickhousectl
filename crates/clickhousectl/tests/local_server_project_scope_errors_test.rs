@@ -90,10 +90,7 @@ fn omitted_commands_explain_absent_project_state() {
     ));
     assert_eq!(stop["stopped"], false);
     assert_exact_scope(&stop["project_scope"], &stop_project);
-    assert_eq!(
-        stop["guidance"][0]["message"],
-        "Change to the local project root where the server was started"
-    );
+    assert_eq!(stop["guidance"][0]["action"], "return_to_project_root");
 
     let remove = json_error(&run(
         &remove_project,
@@ -105,8 +102,8 @@ fn omitted_commands_explain_absent_project_state() {
     assert!(remove["error"].get("server").is_none());
     assert_exact_scope(&remove["error"]["project_scope"], &remove_project);
     assert_eq!(
-        remove["error"]["guidance"][0]["message"],
-        "Change to the local project root where the server was started"
+        remove["error"]["guidance"][0]["action"],
+        "return_to_project_root"
     );
 
     let human_project = root.path().join("human-project");
@@ -114,9 +111,12 @@ fn omitted_commands_explain_absent_project_state() {
     let human = run(&human_project, home.path(), &["local", "server", "remove"]);
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
-    assert!(stderr.contains("No `.clickhouse` project state was found"));
-    assert!(stderr.contains("parent `.clickhouse` directories are not searched"));
-    assert!(stderr.contains("where the server was started"));
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(stderr.contains(&canonical(&human_project)), "{stderr}");
+    assert!(
+        stderr.contains("`clickhousectl local clickhouse list`"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -181,10 +181,11 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     let stderr = String::from_utf8_lossy(&human_remove.stderr);
     assert!(stderr.contains(&canonical(&child)), "stderr: {stderr}");
     assert!(
-        stderr.contains("Project-local clickhouse remove uses the exact current working directory")
+        stderr.contains("`clickhousectl local clickhouse list --global`"),
+        "{stderr}"
     );
-    assert!(stderr.contains("parent `.clickhouse` directories are not searched"));
-    assert!(!stderr.contains("server stop <name> --global"));
+    // The global stop recovery belongs to `stop` only.
+    assert!(!stderr.contains("stop <name> --global"), "{stderr}");
 
     for error in [&stop, &remove] {
         for guidance in error["error"]["guidance"].as_array().unwrap() {
@@ -213,8 +214,6 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     assert!(human.status.success());
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(stdout.contains(&canonical(&child)), "stdout: {stdout}");
-    assert!(stdout.contains("exact current working directory"));
-    assert!(stdout.contains("parent `.clickhouse` directories are not searched"));
     assert!(stdout.contains("clickhousectl local clickhouse list --global"));
 
     assert!(

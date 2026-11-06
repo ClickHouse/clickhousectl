@@ -200,23 +200,18 @@ fn udf_commands_report_server_not_found_without_creating_project_state() {
         assert_exit(&output, 1, args);
         let error = &stderr_json(&output)["error"];
         assert_eq!(error["code"], "server_not_found", "{args:?}");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("no clickhouse/ directory or servers"),
-            "{args:?}: {error}"
+        // A project without state points across projects, not at `start`.
+        assert_eq!(
+            error["command"], "clickhousectl local clickhouse list --global",
+            "{args:?}"
         );
     }
 }
 
 #[test]
 fn postgres_lookups_report_not_found_without_creating_project_state() {
-    for (args, message) in [
-        (
-            &["local", "--json", "postgres", "stop", "x"][..],
-            "Server 'x' not found",
-        ),
+    for (args, selected) in [
+        (&["local", "--json", "postgres", "stop", "x"][..], "'x'"),
         (
             &[
                 "local",
@@ -227,26 +222,18 @@ fn postgres_lookups_report_not_found_without_creating_project_state() {
                 "--version",
                 "17",
             ][..],
-            "Server 'x (postgres:17)' not found",
+            "'x (postgres:17)'",
         ),
-        (
-            &["local", "--json", "postgres", "remove", "x"][..],
-            "Server 'x' not found",
-        ),
-        (
-            &["local", "--json", "postgres", "client"][..],
-            "Server 'default' not found",
-        ),
-        (
-            &["local", "--json", "postgres", "dotenv"][..],
-            "Server 'default' not found",
-        ),
+        (&["local", "--json", "postgres", "remove", "x"][..], "'x'"),
+        (&["local", "--json", "postgres", "client"][..], "'default'"),
+        (&["local", "--json", "postgres", "dotenv"][..], "'default'"),
     ] {
         let output = run_in_empty_project(args);
         assert_exit(&output, 1, args);
         let error = &stderr_json(&output)["error"];
         assert_eq!(error["code"], "server_not_found", "{args:?}");
-        assert_eq!(error["message"], message, "{args:?}");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(selected), "{args:?}: {message}");
     }
 }
 
