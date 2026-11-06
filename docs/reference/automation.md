@@ -46,7 +46,9 @@ Paginated commands require command-specific handling. `cloud org list`, `cloud s
 | `1` | Runtime error |
 | `2` | Usage error, including invalid command-line values such as an empty Cloud resource ID (often an unset shell variable); nothing is sent |
 | `3` | Cancellation |
-| `4` | Authentication required/rejected, including OAuth-only writes |
+| `4` | Authentication required/rejected (HTTP 401, missing credentials), including OAuth-only writes |
+
+An HTTP 403 is a runtime error (`1`, code `http_4xx`), not `4`: it refuses the request, for example a quota, a precondition such as ClickStack not being set up, an organization policy or a missing grant, and logging in again does not fix it. The exception is a credential check backed by the identity (whoami) endpoint: `cloud auth login`, `cloud auth whoami`, and the key bind in `cloud service query`. There a 403 rejects the credentials themselves and exits `4`.
 
 Exit `2` also covers input that is checked after parsing but can never succeed, such as an unknown `--provider`, a malformed `--tag`, `--ip-allow` or `--role-id` entry, `--min-replicas` without `--max-replicas`, empty SQL, a `--file` body that is not valid JSON or has unknown fields, or `cloud auth login --interactive` without a TTY. A file that cannot be read is a runtime error (`1`, code `io`), and so is a check that depends on the resource's current state. When valid JSON does not fit the request, the error names the file, the JSON path of the offending value, such as `policies[0].permissions[0]`, and the kind of JSON value expected; only JSON syntax errors give a line and column.
 

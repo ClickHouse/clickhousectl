@@ -44,7 +44,7 @@ work on a branch, with an associated issue and a PR.
   classify the error themselves before `convert_query_error`. Do not copy that shape for other endpoints.
 - Cloud handlers support `--json` unless there is good reason not to. JSON is emitted automatically when `--json`
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
-- `CloudError.kind` decides the top-level error: `Auth` (401/403, missing credentials) → exit 4; `Usage` (input
+- `CloudError.kind` decides the top-level error: `Auth` (401, missing credentials; a 403 is not) → exit 4; `Usage` (input
   validation found at runtime) → clap-rendered, exit 2; else `Generic`. JSON mode prints every Cloud runtime failure,
   including auth and cancellation, via `cloud::output::print_error`; usage failures keep clap's text. Output mode
   never changes the exit code or the human message.

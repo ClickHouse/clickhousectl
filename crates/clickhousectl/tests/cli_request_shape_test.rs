@@ -1569,11 +1569,13 @@ async fn dispatched_cloud_401_exits_with_auth_required() {
 }
 
 #[tokio::test]
-async fn dispatched_cloud_403_exits_with_auth_required() {
+async fn dispatched_cloud_403_is_a_request_refusal_not_auth_required() {
+    // A 403 refuses the request (quota, precondition, policy, grant), which
+    // logging in again cannot fix, so it is not `auth_required` (#1225).
     let output = invoke_service_list_api_error(403, "Forbidden").await;
-    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
-    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 #[tokio::test]
@@ -1737,7 +1739,7 @@ async fn query_endpoint_create_key_replacement_is_explicit() {
 async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing() {
     let cases = [
         (
-            ResponseTemplate::new(403),
+            ResponseTemplate::new(401),
             vec!["--allowed-origins", "*"],
             4,
         ),
@@ -19883,7 +19885,7 @@ async fn selectors_refuse_bad_lists_before_mutation_and_preserve_list_errors() {
             serde_json::json!({"result": [{"name": "target", "id": "11111111-2222-3333-4444-555555555555"}, {"name": "target", "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}),
             1,
         ),
-        (403, serde_json::json!({"error": "list forbidden"}), 4),
+        (401, serde_json::json!({"error": "list forbidden"}), 4),
     ] {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
@@ -20324,7 +20326,7 @@ async fn selectors_endpoint_pagination_integrity_and_later_errors_block_mutation
             serde_json::json!({"result": [], "totalCount": 3, "nextCursor": null}),
             1,
         ),
-        (403, serde_json::json!({"error": "later page forbidden"}), 4),
+        (401, serde_json::json!({"error": "later page forbidden"}), 4),
     ] {
         let mock = MockServer::start().await;
         let list_path = "/v1/organizations/org-1/services/parent/query-api-endpoints";
@@ -20411,7 +20413,7 @@ async fn cloud_runtime_errors_classify_http_statuses_in_explicit_and_agent_json(
     // the output mode is independent of the status.
     for (status, code, exit, mode) in [
         (400, "http_4xx", 1, "explicit"),
-        (403, "auth_required", 4, "agent"),
+        (401, "auth_required", 4, "agent"),
         (408, "timeout", 1, "explicit"),
         (429, "rate_limited", 1, "agent"),
         (503, "http_5xx", 1, "explicit"),
@@ -21372,7 +21374,7 @@ async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/services"))
-        .respond_with(ResponseTemplate::new(403).set_body_string("Denied"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("Denied"))
         .mount(&mock)
         .await;
     let home = tempfile::tempdir().unwrap();
@@ -21761,7 +21763,7 @@ async fn key_pagination_name_lookup_finds_later_match_and_rejects_cross_page_amb
 async fn key_pagination_later_page_errors_prevent_partial_output_and_name_resolution() {
     // The listing and the name lookup each stop at a failed later page; the
     // status → exit code mapping is the `dispatched_cloud_*` tests'.
-    for (lookup, status, exit) in [(false, 400, 1), (true, 403, 4)] {
+    for (lookup, status, exit) in [(false, 400, 1), (true, 401, 4)] {
         let mock = MockServer::start().await;
         mount_key_page(
             &mock,
@@ -22176,7 +22178,7 @@ async fn postgres_query_preserves_structured_failures_without_retries_or_provisi
             "sql_error",
         ),
         (401, r#"{"error":"Unauthorized"}"#, 4, "auth_required"),
-        (403, r#"{"error":"Forbidden"}"#, 4, "auth_required"),
+        (403, r#"{"error":"Forbidden"}"#, 1, "http_4xx"),
         (404, "route missing", 1, "http_4xx"),
         (429, "rate limited", 1, "rate_limited"),
         (500, r#"{"error":"Timeout error."}"#, 1, "timeout"),
@@ -22205,9 +22207,6 @@ async fn postgres_query_preserves_structured_failures_without_retries_or_provisi
         assert!(output.stdout.is_empty());
         let error = cloud_runtime_error(&output);
         assert_eq!(error["code"], code, "status {status}: {error}");
-        if status == 403 {
-            assert!(!error["message"].as_str().unwrap().contains("--api-key"));
-        }
         assert_eq!(query.received_requests().await.unwrap().len(), 1);
         assert!(control.received_requests().await.unwrap().is_empty());
     }
@@ -23101,22 +23100,32 @@ async fn api_key_login_verifies_and_prints_the_identity_before_saving() {
 
 #[tokio::test]
 async fn api_key_login_rejected_by_whoami_exits_4_and_saves_nothing() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/whoami"))
-        .respond_with(whoami_rejected())
-        .expect(1)
-        .mount(&server)
-        .await;
-    let project = tempfile::tempdir().unwrap();
-    let output = invoke_auth(project.path(), &server.uri(), true, LOGIN_ARGS);
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    assert!(!project.path().join(".clickhouse/credentials.json").exists());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Invalid credentials"), "{stderr}");
-    let error: Value = serde_json::from_str(&stderr).unwrap();
-    assert_eq!(error["error"]["code"], "auth_required");
+    // whoami refusing the key with a 403 blocks the save as a 401 does, even
+    // though a 403 elsewhere is a request refusal, not auth_required (#1225).
+    for status in [401, 403] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                    "status": status,
+                    "requestId": "whoami-rejected",
+                    "error": "Invalid credentials"
+                })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_auth(project.path(), &server.uri(), true, LOGIN_ARGS);
+        assert_eq!(output.status.code(), Some(4), "status {status}");
+        assert!(output.stdout.is_empty());
+        assert!(!project.path().join(".clickhouse/credentials.json").exists());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Invalid credentials"), "{stderr}");
+        let error: Value = serde_json::from_str(&stderr).unwrap();
+        assert_eq!(error["error"]["code"], "auth_required");
+    }
 }
 
 #[tokio::test]

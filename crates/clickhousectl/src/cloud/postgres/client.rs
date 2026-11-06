@@ -25,9 +25,8 @@ impl CloudClient {
             .run_postgres_query_bearer(org_id, service_id, request)
             .await
             .map_err(|error| {
-                // The generic OAuth 403 hint recommends API keys for writes.
-                // This read-only route accepts OAuth only, so keep its typed
-                // classification while providing route-specific guidance.
+                // This read-only route accepts OAuth only, so a 403 stays a
+                // generic refusal (#1225) and gains route-specific guidance.
                 let forbidden_message = match &error {
                     clickhouse_cloud_api::Error::Api {
                         status: 403,

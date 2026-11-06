@@ -1007,7 +1007,7 @@ impl CloudClient {
         }
     }
 
-    /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
+    /// Convert a library error into a `CloudError`.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
         self.convert_error_with_organization(err, None)
     }
@@ -1203,16 +1203,13 @@ impl CloudClient {
                 {
                     msg = format!("{trimmed_message}: request scoped to organization {org_id}");
                 }
-                if *status == 403 && self.is_bearer_auth() {
-                    msg.push_str(
-                        "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
-                         Use API key authentication for write operations:\n  \
-                         clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
-                         Learn how to create API keys:\n  \
-                         https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
-                    );
-                }
-                if matches!(*status, 401 | 403) {
+                // Only a 401 says the credentials themselves were refused. A
+                // 403 is a refusal of this request (a quota, a precondition,
+                // a policy or a missing grant) that logging in again cannot
+                // fix (#1225), so it stays a generic `http_4xx` failure.
+                // Writes under OAuth never get here: dispatch blocks them
+                // first with their own API-key guidance.
+                if *status == 401 {
                     CloudError::auth(msg)
                 } else {
                     CloudError::new(msg)
@@ -1462,16 +1459,17 @@ mod tests {
         assert_eq!(err.failure, None);
     }
 
+    /// A 403 refuses the request, not the credentials (#1225): under an API
+    /// key or OAuth it stays generic, with the server's text as the message.
     #[test]
-    fn convert_error_includes_oauth_hint_for_403_bearer() {
+    fn convert_error_reports_403_as_a_generic_refusal() {
         let http = reqwest::Client::builder().build().unwrap();
-        let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
-            http,
-            DEFAULT_LIB_BASE_URL,
-            "test_token",
-        );
-        let client = CloudClient {
-            lib_client,
+        let bearer = CloudClient {
+            lib_client: clickhouse_cloud_api::Client::with_http_client_bearer(
+                http,
+                DEFAULT_LIB_BASE_URL,
+                "test_token",
+            ),
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
@@ -1479,18 +1477,18 @@ mod tests {
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
         };
-        let err = client.convert_error(clickhouse_cloud_api::Error::Api {
-            status: 403,
-            message: "Forbidden".into(),
-        });
-        // The server's own text leads, followed by the write-capable login.
-        assert!(err.message.starts_with("Forbidden"), "{}", err.message);
-        assert!(
-            err.message
-                .contains("clickhousectl cloud auth login --api-key"),
-            "{}",
-            err.message
-        );
+        for client in [test_client(), bearer] {
+            let err = client.convert_error(clickhouse_cloud_api::Error::Api {
+                status: 403,
+                message: "FORBIDDEN: quota".into(),
+            });
+            assert_eq!(err.kind, CloudErrorKind::Generic);
+            assert_eq!(err.message, "FORBIDDEN: quota");
+            assert_eq!(
+                err.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, 403))
+            );
+        }
     }
 
     #[test]
@@ -1531,30 +1529,10 @@ mod tests {
     }
 
     #[test]
-    fn convert_error_no_hint_for_403_basic() {
-        let client = test_client();
-        let err = client.convert_error(clickhouse_cloud_api::Error::Api {
-            status: 403,
-            message: "Forbidden".into(),
-        });
-        // API-key auth can already write: the server's text is left as is.
-        assert_eq!(err.message, "Forbidden");
-    }
-
-    #[test]
     fn convert_error_flags_401_as_auth() {
         let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
             status: 401,
             message: "Unauthorized".into(),
-        });
-        assert_eq!(err.kind, CloudErrorKind::Auth);
-    }
-
-    #[test]
-    fn convert_error_flags_403_as_auth() {
-        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
-            status: 403,
-            message: "Forbidden".into(),
         });
         assert_eq!(err.kind, CloudErrorKind::Auth);
     }
@@ -1580,17 +1558,6 @@ mod tests {
         assert_eq!(
             err.failure,
             Some(ApiFailure::with_status(FailureKind::RateLimited, 429))
-        );
-
-        // The OAuth hint rewrites the message; the classification is
-        // unaffected by it.
-        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
-            status: 403,
-            message: "Forbidden".into(),
-        });
-        assert_eq!(
-            err.failure,
-            Some(ApiFailure::with_status(FailureKind::Http4xx, 403))
         );
 
         // A locally-raised error has no classification until a boundary
@@ -1875,8 +1842,8 @@ mod tests {
     }
 
     #[test]
-    fn lookup_auth_errors_are_not_missing_resources_even_with_not_found_text() {
-        for status in [401, 403] {
+    fn lookup_refusals_are_not_missing_resources_even_with_not_found_text() {
+        for (status, kind) in [(401, CloudErrorKind::Auth), (403, CloudErrorKind::Generic)] {
             let err = test_client().convert_error_for_lookup(
                 clickhouse_cloud_api::Error::Api {
                     status,
@@ -1884,7 +1851,7 @@ mod tests {
                 },
                 ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
             );
-            assert_eq!(err.kind, CloudErrorKind::Auth);
+            assert_eq!(err.kind, kind);
             assert!(err.details.is_none());
             assert_eq!(
                 err.failure,

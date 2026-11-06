@@ -1883,10 +1883,7 @@ mod tests {
             assert_eq!(error.message, plain.message);
             assert!(error.details.is_none());
             assert_eq!(error.failure.unwrap().http_status, Some(status));
-            assert_eq!(
-                error.kind == crate::cloud::client::CloudErrorKind::Auth,
-                status == 401 || status == 403
-            );
+            assert_eq!(error.kind, plain.kind);
         }
     }
 
