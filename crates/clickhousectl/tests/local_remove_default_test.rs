@@ -75,6 +75,7 @@ impl Home {
             // subprocess to JSON, so human-output assertions stay meaningful.
             .env_clear()
             .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .env("HOME", self.home.path())
             .current_dir(self.project.path())
             .args(args);
@@ -421,7 +422,9 @@ fn local_use_writes_the_default_marker_under_the_commit_lock() {
     let mut child = home.spawn(&["local", "--json", "use", OTHER_VERSION]);
 
     // While the lock is held the marker cannot move, and `use` cannot finish.
-    std::thread::sleep(Duration::from_secs(1));
+    // An unlocked `use` finishes well within this window; a slow machine can
+    // only make the check weaker, never flaky.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         std::fs::read_to_string(home.default_marker()).expect("default marker"),
         DEFAULT_VERSION,

@@ -746,7 +746,9 @@ fn kill_process(pid: u32) -> Result<()> {
 
     // A watchdog that takes the SIGTERM passes it to the server and exits with
     // it, so waiting on the watchdog waits on the pair.
-    if wait_for_exit(pid, TERM_TIMEOUT) {
+    let term_timeout =
+        crate::timing::duration_override(crate::timing::TERM_TIMEOUT_ENV, TERM_TIMEOUT);
+    if wait_for_exit(pid, term_timeout) {
         return Ok(());
     }
 

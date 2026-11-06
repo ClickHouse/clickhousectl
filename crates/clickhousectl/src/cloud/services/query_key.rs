@@ -107,6 +107,17 @@ pub(crate) const KEY_PROPAGATION: KeyPropagation = KeyPropagation {
     max_backoff: Duration::from_secs(8),
 };
 
+/// [`KEY_PROPAGATION`], with the hidden test override of its window.
+fn key_propagation() -> KeyPropagation {
+    KeyPropagation {
+        timeout: crate::timing::duration_override(
+            crate::timing::KEY_PROPAGATION_TIMEOUT_ENV,
+            KEY_PROPAGATION.timeout,
+        ),
+        ..KEY_PROPAGATION
+    }
+}
+
 /// Whether an upsert failure can be the endpoint service not yet seeing a key
 /// created moments ago. Structural: the status of the typed [`Error::Api`]
 /// variant, never the message text (#450). The propagation failure is a
@@ -528,7 +539,7 @@ pub async fn repair_service_query_key(
         lock: &provisioning_lock,
     };
     let repaired_endpoint = match client
-        .bind_created_query_key(org_id, service_id, &endpoint_request, KEY_PROPAGATION)
+        .bind_created_query_key(org_id, service_id, &endpoint_request, key_propagation())
         .await
     {
         Ok(endpoint) => endpoint,
@@ -1441,7 +1452,7 @@ pub(crate) async fn bind_caller_query_key(
     );
 
     client
-        .bind_created_query_key(org_id, service_id, &request, KEY_PROPAGATION)
+        .bind_created_query_key(org_id, service_id, &request, key_propagation())
         .await
         .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))?;
     crate::failure::set_provisioning_state(ProvisioningState::BoundCallerKey);

@@ -961,7 +961,11 @@ where
         if elapsed >= timeout {
             return Err(wait_timeout_error(&what, timeout, follow_up));
         }
-        tokio::time::sleep(UDF_POLL_INTERVAL.min(timeout - elapsed)).await;
+        let interval = crate::timing::duration_override(
+            crate::timing::UDF_POLL_INTERVAL_ENV,
+            UDF_POLL_INTERVAL,
+        );
+        tokio::time::sleep(interval.min(timeout - elapsed)).await;
     }
 }
 

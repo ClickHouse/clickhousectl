@@ -1208,59 +1208,53 @@ fn exact_cwd_and_explicit_project(fixture: &Fixture) {
     fixture.assert_no_server_instances(&fixture.child);
 }
 
-struct Scenario {
-    name: &'static str,
-    run: fn(&Fixture),
+/// Run one scenario in its own fixture, then check the invariants every
+/// scenario must leave behind.
+fn run_scenario(name: &str, run: fn(&Fixture)) {
+    let fixture = Fixture::new(name);
+    run(&fixture);
+    fixture.assert_no_server_instances(&fixture.project);
+    fixture.assert_telemetry_disabled();
+    assert!(
+        !fixture.home.join(".clickhouse/servers").exists(),
+        "{name} wrote project server state under HOME"
+    );
+
+    let recorded: BTreeSet<_> = std::fs::read_to_string(&fixture.pid_file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            line.split_once('|')
+                .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        })
+        .collect();
+    assert!(
+        recorded.iter().all(|pid| !process_is_alive(*pid)),
+        "{name} left a fake ClickHouse process running"
+    );
 }
 
 #[test]
-fn local_server_state_machine() {
-    let scenarios = [
-        Scenario {
-            name: "fresh",
-            run: fresh_project,
-        },
-        Scenario {
-            name: "default-lifecycle",
-            run: default_lifecycle,
-        },
-        Scenario {
-            name: "custom-name-lifecycle",
-            run: custom_name_lifecycle,
-        },
-        Scenario {
-            name: "selection-matrix",
-            run: omitted_and_explicit_selection,
-        },
-        Scenario {
-            name: "exact-cwd",
-            run: exact_cwd_and_explicit_project,
-        },
-    ];
+fn state_machine_fresh_project() {
+    run_scenario("fresh", fresh_project);
+}
 
-    for scenario in scenarios {
-        let fixture = Fixture::new(scenario.name);
-        (scenario.run)(&fixture);
-        fixture.assert_no_server_instances(&fixture.project);
-        fixture.assert_telemetry_disabled();
-        assert!(
-            !fixture.home.join(".clickhouse/servers").exists(),
-            "{} wrote project server state under HOME",
-            scenario.name
-        );
+#[test]
+fn state_machine_default_lifecycle() {
+    run_scenario("default-lifecycle", default_lifecycle);
+}
 
-        let recorded: BTreeSet<_> = std::fs::read_to_string(&fixture.pid_file)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| {
-                line.split_once('|')
-                    .and_then(|(pid, _)| pid.parse::<u32>().ok())
-            })
-            .collect();
-        assert!(
-            recorded.iter().all(|pid| !process_is_alive(*pid)),
-            "{} left a fake ClickHouse process running",
-            scenario.name
-        );
-    }
+#[test]
+fn state_machine_custom_name_lifecycle() {
+    run_scenario("custom-name-lifecycle", custom_name_lifecycle);
+}
+
+#[test]
+fn state_machine_selection_matrix() {
+    run_scenario("selection-matrix", omitted_and_explicit_selection);
+}
+
+#[test]
+fn state_machine_exact_cwd_and_explicit_project() {
+    run_scenario("exact-cwd", exact_cwd_and_explicit_project);
 }

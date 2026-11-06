@@ -50,6 +50,7 @@ fn run(project: &Path, home: &Path, path: Option<&Path>, args: &[&str]) -> Outpu
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .current_dir(project)
         .args(args);

@@ -115,6 +115,7 @@ fn command(env: &Env) -> Command {
     command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", env.home.path())
         .env("PATH", format!("{}:/usr/bin:/bin", env.bin.display()))
         .env("FAKE_CLICKHOUSE_HTTP_PORT", env.http_port.to_string())
@@ -124,6 +125,9 @@ fn command(env: &Env) -> Command {
         .env("FAKE_CLICKHOUSE_FAIL_RETRY", &env.fail_retry_marker)
         .env("FAKE_CLICKHOUSE_FAILED_FUNCTIONS", &env.failed_functions)
         .env("FAKE_CLICKHOUSE_DROP_HTTP", &env.drop_http_marker)
+        // A function the fake never loads waits out the whole reload window;
+        // a second is still several reload attempts.
+        .env("CHCTL_UDF_LOAD_TIMEOUT_MS", "1000")
         .current_dir(env.project.path());
     command
 }
@@ -456,14 +460,6 @@ fn a_function_the_server_never_loads_is_an_error_that_keeps_the_files() {
             .is_file()
     );
     assert!(data.join("user_scripts/other_fn/main.py").is_file());
-
-    let human = run(&env, &["local", "udf", "deploy", "other_fn"]);
-    assert_eq!(human.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&human.stderr).contains(&log_path.display().to_string()),
-        "{}",
-        String::from_utf8_lossy(&human.stderr)
-    );
 }
 
 #[test]

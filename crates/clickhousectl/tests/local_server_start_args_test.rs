@@ -32,6 +32,7 @@ fn install_fake_clickhouse(home: &Path, version: &str) {
 fn run_start(project: &Path, home: &Path, args_file: &Path, selector: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .env("FAKE_CLICKHOUSE_ARGS_FILE", args_file)
         .current_dir(project)

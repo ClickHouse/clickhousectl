@@ -527,6 +527,7 @@ fn run_start_command(
         command.env("CHCTL_TELEMETRY_DEBUG", "1");
     } else {
         command.env("DO_NOT_TRACK", "1");
+        command.env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0");
     }
     // Bound hangs after acquiring the fixture lock, independently of the
     // readiness deadline under test. Capturing on another thread also drains
@@ -665,6 +666,7 @@ fn postgres_dotenv_releases_metadata_lock_before_docker_credentials_read() {
     let output = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .current_dir(project.path())
@@ -719,6 +721,7 @@ fn postgres_start_revalidates_metadata_after_image_inspection() {
     let output = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .current_dir(project.path())
@@ -789,63 +792,6 @@ fn resumed_start_also_waits_for_postgres_readiness() {
         !requests
             .iter()
             .any(|request| request.path.starts_with("/containers/create"))
-    );
-}
-
-#[test]
-fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
-    let (output, requests, project) = run_start(
-        DockerScenario {
-            existing: false,
-            outcome: ContainerOutcome::Running,
-            start_statuses: vec![204],
-            remove_statuses: vec![204],
-            readiness_exit_codes: vec![],
-            readiness_create_errors: 0,
-            logs: vec![],
-            write_partial_data: false,
-            create_metadata_directory_on_start: false,
-        },
-        false,
-        false,
-        1,
-        false,
-    );
-
-    assert_eq!(output.status.code(), Some(1));
-    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "startup_timeout");
-    assert_eq!(
-        error["error"]["message"],
-        "Postgres server 'default' did not become ready within 1 seconds"
-    );
-    // The fake daemon always reports a running container and never reports
-    // readiness. The timeout must therefore trigger rollback, regardless of
-    // how many polls the scheduler permits before the deadline.
-    let start = request_index(&requests, "POST", "/containers/pg-id/start");
-    let inspect = request_index(&requests, "GET", "/containers/pg-id/json");
-    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
-    assert!(start < inspect && inspect < remove);
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "DELETE")
-            .count(),
-        1,
-    );
-    assert!(
-        !project
-            .path()
-            .join(".clickhouse/servers/default-pg18")
-            .exists(),
-        "wall-clock timeout retained PGDATA created by this attempt"
-    );
-    assert!(
-        !project
-            .path()
-            .join(".clickhouse/servers/default-pg18.json")
-            .exists(),
-        "wall-clock timeout retained success metadata"
     );
 }
 
@@ -956,6 +902,7 @@ fn failed_fresh_start_preserves_postgres_identity_without_polluting_clickhouse_s
     let stop = Command::new(clickhousectl_binary())
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("PATH", "/usr/bin:/bin")
         .current_dir(project.path())
@@ -1109,9 +1056,28 @@ fn initialization_timeout_removes_partial_pgdata() {
         "Postgres server 'default' did not become ready within 1 seconds"
     );
     assert!(!stderr.contains("database system is starting up"));
-    request_index(&requests, "DELETE", "/containers/pg-id?");
-    assert!(!fresh_instance_dir(project.path()).exists());
-    assert!(!metadata_path(project.path()).exists());
+    // The fake daemon reports a running container that never becomes ready.
+    // The wall-clock timeout must therefore trigger rollback, regardless of
+    // how many polls the scheduler permits before the deadline.
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    let inspect = request_index(&requests, "GET", "/containers/pg-id/json");
+    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(start < inspect && inspect < remove);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .count(),
+        1,
+    );
+    assert!(
+        !fresh_instance_dir(project.path()).exists(),
+        "the timeout retained PGDATA created by this attempt"
+    );
+    assert!(
+        !metadata_path(project.path()).exists(),
+        "the timeout retained success metadata"
+    );
 }
 
 #[test]
@@ -1322,6 +1288,7 @@ fn removing_running_postgres_preserves_instance_and_supplies_stop_recovery() {
                 .env_clear()
                 .env("HOME", home.path())
                 .env("DO_NOT_TRACK", "1")
+                .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
                 .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
                 .current_dir(project.path())
                 .args(["local", "postgres", "remove"]);

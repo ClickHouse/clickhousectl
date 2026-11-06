@@ -29,6 +29,7 @@ INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/src/main.rs",
         "crates/clickhousectl/src/paths.rs",
         "crates/clickhousectl/src/stdout.rs",
+        "crates/clickhousectl/src/timing.rs",
         "crates/clickhousectl/src/user_agent.rs",
         "crates/clickhousectl/tests/local_install_local_first_test.rs",
         "crates/clickhousectl/tests/local_version_error_test.rs",

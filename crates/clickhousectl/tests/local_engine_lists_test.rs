@@ -41,6 +41,7 @@ fn run(project: &Path, docker_host: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clickhousectl"))
         .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
         .env("PATH", "/usr/bin:/bin")
         .env("DOCKER_HOST", docker_host)

@@ -14,6 +14,7 @@ fn missing_selection_without_a_terminal_is_a_usage_error() {
             .env_clear()
             .env("HOME", dir.path())
             .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .current_dir(dir.path())
             .arg("skills")
             .args(flags)

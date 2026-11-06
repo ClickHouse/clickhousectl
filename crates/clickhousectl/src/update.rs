@@ -441,7 +441,16 @@ pub async fn refresh_update_cache() {
     if !cache_is_stale(read_update_check(), now_secs()) {
         return;
     }
-    do_refresh_update_cache(BACKGROUND_TIMEOUT).await;
+    let timeout = crate::timing::duration_override(
+        crate::timing::UPDATE_CHECK_TIMEOUT_ENV,
+        BACKGROUND_TIMEOUT,
+    );
+    // No time allowed means no request: subprocess tests turn the background
+    // check off. The explicit checks (`--version`, `update`) are unaffected.
+    if timeout.is_zero() {
+        return;
+    }
+    do_refresh_update_cache(timeout).await;
 }
 
 /// Force a network check and refresh the cache + timer regardless of staleness.
