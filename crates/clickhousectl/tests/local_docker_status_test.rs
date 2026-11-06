@@ -177,6 +177,13 @@ async fn successful_inspection_distinguishes_running_stopped_and_missing() {
                 ),
                 "server_not_running",
             );
+            // Stopping an instance that is not running is an idempotent
+            // success that sends Docker nothing to change (#1231).
+            let output = project.run(&host, &["local", "postgres", "stop", "default"], true);
+            assert!(output.status.success(), "{output:?}");
+            let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(body["name"], "default");
+            assert_eq!(body["already_stopped"], true);
         }
         if status == 404 {
             let output = project.run(
@@ -196,5 +203,13 @@ async fn successful_inspection_distinguishes_running_stopped_and_missing() {
             );
         }
         project.assert_preserved();
+        assert!(
+            docker
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == "GET")
+        );
     }
 }

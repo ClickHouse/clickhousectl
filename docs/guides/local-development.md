@@ -148,7 +148,7 @@ clickhousectl local clickhouse stop dev
 clickhousectl local postgres stop app --version 18
 ```
 
-Stop preserves data. **The following removals permanently delete the selected server's data**, including Postgres container volumes:
+Stop preserves data. Stopping a server or instance that exists but is not running succeeds and reports `already_stopped: true`; an unknown name is an error. **The following removals permanently delete the selected server's data**, including Postgres container volumes:
 
 ```bash
 clickhousectl local clickhouse remove dev

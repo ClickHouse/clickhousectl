@@ -1028,14 +1028,19 @@ fn generate_password() -> String {
 async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
     let (target, metadata_lock) = lock_and_resolve_pg_target(name, version)?;
-    if !json {
-        let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
-        println!("Stopping Postgres {}...", display);
+    // `stop` is idempotent, as for ClickHouse: an instance that exists but
+    // is not running is already in the desired end state.
+    let already_stopped = !server::is_server_running_locked(&target.name, &metadata_lock)?;
+    if !already_stopped {
+        if !json {
+            let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
+            println!("Stopping Postgres {}...", display);
+        }
+        server::kill_server_locked(&target.name, &metadata_lock)?;
     }
-    server::kill_server_locked(&target.name, &metadata_lock)?;
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
-        already_stopped: false,
+        already_stopped,
         selection: None,
     };
     output::print_output(&out, json);
