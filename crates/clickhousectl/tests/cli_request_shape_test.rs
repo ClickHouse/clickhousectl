@@ -20564,9 +20564,10 @@ async fn postgres_config_patch_of_a_missing_service_reads_as_not_found() {
     }
 }
 
-/// A config PATCH rejected for its body answers 400 too. The service exists,
-/// so the server's validation message must reach the user unchanged rather
-/// than being misreported as a missing service.
+/// A config PATCH rejected for its body answers 400 too. The confirming GET
+/// returns a service that decodes, so the service exists and the server's
+/// validation message must reach the user unchanged rather than being
+/// misreported as a missing service.
 #[tokio::test]
 async fn postgres_config_patch_validation_400_keeps_the_servers_message() {
     let mock = MockServer::start().await;
@@ -20579,15 +20580,21 @@ async fn postgres_config_patch_validation_400_keeps_the_servers_message() {
         .expect(1)
         .mount(&mock)
         .await;
-    Mock::given(method("GET"))
-        .and(path(unknown_postgres_path("")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": {"id": UNKNOWN_UUID}})),
-        )
-        .expect(1)
-        .mount(&mock)
-        .await;
+    // The success envelope the `postgres get` tests decode.
+    mount_postgres_service_response(
+        &mock,
+        "GET",
+        &unknown_postgres_path(""),
+        serde_json::json!({
+            "id": UNKNOWN_UUID,
+            "name": "existing-pg",
+            "state": "running",
+            "region": "us-east-1",
+            "provider": "aws",
+            "isPrimary": true,
+        }),
+    )
+    .await;
 
     let output =
         invoke_cli_with_cloud_credentials(&mock, &postgres_config_patch_args("max_connections=1"));
@@ -20599,6 +20606,82 @@ async fn postgres_config_patch_validation_400_keeps_the_servers_message() {
         "BAD_REQUEST: max_connections must be at least 10"
     );
     assert_eq!(error["code"], "http_4xx");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("PATCH".to_string(), unknown_postgres_path("/config")),
+            ("GET".to_string(), unknown_postgres_path("")),
+        ]
+    );
+}
+
+/// When the confirming GET itself fails for another reason (a server error,
+/// or a permission the caller lacks), it cannot show the service is missing.
+/// The original PATCH error stands: its message, JSON code and exit code are
+/// unchanged, never not-found and never the GET's own failure.
+#[tokio::test]
+async fn postgres_config_patch_keeps_the_original_error_when_the_confirming_get_fails() {
+    let args = postgres_config_patch_args("max_connections=1");
+    for (patch_status, patch_message) in [
+        (400, "BAD_REQUEST: max_connections must be at least 10"),
+        (404, "NOT_FOUND: Postgres service not found"),
+    ] {
+        for (get_status, get_message) in [
+            (500, "INTERNAL_ERROR: confirming GET failed"),
+            (403, "FORBIDDEN: confirming GET not allowed"),
+        ] {
+            for json in [false, true] {
+                let mock = MockServer::start().await;
+                for (http_method, route, status, message) in [
+                    (
+                        "PATCH",
+                        unknown_postgres_path("/config"),
+                        patch_status,
+                        patch_message,
+                    ),
+                    ("GET", unknown_postgres_path(""), get_status, get_message),
+                ] {
+                    Mock::given(method(http_method))
+                        .and(path(route))
+                        .respond_with(
+                            ResponseTemplate::new(status).set_body_json(
+                                serde_json::json!({"status": status, "error": message}),
+                            ),
+                        )
+                        .expect(1)
+                        .mount(&mock)
+                        .await;
+                }
+
+                let case = format!("PATCH {patch_status}, GET {get_status}, json {json}");
+                if json {
+                    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+                    assert_eq!(output.status.code(), Some(1), "{case}");
+                    assert!(output.stdout.is_empty(), "{case}");
+                    let error = cloud_runtime_error(&output);
+                    assert_eq!(error["message"], patch_message, "{case}");
+                    assert_eq!(error["code"], "http_4xx", "{case}");
+                } else {
+                    let output = invoke_cli_human(&mock, &args);
+                    assert_eq!(output.status.code(), Some(1), "{case}");
+                    assert!(output.stdout.is_empty(), "{case}");
+                    assert_eq!(
+                        String::from_utf8_lossy(&output.stderr),
+                        format!("Error: {patch_message}\n"),
+                        "{case}"
+                    );
+                }
+                assert_eq!(
+                    received_request_shape(&mock).await,
+                    vec![
+                        ("PATCH".to_string(), unknown_postgres_path("/config")),
+                        ("GET".to_string(), unknown_postgres_path("")),
+                    ],
+                    "{case}"
+                );
+            }
+        }
+    }
 }
 
 /// A `service delete` for an id no service has, with the organization id also

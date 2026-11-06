@@ -10,3 +10,6 @@ d78a6d2aa40a70d9e1093f09ae987ca1b26e3e41
 
 # Split cloud/postgres into per-command-family files (#1157)
 e7fcdb1a8f1e48c564717f1ccd0fa654d182aa73
+
+# Split cloud/organizations into per-command-family files (#1157)
+00efe9734194de9fbe59a2f5a2153ba83f18ec7c
