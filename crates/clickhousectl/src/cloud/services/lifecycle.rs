@@ -1,11 +1,12 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::client::{
-    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, read_flag_file,
 };
 use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::PollProgress;
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
+use crate::failure::{ApiFailure, FailureKind};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, BackupEncryptionConfig, InstancePrivateEndpointsPatch, InstanceTagsPatch,
     IpAccessListEntry, IpAccessListPatch, Service, ServiceEndpoint, ServiceEndpointChange,
@@ -354,28 +355,22 @@ fn resolve_horizontal_autoscaling(
 }
 
 /// Read a backup's `encryption_config.json` from a file or stdin (`-`), passing
-/// the object through unchanged. Every failure is a usage error raised before
-/// any request is sent.
+/// the object through unchanged. Every failure is raised before any request is
+/// sent: input that cannot be read is an `Io` failure (exit 1), and a document
+/// that is not a JSON object is a usage error.
 pub(super) fn read_backup_encryption_config(path: &str) -> CloudResult<BackupEncryptionConfig> {
     use std::io::Read as _;
 
+    const FLAG: &str = "--backup-encryption-config";
     let (raw, source) = if path == "-" {
         let mut raw = String::new();
         std::io::stdin().read_to_string(&mut raw).map_err(|error| {
-            CloudError::usage(format!(
-                "failed to read --backup-encryption-config from stdin: {error}"
-            ))
+            CloudError::new(format!("failed to read {FLAG} from stdin: {error}"))
+                .with_failure(ApiFailure::new(FailureKind::Io))
         })?;
         (raw, "stdin".to_string())
     } else {
-        (
-            std::fs::read_to_string(path).map_err(|error| {
-                CloudError::usage(format!(
-                    "failed to read --backup-encryption-config file '{path}': {error}"
-                ))
-            })?,
-            format!("file '{path}'"),
-        )
+        (read_flag_file(FLAG, path)?, format!("file '{path}'"))
     };
     match serde_json::from_str::<serde_json::Value>(&raw) {
         Ok(serde_json::Value::Object(object)) => Ok(object.into_iter().collect()),
@@ -1676,13 +1671,12 @@ mod tests {
     #[test]
     fn read_backup_encryption_config_rejects_bad_input_as_usage_errors() {
         let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("missing.json");
         let array = directory.path().join("array.json");
         let invalid = directory.path().join("invalid.json");
         std::fs::write(&array, "[1, 2]").unwrap();
         std::fs::write(&invalid, "{not json").unwrap();
 
-        for path in [&missing, &array, &invalid] {
+        for path in [&array, &invalid] {
             let error = read_backup_encryption_config(path.to_str().unwrap()).unwrap_err();
             assert_eq!(
                 error.kind,
@@ -1690,6 +1684,20 @@ mod tests {
                 "{path:?}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn read_backup_encryption_config_reports_an_unreadable_file_as_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.json");
+        let error = read_backup_encryption_config(missing.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
+        assert!(
+            error.message.contains("--backup-encryption-config"),
+            "{error}"
+        );
+        assert!(error.message.contains(missing.to_str().unwrap()), "{error}");
     }
 
     #[test]

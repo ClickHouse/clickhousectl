@@ -107,6 +107,34 @@ impl From<std::io::Error> for CloudError {
     }
 }
 
+impl CloudError {
+    /// The file a flag names could not be read. The message names the flag
+    /// and the path and keeps the OS reason, so a command with several file
+    /// flags says which one failed; the failure stays [`FailureKind::Io`].
+    pub fn file_read(flag: &str, path: &std::path::Path, error: std::io::Error) -> Self {
+        Self::new(format!(
+            "failed to read {flag} '{}': {error}",
+            path.display()
+        ))
+        .with_failure(ApiFailure::new(FailureKind::Io))
+    }
+}
+
+/// Read the file `flag` names as UTF-8 text; see [`CloudError::file_read`].
+pub(crate) fn read_flag_file(flag: &str, path: impl AsRef<std::path::Path>) -> Result<String> {
+    let path = path.as_ref();
+    std::fs::read_to_string(path).map_err(|error| CloudError::file_read(flag, path, error))
+}
+
+/// Read the file `flag` names as bytes; see [`CloudError::file_read`].
+pub(crate) fn read_flag_file_bytes(
+    flag: &str,
+    path: impl AsRef<std::path::Path>,
+) -> Result<Vec<u8>> {
+    let path = path.as_ref();
+    std::fs::read(path).map_err(|error| CloudError::file_read(flag, path, error))
+}
+
 impl From<serde_json::Error> for CloudError {
     fn from(error: serde_json::Error) -> Self {
         Self::new(error.to_string()).with_failure(ApiFailure::new(FailureKind::Other))
@@ -1318,6 +1346,21 @@ mod tests {
             CloudError::from(std::io::Error::other("disk gone")).failure,
             Some(ApiFailure::new(FailureKind::Io))
         );
+    }
+
+    #[test]
+    fn flag_file_read_errors_name_the_flag_and_path_and_stay_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.pem");
+        for error in [
+            read_flag_file("--ca-certificate", &missing).unwrap_err(),
+            read_flag_file_bytes("--ca-certificate", &missing).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, CloudErrorKind::Generic);
+            assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
+            assert!(error.message.contains("--ca-certificate"), "{error}");
+            assert!(error.message.contains(missing.to_str().unwrap()), "{error}");
+        }
     }
 
     #[test]

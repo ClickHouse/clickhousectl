@@ -13,7 +13,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::SAVED_QUERY_LIST])]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file_bytes};
 use crate::cloud::output::{or_absent, print_human, print_line};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
@@ -219,11 +219,10 @@ fn read_sql(body: &SavedQueryBodyArgs) -> CloudResult<String> {
         })?;
         (bytes, "stdin".to_owned())
     } else {
-        let bytes = std::fs::read(path).map_err(|error| {
-            CloudError::new(format!("failed to read SQL file {path}: {error}"))
-                .with_failure(ApiFailure::new(FailureKind::Io))
-        })?;
-        (bytes, format!("SQL file {path}"))
+        (
+            read_flag_file_bytes("--sql-file", path)?,
+            format!("SQL file {path}"),
+        )
     };
     String::from_utf8(bytes)
         .map_err(|_| CloudError::usage(format!("SQL from {source} is not valid UTF-8")))
@@ -545,6 +544,7 @@ mod tests {
         let error = read_sql(&input).unwrap_err();
         assert_eq!(error.kind, CloudErrorKind::Generic);
         assert!(error.message.contains(missing), "{}", error.message);
+        assert!(error.message.contains("--sql-file"), "{}", error.message);
         assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
     }
 

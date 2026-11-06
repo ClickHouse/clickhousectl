@@ -583,7 +583,7 @@ fn build_postgres_create_request(
     let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<PgBouncerConfig>)
+        .map(|path| load_json_file::<PgBouncerConfig>("--pg-bouncer-config-file", path))
         .transpose()?;
 
     Ok(PostgresServicePostRequest {

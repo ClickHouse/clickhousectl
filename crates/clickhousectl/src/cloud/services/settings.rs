@@ -1,6 +1,7 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
+use crate::failure::{ApiFailure, FailureKind};
 use clickhouse_cloud_api::models::ServiceClickhouseSettingsPatchRequest;
 use std::collections::BTreeMap;
 use tabled::{Table, Tabled, settings::Style};
@@ -102,14 +103,13 @@ fn read_service_settings(
         let (raw, source) = if path == "-" {
             let mut raw = String::new();
             std::io::stdin().read_to_string(&mut raw).map_err(|error| {
-                CloudError::new(format!("failed to read settings from stdin: {error}"))
+                CloudError::new(format!("failed to read --file from stdin: {error}"))
+                    .with_failure(ApiFailure::new(FailureKind::Io))
             })?;
             (raw, "stdin".to_string())
         } else {
             (
-                std::fs::read_to_string(path).map_err(|error| {
-                    CloudError::new(format!("failed to read settings file '{path}': {error}"))
-                })?,
+                read_flag_file("--file", path)?,
                 format!("settings file '{path}'"),
             )
         };
@@ -406,6 +406,8 @@ mod tests {
             }
             let error = read_service_settings(&[], Some(path)).unwrap_err();
             assert!(error.to_string().contains(path), "{error}");
+            assert!(error.to_string().contains("--file"), "{error}");
+            assert_eq!(error.failure, Some(ApiFailure::new(FailureKind::Io)));
         }
     }
 

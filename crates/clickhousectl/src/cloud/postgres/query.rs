@@ -1,4 +1,4 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file_bytes};
 use crate::cloud::shared::{NameSelector, NamedResource, resolve_org_id};
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage};
 use clickhouse_cloud_api::RunPostgresQueryRequest;
@@ -34,13 +34,7 @@ fn read_postgres_query_sql(
         return decode_postgres_query_sql(sql.as_bytes().to_vec(), "--query");
     }
     if let Some(path) = queries_file.filter(|path| *path != Path::new("-")) {
-        let bytes = std::fs::read(path).map_err(|error| {
-            CloudError::new(format!(
-                "Failed to read SQL file '{}': {error}",
-                path.display()
-            ))
-            .with_failure(ApiFailure::new(FailureKind::Io))
-        })?;
+        let bytes = read_flag_file_bytes("--queries-file", path)?;
         return decode_postgres_query_sql(bytes, &format!("SQL file '{}'", path.display()));
     }
     if queries_file.is_none() && stdin_is_terminal {
@@ -267,6 +261,7 @@ mod tests {
             false,
         )
         .unwrap_err();
+        assert!(error.message.contains("--queries-file"), "{error}");
         assert_eq!(error.failure.unwrap().kind, FailureKind::Io);
     }
 

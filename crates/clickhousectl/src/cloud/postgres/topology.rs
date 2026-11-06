@@ -112,7 +112,7 @@ pub async fn postgres_read_replica_create(
     let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<PgBouncerConfig>)
+        .map(|path| load_json_file::<PgBouncerConfig>("--pg-bouncer-config-file", path))
         .transpose()?;
 
     let req = PostgresServiceReadReplicaRequest {
@@ -148,7 +148,7 @@ pub async fn postgres_restore(
     let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<PgBouncerConfig>)
+        .map(|path| load_json_file::<PgBouncerConfig>("--pg-bouncer-config-file", path))
         .transpose()?;
     let restore_target = chrono::DateTime::parse_from_rfc3339(opts.restore_target)
         .map_err(|e| CloudError::usage(format!("invalid restore-target: {}", e)))?

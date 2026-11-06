@@ -1,4 +1,4 @@
-use crate::cloud::client::{CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudError, Result as CloudResult, read_flag_file};
 use crate::failure::{ApiFailure, FailureKind};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -13,23 +13,29 @@ pub(crate) fn config_source_label(config_file: &str) -> &str {
     }
 }
 
-/// Read a JSON request body from a file or stdin.
+/// Read a command's primary JSON request body, the `--file` document that
+/// [`assert_primary_json_input`] pins, from a file or stdin.
 ///
 /// A file that cannot be read is a runtime I/O failure (exit 1, code `io`);
 /// a body that is not JSON is invalid input (a usage error, exit 2).
 pub(crate) fn read_config_value(config_file: &str) -> CloudResult<Value> {
-    let io_failure =
-        |message: String| CloudError::new(message).with_failure(ApiFailure::new(FailureKind::Io));
+    read_flag_config_value("--file", config_file)
+}
+
+/// Read the JSON document `flag` names from a file or stdin; see
+/// [`read_config_value`] for how each failure is reported.
+pub(crate) fn read_flag_config_value(flag: &str, config_file: &str) -> CloudResult<Value> {
     let contents = if config_file == "-" {
         let mut contents = String::new();
         std::io::stdin()
             .read_to_string(&mut contents)
-            .map_err(|error| io_failure(format!("failed to read config from stdin: {error}")))?;
+            .map_err(|error| {
+                CloudError::new(format!("failed to read {flag} from stdin: {error}"))
+                    .with_failure(ApiFailure::new(FailureKind::Io))
+            })?;
         contents
     } else {
-        std::fs::read_to_string(config_file).map_err(|error| {
-            io_failure(format!("failed to read config file {config_file}: {error}"))
-        })?
+        read_flag_file(flag, config_file)?
     };
 
     serde_json::from_str(&contents).map_err(|error| {
@@ -238,6 +244,7 @@ mod tests {
         let missing = missing.to_str().unwrap();
         // Each failure names the file and carries the underlying error's text.
         let error = read_config_value(missing).unwrap_err();
+        assert!(error.message.contains("--file"), "{error}");
         let io_error = std::fs::read_to_string(missing).unwrap_err().to_string();
         assert!(
             error.message.contains(missing) && error.message.ends_with(&io_error),
