@@ -318,8 +318,9 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 )?;
             }
             warn_local_only_fields(&definition);
-            let mut request =
-                build_udf_create_request(definition, "pending").map_err(definition_invalid)?;
+            let origin = definition_origin(input.config.as_deref(), source.as_deref());
+            let mut request = build_udf_create_request(definition, "pending", &origin)
+                .map_err(definition_invalid)?;
             let artifact = resolve_artifact(
                 input.artifact.as_deref(),
                 source.as_deref(),
@@ -353,7 +354,8 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             )?;
             udf::strip_function_name(&mut definition);
             warn_local_only_fields(&definition);
-            let mut request = build_udf_version_create_request(definition, "pending")
+            let origin = definition_origin(input.config.as_deref(), source.as_deref());
+            let mut request = build_udf_version_create_request(definition, "pending", &origin)
                 .map_err(definition_invalid)?;
             let artifact = resolve_artifact(
                 input.artifact.as_deref(),
@@ -649,8 +651,19 @@ fn definition_invalid(error: CloudError) -> CloudError {
     error.with_details(detail)
 }
 
-/// A definition (`--file`, else `udf.json` read from `NAME/`) that carries
-/// `functionName` must name `NAME`; the error names the file it came from.
+/// The file a definition was read from (`--file`, else `udf.json` read from
+/// `NAME/`), as its errors name it.
+fn definition_origin(config: Option<&str>, source: Option<&Path>) -> String {
+    match (config, source) {
+        (Some("-"), _) => "<stdin>".to_owned(),
+        (Some(config), _) => config.to_owned(),
+        (None, Some(dir)) => dir.join(DEFINITION_FILE).display().to_string(),
+        (None, None) => DEFINITION_FILE.to_owned(),
+    }
+}
+
+/// A definition that carries `functionName` must name `NAME`; the error
+/// names the file it came from.
 fn check_definition_name(
     definition: &Value,
     config: Option<&str>,
@@ -658,12 +671,7 @@ fn check_definition_name(
     name: &str,
 ) -> CloudResult<()> {
     udf::check_function_name(definition, name).map_err(|reason| {
-        let origin = match (config, source) {
-            (Some("-"), _) => "<stdin>".to_owned(),
-            (Some(config), _) => config.to_owned(),
-            (None, Some(dir)) => dir.join(DEFINITION_FILE).display().to_string(),
-            (None, None) => DEFINITION_FILE.to_owned(),
-        };
+        let origin = definition_origin(config, source);
         CloudError::usage(format!("{origin}: {reason}"))
     })
 }
@@ -708,15 +716,21 @@ fn validate_udf_enums(
     Ok(())
 }
 
-fn build_udf_create_request(mut value: Value, upload_id: &str) -> CloudResult<UdfCreateRequest> {
+/// `origin` is the file the definition came from (see [`definition_origin`]),
+/// which schema errors name.
+fn build_udf_create_request(
+    mut value: Value,
+    upload_id: &str,
+    origin: &str,
+) -> CloudResult<UdfCreateRequest> {
     match validate_udf_config(&mut value, upload_id, true)?.as_str() {
         "executable" => {
-            let body: UdfCreateRequestV1 = deserialize_strict_config(value, "UDF definition")?;
+            let body: UdfCreateRequestV1 = deserialize_strict_config(value, origin)?;
             validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfCreateRequest::UdfCreateRequestV1(body))
         }
         "executable_pool" => {
-            let body: UdfCreateRequestV2 = deserialize_strict_config(value, "UDF definition")?;
+            let body: UdfCreateRequestV2 = deserialize_strict_config(value, origin)?;
             validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfCreateRequest::UdfCreateRequestV2(body))
         }
@@ -727,17 +741,16 @@ fn build_udf_create_request(mut value: Value, upload_id: &str) -> CloudResult<Ud
 fn build_udf_version_create_request(
     mut value: Value,
     upload_id: &str,
+    origin: &str,
 ) -> CloudResult<UdfVersionCreateRequest> {
     match validate_udf_config(&mut value, upload_id, false)?.as_str() {
         "executable" => {
-            let body: UdfVersionCreateRequestV1 =
-                deserialize_strict_config(value, "UDF definition")?;
+            let body: UdfVersionCreateRequestV1 = deserialize_strict_config(value, origin)?;
             validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfVersionCreateRequest::UdfVersionCreateRequestV1(body))
         }
         "executable_pool" => {
-            let body: UdfVersionCreateRequestV2 =
-                deserialize_strict_config(value, "UDF definition")?;
+            let body: UdfVersionCreateRequestV2 = deserialize_strict_config(value, origin)?;
             validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfVersionCreateRequest::UdfVersionCreateRequestV2(body))
         }
@@ -1176,11 +1189,12 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let definition = definition_source(None, Some(&source))?;
     check_definition_name(&definition, None, Some(&source), name)?;
     warn_local_only_fields(&definition);
-    let create_request =
-        build_udf_create_request(definition.clone(), "pending").map_err(definition_invalid)?;
+    let origin = definition_origin(None, Some(&source));
+    let create_request = build_udf_create_request(definition.clone(), "pending", &origin)
+        .map_err(definition_invalid)?;
     let mut version_definition = definition;
     udf::strip_function_name(&mut version_definition);
-    let version_request = build_udf_version_create_request(version_definition, "pending")
+    let version_request = build_udf_version_create_request(version_definition, "pending", &origin)
         .map_err(definition_invalid)?;
     let runtime = create_request_runtime(&create_request)?;
     let artifact = Artifact::Packaged(package_source_dir(&source, runtime)?);
@@ -1912,7 +1926,9 @@ mod tests {
                         }).as_object().unwrap().clone());
                     }
                     let output = if create {
-                        let request = build_udf_create_request(input.clone(), "upload-1").unwrap();
+                        let request =
+                            build_udf_create_request(input.clone(), "upload-1", DEFINITION_FILE)
+                                .unwrap();
                         match &request {
                             UdfCreateRequest::UdfCreateRequestV1(body) => {
                                 assert_eq!(body.upload_id, "upload-1");
@@ -1927,8 +1943,12 @@ mod tests {
                         }
                         serde_json::to_value(request).unwrap()
                     } else {
-                        let request =
-                            build_udf_version_create_request(input.clone(), "upload-1").unwrap();
+                        let request = build_udf_version_create_request(
+                            input.clone(),
+                            "upload-1",
+                            DEFINITION_FILE,
+                        )
+                        .unwrap();
                         match &request {
                             UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => {
                                 assert_eq!(body.upload_id, "upload-1");
@@ -1961,14 +1981,15 @@ mod tests {
             for kind in ["executable", "executable_pool"] {
                 let mut create = definition(kind, true);
                 create["sandboxVersion"] = value.clone();
-                let request = build_udf_create_request(create, "fresh").unwrap();
+                let request = build_udf_create_request(create, "fresh", DEFINITION_FILE).unwrap();
                 let body = serde_json::to_value(request).unwrap();
                 assert!(body.get("sandboxVersion").is_none(), "{kind}");
                 assert_eq!(body["uploadId"], json!("fresh"));
 
                 let mut version = definition(kind, false);
                 version["sandboxVersion"] = value.clone();
-                let request = build_udf_version_create_request(version, "fresh").unwrap();
+                let request =
+                    build_udf_version_create_request(version, "fresh", DEFINITION_FILE).unwrap();
                 let body = serde_json::to_value(request).unwrap();
                 assert!(body.get("sandboxVersion").is_none(), "{kind}");
             }
@@ -1997,21 +2018,31 @@ mod tests {
         ] {
             let mut input = definition("executable", true);
             input[key] = value;
-            assert!(build_udf_create_request(input, "fresh").is_err(), "{key}");
+            assert!(
+                build_udf_create_request(input, "fresh", DEFINITION_FILE).is_err(),
+                "{key}"
+            );
         }
         for required in ["type", "runtime", "arguments", "returnType", "functionName"] {
             let mut input = definition("executable", true);
             input.as_object_mut().unwrap().remove(required);
             assert!(
-                build_udf_create_request(input, "fresh").is_err(),
+                build_udf_create_request(input, "fresh", DEFINITION_FILE).is_err(),
                 "{required}"
             );
         }
-        assert!(build_udf_version_create_request(json!({}), "fresh").is_err());
-        assert!(build_udf_version_create_request(definition("executable", true), "fresh").is_err());
+        assert!(build_udf_version_create_request(json!({}), "fresh", DEFINITION_FILE).is_err());
+        assert!(
+            build_udf_version_create_request(
+                definition("executable", true),
+                "fresh",
+                DEFINITION_FILE
+            )
+            .is_err()
+        );
         let mut nullable = definition("executable", true);
         nullable["memoryLimitMib"] = Value::Null;
-        assert!(build_udf_create_request(nullable, "fresh").is_ok());
+        assert!(build_udf_create_request(nullable, "fresh", DEFINITION_FILE).is_ok());
     }
 
     #[test]
@@ -2031,7 +2062,7 @@ mod tests {
         ] {
             let text = crate::local::udf::definition_template("my_fn", runtime, kind);
             let value: Value = serde_json::from_str(&text).unwrap();
-            match build_udf_create_request(value, "fresh").unwrap() {
+            match build_udf_create_request(value, "fresh", DEFINITION_FILE).unwrap() {
                 UdfCreateRequest::UdfCreateRequestV1(body) => {
                     assert_eq!(kind, UdfTypeArg::Executable);
                     assert_eq!(body.runtime, expected);
@@ -2201,7 +2232,7 @@ mod tests {
         assert_eq!(missing.kind, CloudErrorKind::Generic);
         assert_eq!(code(missing), Some(CloudErrorCode::UdfSourceInvalid));
 
-        let invalid = build_udf_create_request(serde_json::json!({}), "pending")
+        let invalid = build_udf_create_request(serde_json::json!({}), "pending", DEFINITION_FILE)
             .map_err(definition_invalid)
             .unwrap_err();
         assert_eq!(code(invalid), Some(CloudErrorCode::UdfDefinitionInvalid));
@@ -2289,6 +2320,23 @@ mod tests {
     }
 
     #[test]
+    fn schema_errors_name_the_definition_file_and_path() {
+        let origin = "defs/fn.json";
+        let mut create = definition("executable", true);
+        create["deterministic"] = json!("yes");
+        let mut version = definition("executable_pool", false);
+        version["deterministic"] = json!("yes");
+        for error in [
+            build_udf_create_request(create, "fresh", origin).unwrap_err(),
+            build_udf_version_create_request(version, "fresh", origin).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, CloudErrorKind::Usage);
+            assert!(error.message.contains(origin), "{error}");
+            assert!(error.message.contains("`deterministic`"), "{error}");
+        }
+    }
+
+    #[test]
     fn request_runtimes_map_to_the_shared_kind() {
         let python = build_udf_create_request(
             {
@@ -2297,15 +2345,19 @@ mod tests {
                 value
             },
             "fresh",
+            DEFINITION_FILE,
         )
         .unwrap();
         assert_eq!(
             create_request_runtime(&python).unwrap(),
             UdfRuntimeKind::Python311
         );
-        let native =
-            build_udf_version_create_request(definition("executable_pool", false), "fresh")
-                .unwrap();
+        let native = build_udf_version_create_request(
+            definition("executable_pool", false),
+            "fresh",
+            DEFINITION_FILE,
+        )
+        .unwrap();
         assert_eq!(
             version_request_runtime(&native).unwrap(),
             UdfRuntimeKind::Native

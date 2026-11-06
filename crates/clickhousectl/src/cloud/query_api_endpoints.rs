@@ -114,8 +114,9 @@ impl QueryApiEndpointArgs {
 pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -> CloudResult<()> {
     match args.command {
         QueryApiEndpointCommands::Create(input) => {
+            let config_file = &input.input.config_file;
             let request =
-                build_query_api_endpoint_request(read_config_value(&input.input.config_file)?)?;
+                build_query_api_endpoint_request(read_config_value(config_file)?, config_file)?;
             let org = resolve_org_id(client).await?;
             output(
                 &client
@@ -126,7 +127,9 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
         }
         QueryApiEndpointCommands::Update { target, input } => {
             let endpoint_id = resolve_endpoint_id(client, &target).await?;
-            let request = build_query_api_endpoint_request(read_config_value(&input.config_file)?)?;
+            let config_file = &input.config_file;
+            let request =
+                build_query_api_endpoint_request(read_config_value(config_file)?, config_file)?;
             let org = resolve_org_id(client).await?;
             output(
                 &client
@@ -292,9 +295,13 @@ fn print_endpoints(data: QueryApiEndpointListResponse) {
     }
 }
 
-fn build_query_api_endpoint_request(value: Value) -> CloudResult<PublicQueryApiEndpointRequest> {
-    let request: PublicQueryApiEndpointRequest =
-        deserialize_strict_config(value, "Query API endpoint definition")?;
+/// Check a `--file` endpoint definition; `source` is the file path (or `-`)
+/// that errors name, as for every other `--file` body.
+fn build_query_api_endpoint_request(
+    value: Value,
+    source: &str,
+) -> CloudResult<PublicQueryApiEndpointRequest> {
+    let request: PublicQueryApiEndpointRequest = deserialize_strict_config(value, source)?;
     for (field, value) in [
         ("name", &request.name),
         ("sql", &request.sql),
@@ -440,7 +447,7 @@ mod tests {
 
     #[test]
     fn query_api_endpoint_builder_minimal() {
-        let request = build_query_api_endpoint_request(minimal()).unwrap();
+        let request = build_query_api_endpoint_request(minimal(), "definition.json").unwrap();
         assert_eq!(request.name, "daily totals");
         assert_eq!(request.sql, "SELECT 1");
         assert_eq!(request.database, "default");
@@ -463,7 +470,7 @@ mod tests {
             "00000000-0000-4000-8000-000000000001",
             "00000000-0000-4000-8000-000000000002"
         ]);
-        let request = build_query_api_endpoint_request(value).unwrap();
+        let request = build_query_api_endpoint_request(value, "definition.json").unwrap();
         assert_eq!(request.name, "daily totals");
         assert_eq!(request.sql, "SELECT 1");
         assert_eq!(request.database, "default");
@@ -489,7 +496,7 @@ mod tests {
             let mut value = minimal();
             value.as_object_mut().unwrap().remove(field);
             assert!(
-                build_query_api_endpoint_request(value).is_err(),
+                build_query_api_endpoint_request(value, "definition.json").is_err(),
                 "missing {field}"
             );
         }
@@ -508,19 +515,29 @@ mod tests {
             let mut value = minimal();
             value[field] = replacement;
             assert!(
-                build_query_api_endpoint_request(value).is_err(),
+                build_query_api_endpoint_request(value, "definition.json").is_err(),
                 "invalid {field}"
             );
         }
     }
 
     #[test]
+    fn query_api_endpoint_body_errors_name_the_file_and_path() {
+        let mut value = minimal();
+        value["allowedOrigins"] = json!([true]);
+        let error = build_query_api_endpoint_request(value, "private/definition.json").unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert!(error.message.contains("private/definition.json"), "{error}");
+        assert!(error.message.contains("`allowedOrigins[0]`"), "{error}");
+    }
+
+    #[test]
     fn query_api_endpoint_builder_counts_sql_characters() {
         let mut value = minimal();
         value["sql"] = json!("é".repeat(4_194_304));
-        assert!(build_query_api_endpoint_request(value.clone()).is_ok());
+        assert!(build_query_api_endpoint_request(value.clone(), "definition.json").is_ok());
         value["sql"] = json!("é".repeat(4_194_305));
-        assert!(build_query_api_endpoint_request(value).is_err());
+        assert!(build_query_api_endpoint_request(value, "definition.json").is_err());
     }
 
     fn parse(extra: &[&str]) -> QueryApiEndpointArgs {
