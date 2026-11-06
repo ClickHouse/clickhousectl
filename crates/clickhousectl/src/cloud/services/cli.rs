@@ -79,6 +79,13 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
+        /// Region ID sent without checking it against the --region list
+        ///
+        /// Overrides the known regions, e.g. for an internal or private region such as
+        /// sa-east-1. Cloud still validates it.
+        #[arg(long, conflicts_with = "region")]
+        custom_region: Option<String>,
+
         /// Minimum memory per replica in GB
         ///
         /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
@@ -1240,6 +1247,7 @@ mod tests {
             name,
             provider,
             region,
+            custom_region,
             min_replica_memory_gb,
             max_replica_memory_gb,
             num_replicas,
@@ -1273,6 +1281,7 @@ mod tests {
         assert_eq!(name, "default-service");
         assert_eq!(provider, "aws");
         assert_eq!(region, "us-east-1");
+        assert!(custom_region.is_none());
         assert!(min_replica_memory_gb.is_none());
         assert!(max_replica_memory_gb.is_none());
         assert!(num_replicas.is_none());
@@ -1361,6 +1370,7 @@ mod tests {
             name,
             provider,
             region,
+            custom_region,
             min_replica_memory_gb,
             max_replica_memory_gb,
             num_replicas,
@@ -1415,6 +1425,41 @@ mod tests {
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert!(private_preview_terms_checked);
         assert_eq!(enable_core_dumps, Some(false));
+        assert!(custom_region.is_none());
+    }
+
+    #[test]
+    fn parses_service_create_custom_region_and_rejects_it_with_region() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--custom-region",
+            "sa-east-1",
+        ]);
+        let ServiceCommands::Create { custom_region, .. } = command else {
+            panic!("expected service create");
+        };
+        assert_eq!(custom_region.as_deref(), Some("sa-east-1"));
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--region",
+            "us-east-1",
+            "--custom-region",
+            "sa-east-1",
+        ])
+        .err()
+        .expect("--region with --custom-region should fail");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
