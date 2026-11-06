@@ -1179,9 +1179,8 @@ pub async fn start_existing(docker: &Docker, id: &str) -> Result<()> {
 /// a metadata file under `.clickhouse/servers/`, and write a `ServerInfo` for
 /// each so they show up in `local server list` and can be managed.
 ///
-/// Safe to call multiple times in one CLI invocation. When Docker isn't
-/// reachable, `connect()` fails fast (no socket → immediate error, no I/O
-/// timeout) and we return silently.
+/// Safe to call multiple times in one CLI invocation. Docker being unreachable
+/// is not an error: see [`discover_project_postgres_blocking`].
 pub fn recover_project_postgres_blocking(
     project_cwd: &str,
     lock: &crate::local::server::MetadataLock,
@@ -1190,36 +1189,41 @@ pub fn recover_project_postgres_blocking(
         Engine, ServerInfo, ensure_pg_data_dir, load_info_locked, pg_instance_key,
         save_server_info_locked,
     };
-    let cwd_owned = project_cwd.to_string();
-    block_on(async move {
-        let docker = match connect().await {
-            Ok(d) => d,
-            Err(_) => return Ok::<(), Error>(()),
-        };
-        let containers = match list_project_postgres(&docker, &cwd_owned).await {
-            Ok(c) => c,
-            Err(_) => return Ok(()),
-        };
-        for c in containers {
-            let key = pg_instance_key(&c.user_name, &c.major);
-            if load_info_locked(&key, lock)?.is_some() {
-                continue;
-            }
-            ensure_pg_data_dir(&c.user_name, &c.major)?;
-            let info = ServerInfo {
-                name: key,
-                pid: 0,
-                version: c.image.clone(),
-                http_port: 0,
-                tcp_port: c.host_port.unwrap_or(0),
-                started_at: "recovered".to_string(),
-                cwd: cwd_owned.clone(),
-                engine: Engine::Postgres,
-                container_id: Some(c.container_id.clone()),
-            };
-            save_server_info_locked(&info, lock)?;
+    for c in discover_project_postgres_blocking(project_cwd) {
+        let key = pg_instance_key(&c.user_name, &c.major);
+        if load_info_locked(&key, lock)?.is_some() {
+            continue;
         }
-        Ok(())
+        ensure_pg_data_dir(&c.user_name, &c.major)?;
+        let info = ServerInfo {
+            name: key,
+            pid: 0,
+            version: c.image,
+            http_port: 0,
+            tcp_port: c.host_port.unwrap_or(0),
+            started_at: "recovered".to_string(),
+            cwd: project_cwd.to_string(),
+            engine: Engine::Postgres,
+            container_id: Some(c.container_id),
+        };
+        save_server_info_locked(&info, lock)?;
+    }
+    Ok(())
+}
+
+/// Postgres containers labelled with `project_cwd`, writing nothing.
+///
+/// Discovery is best effort: when Docker isn't reachable, `connect()` fails
+/// fast (no socket → immediate error, no I/O timeout) and this finds nothing,
+/// as does a failed container listing.
+pub fn discover_project_postgres_blocking(project_cwd: &str) -> Vec<DiscoveredContainer> {
+    block_on(async {
+        match connect().await {
+            Ok(docker) => list_project_postgres(&docker, project_cwd)
+                .await
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
     })
 }
 
