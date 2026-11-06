@@ -113,14 +113,6 @@ impl CloudArgs {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum CloudCommands {
-    /// Manage user-defined functions
-    #[command(after_help = "CONTEXT FOR AGENTS:
-  Writes require API key authentication; list/get support OAuth.
-  Function names: `cloud udf list`; service IDs: `cloud service list`.
-  Create uploads a ZIP archive and starts an asynchronous build.
-  Typical flow: deploy NAME --service <id>, or create -> get until ready -> attach -> attachment get.")]
-    Udf(UdfArgs),
-
     /// Manage authentication (OAuth login, API keys)
     Auth {
         #[command(subcommand)]
@@ -149,6 +141,20 @@ CONTEXT FOR AGENTS:
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
+    },
+
+    /// Manage ClickHouse Cloud Postgres services (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Write commands need API key auth.
+  Service IDs: `cloud postgres list`.
+  Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
+  `get` shows host/user; connections use port 5432, database postgres and TLS.
+  Role changes return after API acceptance; see each command's help for verification.
+  Typical flow: `create` -> `get <id>` until running -> `certs get <id> --output ca.pem` -> connect.")]
+    Postgres {
+        #[command(subcommand)]
+        command: crate::cloud::postgres::PostgresCommands,
     },
 
     /// Manage Query API endpoints
@@ -215,6 +221,26 @@ CONTEXT FOR AGENTS:
         command: ClickStackCommands,
     },
 
+    /// Manage user-defined functions
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  Writes require API key authentication; list/get support OAuth.
+  Function names: `cloud udf list`; service IDs: `cloud service list`.
+  Create uploads a ZIP archive and starts an asynchronous build.
+  Typical flow: deploy NAME --service <id>, or create -> get until ready -> attach -> attachment get.")]
+    Udf(UdfArgs),
+
+    /// Manage API keys
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  `create` prints a generated key secret exactly once — capture stdout or create a new key.
+  Role IDs come from `cloud org role list` and must be UUIDs here.
+  `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
+  Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
+    Key {
+        #[command(subcommand)]
+        command: KeyCommands,
+    },
+
     /// Manage organization members
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -238,18 +264,6 @@ CONTEXT FOR AGENTS:
         command: InvitationCommands,
     },
 
-    /// Manage API keys
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  `create` prints a generated key secret exactly once — capture stdout or create a new key.
-  Role IDs come from `cloud org role list` and must be UUIDs here.
-  `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
-  Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
-    Key {
-        #[command(subcommand)]
-        command: KeyCommands,
-    },
-
     /// View the organization activity log
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -258,20 +272,6 @@ CONTEXT FOR AGENTS:
     Activity {
         #[command(subcommand)]
         command: ActivityCommands,
-    },
-
-    /// Manage ClickHouse Cloud Postgres services (Beta)
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Write commands need API key auth.
-  Service IDs: `cloud postgres list`.
-  Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
-  `get` shows host/user; connections use port 5432, database postgres and TLS.
-  Role changes return after API acceptance; see each command's help for verification.
-  Typical flow: `create` -> `get <id>` until running -> `certs get <id> --output ca.pem` -> connect.")]
-    Postgres {
-        #[command(subcommand)]
-        command: crate::cloud::postgres::PostgresCommands,
     },
 }
 
