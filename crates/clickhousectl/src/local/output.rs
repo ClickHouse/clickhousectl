@@ -645,6 +645,11 @@ impl LocalErrorOutput {
                     PortKind::Http | PortKind::Tcp => "clickhousectl local clickhouse start --help",
                 })
             }
+            // No CLI command frees a port another process holds; the message
+            // names the port to free.
+            Error::PostgresResumePortInUse { .. } | Error::PostgresPortNotPublished { .. } => {
+                Mapping::parity(LocalErrorCode::PortInUse)
+            }
             // `details` is the managed server's own stderr or log tail: kept in
             // human output, summarized here.
             Error::StartupExit { kind, name, .. } => Mapping::redacted(
@@ -2124,6 +2129,20 @@ mod tests {
                 "port_in_use",
             ),
             (
+                Error::PostgresResumePortInUse {
+                    name: "dev".into(),
+                    port: 5432,
+                },
+                "port_in_use",
+            ),
+            (
+                Error::PostgresPortNotPublished {
+                    name: "dev".into(),
+                    port: 5432,
+                },
+                "port_in_use",
+            ),
+            (
                 Error::StartupExit {
                     kind: crate::error::StartupKind::ClickHouse,
                     name: "default".into(),
@@ -2960,6 +2979,14 @@ mod tests {
                 port: 5432,
             },
             Error::PortUnavailable(PortKind::Http),
+            Error::PostgresResumePortInUse {
+                name: "dev".into(),
+                port: 5432,
+            },
+            Error::PostgresPortNotPublished {
+                name: "dev".into(),
+                port: 5432,
+            },
             Error::DockerNotAvailable("Docker socket was not found.\nStart Docker Desktop.".into()),
             Error::ContainerNameConflict("chctl-pg-dev-17".into()),
             Error::PostgresUsage(

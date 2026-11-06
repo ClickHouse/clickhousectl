@@ -619,7 +619,8 @@ pub enum PostgresCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   An existing stopped instance for the same (name, major) is resumed with its stored settings, so
-  --port/--user/--password/--database/-e are ignored on a resume.
+  --port/--user/--password/--database/-e are ignored on a resume. A resume whose stored port another
+  process holds fails with port_in_use; free that port, then start again.
   Without --version, an existing instance selects the major; two majors under one name error.
   The generated password is printed once by start — re-read connection details later with
   `postgres dotenv` or `postgres client`.

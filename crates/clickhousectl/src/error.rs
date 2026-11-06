@@ -544,6 +544,20 @@ pub enum Error {
     #[error("Could not find a free {0} port")]
     PortUnavailable(PortKind),
 
+    /// A stopped Postgres container keeps the host port it was created with,
+    /// so a resume cannot move to another port (#1227).
+    #[error(
+        "Postgres port {port} stored for server '{name}' is already in use; a resume keeps its stored port, so free port {port} and start the server again"
+    )]
+    PostgresResumePortInUse { name: String, port: u16 },
+
+    /// Docker started the container without publishing its host port, so the
+    /// stored port would point at whatever else holds it (#1227).
+    #[error(
+        "Docker started Postgres server '{name}' without publishing port {port}, so it was stopped; free port {port} and start the server again"
+    )]
+    PostgresPortNotPublished { name: String, port: u16 },
+
     #[error("{details}")]
     StartupExit {
         kind: StartupKind,

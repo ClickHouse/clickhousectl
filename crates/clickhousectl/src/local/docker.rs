@@ -487,6 +487,27 @@ pub fn inspected_container_running(
         .ok_or_else(|| Error::DockerError("container inspection omitted its running state".into()))
 }
 
+/// True when a running container publishes Postgres's `5432/tcp` on
+/// `host_port`. Docker can start a container without the binding it was
+/// created with (#1227), so a start is not proof the port is published.
+pub fn inspected_postgres_port_published(
+    response: &bollard::models::ContainerInspectResponse,
+    host_port: u16,
+) -> bool {
+    let expected = host_port.to_string();
+    response
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.ports.as_ref())
+        .and_then(|ports| ports.get("5432/tcp"))
+        .and_then(Option::as_ref)
+        .is_some_and(|bindings| {
+            bindings
+                .iter()
+                .any(|binding| binding.host_port.as_deref() == Some(expected.as_str()))
+        })
+}
+
 pub async fn is_container_running(docker: &Docker, id: &str) -> Result<bool> {
     match inspect_container(docker, id).await? {
         Some(response) => inspected_container_running(&response),
@@ -1232,6 +1253,28 @@ pub fn discover_project_postgres_blocking(project_cwd: &str) -> Vec<DiscoveredCo
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    fn inspect_with_ports(ports: serde_json::Value) -> bollard::models::ContainerInspectResponse {
+        serde_json::from_value(serde_json::json!({ "NetworkSettings": { "Ports": ports } }))
+            .expect("parse inspect response")
+    }
+
+    #[test]
+    fn postgres_port_published_requires_the_stored_host_binding() {
+        let published = inspect_with_ports(serde_json::json!({
+            "5432/tcp": [{ "HostIp": "127.0.0.1", "HostPort": "5432" }]
+        }));
+        assert!(inspected_postgres_port_published(&published, 5432));
+        assert!(!inspected_postgres_port_published(&published, 5433));
+
+        // The #1227 state: Docker started the container with no binding.
+        let unpublished = inspect_with_ports(serde_json::json!({}));
+        assert!(!inspected_postgres_port_published(&unpublished, 5432));
+        let exposed_only = inspect_with_ports(serde_json::json!({ "5432/tcp": null }));
+        assert!(!inspected_postgres_port_published(&exposed_only, 5432));
+        let no_settings = bollard::models::ContainerInspectResponse::default();
+        assert!(!inspected_postgres_port_published(&no_settings, 5432));
+    }
 
     #[cfg(unix)]
     #[tokio::test]

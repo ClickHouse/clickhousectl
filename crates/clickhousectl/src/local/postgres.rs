@@ -411,6 +411,7 @@ async fn start(
         };
         let startup_result = async {
             docker::start_existing(&docker, &container_id).await?;
+            ensure_port_published(&docker, &container_id, &user_name, host_port).await?;
             server::save_server_info_locked(&info, &metadata_lock)
         }
         .await;
@@ -690,7 +691,17 @@ async fn resume_existing(
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
 
+    // The container keeps the host port it was created with. Starting it
+    // while another process holds that port either fails opaquely or starts
+    // it unpublished, so check first and confirm the binding after (#1227).
+    ensure_resume_port_free(&display_name, prior.tcp_port)?;
     docker::start_existing(docker, &container_id).await?;
+    if let Err(primary) =
+        ensure_port_published(docker, &container_id, &display_name, prior.tcp_port).await
+    {
+        drop(metadata_lock);
+        return Err(stop_failed_resume(docker, &container_id, primary, "port check").await);
+    }
 
     let info = ServerInfo {
         started_at: server::now_timestamp(),
@@ -698,15 +709,7 @@ async fn resume_existing(
     };
     if let Err(primary) = server::save_server_info_locked(&info, &metadata_lock) {
         drop(metadata_lock);
-        return match docker::stop_container(docker, &container_id).await {
-            Ok(()) => Err(primary),
-            Err(cleanup) => Err(Error::PostgresStartupRollback {
-                primary: Box::new(primary),
-                cleanup: format!(
-                    "could not stop resumed container '{container_id}' after metadata failure: {cleanup}"
-                ),
-            }),
-        };
+        return Err(stop_failed_resume(docker, &container_id, primary, "metadata failure").await);
     }
     drop(metadata_lock);
 
@@ -731,6 +734,58 @@ async fn resume_existing(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// A stopped container cannot move to another host port, so a resume whose
+/// stored port is taken fails instead of starting unpublished (#1227).
+fn ensure_resume_port_free(name: &str, port: u16) -> Result<()> {
+    if server::is_port_available(port) {
+        Ok(())
+    } else {
+        Err(Error::PostgresResumePortInUse {
+            name: name.to_string(),
+            port,
+        })
+    }
+}
+
+/// Confirm Docker published `port` for a container it just started (#1227).
+async fn ensure_port_published(
+    docker: &bollard::Docker,
+    container_id: &str,
+    name: &str,
+    port: u16,
+) -> Result<()> {
+    let published = docker::inspect_container(docker, container_id)
+        .await?
+        .is_some_and(|inspected| docker::inspected_postgres_port_published(&inspected, port));
+    if published {
+        Ok(())
+    } else {
+        Err(Error::PostgresPortNotPublished {
+            name: name.to_string(),
+            port,
+        })
+    }
+}
+
+/// Stop a resumed container after a later resume step failed, keeping the
+/// step's error as the primary one.
+async fn stop_failed_resume(
+    docker: &bollard::Docker,
+    container_id: &str,
+    primary: Error,
+    step: &str,
+) -> Error {
+    match docker::stop_container(docker, container_id).await {
+        Ok(()) => primary,
+        Err(cleanup) => Error::PostgresStartupRollback {
+            primary: Box::new(primary),
+            cleanup: format!(
+                "could not stop resumed container '{container_id}' after {step}: {cleanup}"
+            ),
+        },
+    }
 }
 
 /// Extract the user-facing name from a disk key. `dev-pg16` → `dev`;
@@ -997,7 +1052,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
-        Some(port) if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() => {
+        Some(port) if server::is_port_available(port) => {
             return Ok(port);
         }
         Some(port) => {
@@ -1008,11 +1063,11 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
         }
         None => {}
     }
-    if std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)).is_ok() {
+    if server::is_port_available(DEFAULT_PG_PORT) {
         return Ok(DEFAULT_PG_PORT);
     }
     for p in (DEFAULT_PG_PORT + 1)..=(DEFAULT_PG_PORT + 100) {
-        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
+        if server::is_port_available(p) {
             return Ok(p);
         }
     }
