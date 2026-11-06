@@ -9,6 +9,7 @@ mod byoc;
 mod clickpipes;
 mod clickstack;
 mod invitations;
+mod jwt_providers;
 mod members;
 mod organizations;
 mod postgres;

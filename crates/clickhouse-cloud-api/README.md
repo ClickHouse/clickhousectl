@@ -6,6 +6,23 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+The beta service JWT provider methods are `jwt_provider_get_list`,
+`jwt_provider_create`, `jwt_provider_get`, `jwt_provider_update` and
+`jwt_provider_delete`. A JWT provider lets users connect to a service with a
+token from an external identity provider; they sign in as `default` with the
+roles in the token's roles claim. Create takes `JwtProviderPostRequest`
+(`name`, `issuer`, `audience`, `jwks_url`, optional `roles_claim`) and is safe
+to retry with the same configuration; update takes `JwtProviderPutRequest`,
+which replaces the whole configuration, so `roles_claim: None` removes an
+existing claim. Reads return `JwtProvider`, and delete returns no `result`. The
+server validates that the JWKS URL serves an RS256 key set, a service has at
+most 5 providers, and every method needs `control-plane:service:manage` and
+the Enterprise tier.
+
+`ServiceReplicaScalingPatchRequest` gains optional `profile`, a custom instance
+profile name such as `v1-highmem-s`; `None` leaves the profile unchanged.
+Struct-literal callers need `profile: None` or `..Default::default()`.
+
 `click_pipe_get_list` now takes `limit: Option<i64>` and `cursor: Option<&str>`
 after the organization and service IDs, and still returns
 `ApiResponse<Vec<ClickPipe>>`. Pass `None, None` to keep listing every ClickPipe

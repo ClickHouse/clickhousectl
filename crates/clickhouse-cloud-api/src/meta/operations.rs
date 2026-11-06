@@ -726,6 +726,51 @@ pub const INVITATION_GET_LIST: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `POST /v1/organizations/{organizationId}/services/{serviceId}/jwtProviders` (`jwtProviderCreate`).
+pub const JWT_PROVIDER_CREATE: OperationMetadata = OperationMetadata {
+    operation_id: "jwtProviderCreate",
+    rust_method: "jwt_provider_create",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/jwtProviders",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `DELETE /v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}` (`jwtProviderDelete`).
+pub const JWT_PROVIDER_DELETE: OperationMetadata = OperationMetadata {
+    operation_id: "jwtProviderDelete",
+    rust_method: "jwt_provider_delete",
+    method: "DELETE",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}` (`jwtProviderGet`).
+pub const JWT_PROVIDER_GET: OperationMetadata = OperationMetadata {
+    operation_id: "jwtProviderGet",
+    rust_method: "jwt_provider_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/services/{serviceId}/jwtProviders` (`jwtProviderGetList`).
+pub const JWT_PROVIDER_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "jwtProviderGetList",
+    rust_method: "jwt_provider_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/jwtProviders",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `PUT /v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}` (`jwtProviderUpdate`).
+pub const JWT_PROVIDER_UPDATE: OperationMetadata = OperationMetadata {
+    operation_id: "jwtProviderUpdate",
+    rust_method: "jwt_provider_update",
+    method: "PUT",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/jwtProviders/{jwtProviderName}",
+    required_permissions: &["control-plane:service:manage"],
+};
+
 /// `DELETE /v1/organizations/{organizationId}/members/{userId}` (`memberDelete`).
 pub const MEMBER_DELETE: OperationMetadata = OperationMetadata {
     operation_id: "memberDelete",
@@ -1661,6 +1706,11 @@ pub const ALL: &[OperationMetadata] = &[
     INVITATION_DELETE,
     INVITATION_GET,
     INVITATION_GET_LIST,
+    JWT_PROVIDER_CREATE,
+    JWT_PROVIDER_DELETE,
+    JWT_PROVIDER_GET,
+    JWT_PROVIDER_GET_LIST,
+    JWT_PROVIDER_UPDATE,
     MEMBER_DELETE,
     MEMBER_GET,
     MEMBER_GET_LIST,

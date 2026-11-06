@@ -492,6 +492,8 @@ pub struct CleanupRegistry {
     query_api_endpoints: Vec<(String, String)>,
     /// `(service_id, saved_query_id)` pairs deleted before their service.
     saved_queries: Vec<(String, String)>,
+    /// `(service_id, jwt_provider_name)` pairs deleted before their service.
+    jwt_providers: Vec<(String, String)>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
@@ -584,6 +586,7 @@ impl CleanupRegistry {
         self.query_api_endpoints
             .append(&mut other.query_api_endpoints);
         self.saved_queries.append(&mut other.saved_queries);
+        self.jwt_providers.append(&mut other.jwt_providers);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
         self.clickhouse_setting_restores
@@ -638,6 +641,20 @@ impl CleanupRegistry {
     pub fn unregister_saved_query(&mut self, service_id: &str, query_id: &str) {
         self.saved_queries
             .retain(|(service, query)| service != service_id || query != query_id);
+    }
+
+    pub fn register_jwt_provider(
+        &mut self,
+        service_id: impl Into<String>,
+        provider_name: impl Into<String>,
+    ) {
+        self.jwt_providers
+            .push((service_id.into(), provider_name.into()));
+    }
+
+    pub fn unregister_jwt_provider(&mut self, service_id: &str, provider_name: &str) {
+        self.jwt_providers
+            .retain(|(service, name)| service != service_id || name != provider_name);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -816,6 +833,21 @@ impl CleanupRegistry {
                     "upgrade window restore {service_id}: {error}",
                     service_id = restore.service_id
                 ));
+            }
+        }
+
+        // JWT providers belong to the service; delete only names this test
+        // created and registered, before the service itself.
+        while let Some((service_id, provider_name)) = self.jwt_providers.pop() {
+            match client
+                .jwt_provider_delete(org_id, &service_id, &provider_name)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => {
+                    failures.push(format!("JWT provider {provider_name} on {service_id}: {e}"))
+                }
             }
         }
 

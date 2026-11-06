@@ -183,6 +183,125 @@ async fn cloud_saved_query_endpoint_lifecycle(
     Ok(())
 }
 
+/// A stable public JWKS with RS256 keys; the server fetches and validates it on
+/// create and update. Google's issuer matches the key set, so the provider is a
+/// realistic configuration even though no token is ever presented.
+const JWT_PROVIDER_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
+const JWT_PROVIDER_ISSUER: &str = "https://accounts.google.com";
+
+fn assert_jwt_provider(
+    provider: &JwtProvider,
+    name: &str,
+    expected: &JwtProviderPutRequest,
+) -> TestResult<()> {
+    if provider.name.as_deref() != Some(name)
+        || provider.issuer.as_ref() != Some(&expected.issuer)
+        || provider.audience.as_ref() != Some(&expected.audience)
+        || provider.jwks_url.as_ref() != Some(&expected.jwks_url)
+        || provider.roles_claim != expected.roles_claim
+    {
+        return Err(format!("JWT provider {name} did not preserve its configuration").into());
+    }
+    Ok(())
+}
+
+/// Exercise every JWT provider operation on the disposable service. Register
+/// the provider before assertions so the outer teardown covers early failures.
+async fn cloud_jwt_provider_lifecycle(
+    client: &Client,
+    cleanup: &mut CleanupRegistry,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
+    let name = "it-jwt-provider";
+    let create = JwtProviderPostRequest {
+        name: name.to_string(),
+        issuer: JWT_PROVIDER_ISSUER.to_string(),
+        audience: "clickhousectl-integration".to_string(),
+        jwks_url: JWT_PROVIDER_JWKS_URL.to_string(),
+        roles_claim: None,
+    };
+    let mut expected = JwtProviderPutRequest {
+        issuer: create.issuer.clone(),
+        audience: create.audience.clone(),
+        jwks_url: create.jwks_url.clone(),
+        roles_claim: None,
+    };
+
+    let created = client
+        .jwt_provider_create(org, service, &create)
+        .await?
+        .result
+        .ok_or("JWT provider create returned no result")?;
+    cleanup.register_jwt_provider(service, name);
+    assert_jwt_provider(&created, name, &expected)?;
+    // The same name and configuration is documented as a safe retry.
+    let retried = client
+        .jwt_provider_create(org, service, &create)
+        .await?
+        .result
+        .ok_or("JWT provider create retry returned no result")?;
+    assert_jwt_provider(&retried, name, &expected)?;
+    let fetched = client
+        .jwt_provider_get(org, service, name)
+        .await?
+        .result
+        .ok_or("JWT provider get returned no result")?;
+    assert_jwt_provider(&fetched, name, &expected)?;
+
+    expected.roles_claim = Some("clickhouse:roles".to_string());
+    expected.audience = "clickhousectl-integration-updated".to_string();
+    let updated = client
+        .jwt_provider_update(org, service, name, &expected)
+        .await?
+        .result
+        .ok_or("JWT provider update returned no result")?;
+    assert_jwt_provider(&updated, name, &expected)?;
+    let listed = client
+        .jwt_provider_get_list(org, service)
+        .await?
+        .result
+        .ok_or("JWT provider list returned no result")?;
+    let item = listed
+        .iter()
+        .find(|provider| provider.name.as_deref() == Some(name))
+        .ok_or("JWT provider list omitted the created provider")?;
+    assert_jwt_provider(item, name, &expected)?;
+
+    // Update replaces the whole configuration, so omitting the roles claim clears it.
+    expected.roles_claim = None;
+    client
+        .jwt_provider_update(org, service, name, &expected)
+        .await?;
+    let fetched = client
+        .jwt_provider_get(org, service, name)
+        .await?
+        .result
+        .ok_or("JWT provider get after update returned no result")?;
+    assert_jwt_provider(&fetched, name, &expected)?;
+
+    client.jwt_provider_delete(org, service, name).await?;
+    cleanup.unregister_jwt_provider(service, name);
+    match client.jwt_provider_get(org, service, name).await {
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+        other => {
+            return Err(format!("expected 404 after JWT provider deletion, got {other:?}").into());
+        }
+    }
+    let remaining = client
+        .jwt_provider_get_list(org, service)
+        .await?
+        .result
+        .ok_or("JWT provider list after delete returned no result")?;
+    if remaining
+        .iter()
+        .any(|provider| provider.name.as_deref() == Some(name))
+    {
+        return Err("JWT provider list still includes the deleted provider".into());
+    }
+    Ok(())
+}
+
 fn assert_saved_query(
     query: &PublicSavedQuery,
     expected: &PublicSavedQueryRequest,
@@ -1500,6 +1619,17 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         &ctx.run_id,
                     )
                 },
+            )
+            .await?;
+
+        // JWT providers are service-scoped and independent of API keys.
+        log_phase("JWT Providers");
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "JWT provider create/get/list/update/delete",
+                || cloud_jwt_provider_lifecycle(&client, &mut cleanup, &ctx.org_id, &service_id),
             )
             .await?;
 

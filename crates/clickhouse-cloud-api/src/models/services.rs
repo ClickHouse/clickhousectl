@@ -1956,6 +1956,10 @@ pub struct ServiceReplicaScalingPatchRequest {
     pub min_replicas: Option<i64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<i64>,
+    /// Custom instance profile, such as `v1-highmem-s`; `None` leaves the
+    /// current profile unchanged.
+    #[serde(rename = "profile", skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.

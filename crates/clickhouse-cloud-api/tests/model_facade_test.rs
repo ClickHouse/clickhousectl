@@ -126,6 +126,18 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PostgresIpAccessListRuleReference::default(),
     );
     assert_same_type(
+        api::JwtProvider::default(),
+        api::models::JwtProvider::default(),
+    );
+    assert_same_type(
+        api::JwtProviderPostRequest::default(),
+        api::models::JwtProviderPostRequest::default(),
+    );
+    assert_same_type(
+        api::JwtProviderPutRequest::default(),
+        api::models::JwtProviderPutRequest::default(),
+    );
+    assert_same_type(
         api::WhoamiUser::default(),
         api::models::WhoamiUser::default(),
     );
