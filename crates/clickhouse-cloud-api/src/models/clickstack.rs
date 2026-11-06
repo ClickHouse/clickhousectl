@@ -3905,6 +3905,11 @@ pub struct ClickStackLogSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub event_attributes_expression: Option<String>,
+    #[serde(
+        rename = "eventNameExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_name_expression: Option<String>,
     #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
     pub filter_settings: Option<ClickStackSourceFilterSettings>,
     pub from: ClickStackSourceFrom,
@@ -3960,6 +3965,11 @@ pub struct ClickStackLogSource {
     )]
     pub service_name_expression: Option<String>,
     #[serde(
+        rename = "severityNumberExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity_number_expression: Option<String>,
+    #[serde(
         rename = "severityTextExpression",
         skip_serializing_if = "Option::is_none"
     )]
@@ -4013,6 +4023,11 @@ pub struct ClickStackLogSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub event_attributes_expression: Option<String>,
+    #[serde(
+        rename = "eventNameExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_name_expression: Option<String>,
     #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
     pub filter_settings: Option<ClickStackSourceFilterSettingsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4070,6 +4085,11 @@ pub struct ClickStackLogSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub service_name_expression: Option<String>,
+    #[serde(
+        rename = "severityNumberExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity_number_expression: Option<String>,
     #[serde(
         rename = "severityTextExpression",
         skip_serializing_if = "Option::is_none"
