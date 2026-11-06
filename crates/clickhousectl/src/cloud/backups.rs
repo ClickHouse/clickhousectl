@@ -263,8 +263,9 @@ impl BackupCommands {
 const BUCKET_CREATE_CONTEXT: &str = "\
 CONTEXT FOR AGENTS:
   `bucketProvider` (AWS, GCP or AZURE) selects the body. AWS: bucketPath, iamRoleArn,
-  iamRoleSessionName, iamRoleExternalId. GCP: bucketPath, accessKeyId, secretAccessKey.
-  AZURE: containerName, connectionString.
+  iamRoleSessionName, plus iamRoleExternalId only if the org has the external-ID feature
+  (otherwise omit it). GCP: bucketPath, accessKeyId, secretAccessKey. AZURE:
+  containerName, connectionString.
   AWS bucketPath is a URL: https://<bucket>.s3.<region>.amazonaws.com/<prefix>.
   The body holds credentials: use a restricted file or `--file -`.";
 
