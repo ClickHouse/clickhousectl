@@ -230,4 +230,35 @@ mod tests {
         assert_eq!(config_source_label("-"), "stdin");
         assert_eq!(config_source_label("patch.json"), "patch.json");
     }
+
+    #[test]
+    fn read_config_value_names_unreadable_and_malformed_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.json");
+        let missing = missing.to_str().unwrap();
+        let error = read_config_value(missing).unwrap_err();
+        assert!(
+            error.message.starts_with("failed to read config file")
+                && error.message.contains(missing),
+            "{error}"
+        );
+
+        let malformed = directory.path().join("malformed.json");
+        std::fs::write(&malformed, r#"{"entries":["#).unwrap();
+        let malformed = malformed.to_str().unwrap();
+        let error = read_config_value(malformed).unwrap_err();
+        assert!(
+            error
+                .message
+                .starts_with(&format!("failed to parse config {malformed} as JSON")),
+            "{error}"
+        );
+
+        let valid = directory.path().join("valid.json");
+        std::fs::write(&valid, r#"{"name":"ok"}"#).unwrap();
+        assert_eq!(
+            read_config_value(valid.to_str().unwrap()).unwrap(),
+            serde_json::json!({"name": "ok"})
+        );
+    }
 }

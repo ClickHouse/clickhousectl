@@ -306,6 +306,107 @@ mod tests {
     }
 
     #[test]
+    fn setting_numbers_keep_integer_boundaries_and_decimal_strings_exact() {
+        let assignments = parse_setting_assignments(&[
+            "minimum=-9223372036854775808".to_string(),
+            "signed_maximum=9223372036854775807".to_string(),
+            "maximum=18446744073709551615".to_string(),
+            "decimal_string=\"0.5\"".to_string(),
+            "exponent_string=\"1e3\"".to_string(),
+        ])
+        .unwrap();
+        let document = parse_settings_map_document(
+            r#"{"minimum":-9223372036854775808,"signed_maximum":9223372036854775807,"maximum":18446744073709551615,"decimal_string":"0.5","exponent_string":"1e3"}"#,
+            "settings file",
+        )
+        .unwrap();
+        assert_eq!(assignments, document);
+
+        let wire =
+            serde_json::to_value(build_service_settings_patch_request(&document).unwrap()).unwrap();
+        let settings = &wire["settings"];
+        assert_eq!(settings["minimum"].as_i64(), Some(i64::MIN));
+        assert_eq!(settings["signed_maximum"].as_i64(), Some(i64::MAX));
+        assert_eq!(settings["maximum"].as_u64(), Some(u64::MAX));
+        assert_eq!(settings["decimal_string"], "0.5");
+        assert_eq!(settings["exponent_string"], "1e3");
+    }
+
+    #[test]
+    fn setting_numbers_reject_inexact_values_from_assignments_and_documents() {
+        for literal in [
+            "18446744073709551616",
+            "99999999999999999999",
+            "-9223372036854775809",
+            "1e3",
+            "1E3",
+            "1e-3",
+            "1.5",
+            "18446744073709551615.0",
+            "[99999999999999999999]",
+            r#"{"nested":1e3}"#,
+        ] {
+            let assignment = parse_setting_assignments(&[format!("value={literal}")])
+                .expect_err(literal)
+                .to_string();
+            let document =
+                parse_settings_map_document(&format!("{{\"value\":{literal}}}"), "stdin")
+                    .expect_err(literal)
+                    .to_string();
+            for message in [assignment, document] {
+                assert!(
+                    message.contains("numeric settings must be integers"),
+                    "{literal}: {message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn settings_inputs_reject_malformed_documents_and_assignments() {
+        for document in [
+            "{broken",
+            "[]",
+            "null",
+            "42",
+            "{}",
+            r#"{"settings":{"compatibility":"26.2"}}"#,
+        ] {
+            assert!(
+                parse_settings_map_document(document, "settings file").is_err(),
+                "{document}"
+            );
+        }
+        for assignments in [
+            vec!["compatibility"],
+            vec!["=1"],
+            vec!["compatibility=unquoted"],
+            vec!["max_query_size=1", "max_query_size=2"],
+        ] {
+            let assignments: Vec<String> = assignments.iter().map(|a| a.to_string()).collect();
+            assert!(
+                parse_setting_assignments(&assignments).is_err(),
+                "{assignments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_file_errors_name_the_unreadable_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let path = path.to_str().unwrap();
+        // A missing file, then one that is not valid UTF-8.
+        for contents in [None, Some([0xff])] {
+            if let Some(contents) = contents {
+                std::fs::write(path, contents).unwrap();
+            }
+            let error = read_service_settings(&[], Some(path)).unwrap_err();
+            assert!(error.to_string().contains(path), "{error}");
+        }
+    }
+
+    #[test]
     fn settings_file_reads_a_plain_dynamic_map() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
