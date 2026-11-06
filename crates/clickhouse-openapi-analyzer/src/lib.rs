@@ -180,11 +180,12 @@ pub fn model_types(rust_source_root: &Path) -> Result<BTreeSet<String>, AnalyzeE
 ///
 /// Backs the completeness half of
 /// `discriminated_union_defaults_round_trip_to_the_same_variant` in
-/// `clickhouse-cloud-api`'s `models_test.rs`: a `discriminated_union!` enum's
-/// `Default` must round-trip to the same variant, and every union with a
-/// `Default` uses a manual impl (derived `Default` cannot pick a payload
-/// variant), so requiring the test's covered-type list to equal this set means
-/// a new manual `Default` impl cannot silently escape the invariant. Like
+/// `clickhouse-cloud-api`'s `tests/models/cross_domain.rs` (the `models_test`
+/// binary): a `discriminated_union!` enum's `Default` must round-trip to the
+/// same variant, and every union with a `Default` uses a manual impl (derived
+/// `Default` cannot pick a payload variant), so requiring the test's
+/// covered-type list to equal this set means a new manual `Default` impl
+/// cannot silently escape the invariant. Like
 /// [`model_fields_with_serde_default`], this is a repository-policy check
 /// rather than a drift `FindingKind`, and it keeps `syn` out of the published
 /// crate's dependency graph.
