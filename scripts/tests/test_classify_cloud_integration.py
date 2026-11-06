@@ -75,7 +75,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             },
             frozenset({"service", "clickpipes"}): {
                 "crates/clickhouse-cloud-api/src/client/services.rs",
-                "crates/clickhouse-cloud-api/src/convert/service.rs",
+                "crates/clickhouse-cloud-api/src/convert/services.rs",
                 "crates/clickhouse-cloud-api/src/models/services.rs",
             },
             frozenset({"postgres", "clickpipes"}): {
@@ -99,6 +99,10 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             frozenset({"organization"}): {
                 "crates/clickhouse-cloud-api/src/client/activity.rs",
                 "crates/clickhouse-cloud-api/src/models/activity.rs",
+                "crates/clickhouse-cloud-api/src/client/byoc.rs",
+                "crates/clickhouse-cloud-api/src/client/invitations.rs",
+                "crates/clickhouse-cloud-api/src/client/members.rs",
+                "crates/clickhouse-cloud-api/src/client/rbac.rs",
                 "crates/clickhouse-cloud-api/src/models/invitations.rs",
                 "crates/clickhouse-cloud-api/src/models/members.rs",
                 "crates/clickhouse-cloud-api/src/models/rbac.rs",
