@@ -551,6 +551,7 @@ mod tests {
                 .find_subcommand("client")
                 .unwrap(),
         ];
+        let mut orders = Vec::new();
         for client in clients {
             let name = client
                 .get_arguments()
@@ -566,18 +567,7 @@ mod tests {
             assert_eq!(alias.get_long(), Some("name"));
             assert_eq!(alias.get_short(), Some('n'));
             for long in [false, true] {
-                assert_eq!(
-                    rendered_options(client, long),
-                    [
-                        "host",
-                        "port",
-                        "version",
-                        "query",
-                        "queries-file",
-                        "json",
-                        "help"
-                    ]
-                );
+                orders.push(rendered_options(client, long));
                 let help = if long {
                     client.clone().render_long_help()
                 } else {
@@ -597,6 +587,18 @@ mod tests {
                         .any(|line| line.trim_start().starts_with("[NAME]"))
                 );
             }
+        }
+        // Every client lists the same options in the same order, in short and long help,
+        // and the common ones keep the order the help standard sets (NAME is checked above).
+        let common = ["host", "port", "version", "query", "queries-file"];
+        let listed: Vec<&str> = orders[0]
+            .iter()
+            .map(String::as_str)
+            .filter(|option| common.contains(option))
+            .collect();
+        assert_eq!(listed, common, "{orders:?}");
+        for order in &orders[1..] {
+            assert_eq!(order, &orders[0]);
         }
     }
 

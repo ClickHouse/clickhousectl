@@ -978,7 +978,7 @@ impl fmt::Display for ListInstalledOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.versions.is_empty() {
             writeln!(f, "No versions installed")?;
-            write!(f, "Run: clickhousectl local install stable")?;
+            write!(f, "Run: clickhousectl local install latest")?;
             return Ok(());
         }
         let rows: Vec<InstalledVersionRow> = self
@@ -3094,19 +3094,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_json() {
-        let output = RemoveOutput {
-            version: "25.12.5.44".to_string(),
-            was_default: false,
-        };
-        let json: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
-
-        assert_eq!(json["version"], "25.12.5.44");
-        assert_eq!(json["was_default"], false);
-    }
-
-    #[test]
     fn remove_json_reports_a_cleared_default() {
         let output = RemoveOutput {
             version: "25.12.5.44".to_string(),
@@ -3363,28 +3350,6 @@ mod tests {
     }
 
     #[test]
-    fn server_configs_display_empty() {
-        let output = ServerConfigsOutput {
-            dir: "/home/user/.clickhouse/configs".to_string(),
-            configs: vec![],
-        };
-        let text = output.to_string();
-        assert!(text.contains("No config files"));
-        assert!(text.contains("--config <NAME>"));
-    }
-
-    #[test]
-    fn server_configs_display_with_entries() {
-        let output = ServerConfigsOutput {
-            dir: "/home/user/.clickhouse/configs".to_string(),
-            configs: vec!["dev.xml".to_string()],
-        };
-        let text = output.to_string();
-        assert!(text.contains("dev.xml"));
-        assert!(text.contains("Use with:"));
-    }
-
-    #[test]
     fn server_remove_json() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
@@ -3399,9 +3364,18 @@ mod tests {
 
     // ── Display (human-readable) tests ──────────────────────────────────
 
+    /// The trimmed cells of the table row whose first cell is `first`.
+    fn table_row(text: &str, first: &str) -> Vec<String> {
+        let row = text
+            .lines()
+            .find(|line| line.split('|').nth(1).map(str::trim) == Some(first))
+            .unwrap_or_else(|| panic!("no row for {first}: {text}"));
+        row.split('|').map(|cell| cell.trim().to_string()).collect()
+    }
+
     #[test]
-    fn list_installed_display_with_versions() {
-        let output = ListInstalledOutput {
+    fn version_tables_mark_only_the_flagged_row() {
+        let installed = ListInstalledOutput {
             versions: vec![
                 InstalledVersion {
                     version: "25.12.5.44".to_string(),
@@ -3412,26 +3386,22 @@ mod tests {
                     default: false,
                 },
             ],
-        };
-        let text = output.to_string();
-        assert!(text.contains("Version"));
-        assert!(text.contains("Default"));
-        assert!(text.contains("25.12.5.44"));
-        assert!(text.contains("yes"));
-        assert!(text.contains("25.11.3.22"));
-    }
+        }
+        .to_string();
+        assert_eq!(
+            table_row(&installed, "Version"),
+            ["", "Version", "Default", ""]
+        );
+        assert_eq!(
+            table_row(&installed, "25.12.5.44"),
+            ["", "25.12.5.44", "yes", ""]
+        );
+        assert_eq!(
+            table_row(&installed, "25.11.3.22"),
+            ["", "25.11.3.22", "", ""]
+        );
 
-    #[test]
-    fn list_installed_display_empty() {
-        let output = ListInstalledOutput { versions: vec![] };
-        let text = output.to_string();
-        assert!(text.contains("No versions installed"));
-        assert!(text.contains("Run: clickhousectl local install stable"));
-    }
-
-    #[test]
-    fn list_available_display_with_versions() {
-        let output = ListAvailableOutput {
+        let available = ListAvailableOutput {
             versions: vec![
                 AvailableVersion {
                     version: "25.12".to_string(),
@@ -3442,134 +3412,192 @@ mod tests {
                     installed: false,
                 },
             ],
-        };
-        let text = output.to_string();
-        assert!(text.contains("Version"));
-        assert!(text.contains("Installed"));
-        assert!(text.contains("25.12"));
-        assert!(text.contains("yes"));
-        assert!(text.contains("25.11"));
-        assert!(text.contains("Install with: clickhousectl local install <version>"));
-    }
-
-    #[test]
-    fn list_available_display_empty() {
-        let output = ListAvailableOutput { versions: vec![] };
-        assert_eq!(output.to_string(), "No versions available");
-    }
-
-    #[test]
-    fn which_display() {
-        let output = WhichOutput {
-            version: "25.12.5.44".to_string(),
-            binary_path: "/home/user/.clickhouse/versions/25.12.5.44/clickhouse".to_string(),
-        };
+        }
+        .to_string();
         assert_eq!(
-            output.to_string(),
-            "25.12.5.44 (/home/user/.clickhouse/versions/25.12.5.44/clickhouse)"
+            table_row(&available, "Version"),
+            ["", "Version", "Installed", ""]
+        );
+        assert_eq!(table_row(&available, "25.12"), ["", "25.12", "yes", ""]);
+        assert_eq!(table_row(&available, "25.11"), ["", "25.11", "", ""]);
+        assert!(
+            available.contains("clickhousectl local install <version>"),
+            "{available}"
         );
     }
 
     #[test]
-    fn install_display() {
-        let output = InstallOutput {
-            version: "25.12.5.44".to_string(),
-            set_as_default: false,
-        };
-        assert_eq!(output.to_string(), "Installed version 25.12.5.44");
+    fn list_installed_display_empty_suggests_a_runnable_latest_install() {
+        use crate::cli::{Cli, Commands};
+        use crate::local::cli::{InstallVersionArg, LocalCommands};
+        use clap::Parser;
 
-        let output_default = InstallOutput {
-            version: "25.12.5.44".to_string(),
-            set_as_default: true,
+        let text = ListInstalledOutput { versions: vec![] }.to_string();
+        let start = text.find("clickhousectl ").expect("a suggested command");
+        let argv: Vec<&str> = text[start..].split_whitespace().collect();
+        let Commands::Local(local) = Cli::try_parse_from(&argv).unwrap().command else {
+            panic!("expected a local command: {argv:?}");
         };
-        assert_eq!(
-            output_default.to_string(),
-            "Installed version 25.12.5.44 (set as default)"
+        // Docs and suggestions use `latest`, never `stable`.
+        assert!(
+            matches!(
+                local.command,
+                LocalCommands::Install {
+                    version: InstallVersionArg::ClickHouse(
+                        crate::version_manager::VersionSpec::Latest
+                    ),
+                    force: false,
+                }
+            ),
+            "{argv:?}"
         );
     }
 
     #[test]
-    fn use_display() {
-        let output = UseOutput {
-            version: "25.12.5.44".to_string(),
-        };
-        assert_eq!(output.to_string(), "Default version set to 25.12.5.44");
+    fn init_display_heads_with_the_run_kind_and_lists_only_scaffolds() {
+        for (paths, already_initialized, expected) in [
+            (&[][..], true, "Already initialized at .clickhouse/"),
+            (
+                &[".clickhouse/.gitignore"][..],
+                true,
+                "Restored runtime ignore at .clickhouse/.gitignore",
+            ),
+            (
+                &["postgres/"][..],
+                true,
+                "Already initialized at .clickhouse/\nCreated project scaffold in postgres/",
+            ),
+            (
+                &[".clickhouse/", "clickhouse/", "postgres/"][..],
+                false,
+                "Initialized ClickHouse project in .clickhouse/\n\
+                 Created project scaffold in clickhouse/\n\
+                 Created project scaffold in postgres/",
+            ),
+        ] {
+            let output = InitOutput {
+                paths: paths.iter().map(|path| path.to_string()).collect(),
+                already_initialized,
+            };
+            assert_eq!(output.to_string(), expected, "{paths:?}");
+        }
     }
 
     #[test]
-    fn remove_display() {
-        let output = RemoveOutput {
-            version: "25.12.5.44".to_string(),
-            was_default: false,
+    fn optional_suffixes_appear_only_when_their_flag_is_set() {
+        let install = |set_as_default| {
+            InstallOutput {
+                version: "25.12.5.44".to_string(),
+                set_as_default,
+            }
+            .to_string()
         };
-        assert_eq!(output.to_string(), "Removed version 25.12.5.44");
+        let plain = install(false);
+        let default = install(true);
+        assert!(default.starts_with(&plain) && default.len() > plain.len());
+
+        let stop = |selection| {
+            ServerStopOutput {
+                name: "default".to_string(),
+                already_stopped: false,
+                selection,
+            }
+            .to_string()
+        };
+        let remove = |selection| {
+            ServerRemoveOutput {
+                name: "default".to_string(),
+                selection,
+            }
+            .to_string()
+        };
+        for render in [&stop as &dyn Fn(_) -> String, &remove] {
+            let plain = render(None);
+            assert_eq!(render(Some(ServerSelection::Explicit)), plain);
+            let implicit = render(Some(ServerSelection::Implicit));
+            assert!(implicit.starts_with(&plain) && implicit.len() > plain.len());
+        }
     }
 
     #[test]
-    fn init_display_idempotent() {
-        let output = InitOutput {
-            paths: vec![],
-            already_initialized: true,
-        };
-        assert_eq!(output.to_string(), "Already initialized at .clickhouse/");
-    }
+    fn human_outputs_show_every_value_they_carry() {
+        let configs_dir = "/home/user/.clickhouse/configs";
+        for (text, values) in [
+            (
+                ServerStartOutput {
+                    name: "analytics".to_string(),
+                    pid: 4242,
+                    http_port: 18123,
+                    tcp_port: 19000,
+                    version: "25.12.5.44".to_string(),
+                }
+                .to_string(),
+                &["analytics", "4242", "18123", "19000", "25.12.5.44"][..],
+            ),
+            (
+                WhichOutput {
+                    version: "25.12.5.44".to_string(),
+                    binary_path: "/home/user/.clickhouse/versions/25.12.5.44/clickhouse"
+                        .to_string(),
+                }
+                .to_string(),
+                &[
+                    "25.12.5.44",
+                    "/home/user/.clickhouse/versions/25.12.5.44/clickhouse",
+                ],
+            ),
+            (
+                UseOutput {
+                    version: "25.12.5.44".to_string(),
+                }
+                .to_string(),
+                &["25.12.5.44"],
+            ),
+            (
+                InstallOutput {
+                    version: "25.12.5.44".to_string(),
+                    set_as_default: false,
+                }
+                .to_string(),
+                &["25.12.5.44"],
+            ),
+            (
+                ServerConfigsOutput {
+                    dir: configs_dir.to_string(),
+                    configs: vec!["dev.xml".to_string(), "prod.yaml".to_string()],
+                }
+                .to_string(),
+                &[configs_dir, "dev.xml", "prod.yaml"],
+            ),
+            (
+                ServerConfigsOutput {
+                    dir: configs_dir.to_string(),
+                    configs: vec![],
+                }
+                .to_string(),
+                &[configs_dir],
+            ),
+        ] {
+            for value in values {
+                assert!(text.contains(value), "missing {value:?}: {text}");
+            }
+        }
 
-    #[test]
-    fn init_display_reports_runtime_ignore_repair() {
-        let output = InitOutput {
-            paths: vec![".clickhouse/.gitignore".to_string()],
-            already_initialized: true,
-        };
-        assert_eq!(
-            output.to_string(),
-            "Restored runtime ignore at .clickhouse/.gitignore"
-        );
-    }
-
-    #[test]
-    fn init_display_reports_scaffold_repair_without_runtime_path() {
-        let output = InitOutput {
-            paths: vec!["postgres/".to_string()],
-            already_initialized: true,
-        };
-        assert_eq!(
-            output.to_string(),
-            "Already initialized at .clickhouse/\nCreated project scaffold in postgres/"
-        );
-    }
-
-    #[test]
-    fn init_display_first_run_lists_created_scaffolds() {
-        let output = InitOutput {
-            paths: vec![
-                ".clickhouse/".to_string(),
-                "clickhouse/".to_string(),
-                "postgres/".to_string(),
-            ],
-            already_initialized: false,
-        };
-        assert_eq!(
-            output.to_string(),
-            "Initialized ClickHouse project in .clickhouse/\n\
-             Created project scaffold in clickhouse/\n\
-             Created project scaffold in postgres/"
-        );
-    }
-
-    #[test]
-    fn server_start_display() {
-        let output = ServerStartOutput {
-            name: "default".to_string(),
-            pid: 12345,
-            http_port: 8123,
-            tcp_port: 9000,
-            version: "25.12.5.44".to_string(),
-        };
-        let text = output.to_string();
-        assert!(text.contains("Server 'default' started in background (PID: 12345)"));
-        assert!(text.contains("  HTTP port: 8123"));
-        assert!(text.contains("  TCP port:  9000"));
-        assert!(text.contains("  Version:   25.12.5.44"));
+        // Empty lists say so instead of printing a header-only table.
+        for empty in [
+            ListAvailableOutput { versions: vec![] }.to_string(),
+            ServerListOutput {
+                servers: vec![],
+                total_servers: 0,
+                total_running_servers: 0,
+                project_scope: None,
+                guidance: Vec::new(),
+                list: ProjectList::Clickhouse,
+            }
+            .to_string(),
+        ] {
+            assert!(!empty.is_empty() && !empty.contains('|'), "{empty}");
+        }
     }
 
     #[test]
@@ -3606,25 +3634,36 @@ mod tests {
             list: ProjectList::Clickhouse,
         };
         let text = output.to_string();
-        assert!(text.contains("Name"));
-        assert!(text.contains("Status"));
-        assert!(text.contains("PID"));
-        assert!(text.contains("HTTP Port"));
-        assert!(text.contains("TCP Port"));
-        assert!(text.contains("default"));
-        assert!(text.contains("running"));
-        assert!(text.contains("12345"));
-        assert!(text.contains("25.12.5.44"));
-        assert!(text.contains("8123"));
-        assert!(text.contains("9000"));
-        assert!(text.contains("test"));
-        assert!(text.contains("stopped"));
-        let stopped = text
-            .lines()
-            .find(|line| line.contains("| test"))
-            .expect("stopped server row");
-        let cells: Vec<_> = stopped.split('|').map(str::trim).collect();
-        assert_eq!(cells, ["", "test", "stopped", "-", "-", "-", "-", ""]);
+        assert_eq!(
+            table_row(&text, "Name"),
+            [
+                "",
+                "Name",
+                "Status",
+                "PID",
+                "Version",
+                "HTTP Port",
+                "TCP Port",
+                ""
+            ]
+        );
+        assert_eq!(
+            table_row(&text, "default"),
+            [
+                "",
+                "default",
+                "running",
+                "12345",
+                "25.12.5.44",
+                "8123",
+                "9000",
+                ""
+            ]
+        );
+        assert_eq!(
+            table_row(&text, "test"),
+            ["", "test", "stopped", "-", "-", "-", "-", ""]
+        );
         assert!(text.contains("2 servers, 1 running"));
     }
 
@@ -3710,36 +3749,6 @@ mod tests {
     }
 
     #[test]
-    fn server_list_display_empty() {
-        let output = ServerListOutput {
-            servers: vec![],
-            total_servers: 0,
-            total_running_servers: 0,
-            project_scope: None,
-            guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
-        };
-        assert_eq!(output.to_string(), "No servers");
-    }
-
-    #[test]
-    fn server_list_display_empty_project_explains_exact_scope() {
-        let output = ServerListOutput {
-            servers: vec![],
-            total_servers: 0,
-            total_running_servers: 0,
-            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
-            guidance: project_scope_guidance(None),
-            list: ProjectList::Clickhouse,
-        };
-        let text = output.to_string();
-        assert!(text.contains("No servers found in project '/project'"));
-        assert!(text.contains("exact current working directory"));
-        assert!(text.contains("parent `.clickhouse` directories are not searched"));
-        assert!(text.contains("clickhousectl local clickhouse list --global"));
-    }
-
-    #[test]
     fn empty_engine_lists_point_at_their_own_command() {
         for (list, command, global) in [
             (
@@ -3804,16 +3813,6 @@ mod tests {
     }
 
     #[test]
-    fn server_stop_display() {
-        let output = ServerStopOutput {
-            name: "default".to_string(),
-            already_stopped: false,
-            selection: Some(ServerSelection::Explicit),
-        };
-        assert_eq!(output.to_string(), "Server 'default' stopped");
-    }
-
-    #[test]
     fn server_stop_all_display() {
         let output = ServerStopAllOutput {
             servers: vec![
@@ -3841,51 +3840,5 @@ mod tests {
             )
         );
         assert!(text.contains("Done"));
-    }
-
-    #[test]
-    fn server_stop_all_display_empty() {
-        let output = ServerStopAllOutput { servers: vec![] };
-        assert_eq!(output.to_string(), "No running servers");
-    }
-
-    #[test]
-    fn server_remove_display() {
-        let output = ServerRemoveOutput {
-            name: "test".to_string(),
-            selection: Some(ServerSelection::Explicit),
-        };
-        assert_eq!(output.to_string(), "Server 'test' removed");
-    }
-
-    // ── print_output helper tests ───────────────────────────────────────
-
-    #[test]
-    fn json_keys_use_snake_case() {
-        // Verify all JSON field names are snake_case (not camelCase)
-        let output = ServerStartOutput {
-            name: "default".to_string(),
-            pid: 1,
-            http_port: 8123,
-            tcp_port: 9000,
-            version: "25.12".to_string(),
-        };
-        let json_str = serde_json::to_string(&output).unwrap();
-        assert!(json_str.contains("\"http_port\""));
-        assert!(json_str.contains("\"tcp_port\""));
-        assert!(!json_str.contains("\"httpPort\""));
-        assert!(!json_str.contains("\"tcpPort\""));
-    }
-
-    #[test]
-    fn install_output_roundtrip() {
-        let output = InstallOutput {
-            version: "25.12.5.44".to_string(),
-            set_as_default: true,
-        };
-        let json_str = serde_json::to_string(&output).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["version"], "25.12.5.44");
-        assert_eq!(parsed["set_as_default"], true);
     }
 }

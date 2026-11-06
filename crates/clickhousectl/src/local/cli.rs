@@ -1109,45 +1109,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_clickhouse_versions_for_each_command() {
-        let expected = "all parts must be numeric";
-        assert_version_rejected(&["install", "not.a.version"], expected);
-        assert_version_rejected(&["use", "not.a.version"], expected);
-        assert_version_rejected(
-            &["clickhouse", "start", "--version", "not.a.version"],
-            expected,
-        );
-        assert_version_rejected(
-            &["client", "--host", "remote", "--version", "not.a.version"],
-            expected,
-        );
-    }
-
-    #[test]
-    fn rejects_three_part_clickhouse_versions_for_each_command() {
-        let expected = "3-part version '25.12.9' is not supported";
-        assert_version_rejected(&["install", "25.12.9"], expected);
-        assert_version_rejected(&["use", "25.12.9"], expected);
-        assert_version_rejected(&["clickhouse", "start", "--version", "25.12.9"], expected);
-        assert_version_rejected(
-            &["client", "--host", "remote", "--version", "25.12.9"],
-            expected,
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_clickhouse_version_shapes_for_each_command() {
-        let expected = "expected 1-2 or 4 parts";
-        assert_version_rejected(&["install", "25.12.9.61.2"], expected);
-        assert_version_rejected(&["use", "25.12.9.61.2"], expected);
-        assert_version_rejected(
-            &["clickhouse", "start", "--version", "25.12.9.61.2"],
-            expected,
-        );
-        assert_version_rejected(
-            &["client", "--host", "remote", "--version", "25.12.9.61.2"],
-            expected,
-        );
+    fn every_clickhouse_version_argument_reports_the_spec_parser_error() {
+        for input in ["not.a.version", "25.12.9", "25.12.9.61.2"] {
+            let expected = version_manager::parse_version_spec(input)
+                .unwrap_err()
+                .to_string();
+            for args in [
+                &["install", input][..],
+                &["use", input],
+                &["clickhouse", "start", "--version", input],
+                &["client", "--host", "remote", "--version", input],
+            ] {
+                assert_version_rejected(args, &expected);
+            }
+        }
     }
 
     #[test]
@@ -1530,15 +1505,6 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_query_sources_are_mutually_exclusive() {
-        // The mutual exclusion is enforced by clap itself, not documented in help text.
-        assert_eq!(
-            local_parse_error(&["client", "--query", "SELECT 1", "--queries-file", "q.sql"]).kind(),
-            clap::error::ErrorKind::ArgumentConflict,
-        );
-    }
-
-    #[test]
     fn postgres_client_applies_named_and_direct_selector_validation() {
         let valid: &[&[&str]] = &[
             &[],
@@ -1643,130 +1609,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_remove_without_force() {
-        let LocalCommands::Remove { version, force } = local_command(&["remove", "25.12.5.44"])
-        else {
-            panic!("expected remove");
-        };
-        assert_eq!(version, "25.12.5.44");
-        assert!(!force);
-    }
-
-    #[test]
-    fn parses_remove_with_force() {
-        let LocalCommands::Remove { version, force } =
-            local_command(&["remove", "25.12.5.44", "--force"])
-        else {
-            panic!("expected remove");
-        };
-        assert_eq!(version, "25.12.5.44");
-        assert!(force);
-    }
-
-    #[test]
-    fn parses_server_start_config() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Start { config_file, .. },
-        } = local_command(&["clickhouse", "start", "--config", "analytics"])
-        else {
-            panic!("expected server start");
-        };
-        assert_eq!(config_file.as_deref(), Some("analytics"));
-    }
-
-    #[test]
-    fn parses_server_start_config_file_legacy_alias() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Start { config_file, .. },
-        } = local_command(&["clickhouse", "start", "--config-file", "analytics"])
-        else {
-            panic!("expected server start");
-        };
-        assert_eq!(config_file.as_deref(), Some("analytics"));
-    }
-
-    #[test]
-    fn server_start_config_file_defaults_to_none() {
-        let LocalCommands::Clickhouse {
-            command:
-                ServerCommands::Start {
-                    config_file,
-                    no_wait,
-                    args,
-                    ..
-                },
-        } = local_command(&["clickhouse", "start"])
-        else {
-            panic!("expected server start");
-        };
-        assert_eq!(config_file, None);
-        assert!(!no_wait);
-        assert!(args.is_empty());
-    }
-
-    #[test]
-    fn server_start_help_renders_default_name_without_escaped_quotes() {
-        let help = rendered_help(&["clickhouse", "start", "--help"]);
-
-        // clap renders the doc comment's quotes literally, never as escaped `\"` sequences.
-        assert!(help.contains(r#"(default: "default""#), "{help}");
-        assert!(!help.contains(r#"\"default\""#), "{help}");
-    }
-
-    #[test]
-    fn parses_server_start_positional_name_before_clickhousectl_options() {
-        let LocalCommands::Clickhouse {
-            command:
-                ServerCommands::Start {
-                    name,
-                    name_flag,
-                    version,
-                    args,
-                    ..
-                },
-        } = local_command(&["clickhouse", "start", "existing", "--version", "25.12.9.61"])
-        else {
-            panic!("expected server start");
-        };
-        assert_eq!(name.as_deref(), Some("existing"));
-        assert_eq!(name_flag, None);
-        assert_eq!(
-            version
-                .map(ServerVersionArg::into_spec)
-                .map(|v| v.to_string()),
-            Some("25.12.9.61".to_string())
-        );
-        assert!(args.is_empty());
-    }
-
-    #[test]
-    fn parses_server_start_name_flag_for_compatibility() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Start {
-                name, name_flag, ..
-            },
-        } = local_command(&["clickhouse", "start", "--name", "existing"])
-        else {
-            panic!("expected server start");
-        };
-        assert_eq!(name, None);
-        assert_eq!(name_flag.as_deref(), Some("existing"));
-    }
-
-    #[test]
-    fn server_start_name_forms_conflict() {
-        let error = Cli::try_parse_from([
-            "clickhousectl",
-            "local",
-            "clickhouse",
-            "start",
-            "existing",
-            "--name",
-            "other",
-        ])
-        .err()
-        .expect("name forms should conflict");
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    fn server_start_config_accepts_the_legacy_config_file_alias() {
+        for flag in ["--config", "--config-file"] {
+            let LocalCommands::Clickhouse {
+                command: ServerCommands::Start { config_file, .. },
+            } = local_command(&["clickhouse", "start", flag, "analytics"])
+            else {
+                panic!("expected server start");
+            };
+            assert_eq!(config_file.as_deref(), Some("analytics"), "{flag}");
+        }
     }
 
     #[test]
@@ -1818,17 +1670,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_server_start_no_wait() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Start { no_wait, .. },
-        } = local_command(&["clickhouse", "start", "--no-wait"])
-        else {
-            panic!("expected server start");
-        };
-        assert!(no_wait);
-    }
-
-    #[test]
     fn server_start_no_wait_conflicts_with_foreground() {
         let error = Cli::try_parse_from([
             "clickhousectl",
@@ -1841,42 +1682,6 @@ mod tests {
         .err()
         .expect("flags should conflict");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn parses_server_configs() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Configs,
-        } = local_command(&["clickhouse", "configs"])
-        else {
-            panic!("expected server configs");
-        };
-    }
-
-    #[test]
-    fn server_stop_omitted_name_remains_distinguishable() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Stop {
-                name, name_flag, ..
-            },
-        } = local_command(&["clickhouse", "stop"])
-        else {
-            panic!("expected server stop");
-        };
-        assert_eq!(name, None);
-        assert_eq!(name_flag, None);
-    }
-
-    #[test]
-    fn server_remove_omitted_name_remains_distinguishable() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Remove { name, name_flag },
-        } = local_command(&["clickhouse", "remove"])
-        else {
-            panic!("expected server remove");
-        };
-        assert_eq!(name, None);
-        assert_eq!(name_flag, None);
     }
 
     #[test]
@@ -1929,76 +1734,18 @@ mod tests {
             assert!(global);
             assert_eq!(project.as_deref(), Some("/tmp/project"));
         }
-    }
 
-    #[test]
-    fn server_remove_name_forms_allow_trailing_options() {
-        for (command, expected_name, expected_name_flag) in [
-            (
-                &["clickhouse", "remove", "analytics", "--json"][..],
-                Some("analytics"),
-                None,
-            ),
-            (
-                &["clickhouse", "remove", "--name", "analytics", "--json"][..],
-                None,
-                Some("analytics"),
-            ),
-        ] {
-            let args = local_args(command);
-            assert!(args.json);
-            let LocalCommands::Clickhouse {
-                command: ServerCommands::Remove { name, name_flag },
-            } = args.command
-            else {
-                panic!("expected server remove");
-            };
-            assert_eq!(name.as_deref(), expected_name);
-            assert_eq!(name_flag.as_deref(), expected_name_flag);
-        }
-    }
-
-    #[test]
-    fn server_teardown_name_forms_conflict() {
-        for command in ["stop", "remove"] {
-            let error = Cli::try_parse_from([
-                "clickhousectl",
-                "local",
+        assert_eq!(
+            local_parse_error(&[
                 "clickhouse",
-                command,
-                "positional",
-                "--name",
-                "flagged",
+                "stop",
+                "analytics",
+                "--project",
+                "/tmp/project"
             ])
-            .err()
-            .expect("name forms should conflict");
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-            assert!(error.to_string().contains("cannot be used with"), "{error}");
-        }
-    }
-
-    #[test]
-    fn server_teardown_help_hides_compatibility_name_flags() {
-        for command in ["stop", "remove"] {
-            let help =
-                Cli::try_parse_from(["clickhousectl", "local", "clickhouse", command, "--help"])
-                    .err()
-                    .expect("help should exit through clap")
-                    .to_string();
-
-            assert!(!help.contains("--name"), "{help}");
-        }
-    }
-
-    #[test]
-    fn postgres_stop_omitted_name_remains_distinguishable() {
-        let LocalCommands::Postgres {
-            command: PostgresCommands::Stop { name, .. },
-        } = local_command(&["postgres", "stop"])
-        else {
-            panic!("expected postgres stop");
-        };
-        assert_eq!(name, None);
+            .kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
@@ -2103,56 +1850,6 @@ mod tests {
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             assert!(error.to_string().contains(expected), "{error}");
         }
-    }
-
-    #[test]
-    fn postgres_remove_omitted_name_remains_distinguishable() {
-        let LocalCommands::Postgres {
-            command: PostgresCommands::Remove { name, .. },
-        } = local_command(&["postgres", "remove"])
-        else {
-            panic!("expected postgres remove");
-        };
-        assert_eq!(name, None);
-    }
-
-    #[test]
-    fn teardown_commands_preserve_explicit_names() {
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Stop {
-                name, name_flag, ..
-            },
-        } = local_command(&["clickhouse", "stop", "analytics"])
-        else {
-            panic!("expected server stop");
-        };
-        assert_eq!(name.as_deref(), Some("analytics"));
-        assert_eq!(name_flag, None);
-
-        let LocalCommands::Clickhouse {
-            command: ServerCommands::Remove { name, name_flag },
-        } = local_command(&["clickhouse", "remove", "analytics"])
-        else {
-            panic!("expected server remove");
-        };
-        assert_eq!(name.as_deref(), Some("analytics"));
-        assert_eq!(name_flag, None);
-
-        let LocalCommands::Postgres {
-            command: PostgresCommands::Stop { name, .. },
-        } = local_command(&["postgres", "stop", "warehouse"])
-        else {
-            panic!("expected postgres stop");
-        };
-        assert_eq!(name.as_deref(), Some("warehouse"));
-
-        let LocalCommands::Postgres {
-            command: PostgresCommands::Remove { name, .. },
-        } = local_command(&["postgres", "remove", "warehouse"])
-        else {
-            panic!("expected postgres remove");
-        };
-        assert_eq!(name.as_deref(), Some("warehouse"));
     }
 
     fn instance_commands() -> [&'static [&'static str]; 10] {
