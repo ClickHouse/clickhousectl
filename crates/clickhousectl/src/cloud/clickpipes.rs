@@ -10928,6 +10928,100 @@ mod tests {
         }
     }
 
+    /// Each PATCH source arm survives the strict parse and serializes back
+    /// exactly, including explicit zeros, `false` and empty lists.
+    #[test]
+    fn clickpipe_update_builder_round_trips_every_source_variant() {
+        for patch in [
+            serde_json::json!({
+                "settings": {"kafka_read_committed": false, "streaming_max_insert_wait_ms": 0},
+                "source": {
+                    "kafka": {
+                        "authentication": "MUTUAL_TLS",
+                        "caCertificate": "ca",
+                        "credentials": {"certificate": "cert", "privateKey": "key"},
+                        "reversePrivateEndpointIds": []
+                    },
+                    "validateSamples": false
+                }
+            }),
+            serde_json::json!({"source": {
+                "kinesis": {
+                    "authentication": "IAM_USER",
+                    "accessKey": {"accessKeyId": "key-id", "secretKey": "secret"}
+                },
+                "validateSamples": true
+            }}),
+            serde_json::json!({"source": {
+                "objectStorage": {
+                    "authentication": "SERVICE_ACCOUNT",
+                    "serviceAccountKey": "base64-key",
+                    "skipInitialLoad": false,
+                    "startAfter": "events/2026-06-01/",
+                    "path": "events/*.json"
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "pubsub": {
+                    "authentication": "SERVICE_ACCOUNT",
+                    "ackDeadline": 10,
+                    "serviceAccountKey": {"serviceAccountFile": "base64-key"}
+                },
+                "validateSamples": true
+            }}),
+            serde_json::json!({"source": {
+                "postgres": {
+                    "credentials": {"username": "rotated", "password": "secret"},
+                    "host": "postgres.example.com",
+                    "port": 5432,
+                    "database": "source_db",
+                    "disableTls": false,
+                    "skipCertVerification": false,
+                    "settings": {"syncIntervalSeconds": 0, "pullBatchSize": 0},
+                    "tableMappingsToAdd": [{
+                        "sourceSchemaName": "public",
+                        "sourceTable": "events",
+                        "targetTable": "events",
+                        "excludedColumns": [],
+                        "useCustomSortingKey": false,
+                        "sortingKeys": [],
+                        "tableEngine": "ReplacingMergeTree",
+                        "partitionKey": "id",
+                        "partitionByExpr": "toYYYYMM(ts)"
+                    }],
+                    "tableMappingsToRemove": [{
+                        "sourceSchemaName": "public",
+                        "sourceTable": "old_events",
+                        "targetTable": "old_events"
+                    }]
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "mongodb": {
+                    "credentials": {"username": "rotated", "password": "secret"},
+                    "uri": "mongodb+srv://mongo.example/source",
+                    "readPreference": "secondaryPreferred",
+                    "disableTls": false,
+                    "skipCertVerification": false,
+                    "settings": {"syncIntervalSeconds": 0, "pullBatchSize": 0},
+                    "tableMappingsToAdd": [],
+                    "tableMappingsToRemove": [{
+                        "sourceDatabaseName": "source",
+                        "sourceCollection": "old_events",
+                        "targetTable": "old_events",
+                        "tableEngine": "Null"
+                    }]
+                },
+                "validateSamples": false
+            }}),
+        ] {
+            let request = build_clickpipe_update_request(patch.clone(), "test").unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), patch);
+        }
+    }
+
     #[test]
     fn clickpipe_update_builder_validates_typed_database_source_ports() {
         for provider in ["mysql", "postgres"] {
@@ -10974,12 +11068,26 @@ mod tests {
         assert!(error.message.contains("cannot be updated"), "{error}");
         assert!(!error.message.contains(".?."), "{error}");
 
+        // The error names the config source and the full field path, with no
+        // serde path placeholders.
         let unknown = build_clickpipe_update_request(
             serde_json::json!({"source": {"kafka": {"unknownOption": true}}}),
-            "test",
+            crate::cloud::config::config_source_label("-"),
         )
         .unwrap_err();
-        assert!(unknown.message.contains("unknownOption"), "{unknown}");
+        assert!(
+            unknown
+                .message
+                .contains("invalid request body in config stdin"),
+            "{unknown}"
+        );
+        assert!(
+            unknown
+                .message
+                .contains("unknown field `source.kafka.unknownOption`"),
+            "{unknown}"
+        );
+        assert!(!unknown.message.contains(".?"), "{unknown}");
     }
 
     #[test]
@@ -11037,10 +11145,24 @@ mod tests {
                 "objectStorage": {},
                 "validateSamples": false
             }}),
+            serde_json::json!({"destination": {"colums": []}}),
+            serde_json::json!({"source": {
+                "kafka": {
+                    "credentials": {"username": "user", "password": "pw", "token": "bad"},
+                    "reversePrivateEndpointIds": []
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "mysql": {"host": "db", "port": 3306, "authentication": "future"},
+                "validateSamples": false
+            }}),
         ] {
+            let error = build_clickpipe_update_request(invalid.clone(), "test")
+                .expect_err(&format!("accepted invalid patch: {invalid}"));
             assert!(
-                build_clickpipe_update_request(invalid.clone(), "test").is_err(),
-                "accepted invalid patch: {invalid}"
+                error.message.contains("invalid request body"),
+                "{invalid}: {error}"
             );
         }
     }
@@ -12565,6 +12687,35 @@ mod tests {
             assert_eq!(source.authentication.to_string(), "basic");
             assert_eq!(source.iam_role, None);
             assert_eq!(source.settings.replication_mode.to_string(), *mode);
+        }
+    }
+
+    /// Every `--postgres-type` value maps to a named library variant rather
+    /// than falling through to `Unknown`, and serializes back to the same
+    /// string, so the server routes the connection to the type the user chose.
+    #[test]
+    fn build_postgres_request_maps_every_postgres_type_to_a_known_variant() {
+        use clickhouse_cloud_api::models::ClickPipeMutatePostgresSourceType;
+
+        for postgres_type in POSTGRES_TYPES {
+            let mut args = postgres_builder_args();
+            args.postgres_type = (*postgres_type).into();
+
+            let request = build_postgres_request(&args).unwrap();
+            let source_type = request
+                .source
+                .postgres
+                .as_ref()
+                .and_then(|source| source.r#type.as_ref())
+                .expect("postgres source type");
+            assert!(
+                !matches!(source_type, ClickPipeMutatePostgresSourceType::Unknown(_)),
+                "{postgres_type} fell through to Unknown"
+            );
+            assert_eq!(
+                serde_json::to_value(source_type).unwrap(),
+                serde_json::json!(postgres_type)
+            );
         }
     }
 

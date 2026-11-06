@@ -706,6 +706,193 @@ mod tests {
         }
     }
 
+    /// Kinesis credential conflicts are usage errors for both create and
+    /// schema discovery, whichever order the flags come in, and the rendered
+    /// error never echoes a credential value.
+    #[test]
+    fn kinesis_auth_conflicts_are_secret_free_usage_errors() {
+        let secrets = [
+            "private-role-arn",
+            "private-access-id",
+            "private-secret-key",
+        ];
+        let conflicts: [&[&str]; 12] = [
+            &[
+                "--auth",
+                "IAM_ROLE",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            &["--auth", "IAM_ROLE", "--access-key-id", "private-access-id"],
+            &["--auth", "IAM_ROLE", "--secret-key", "private-secret-key"],
+            &[
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            &[
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+            ],
+            &[
+                "--iam-role",
+                "private-role-arn",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            &["--auth", "IAM_USER", "--iam-role", "private-role-arn"],
+            &[
+                "--auth",
+                "IAM_USER",
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            &["--access-key-id", "private-access-id"],
+            &["--secret-key", "private-secret-key"],
+            &["--auth", "IAM_USER", "--access-key-id", "private-access-id"],
+            &["--auth", "IAM_USER", "--secret-key", "private-secret-key"],
+        ];
+        for operation in ["create", "schema-discover"] {
+            let mut base = vec![
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                operation,
+                "kinesis",
+                "svc-1",
+                "--stream-name",
+                "stream",
+                "--region",
+                "us-east-1",
+                "--format",
+                "JSONEachRow",
+            ];
+            if operation == "create" {
+                base.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                    "--column",
+                    "id:Int64",
+                ]);
+            }
+            for flags in conflicts {
+                // Reversed flag pairs: precedence must not silently pick a mode.
+                let reversed: Vec<&str> = flags
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .copied()
+                    .collect();
+                for ordered in [flags.to_vec(), reversed] {
+                    let args: Vec<&str> = base.iter().chain(&ordered).copied().collect();
+                    let error = parse_and_validate(&args)
+                        .err()
+                        .unwrap_or_else(|| panic!("{operation} {ordered:?} should fail"));
+                    assert_eq!(error.exit_code(), 2, "{operation} {ordered:?}");
+                    let message = error.to_string();
+                    assert!(message.contains("--"), "{message}");
+                    for secret in secrets {
+                        assert!(!message.contains(secret), "credential leaked: {message}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Each reverse private endpoint type's flag relationships are checked
+    /// after parsing and reported as usage errors against the create command.
+    #[test]
+    fn reverse_private_endpoint_create_relationship_errors_are_clap_usage_errors() {
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+        ];
+        let cases: [(&[&str], &str); 4] = [
+            (
+                &[
+                    "--type",
+                    "VPC_RESOURCE",
+                    "--vpc-resource-configuration-id",
+                    "rcfg-1",
+                ],
+                "--vpc-resource-share-arn",
+            ),
+            (
+                &[
+                    "--type",
+                    "VPC_ENDPOINT_SERVICE",
+                    "--vpc-endpoint-service-name",
+                    "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                    "--msk-cluster-arn",
+                    "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                ],
+                "--msk-cluster-arn",
+            ),
+            (
+                &[
+                    "--type",
+                    "MSK_MULTI_VPC",
+                    "--msk-cluster-arn",
+                    "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                    "--msk-authentication",
+                    "SASL_IAM",
+                    "--custom-private-dns-mapping",
+                    "db.example.com",
+                ],
+                "--custom-private-dns-mapping",
+            ),
+            (
+                &[
+                    "--type",
+                    "VPC_ENDPOINT_SERVICE",
+                    "--vpc-endpoint-service-name",
+                    "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                    "--custom-private-dns-mapping",
+                    "db.example.com=rcfg-1",
+                ],
+                "--custom-private-dns-mapping",
+            ),
+        ];
+
+        for (extra, flag) in cases {
+            let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+            let error = parse_and_validate(&args)
+                .err()
+                .expect("invalid reverse private endpoint flags should fail validation");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(flag), "{message}");
+            assert!(
+                message.contains("clickhousectl cloud clickpipe reverse-private-endpoint create"),
+                "{message}"
+            );
+        }
+    }
+
     #[test]
     fn local_postgres_start_env_relationship_errors_are_clap_usage_errors() {
         for (extra, diagnostic) in [
