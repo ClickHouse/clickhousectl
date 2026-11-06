@@ -13107,7 +13107,7 @@ async fn clickpipe_cdc_scaling_get_supports_oauth_and_preserves_sparse_json() {
 #[tokio::test]
 async fn clickpipe_cdc_scaling_update_patches_the_built_body() {
     let mock = MockServer::start().await;
-    let scaling = serde_json::json!({ "replicaCpuMillicores": 1000 });
+    let scaling = serde_json::json!({ "replicaCpuMillicores": 1000, "replicaMemoryGb": 4.0 });
     Mock::given(method("PATCH"))
         .and(path(CDC_SCALING_PATH))
         .and(body_json(scaling.clone()))
@@ -13125,6 +13125,8 @@ async fn clickpipe_cdc_scaling_update_patches_the_built_body() {
             "svc-1",
             "--cpu-millicores",
             "1000",
+            "--memory-gb",
+            "4",
             "--org-id",
             "org-1",
         ],
@@ -13160,6 +13162,8 @@ async fn background_changes_name_their_progress_check_in_human_output() {
                 "cdc-scaling",
                 "update",
                 "svc-1",
+                "--cpu-millicores",
+                "2000",
                 "--memory-gb",
                 "8",
             ],
