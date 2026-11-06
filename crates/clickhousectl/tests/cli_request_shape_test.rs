@@ -11558,6 +11558,120 @@ async fn clickpipe_lifecycle_preserves_the_json_response_and_names_the_poll() {
     );
 }
 
+/// A start answered with `Pausing` is dropped by the API (#1228), so it fails
+/// with a code and the read to repeat, not an exit-0 acknowledgment.
+#[tokio::test]
+async fn clickpipe_start_on_a_pausing_pipe_fails_with_the_poll_command() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/pipe-cdc/state",
+        ))
+        .and(body_json(serde_json::json!({"command": "start"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "cdc-pipe", "state": "Pausing"},
+            "status": 200,
+            "requestId": "stub-clickpipe-start-pausing",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "start",
+            "svc-id",
+            "pipe-cdc",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("JSON error envelope");
+    assert_eq!(error["error"]["code"], "clickpipe_still_pausing");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl cloud clickpipe get svc-id pipe-cdc --org-id org"
+    );
+}
+
+/// A state change answered with `Paused`, for `pipe-cdc`.
+async fn mount_clickpipe_state_returning_paused(mock: &MockServer, command: &str) {
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/pipe-cdc/state",
+        ))
+        .and(body_json(serde_json::json!({"command": command})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "cdc-pipe", "state": "Paused"},
+            "status": 200,
+            "requestId": "stub-clickpipe-state-paused",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+/// A start answered with `Paused`, just after a stop, is dropped too (#1228),
+/// so it fails with a code and the start to rerun; no `next` poll on stdout.
+#[tokio::test]
+async fn clickpipe_start_answered_with_paused_fails_with_the_start_to_rerun() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_state_returning_paused(&mock, "start").await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "start",
+            "svc-id",
+            "pipe-cdc",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("JSON error envelope");
+    assert_eq!(error["error"]["code"], "clickpipe_start_not_applied");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl cloud clickpipe start svc-id pipe-cdc --org-id org"
+    );
+}
+
+/// A resync answered with `Paused` is applied, so it still succeeds and
+/// names the poll; the not-applied check is specific to start.
+#[tokio::test]
+async fn clickpipe_resync_answered_with_paused_still_succeeds() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_state_returning_paused(&mock, "resync").await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "resync",
+            "svc-id",
+            "pipe-cdc",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(output.stderr.is_empty());
+    let (response, next) = take_next(&output.stdout);
+    assert_eq!(response["state"], "Paused");
+    let next = next.expect("an applied resync names its poll");
+    assert_eq!(next["until"], serde_json::json!(["Running", "Completed"]));
+}
+
 // ── ClickPipe settings updates are source-aware (#602) ─────────────────────
 //
 // `kafka_read_committed` is only supported for Kafka pipes: the API fails the
