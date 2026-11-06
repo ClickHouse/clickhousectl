@@ -1,7 +1,9 @@
 use super::lifecycle::{
     PostgresListFilter, parse_postgres_ip_access_entry, parse_postgres_list_filter,
 };
-use super::observability::{parse_known_postgres_logs_sort_order, parse_postgres_window_datetime};
+use super::observability::{
+    PostgresLogSeverity, parse_known_postgres_logs_sort_order, parse_postgres_window_datetime,
+};
 use crate::cloud::shared::{NameSelector, SourceSelector, parse_datetime};
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
@@ -68,9 +70,9 @@ CONTEXT FOR AGENTS:
         /// Case-sensitive substring the log body must contain
         #[arg(long)]
         body_contains: Option<String>,
-        /// PostgreSQL severity, such as ERROR, WARNING, or LOG
-        #[arg(long)]
-        severity: Option<String>,
+        /// Log severity to match exactly; case-insensitive
+        #[arg(long, value_enum, ignore_case = true)]
+        severity: Option<PostgresLogSeverity>,
         /// Sort order
         #[arg(
             long,
@@ -910,7 +912,7 @@ mod tests {
             panic!("expected logs");
         };
         assert_eq!(body_contains.as_deref(), Some("checkpoint complete"));
-        assert_eq!(severity.as_deref(), Some("LOG"));
+        assert_eq!(severity, Some(PostgresLogSeverity::Log));
         assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(limit, Some(2000));
         assert_eq!(offset, Some(0));
@@ -961,6 +963,49 @@ mod tests {
     }
 
     #[test]
+    fn postgres_logs_severity_accepts_the_supported_levels_in_any_case() {
+        use clap::CommandFactory;
+
+        const LEVELS: [&str; 8] = [
+            "DEBUG", "LOG", "INFO", "NOTICE", "WARNING", "ERROR", "FATAL", "PANIC",
+        ];
+        let command = PostgresCli::command();
+        let severity = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "logs")
+            .and_then(|logs| logs.get_arguments().find(|arg| arg.get_id() == "severity"))
+            .expect("logs --severity argument");
+        let possible_values: Vec<_> = severity
+            .get_possible_values()
+            .into_iter()
+            .map(|value| value.get_name().to_string())
+            .collect();
+        assert_eq!(possible_values, LEVELS);
+
+        for level in LEVELS {
+            for input in [level.to_string(), level.to_lowercase()] {
+                let cmd = parse_postgres(&[
+                    "clickhousectl",
+                    "cloud",
+                    "postgres",
+                    "logs",
+                    "pg-1",
+                    "--from-date",
+                    "2026-08-01T00:00:00Z",
+                    "--to-date",
+                    "2026-08-02T00:00:00Z",
+                    "--severity",
+                    &input,
+                ]);
+                let PostgresCommands::Logs { severity, .. } = cmd else {
+                    panic!("expected logs");
+                };
+                assert_eq!(severity.map(PostgresLogSeverity::as_str), Some(level));
+            }
+        }
+    }
+
+    #[test]
     fn rejects_invalid_postgres_logs_flag_values() {
         let invalid_datetime = PostgresCli::try_parse_from([
             "clickhousectl",
@@ -988,6 +1033,8 @@ mod tests {
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "2001", clap::error::ErrorKind::ValueValidation),
             ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
+            ("--severity", "WARN", clap::error::ErrorKind::InvalidValue),
+            ("--severity", "DEBUG1", clap::error::ErrorKind::InvalidValue),
         ] {
             let mut args = vec![
                 "clickhousectl",

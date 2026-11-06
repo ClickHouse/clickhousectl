@@ -98,7 +98,7 @@ clickhousectl cloud postgres metrics <postgres-id> \
 clickhousectl cloud postgres backup list <postgres-id>
 ```
 
-Logs accept an inclusive window of at most 30 days; use limit/offset pagination. Metrics and `slow-queries` require ordered RFC 3339 bounds with at most millisecond precision. `postgres prometheus service/org` emits Prometheus text, encoded as one JSON string in JSON mode.
+Logs accept an inclusive window of at most 30 days; use limit/offset pagination. `--severity` matches one level exactly: `DEBUG`, `LOG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `FATAL`, or `PANIC`, in any case. Metrics and `slow-queries` require ordered RFC 3339 bounds with at most millisecond precision. `postgres prometheus service/org` emits Prometheus text, encoded as one JSON string in JSON mode.
 
 Backup listing shows completed base backups and their status, with cursor pagination. Restore targets a point in time within retention, not a backup key. `get` shows the earliest restorable time once a primary's first backup has completed:
 
