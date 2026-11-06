@@ -575,250 +575,177 @@ pub(crate) mod tests {
         }
     }
 
+    /// The OAuth write gate (`cloud::run`) trusts this classification, so one
+    /// table covers a read and a write in every domain; each domain's own test
+    /// covers the rest of its commands.
     #[test]
-    fn is_write_command_read_only_commands() {
-        // Backup reads
-        assert_write(
-            &["clickhousectl", "cloud", "backup", "list", "svc-1"],
-            false,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"],
-            false,
-        );
-
-        // Key reads
-        assert_write(&["clickhousectl", "cloud", "key", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "key", "get", "key-1"], false);
-
-        // Activity reads
-        assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
-        assert_write(
-            &["clickhousectl", "cloud", "activity", "get", "act-1"],
-            false,
-        );
-
-        // Postgres reads
-        assert_write(&["clickhousectl", "cloud", "postgres", "list"], false);
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "get", "pg-1"],
-            false,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"],
-            false,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "config",
-                "get",
-                "pg-1",
-            ],
-            false,
-        );
-
-        // ClickPipe reverse private endpoint reads
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "clickpipe",
-                "reverse-private-endpoint",
-                "list",
-                "svc-1",
-            ],
-            false,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "clickpipe",
-                "reverse-private-endpoint",
-                "get",
-                "svc-1",
-                "rpe-1",
-            ],
-            false,
-        );
-    }
-
-    #[test]
-    fn is_write_command_destructive_commands() {
-        // Key writes
-        assert_write(
-            &["clickhousectl", "cloud", "key", "create", "--name", "k"],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "key",
-                "update",
-                "key-1",
-                "--new-name",
-                "new",
-            ],
-            true,
-        );
-        assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
-
-        // Postgres writes
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "create",
-                "--name",
-                "pg",
-                "--region",
-                "us-east-1",
-                "--size",
-                "m7i.2xlarge",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "update",
-                "pg-1",
-                "--size",
-                "c6gd.large",
-            ],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "delete", "pg-1"],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "config",
-                "replace",
-                "pg-1",
-                "--file",
-                "/tmp/c.json",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "config",
-                "patch",
-                "pg-1",
-                "--set",
-                "max_connections=500",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "reset-password",
-                "pg-1",
-                "--generate",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "read-replica",
-                "create",
-                "pg-1",
-                "--name",
-                "r1",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "postgres",
-                "restore",
-                "pg-1",
-                "--name",
-                "r",
-                "--restore-target",
-                "2026-04-16T12:00:00Z",
-            ],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "restart", "pg-1"],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "promote", "pg-1"],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "postgres", "switchover", "pg-1"],
-            true,
-        );
-
-        // ClickPipe reverse private endpoint writes
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "clickpipe",
-                "reverse-private-endpoint",
-                "create",
-                "svc-1",
-                "--type",
-                "GCP_PSC_SERVICE_ATTACHMENT",
-                "--description",
-                "endpoint",
-                "--gcp-service-attachment",
-                "projects/p/regions/us-central1/serviceAttachments/s",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "clickpipe",
-                "reverse-private-endpoint",
-                "update",
-                "svc-1",
-                "rpe-1",
-                "--custom-private-dns-mapping",
-                "db.example.com",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "clickpipe",
-                "reverse-private-endpoint",
-                "delete",
-                "svc-1",
-                "rpe-1",
-            ],
-            true,
+    fn is_write_command_classifies_reads_and_writes_in_every_domain() {
+        let cases: &[(&[&str], bool)] = &[
+            (&["auth", "status"], false),
+            (&["auth", "whoami"], false),
+            (
+                &["auth", "login", "--api-key", "k", "--api-secret", "s"],
+                false,
+            ),
+            (&["org", "list"], false),
+            (&["org", "get"], false),
+            (&["org", "balance"], false),
+            (&["org", "notifications"], false),
+            (&["org", "prometheus", "discovery"], false),
+            (&["org", "role", "list"], false),
+            (&["org", "update", "--new-name", "renamed"], true),
+            (&["org", "role", "delete", "role-1"], true),
+            (&["org", "byoc", "delete", "byoc-1"], true),
+            (&["service", "list"], false),
+            (&["service", "query", "svc-1", "--query", "SELECT 1"], false),
+            (&["service", "delete", "svc-1"], true),
+            (
+                &["service", "settings", "unset", "svc-1", "max_threads"],
+                true,
+            ),
+            (&["backup", "list", "svc-1"], false),
+            (&["backup", "get", "svc-1", "bk-1"], false),
+            (&["member", "list"], false),
+            (&["member", "update", "user-1", "--role-id", "role-1"], true),
+            (&["invitation", "list"], false),
+            (&["invitation", "delete", "inv-1"], true),
+            (&["key", "list"], false),
+            (&["key", "get", "key-1"], false),
+            (&["key", "create", "--name", "k"], true),
+            (&["key", "update", "key-1", "--new-name", "new"], true),
+            (&["key", "delete", "key-1"], true),
+            (&["udf", "list"], false),
+            (&["udf", "delete", "my_udf"], true),
+            (&["query-api-endpoint", "list", "svc-1"], false),
+            (&["query-api-endpoint", "delete", "svc-1", "ep-1"], true),
+            (&["saved-query", "list", "svc-1"], false),
+            (&["saved-query", "delete", "svc-1", "q-1"], true),
+            (&["activity", "list"], false),
+            (&["activity", "get", "act-1"], false),
+            (&["postgres", "list"], false),
+            (&["postgres", "get", "pg-1"], false),
+            (&["postgres", "certs", "get", "pg-1"], false),
+            (&["postgres", "config", "get", "pg-1"], false),
+            // Postgres has no exhaustive classification test of its own, so
+            // every write is listed here.
+            (
+                &[
+                    "postgres",
+                    "create",
+                    "--name",
+                    "pg",
+                    "--region",
+                    "us-east-1",
+                    "--size",
+                    "m7i.2xlarge",
+                ],
+                true,
+            ),
+            (
+                &["postgres", "update", "pg-1", "--size", "c6gd.large"],
+                true,
+            ),
+            (&["postgres", "delete", "pg-1"], true),
+            (
+                &["postgres", "config", "replace", "pg-1", "--file", "c.json"],
+                true,
+            ),
+            (
+                &[
+                    "postgres",
+                    "config",
+                    "patch",
+                    "pg-1",
+                    "--set",
+                    "max_connections=500",
+                ],
+                true,
+            ),
+            (&["postgres", "reset-password", "pg-1", "--generate"], true),
+            (
+                &["postgres", "read-replica", "create", "pg-1", "--name", "r1"],
+                true,
+            ),
+            (
+                &[
+                    "postgres",
+                    "restore",
+                    "pg-1",
+                    "--name",
+                    "r",
+                    "--restore-target",
+                    "2026-04-16T12:00:00Z",
+                ],
+                true,
+            ),
+            (&["postgres", "restart", "pg-1"], true),
+            (&["postgres", "promote", "pg-1"], true),
+            (&["postgres", "switchover", "pg-1"], true),
+            (&["clickpipe", "list", "svc-1"], false),
+            (
+                &["clickpipe", "reverse-private-endpoint", "list", "svc-1"],
+                false,
+            ),
+            (&["clickpipe", "delete", "svc-1", "pipe-1"], true),
+            (
+                &[
+                    "clickpipe",
+                    "reverse-private-endpoint",
+                    "delete",
+                    "svc-1",
+                    "rpe-1",
+                ],
+                true,
+            ),
+            (&["clickstack", "source", "list", "svc-1"], false),
+            (&["clickstack", "alert", "get", "svc-1", "alert-1"], false),
+            (&["clickstack", "source", "delete", "svc-1", "src-1"], true),
+            (
+                &["clickstack", "webhook", "delete", "svc-1", "hook-1"],
+                true,
+            ),
+        ];
+        let mut domains = std::collections::BTreeSet::new();
+        for (args, expected) in cases {
+            let mut full = vec!["clickhousectl", "cloud"];
+            full.extend_from_slice(args);
+            assert_write(&full, *expected);
+            domains.insert((args[0], *expected));
+        }
+        // Every top-level domain has at least one read; every domain that can
+        // mutate has at least one write.
+        let reads: std::collections::BTreeSet<_> = domains
+            .iter()
+            .filter(|(_, write)| !write)
+            .map(|(domain, _)| *domain)
+            .collect();
+        let writes: std::collections::BTreeSet<_> = domains
+            .iter()
+            .filter(|(_, write)| *write)
+            .map(|(domain, _)| *domain)
+            .collect();
+        let all = [
+            "activity",
+            "auth",
+            "backup",
+            "clickpipe",
+            "clickstack",
+            "invitation",
+            "key",
+            "member",
+            "org",
+            "postgres",
+            "query-api-endpoint",
+            "saved-query",
+            "service",
+            "udf",
+        ];
+        assert_eq!(reads, all.into_iter().collect());
+        assert_eq!(
+            writes,
+            all.into_iter()
+                .filter(|domain| !matches!(*domain, "activity" | "auth" | "backup"))
+                .collect()
         );
     }
 }
