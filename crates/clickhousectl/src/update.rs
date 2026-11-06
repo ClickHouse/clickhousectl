@@ -1,21 +1,22 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use flate2::read::GzDecoder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs;
 use std::io::{self, Cursor, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
 
-const GITHUB_REPO: &str = "ClickHouse/clickhousectl";
 const BUILDS_BASE_URL: &str = "https://builds.clickhouse.com/clickhousectl";
+/// Holds the latest release tag (`vX.Y.Z`). The release workflow's
+/// `publish-latest` job writes it after each release.
+const LATEST_MANIFEST_URL: &str = "https://builds.clickhouse.com/clickhousectl/latest.txt";
+/// Fallback when `latest.txt` is unavailable: GitHub's web redirect to the
+/// latest release, which is not subject to the REST API's 60 requests/hour
+/// unauthenticated limit.
+const LATEST_RELEASE_PAGE_URL: &str = "https://github.com/ClickHouse/clickhousectl/releases/latest";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
-
-#[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,23 +114,93 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// Fetch the latest release info from GitHub with configurable timeout.
-async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRelease> {
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        GITHUB_REPO
-    );
-    let client = crate::http::client_builder().timeout(timeout).build()?;
+/// Parse a release tag such as `v0.5.0`, as written to `latest.txt`.
+fn parse_release_tag(text: &str) -> Option<String> {
+    let tag = text.trim();
+    (tag.starts_with('v') && parse_version(tag).is_some()).then(|| tag.to_owned())
+}
 
+/// Take the tag from the `Location` of GitHub's `releases/latest` redirect,
+/// e.g. `https://github.com/ClickHouse/clickhousectl/releases/tag/v0.5.0`.
+fn tag_from_release_location(location: &str) -> Option<String> {
+    let (_, tag) = location
+        .trim_end_matches('/')
+        .rsplit_once("/releases/tag/")?;
+    parse_release_tag(tag)
+}
+
+/// Read `latest.txt`. builds.clickhouse.com caches every path for days, so a
+/// unique query string makes the CDN fetch it from the bucket.
+async fn fetch_manifest_tag(
+    client: &reqwest::Client,
+    url: &str,
+) -> std::result::Result<String, String> {
+    let url = format!("{}?t={}", url, now_secs());
     let response = client
         .get(&url)
         .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| e.to_string())?;
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    parse_release_tag(&body).ok_or_else(|| format!("{} did not contain a release tag", url))
+}
 
-    let release: GitHubRelease = response.json().await?;
-    Ok(release)
+/// Read the tag from the `releases/latest` redirect without following it.
+async fn fetch_release_redirect_tag(
+    client: &reqwest::Client,
+    url: &str,
+) -> std::result::Result<String, String> {
+    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+    response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|location| location.to_str().ok())
+        .filter(|_| response.status().is_redirection())
+        .and_then(tag_from_release_location)
+        .ok_or_else(|| {
+            format!(
+                "{} returned {} without a release tag redirect",
+                url,
+                response.status()
+            )
+        })
+}
+
+/// Resolve the latest release tag from `latest.txt`, falling back to the
+/// GitHub release redirect when the manifest is missing or invalid.
+async fn resolve_latest_tag(
+    client: &reqwest::Client,
+    manifest_url: &str,
+    release_page_url: &str,
+) -> Result<String> {
+    let manifest_err = match fetch_manifest_tag(client, manifest_url).await {
+        Ok(tag) => return Ok(tag),
+        Err(e) => e,
+    };
+    fetch_release_redirect_tag(client, release_page_url)
+        .await
+        .map_err(|redirect_err| {
+            Error::Download(format!(
+                "Could not determine the latest clickhousectl version: {}; {}",
+                manifest_err, redirect_err
+            ))
+        })
+}
+
+/// Fetch the latest release tag, bounding the whole lookup (manifest plus any
+/// fallback) by `timeout`.
+async fn fetch_latest_tag(timeout: std::time::Duration) -> Result<String> {
+    let client = crate::http::client_builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    tokio::time::timeout(
+        timeout,
+        resolve_latest_tag(&client, LATEST_MANIFEST_URL, LATEST_RELEASE_PAGE_URL),
+    )
+    .await
+    .map_err(|_| Error::Download("Timed out determining the latest clickhousectl version".into()))?
 }
 
 /// Extract the `clickhousectl` binary from a `.tar.gz` release archive.
@@ -176,8 +247,7 @@ const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis
 /// Uses the explicit (longer) timeout since this is called from user-initiated commands.
 pub async fn check_for_update() -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
-    let latest = &release.tag_name;
+    let latest = &fetch_latest_tag(EXPLICIT_TIMEOUT).await?;
     let display = latest.strip_prefix('v').unwrap_or(latest);
 
     // An explicit check always refreshes the cache and resets the staleness
@@ -190,8 +260,7 @@ pub async fn check_for_update() -> Result<UpdateResult> {
 /// Download the latest release and replace the current binary.
 pub async fn perform_update(json: bool) -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
-    let latest = &release.tag_name;
+    let latest = &fetch_latest_tag(EXPLICIT_TIMEOUT).await?;
     let mut result = UpdateResult::checked(current, latest);
 
     if matches!(result.action, UpdateAction::UpToDate) {
@@ -350,9 +419,8 @@ pub fn print_cached_update_notice() {
 /// available" version is preserved so we don't hide a known update.
 async fn do_refresh_update_cache(timeout: std::time::Duration) {
     let current = env!("CARGO_PKG_VERSION");
-    match fetch_latest_release(timeout).await {
-        Ok(r) => {
-            let latest = r.tag_name;
+    match fetch_latest_tag(timeout).await {
+        Ok(latest) => {
             let display = latest.strip_prefix('v').unwrap_or(&latest);
             let _ = save_update_check(display);
         }
@@ -507,5 +575,128 @@ mod tests {
         let err = extract_binary_from_archive(&empty).unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("did not contain"), "got: {}", msg);
+    }
+
+    #[test]
+    fn release_tags_need_a_v_prefix_and_three_numeric_parts() {
+        assert_eq!(parse_release_tag("v0.5.0\n").as_deref(), Some("v0.5.0"));
+        assert_eq!(parse_release_tag("  v1.2.3  ").as_deref(), Some("v1.2.3"));
+        for bad in [
+            "",
+            "0.5.0",
+            "v0.5",
+            "v0.5.0-rc1",
+            "<html>",
+            "v0.5.0\nv0.6.0",
+        ] {
+            assert_eq!(parse_release_tag(bad), None, "{:?}", bad);
+        }
+    }
+
+    #[test]
+    fn release_location_yields_its_tag() {
+        assert_eq!(
+            tag_from_release_location(
+                "https://github.com/ClickHouse/clickhousectl/releases/tag/v0.5.0"
+            )
+            .as_deref(),
+            Some("v0.5.0")
+        );
+        // No release yet: GitHub redirects to the releases list.
+        assert_eq!(
+            tag_from_release_location("https://github.com/ClickHouse/clickhousectl/releases"),
+            None
+        );
+    }
+
+    mod resolve {
+        use super::super::*;
+        use wiremock::matchers::{method, path, query_param_is_missing};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn client() -> reqwest::Client {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap()
+        }
+
+        async fn resolve(server: &MockServer) -> Result<String> {
+            resolve_latest_tag(
+                &client(),
+                &format!("{}/latest.txt", server.uri()),
+                &format!("{}/releases/latest", server.uri()),
+            )
+            .await
+        }
+
+        async fn mount_redirect(server: &MockServer, location: &str) {
+            Mock::given(method("GET"))
+                .and(path("/releases/latest"))
+                .respond_with(ResponseTemplate::new(302).insert_header("location", location))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn manifest_is_read_with_a_cache_busting_query() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/latest.txt"))
+                .and(query_param_is_missing("t"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("v0.0.1\n"))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/latest.txt"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("v9.8.7\n"))
+                .mount(&server)
+                .await;
+            mount_redirect(&server, "/releases/tag/v0.0.2").await;
+
+            assert_eq!(resolve(&server).await.unwrap(), "v9.8.7");
+        }
+
+        #[tokio::test]
+        async fn missing_or_invalid_manifest_falls_back_to_the_release_redirect() {
+            for manifest in [
+                ResponseTemplate::new(403),
+                ResponseTemplate::new(200).set_body_string("<html>"),
+            ] {
+                let server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/latest.txt"))
+                    .respond_with(manifest)
+                    .mount(&server)
+                    .await;
+                mount_redirect(
+                    &server,
+                    "https://github.com/ClickHouse/clickhousectl/releases/tag/v0.6.1",
+                )
+                .await;
+
+                assert_eq!(resolve(&server).await.unwrap(), "v0.6.1");
+            }
+        }
+
+        #[tokio::test]
+        async fn both_sources_failing_reports_each_failure() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/latest.txt"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/releases/latest"))
+                .respond_with(ResponseTemplate::new(429))
+                .mount(&server)
+                .await;
+
+            let msg = resolve(&server).await.unwrap_err().to_string();
+            assert!(msg.contains("latest clickhousectl version"), "got: {}", msg);
+            assert!(msg.contains("403"), "got: {}", msg);
+            assert!(msg.contains("429"), "got: {}", msg);
+        }
     }
 }
