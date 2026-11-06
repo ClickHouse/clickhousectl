@@ -1,6 +1,7 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::client::{
-    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, read_flag_file,
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, is_not_found,
+    read_flag_file,
 };
 use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
@@ -926,6 +927,26 @@ fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
     CloudError { message, ..error }
 }
 
+/// A delete the API rejected for a service that a read shows still exists,
+/// such as one still provisioning (#1226). The service's state comes from
+/// that read, never from the response text.
+pub(super) fn service_delete_rejected(
+    error: CloudError,
+    service_id: &str,
+    state: &str,
+) -> CloudError {
+    let api_message = error.message.clone();
+    let message = format!(
+        "service {service_id} exists but the API rejected its deletion in state '{state}'. \
+         Retry once it has finished changing state; check it with `clickhousectl cloud service \
+         get {service_id}`. API response: {api_message}"
+    );
+    CloudError { message, ..error }
+}
+
+/// Convert a failed DELETE of a service. Only the typed 404 reads as the
+/// service being missing: a 400 can be the API refusing to delete a service
+/// in its current state (#1226), so the caller confirms with a read first.
 pub(super) fn service_delete_error(
     client: &CloudClient,
     error: clickhouse_cloud_api::Error,
@@ -934,10 +955,14 @@ pub(super) fn service_delete_error(
     org_id: &str,
 ) -> CloudError {
     let is_conflict = matches!(&error, clickhouse_cloud_api::Error::Api { status: 409, .. });
-    let error = client.convert_error_for_lookup(
-        error,
-        ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
-    );
+    let error = if is_not_found(&error) {
+        client.convert_error_for_lookup(
+            error,
+            ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+        )
+    } else {
+        client.convert_error_for_organization(error, org_id)
+    };
     if is_conflict && !force {
         service_delete_conflict(error, service_id)
     } else {

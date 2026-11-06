@@ -1,7 +1,9 @@
 use super::observability::{
     PostgresBackupPage, PostgresLogsQuery, SlowQueryDetailQuery, SlowQueryListQuery,
 };
-use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, ResourceKind, ResourceLookup, Result as CloudResult, is_not_found,
+};
 use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
     PostgresInstanceConfig, PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse,
@@ -182,7 +184,7 @@ impl CloudClient {
     /// [`CloudClient::convert_error_for_lookup`] reads a 400 or 404 against
     /// well-formed ids as a missing service. That is sound only when the
     /// path names the service itself and nothing else in the request is
-    /// user input (`get`, `delete`). Here a 404 can mean the subresource is
+    /// user input (`get`). Here a 404 can mean the subresource is
     /// absent and a 400 can be the body's validation failure, so the status
     /// alone cannot tell. A GET of the service itself decides: when it also
     /// rejects the well-formed ids, the service is missing and the original
@@ -232,11 +234,16 @@ impl CloudClient {
             .postgres_service_delete(org_id, postgres_id)
             .await
             .map_err(|error| {
-                // This path identifies the Postgres service itself.
-                self.convert_error_for_lookup(
-                    error,
-                    ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
-                )
+                // Only a 404 reads as missing: the handler has just read the
+                // service, so a 400 is the API refusing this delete (#1226).
+                if is_not_found(&error) {
+                    self.convert_error_for_lookup(
+                        error,
+                        ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
+                    )
+                } else {
+                    self.convert_error_for_organization(error, org_id)
+                }
             })?;
         Ok(())
     }
