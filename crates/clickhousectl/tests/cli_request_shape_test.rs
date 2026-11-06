@@ -227,6 +227,16 @@ fn assert_success(output: &std::process::Output) {
     );
 }
 
+/// Split the `next` polling hint (#1162) off a command's JSON output, leaving
+/// the API response the command printed around it.
+fn take_next(stdout: &[u8]) -> (Value, Option<Value>) {
+    let mut value: Value = serde_json::from_slice(stdout).expect("stdout should be JSON");
+    let next = value
+        .as_object_mut()
+        .and_then(|object| object.remove("next"));
+    (value, next)
+}
+
 /// Turns off the CLI's background update check, which would otherwise send
 /// a real request to the release server and wait up to 400 ms for it.
 const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
@@ -1970,8 +1980,11 @@ async fn service_scale_sends_the_builder_body_to_the_replica_scaling_route() {
 }
 
 #[tokio::test]
-async fn service_start_and_stop_preserve_json_responses() {
-    for (command, returned_state) in [("start", "running"), ("stop", "stopped")] {
+async fn service_start_and_stop_preserve_json_responses_and_name_the_poll() {
+    for (command, returned_state, until) in [
+        ("start", "running", serde_json::json!(["running"])),
+        ("stop", "stopped", serde_json::json!(["stopped", "idle"])),
+    ] {
         let mock = MockServer::start().await;
         let result = serde_json::json!({"name": "demo", "state": returned_state});
         Mock::given(method("PATCH"))
@@ -1993,10 +2006,15 @@ async fn service_start_and_stop_preserve_json_responses() {
 
         assert_success(&output);
         assert!(output.stderr.is_empty());
+        let (response, next) = take_next(&output.stdout);
+        assert_eq!(response, result);
+        let next = next.expect("an accepted state change names its poll");
         assert_eq!(
-            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-            result
+            next["command"],
+            "clickhousectl cloud service get svc-1 --org-id org-1 --json"
         );
+        assert_eq!(next["field"], "state");
+        assert_eq!(next["until"], until, "{command}");
     }
 }
 
@@ -3617,6 +3635,8 @@ async fn postgres_update_preserves_tags_when_changing_other_fields() {
     );
     let output: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output["tags"], tags);
+    // `haType` flips on acceptance, so an HA change gets no hint.
+    assert_eq!(output.get("next"), None);
 }
 
 #[tokio::test]
@@ -3732,6 +3752,12 @@ async fn postgres_create_sends_access_rules_only_when_asked() {
         assert_success(&output);
         let output: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(output["ipAccessList"], postgres_access_rules_response());
+        assert_eq!(
+            output["next"]["command"],
+            format!(
+                "clickhousectl cloud postgres get {ACCESS_RULE_POSTGRES_ID} --org-id org-1 --json"
+            )
+        );
     }
 }
 
@@ -3951,6 +3977,11 @@ async fn postgres_restore_copies_the_source_access_rules() {
     assert_success(&output);
     let output: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output["ipAccessList"], applied);
+    // The restored service, not the source, is the one to poll.
+    assert_eq!(
+        output["next"]["command"],
+        format!("clickhousectl cloud postgres get {ACCESS_RULE_POSTGRES_ID} --org-id org-1 --json")
+    );
     let source = format!("/v1/organizations/org-1/postgres/{RESTORE_SOURCE_ID}");
     let restored = format!("/v1/organizations/org-1/postgres/{ACCESS_RULE_POSTGRES_ID}");
     assert_eq!(
@@ -4385,8 +4416,9 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
         );
         assert!(!stdout.contains("reset-password"), "{stdout}");
 
-        // Read replica `--json` prints the returned service (restore's JSON
-        // output is asserted by the `postgres_restore_*` tests).
+        // Read replica `--json` prints the returned service and polls the new
+        // replica (restore's JSON output is asserted by the
+        // `postgres_restore_*` tests).
         if endpoint == "readReplica" {
             let service = serde_json::json!({"id": ROLE_TEST_POSTGRES_ID});
             let json_mock = MockServer::start().await;
@@ -4399,10 +4431,17 @@ async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get
             .await;
             let output = invoke_cli_with_cloud_credentials(&json_mock, &args);
             assert_success(&output);
+            let (response, next) = take_next(&output.stdout);
+            assert_eq!(response, service);
+            let next = next.expect("a new replica names its poll");
             assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-                service
+                next["command"],
+                format!(
+                    "clickhousectl cloud postgres get {ROLE_TEST_POSTGRES_ID} --org-id org-1 --json"
+                )
             );
+            assert_eq!(next["field"], "state");
+            assert_eq!(next["until"], serde_json::json!(["running"]));
         }
     }
 }
@@ -4476,12 +4515,20 @@ async fn postgres_role_changes_issue_only_the_expected_state_patch() {
             )],
             "{command} must issue only the state change"
         );
-        let stdout: Value = serde_json::from_slice(&output.stdout)
-            .expect("stdout should be the API acknowledgment as JSON");
+        let (stdout, next) = take_next(&output.stdout);
         assert_eq!(
             stdout, service,
             "{command} must preserve the response shape"
         );
+        // Nothing `postgres get` returns confirms a switchover.
+        match command {
+            "promote" => {
+                let next = next.expect("promote names its poll");
+                assert_eq!(next["field"], "isPrimary");
+                assert_eq!(next["until"], serde_json::json!([true]));
+            }
+            _ => assert_eq!(next, None, "{command}"),
+        }
     }
 }
 
@@ -5007,6 +5054,13 @@ async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
     let dir = tempfile::tempdir().unwrap();
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_success(&output);
+    let (_, next) = take_next(&output.stdout);
+    let next = next.expect("an accepted delete names its poll");
+    assert_eq!(
+        next["command"],
+        format!("clickhousectl cloud service get {DELETE_TEST_SERVICE_ID} --org-id org-1 --json")
+    );
+    assert_eq!(next["until_error_code"], "resource_not_found");
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -11454,7 +11508,7 @@ async fn clickpipe_lifecycle_human_output_acknowledges_the_immediate_state() {
 }
 
 #[tokio::test]
-async fn clickpipe_lifecycle_preserves_the_json_response() {
+async fn clickpipe_lifecycle_preserves_the_json_response_and_names_the_poll() {
     let mock = MockServer::start().await;
     let result = serde_json::json!({
         "id": "00000000-0000-0000-0000-000000000842",
@@ -11489,9 +11543,18 @@ async fn clickpipe_lifecycle_preserves_the_json_response() {
 
     assert_success(&output);
     assert!(output.stderr.is_empty());
+    let (response, next) = take_next(&output.stdout);
+    assert_eq!(response, result);
+    let next = next.expect("an accepted state change names its poll");
     assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        result
+        next["command"],
+        "clickhousectl cloud clickpipe get svc-id pipe-start --org-id org --json"
+    );
+    assert_eq!(next["field"], "state");
+    assert_eq!(next["until"], serde_json::json!(["Running", "Completed"]));
+    assert_eq!(
+        next["fail_on"],
+        serde_json::json!(["Failed", "InternalError"])
     );
 }
 
@@ -13068,10 +13131,15 @@ async fn clickpipe_cdc_scaling_update_patches_the_built_body() {
     );
 
     assert_success(&output);
+    let (response, next) = take_next(&output.stdout);
+    assert_eq!(response, scaling);
+    let next = next.expect("a scaling change names its poll");
     assert_eq!(
-        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
-        scaling
+        next["command"],
+        "clickhousectl cloud clickpipe cdc-scaling get svc-1 --org-id org-1 --json"
     );
+    assert_eq!(next["field"], "replicaCpuMillicores");
+    assert_eq!(next["until"], serde_json::json!([1000]));
 }
 
 // ── the Query API gateway timeout (issue #644) ─────────────────────────────
@@ -13758,6 +13826,16 @@ async fn reverse_private_endpoint_create_posts_the_built_body() {
         received_request_shape(&mock).await,
         vec![("POST".to_string(), RPE_COLLECTION_PATH.to_string())],
     );
+    let (_, next) = take_next(&output.stdout);
+    let next = next.expect("a created endpoint names its poll");
+    assert_eq!(
+        next["command"],
+        format!(
+            "clickhousectl cloud clickpipe reverse-private-endpoint get svc-1 {RPE_ID} --org-id \
+             org-1 --json"
+        )
+    );
+    assert_eq!(next["until"], serde_json::json!(["Ready"]));
     let requests = mock.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(
@@ -25202,6 +25280,7 @@ async fn service_create_dotenv_writes_the_password_and_keeps_it_off_stdout() {
             assert_eq!(result["service"]["id"], DOTENV_SERVICE_ID);
             assert_eq!(result["dotenv"]["file"], target.to_str().unwrap());
             assert_eq!(result["dotenv"]["keys"][5], "CLICKHOUSE_PASSWORD");
+            assert_eq!(result["next"]["field"], "state");
         }
     }
 }
@@ -25228,6 +25307,10 @@ async fn service_create_without_dotenv_still_prints_the_password() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["password"], "one-time-secret");
     assert!(result.get("dotenv").is_none());
+    assert_eq!(
+        result["next"]["command"],
+        format!("clickhousectl cloud service get {DOTENV_SERVICE_ID} --org-id org-1 --json")
+    );
     assert!(!dir.path().join(".env").exists());
 }
 
