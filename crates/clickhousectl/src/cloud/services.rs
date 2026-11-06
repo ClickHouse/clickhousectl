@@ -3518,7 +3518,7 @@ async fn probe_repaired_query_key(
     // Never probe production by accident: a control plane the query host
     // cannot be derived from (a local mock, an unusual base URL) means the
     // library would fall back to the production host.
-    if client.api().configured_query_host().is_none() {
+    if client.configured_query_host().is_none() {
         return Ok(skip_repair_verification(
             org_id,
             service_id,
@@ -3555,7 +3555,7 @@ async fn probe_repaired_query_key(
     }
 
     let outcome = wait_for_query_endpoint_readiness(readiness, || {
-        client.api().run_query(
+        client.run_service_query(
             service_id,
             key_id,
             key_secret,
@@ -3643,9 +3643,7 @@ async fn run_basic_service_query(
     confirmed_idle: bool,
 ) -> Result<reqwest::Response, QueryRequestError> {
     run_service_query_with_wake(service_name, confirmed_idle, |wake| {
-        client
-            .api()
-            .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+        client.run_service_query(service_id, key_id, key_secret, sql, database, format, wake)
     })
     .await
 }
@@ -3806,7 +3804,7 @@ async fn run_just_provisioned_service_query_or(
     on_timeout: impl FnOnce(Duration) -> CloudError,
 ) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
-        client.api().run_query(
+        client.run_service_query(
             target.service_id,
             key_id,
             key_secret,
@@ -3944,7 +3942,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         // possible on this path at all.
         failure::set_provisioning_state(ProvisioningState::Bearer);
         let run = |wake: bool| {
-            client.api().run_query_bearer(
+            client.run_service_query_bearer(
                 &service_id,
                 &sql,
                 options.database.as_deref(),
@@ -4601,6 +4599,58 @@ async fn service_prometheus(
 }
 
 impl CloudClient {
+    /// The Query API host the library would send queries to, when one is
+    /// configured or derivable from the control-plane URL.
+    fn configured_query_host(&self) -> Option<String> {
+        self.api().configured_query_host()
+    }
+
+    /// Send one statement to a service's Query API with an API key.
+    ///
+    /// Unlike every other wrapper, this returns the library error as-is and
+    /// the response unread: the caller streams the body, and the query paths
+    /// classify the raw error themselves (idle and stopped services, wake
+    /// retries, readiness polling, key rejections) before converting it
+    /// through `convert_query_error`, which records the telemetry failure.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_service_query(
+        &self,
+        service_id: &str,
+        key_id: &str,
+        key_secret: &str,
+        sql: &str,
+        database: Option<&str>,
+        format: &str,
+        wake_service: bool,
+    ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+        self.api()
+            .run_query(
+                service_id,
+                key_id,
+                key_secret,
+                sql,
+                database,
+                format,
+                wake_service,
+            )
+            .await
+    }
+
+    /// [`Self::run_service_query`] with the client's OAuth bearer token,
+    /// returning the raw library error for the same reason.
+    async fn run_service_query_bearer(
+        &self,
+        service_id: &str,
+        sql: &str,
+        database: Option<&str>,
+        format: &str,
+        wake_service: bool,
+    ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+        self.api()
+            .run_query_bearer(service_id, sql, database, format, wake_service)
+            .await
+    }
+
     pub async fn get_scaling_schedule(
         &self,
         org_id: &str,

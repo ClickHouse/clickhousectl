@@ -1,6 +1,12 @@
 use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
+/// The GET that tells a missing service from a rejected request when a by-id
+/// subresource or write fails with a 400 or 404 (see
+/// `CloudClient::convert_postgres_by_id_result`).
+const CONFIRM_POSTGRES_SERVICE: Conditional =
+    Conditional::new("If the ID is rejected", &[&op::POSTGRES_SERVICE_GET]);
+
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("postgres list", &[&op::POSTGRES_SERVICE_GET_LIST]),
@@ -17,33 +23,46 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::POSTGRES_SERVICE_GET, &op::POSTGRES_SERVICE_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres certs get", &[&op::POSTGRES_SERVICE_CERTS_GET])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres config get", &[&op::POSTGRES_INSTANCE_CONFIG_GET])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres certs get", &[&op::POSTGRES_SERVICE_CERTS_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres config get", &[&op::POSTGRES_INSTANCE_CONFIG_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres config replace",
         &[&op::POSTGRES_INSTANCE_CONFIG_POST],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres config patch",
         &[&op::POSTGRES_INSTANCE_CONFIG_PATCH],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres reset-password",
         &[&op::POSTGRES_SERVICE_SET_PASSWORD],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres read-replica create",
         &[&op::POSTGRES_INSTANCE_CREATE_READ_REPLICA],
     )
-    .when(&[Conditional::flag(
-        "source-name",
-        &[&op::POSTGRES_SERVICE_GET_LIST],
-    )]),
+    .when(&[
+        Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres metrics", &[&op::POSTGRES_INSTANCE_METRICS_GET])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api(
@@ -68,16 +87,24 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
         Conditional::new("Applying access rules", &[&op::POSTGRES_SERVICE_PATCH]),
+        CONFIRM_POSTGRES_SERVICE,
     ]),
-    Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres promote", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres switchover", &[&op::POSTGRES_SERVICE_PATCH_STATE])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres promote", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres switchover", &[&op::POSTGRES_SERVICE_PATCH_STATE]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres update", &[&op::POSTGRES_SERVICE_PATCH]).when(&[
         Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Without --clear-tags", &[&op::POSTGRES_SERVICE_GET]),
+        CONFIRM_POSTGRES_SERVICE,
     ]),
 ];
 
@@ -94,17 +121,19 @@ use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultToastCompression,
+    PgBouncerConfig, PgConfig, PgConfigDefaultToastCompression,
     PgConfigDefaultTransactionIsolation, PgConfigEnableParallelHash, PgConfigIoMethod,
     PgConfigLogLockWaits, PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType,
     PgIdProperty, PgProvider, PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig,
+    PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse,
     PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse, PostgresIpAccessListPatch,
     PostgresIpAccessListRuleReference, PostgresLogEntry, PostgresLogsGetListSortorder,
-    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
-    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
-    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
-    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePasswordResource,
+    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
+    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
+    PostgresServiceSetStateCommand, PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
+    ResourceTagsV1, ResourceTagsV1Response, SlowQueryPatternsGetListSortby,
+    SlowQueryPatternsGetListSortorder,
 };
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
@@ -999,13 +1028,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Every Postgres path reports an empty body the same way the rest of the
-/// cloud surface does, so moving one onto a `CloudClient` wrapper cannot
-/// change the message a caller sees.
-fn unwrap_api<T>(resp: ApiResponse<T>) -> CloudResult<T> {
-    CloudClient::unwrap_response(resp)
-}
 
 fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
@@ -2044,12 +2066,7 @@ pub async fn postgres_list(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_service_get_list(&org_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let items = unwrap_api(resp)?;
+    let items = client.list_postgres_services(&org_id).await?;
     let filtered: Vec<PostgresServiceListItem> = items
         .into_iter()
         .filter(|i| apply_filter(i, filters))
@@ -2279,12 +2296,7 @@ pub async fn postgres_create(
     let req = build_postgres_create_request(&opts)?;
 
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_service_create(&org_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client.create_postgres_service(&org_id, &req).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -2353,12 +2365,7 @@ pub async fn postgres_update(
     let tags = if opts.clear_tags {
         Some(Vec::new())
     } else {
-        let current = client
-            .api()
-            .postgres_service_get(&org_id, postgres_id)
-            .await
-            .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-        let current = unwrap_api(current)?;
+        let current = client.get_postgres_service(&org_id, postgres_id).await?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
@@ -2367,12 +2374,9 @@ pub async fn postgres_update(
         build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
     let req = build_postgres_update_request(opts.name, size, ha_type, tags, ip_access_list);
 
-    let resp = client
-        .api()
-        .postgres_service_patch(&org_id, postgres_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client
+        .patch_postgres_service(&org_id, postgres_id, &req)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -2398,16 +2402,7 @@ pub async fn postgres_delete(
     // the resource object rather than `{"status":...,"requestId":...}` (#614).
     let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
-    client
-        .api()
-        .postgres_service_delete(&org_id, postgres_id)
-        .await
-        .map_err(|error| {
-            client.convert_error_for_lookup(
-                error,
-                ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, &org_id),
-            )
-        })?;
+    client.delete_postgres_service(&org_id, postgres_id).await?;
 
     // The service is already gone by here, so a closed stdout must not turn a
     // completed deletion into a panic — see `print_line` and #598.
@@ -2430,10 +2425,8 @@ pub async fn postgres_certs_get(
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let pem = client
-        .api()
-        .postgres_service_certs_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
+        .get_postgres_service_certs(&org_id, postgres_id)
+        .await?;
 
     if let Some(path) = output {
         write_pem_file(path, &pem)?;
@@ -2470,12 +2463,7 @@ pub async fn postgres_config_get(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_instance_config_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let cfg = unwrap_api(resp)?;
+    let cfg = client.get_postgres_config(&org_id, postgres_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&cfg)?);
     } else {
@@ -2492,12 +2480,9 @@ pub async fn postgres_config_replace(
 ) -> CloudResult<()> {
     let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_instance_config_post(&org_id, postgres_id, &cfg)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let out = unwrap_api(resp)?;
+    let out = client
+        .replace_postgres_config(&org_id, postgres_id, &cfg)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -2536,12 +2521,9 @@ pub async fn postgres_config_patch(
     };
 
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let out = unwrap_api(resp)?;
+    let out = client
+        .patch_postgres_config(&org_id, postgres_id, &cfg)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&out)?);
@@ -2578,12 +2560,9 @@ pub async fn postgres_reset_password(
     let req = PostgresServiceSetPassword {
         password: pw.clone(),
     };
-    let resp = client
-        .api()
-        .postgres_service_set_password(&org_id, postgres_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let out = unwrap_api(resp)?;
+    let out = client
+        .set_postgres_service_password(&org_id, postgres_id, &req)
+        .await?;
     // Emit what the user now needs to use: the API echoes the password back, but
     // fall back to the one we sent if the response omits it.
     let password = out.password.unwrap_or(pw);
@@ -2629,12 +2608,9 @@ pub async fn postgres_read_replica_create(
     };
 
     let org_id = resolve_org_id(client).await?;
-    let resp = client
-        .api()
-        .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client
+        .create_postgres_read_replica(&org_id, postgres_id, &req)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -2689,12 +2665,9 @@ pub async fn postgres_restore(
         pg_config,
         pg_bouncer_config,
     };
-    let resp = client
-        .api()
-        .postgres_instance_restore(&org_id, postgres_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client
+        .restore_postgres_service(&org_id, postgres_id, &req)
+        .await?;
 
     let svc = apply_restored_access_rules(client, &org_id, svc, &desired, tags).await?;
 
@@ -2789,13 +2762,9 @@ pub async fn postgres_state_change(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let req = PostgresServiceSetState { command: cmd };
-    let resp = client
-        .api()
-        .postgres_service_patch_state(&org_id, postgres_id, &req)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client
+        .set_postgres_service_state(&org_id, postgres_id, cmd)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -3343,6 +3312,196 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    /// Convert a failed by-id Postgres request whose path names a
+    /// subresource of the service or whose body carries user input.
+    ///
+    /// [`CloudClient::convert_error_for_lookup`] reads a 400 or 404 against
+    /// well-formed ids as a missing service. That is sound only when the
+    /// path names the service itself and nothing else in the request is
+    /// user input (`get`, `delete`). Here a 404 can mean the subresource is
+    /// absent and a 400 can be the body's validation failure, so the status
+    /// alone cannot tell. A GET of the service itself decides: when it also
+    /// rejects the well-formed ids, the service is missing and the original
+    /// error is reported as such; otherwise the original error stands. The
+    /// extra GET only happens after such a rejection.
+    async fn convert_postgres_by_id_result<T>(
+        &self,
+        result: Result<T, clickhouse_cloud_api::Error>,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<T> {
+        let error = match result {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let lookup = ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id);
+        if lookup.rejected_well_formed_ids(&error)
+            && let Err(get_error) = self.api().postgres_service_get(org_id, postgres_id).await
+            && lookup.rejected_well_formed_ids(&get_error)
+        {
+            return Err(self.convert_error_for_lookup(error, lookup));
+        }
+        Err(self.convert_error_for_organization(error, org_id))
+    }
+
+    /// Create a Postgres service.
+    async fn create_postgres_service(
+        &self,
+        org_id: &str,
+        request: &PostgresServicePostRequest,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .api()
+            .postgres_service_create(org_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Delete a Postgres service. The endpoint returns no resource.
+    async fn delete_postgres_service(&self, org_id: &str, postgres_id: &str) -> CloudResult<()> {
+        self.api()
+            .postgres_service_delete(org_id, postgres_id)
+            .await
+            .map_err(|error| {
+                // This path identifies the Postgres service itself.
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
+                )
+            })?;
+        Ok(())
+    }
+
+    /// Fetch a Postgres service's CA certificate as PEM text.
+    async fn get_postgres_service_certs(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<String> {
+        self.convert_postgres_by_id_result(
+            self.api()
+                .postgres_service_certs_get(org_id, postgres_id)
+                .await,
+            org_id,
+            postgres_id,
+        )
+        .await
+    }
+
+    /// Fetch a Postgres service's runtime configuration.
+    async fn get_postgres_config(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<PostgresInstanceConfigResponse> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_get(org_id, postgres_id)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Replace a Postgres service's runtime configuration.
+    async fn replace_postgres_config(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        config: &PostgresInstanceConfig,
+    ) -> CloudResult<PostgresInstanceUpdateConfigResponse> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_post(org_id, postgres_id, config)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Merge settings into a Postgres service's runtime configuration.
+    async fn patch_postgres_config(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        config: &PostgresInstanceConfig,
+    ) -> CloudResult<PostgresInstanceUpdateConfigResponse> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_config_patch(org_id, postgres_id, config)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Set a Postgres service's password.
+    async fn set_postgres_service_password(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresServiceSetPassword,
+    ) -> CloudResult<PostgresServicePasswordResource> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_set_password(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Create a read replica of a Postgres service.
+    async fn create_postgres_read_replica(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresServiceReadReplicaRequest,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_create_read_replica(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Restore a Postgres service to a point in time as a new service.
+    async fn restore_postgres_service(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresServiceRestoreRequest,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_restore(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
     /// Update a Postgres service.
     async fn patch_postgres_service(
         &self,
@@ -3351,10 +3510,14 @@ impl CloudClient {
         request: &PostgresServicePatchRequest,
     ) -> CloudResult<PostgresService> {
         let response = self
-            .api()
-            .postgres_service_patch(org_id, postgres_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_patch(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -3412,10 +3575,14 @@ impl CloudClient {
     ) -> CloudResult<PostgresService> {
         let request = PostgresServiceSetState { command };
         let response = self
-            .api()
-            .postgres_service_patch_state(org_id, postgres_id, &request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_patch_state(org_id, postgres_id, &request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 }

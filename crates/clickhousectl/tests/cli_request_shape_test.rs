@@ -20390,6 +20390,217 @@ async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() 
     }
 }
 
+// ── Postgres by-id commands report a missing service like `get` (#1156) ──
+
+fn unknown_postgres_path(suffix: &str) -> String {
+    format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}{suffix}")
+}
+
+/// The not-found message `postgres get` prints for [`UNKNOWN_UUID`], ending in
+/// the rejected request's own server message.
+fn postgres_not_found_message(server_message: &str) -> String {
+    format!(
+        "No such Postgres service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+         The API rejected the identifier: {server_message}"
+    )
+}
+
+fn assert_postgres_not_found_json(output: &std::process::Output, server_message: &str) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error = cloud_runtime_error(output);
+    assert_eq!(error["code"], "resource_not_found");
+    assert_eq!(
+        error["command"],
+        format!("clickhousectl cloud postgres list --org-id {LOOKUP_ORG_ID}")
+    );
+    assert_eq!(error["message"], postgres_not_found_message(server_message));
+}
+
+fn assert_postgres_not_found_human(output: &std::process::Output, server_message: &str) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("Error: {}\n", postgres_not_found_message(server_message))
+    );
+}
+
+/// `postgres update` reads the service's tags before it patches. A missing
+/// service must stop there with the same answer `postgres get` gives, and
+/// must not send the PATCH.
+#[tokio::test]
+async fn postgres_update_of_a_missing_service_reads_as_not_found() {
+    let server_message =
+        format!("BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\"");
+    let args = [
+        "postgres",
+        "update",
+        UNKNOWN_UUID,
+        "--org-id",
+        LOOKUP_ORG_ID,
+        "--new-name",
+        "renamed",
+    ];
+    for json in [false, true] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(
+            &mock,
+            unknown_postgres_path(""),
+            "Postgres service",
+            UNKNOWN_UUID,
+        )
+        .await;
+
+        if json {
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_postgres_not_found_json(&output, &server_message);
+        } else {
+            let output = invoke_cli_human(&mock, &args);
+            assert_postgres_not_found_human(&output, &server_message);
+        }
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![("GET".to_string(), unknown_postgres_path(""))]
+        );
+    }
+}
+
+/// `--clear-tags` skips the tag read, so the PATCH is what fails. Its body is
+/// user input, so the CLI only calls the service missing after a GET of the
+/// service also rejects the id.
+#[tokio::test]
+async fn postgres_update_clear_tags_of_a_missing_service_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    let server_message =
+        format!("BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\"");
+    Mock::given(method("PATCH"))
+        .and(path(unknown_postgres_path("")))
+        .respond_with(invalid_id_400_response("Postgres service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    mount_invalid_id_400(
+        &mock,
+        unknown_postgres_path(""),
+        "Postgres service",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            UNKNOWN_UUID,
+            "--org-id",
+            LOOKUP_ORG_ID,
+            "--clear-tags",
+        ],
+    );
+
+    assert_postgres_not_found_json(&output, &server_message);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("PATCH".to_string(), unknown_postgres_path("")),
+            ("GET".to_string(), unknown_postgres_path("")),
+        ]
+    );
+}
+
+fn postgres_config_patch_args(setting: &'static str) -> [&'static str; 8] {
+    [
+        "postgres",
+        "config",
+        "patch",
+        UNKNOWN_UUID,
+        "--org-id",
+        LOOKUP_ORG_ID,
+        "--set",
+        setting,
+    ]
+}
+
+/// A config PATCH for a deleted service answers 404; the confirming GET of
+/// the service agrees, so the command reports the service as missing, in
+/// both output modes.
+#[tokio::test]
+async fn postgres_config_patch_of_a_missing_service_reads_as_not_found() {
+    let server_message = "NOT_FOUND: Postgres service not found";
+    let args = postgres_config_patch_args("max_connections=500");
+    for json in [false, true] {
+        let mock = MockServer::start().await;
+        for (http_method, route) in [
+            ("PATCH", unknown_postgres_path("/config")),
+            ("GET", unknown_postgres_path("")),
+        ] {
+            Mock::given(method(http_method))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "status": 404,
+                    "error": server_message,
+                })))
+                .expect(1)
+                .mount(&mock)
+                .await;
+        }
+
+        if json {
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_postgres_not_found_json(&output, server_message);
+        } else {
+            let output = invoke_cli_human(&mock, &args);
+            assert_postgres_not_found_human(&output, server_message);
+        }
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![
+                ("PATCH".to_string(), unknown_postgres_path("/config")),
+                ("GET".to_string(), unknown_postgres_path("")),
+            ]
+        );
+    }
+}
+
+/// A config PATCH rejected for its body answers 400 too. The service exists,
+/// so the server's validation message must reach the user unchanged rather
+/// than being misreported as a missing service.
+#[tokio::test]
+async fn postgres_config_patch_validation_400_keeps_the_servers_message() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(unknown_postgres_path("/config")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "BAD_REQUEST: max_connections must be at least 10",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(unknown_postgres_path("")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"id": UNKNOWN_UUID}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &postgres_config_patch_args("max_connections=1"));
+
+    assert_eq!(output.status.code(), Some(1));
+    let error = cloud_runtime_error(&output);
+    assert_eq!(
+        error["message"],
+        "BAD_REQUEST: max_connections must be at least 10"
+    );
+    assert_eq!(error["code"], "http_4xx");
+}
+
 /// A `service delete` for an id no service has, with the organization id also
 /// a well-formed UUID so every path identifier passes the structural test.
 fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process::Output {
