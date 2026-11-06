@@ -423,6 +423,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_date_only_accepts_calendar_dates_and_rejects_everything_else() {
+        for value in ["2026-04-16", "2024-02-29"] {
+            assert_eq!(parse_date_only(value).unwrap(), value);
+        }
+        for value in [
+            "",
+            "yesterday",
+            "2026-4-16x",
+            "2026/04/16",
+            "2026-02-30",
+            "2026-13-01",
+            "2026-04-16T12:00:00Z",
+        ] {
+            let error = parse_date_only(value).unwrap_err();
+            assert!(error.contains("expected YYYY-MM-DD"), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn parse_datetime_keeps_rfc3339_input_and_rejects_other_forms() {
+        for value in ["2026-04-16T12:00:00Z", "2026-04-16T12:00:00.123456+05:30"] {
+            assert_eq!(parse_datetime(value).unwrap(), value);
+        }
+        for value in ["", "yesterday", "2026-04-16", "2026-04-16T12:00:00"] {
+            let error = parse_datetime(value).unwrap_err();
+            assert!(error.contains("RFC 3339"), "{value}: {error}");
+        }
+    }
+
+    #[test]
     fn parse_ip_access_entries_rejects_invalid_sources() {
         for value in [
             "",

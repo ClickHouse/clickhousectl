@@ -1825,6 +1825,59 @@ mod tests {
         value
     }
 
+    #[tokio::test]
+    async fn open_artifact_rejects_missing_empty_and_non_file_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let empty = directory.path().join("empty.zip");
+        std::fs::write(&empty, b"").unwrap();
+        let archive = directory.path().join("code.zip");
+        std::fs::write(&archive, b"PK\x03\x04archive").unwrap();
+        for (path, expected) in [
+            (directory.path().join("missing.zip"), "Cannot open"),
+            (empty, "must be a nonempty file"),
+            (directory.path().to_path_buf(), "must be a nonempty file"),
+        ] {
+            let error = open_artifact(&path).await.unwrap_err();
+            assert!(error.message.contains(expected), "{path:?}: {error}");
+            assert_eq!(error.kind, CloudErrorKind::Generic);
+        }
+        assert!(open_artifact(&archive).await.is_ok());
+    }
+
+    /// List pages keep zero and omit absent metadata, never fabricating a
+    /// result; a page without one is an error.
+    #[test]
+    fn udf_pages_preserve_zero_and_omit_absent_metadata() {
+        for (wire, expected) in [
+            (
+                json!({"result":[],"limit":25,"totalCount":0,"nextCursor":null}),
+                Some(json!({"result":[],"limit":25,"totalCount":0})),
+            ),
+            (
+                json!({"result":[],"limit":null,"totalCount":null,"nextCursor":null}),
+                Some(json!({"result":[]})),
+            ),
+            (
+                json!({"result":[{}],"nextCursor":"next page"}),
+                Some(json!({"result":[{}],"nextCursor":"next page"})),
+            ),
+            (json!({"result":null}), None),
+            (json!({}), None),
+        ] {
+            let response: ApiResponse<Vec<Udf>> = serde_json::from_value(wire.clone()).unwrap();
+            match (UdfPage::from_response(response), expected) {
+                (Ok(page), Some(expected)) => {
+                    assert_eq!(serde_json::to_value(page).unwrap(), expected, "{wire}")
+                }
+                (Err(_), None) => {}
+                (result, expected) => panic!(
+                    "{wire}: got {:?}, expected {expected:?}",
+                    result.map(|page| serde_json::to_value(page).unwrap())
+                ),
+            }
+        }
+    }
+
     #[test]
     fn udf_builders_cover_minimal_and_maximal_variants() {
         for create in [true, false] {

@@ -380,6 +380,69 @@ mod tests {
         .unwrap();
         assert_eq!(empty.pg_config, PgConfig::default());
         assert_eq!(empty.pg_bouncer_config, PgBouncerConfig::default());
+        // Explicitly empty sections reach the wire as `{}`, not as nulls.
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
+        );
+    }
+
+    #[test]
+    fn pg_config_files_reject_unknown_null_enum_and_non_object_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("pg.json");
+        for (contents, expected) in [
+            (
+                r#"{"max_conections": 500}"#,
+                "unknown pgConfig key 'max_conections'",
+            ),
+            (r#"{"work_mem": null}"#, "null is not supported"),
+            (
+                r#"{"wal_compression": "gzip"}"#,
+                "invalid pgConfig value 'gzip'",
+            ),
+            (r#"{"enable_parallel_hash": true}"#, "expected one of"),
+            ("[]", "pgConfig must be a JSON object"),
+            ("{", "failed to parse"),
+        ] {
+            std::fs::write(&file, contents).unwrap();
+            let error = load_pg_config_file(&file).unwrap_err().to_string();
+            assert!(error.contains(expected), "{contents}: {error}");
+        }
+        let error = load_pg_config_file(&directory.path().join("missing.json"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to read"), "{error}");
+    }
+
+    #[test]
+    fn pgbouncer_inputs_reject_non_string_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("pgbouncer.json");
+        for value in [
+            serde_json::json!(16),
+            serde_json::json!(false),
+            serde_json::json!(null),
+        ] {
+            let parameters = serde_json::json!({ "default_pool_size": value });
+            std::fs::write(&file, parameters.to_string()).unwrap();
+            let error = load_json_file::<PgBouncerConfig>(&file)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("pgbouncer.json"), "{value}: {error}");
+            assert!(error.contains("string"), "{value}: {error}");
+
+            let error = instance_config_from_json(
+                &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": parameters }),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("invalid pgBouncerConfig"),
+                "{value}: {error}"
+            );
+            assert!(error.contains("string"), "{value}: {error}");
+        }
     }
 
     #[test]

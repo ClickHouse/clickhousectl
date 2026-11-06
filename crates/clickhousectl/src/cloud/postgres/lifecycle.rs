@@ -856,6 +856,26 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn rejects_malformed_postgres_list_filters() {
+        for (raw, expected) in [
+            ("bogus=1", "unknown filter key 'bogus'"),
+            ("state=", "filter 'state' requires a value"),
+            ("isPrimary=maybe", "expected true or false"),
+            ("state", "expected KEY=VALUE"),
+        ] {
+            let error = parse_postgres_list_filter(raw).unwrap_err();
+            assert!(error.contains(expected), "{raw}: {error}");
+        }
+        for raw in ["bogus=1", "state"] {
+            let error = parse_postgres_list_filter(raw).unwrap_err();
+            assert!(
+                error.contains("state, region, name, provider, isPrimary"),
+                "{raw}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn validate_password_rules() {
         assert!(validate_password("Short1").is_err());
         assert!(validate_password("alllowercase12345").is_err()); // no upper
