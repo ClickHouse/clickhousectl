@@ -133,7 +133,7 @@ clickhousectl local status
 
 Each engine's `list` and `stop-all` cover only that engine. `local status` lists every ClickHouse server and Postgres instance in the project, running or stopped.
 
-Create `pg-schema.sql` with your Postgres SQL before running the file example. Put `\set ON_ERROR_STOP on` at the top of the file to stop on SQL errors.
+Create `pg-schema.sql` with your Postgres SQL before running the file example. File and piped stdin input stop at the first failed statement and exit 3; pass `-- -v ON_ERROR_STOP=0` to run the remaining statements.
 
 Starts wait for `pg_isready`, by default for 60 seconds; `--wait-timeout` accepts 1–600 seconds. `local postgres client` uses host `psql` or the container's `psql`. File input and stdin work with either, but paths inside SQL (`\i`, `\copy`) refer to the container filesystem in Docker mode. `--json` does not change psql output. When both are supplied, `--query` runs before `--queries-file`.
 

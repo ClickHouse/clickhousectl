@@ -1201,6 +1201,9 @@ async fn client(
         None if !explicit_input && !interactive => Some(Box::new(std::io::stdin())),
         None => None,
     };
+    if input.is_some() {
+        psql_args.extend(ON_ERROR_STOP.map(String::from));
+    }
     psql_args.extend(extra_args);
 
     if !interactive {
@@ -1231,6 +1234,11 @@ async fn read_pg_env(docker: &bollard::Docker, id: &str) -> (String, String, Str
     )
 }
 
+/// psql runs a script past a failed statement and exits 0 unless
+/// `ON_ERROR_STOP` is set. Script input (a file or non-terminal stdin) gets it
+/// ahead of native arguments, so `-- -v ON_ERROR_STOP=0` still overrides it.
+const ON_ERROR_STOP: [&str; 2] = ["-v", "ON_ERROR_STOP=1"];
+
 fn host_has_psql() -> bool {
     Command::new("psql")
         .arg("--version")
@@ -1253,6 +1261,9 @@ fn exec_host_psql(
     extra_args: Vec<String>,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
+    // psql reads a non-terminal stdin as a script unless -c supplies input.
+    let script_input =
+        queries_file.is_some() || (query.is_none() && !std::io::stdin().is_terminal());
     let mut cmd = Command::new("psql");
     cmd.arg("-h")
         .arg(host)
@@ -1270,6 +1281,9 @@ fn exec_host_psql(
     }
     if let Some(f) = queries_file {
         cmd.arg("-f").arg(f);
+    }
+    if script_input {
+        cmd.args(ON_ERROR_STOP);
     }
     cmd.args(&extra_args);
     // `exec()` replaces the process image on success, so `main`'s telemetry

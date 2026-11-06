@@ -82,18 +82,28 @@ fn json_and_agent_modes_leave_native_argv_unchanged() {
         } else {
             vec!["client", "--host", "127.0.0.1", "--port", "9000"]
         };
+        // psql reads the null stdin, or the file, as a script that stops on error.
+        let stop: &[&str] = if postgres {
+            &["-v", "ON_ERROR_STOP=1"]
+        } else {
+            &[]
+        };
         let inputs = [
-            (vec![], vec![]), // Interactive invocation: no query source injected.
+            (vec![], stop.to_vec()), // No query source injected.
             (
                 vec!["--query", "SELECT 'x'"],
                 vec![if postgres { "-c" } else { "--query" }, "SELECT 'x'"],
             ),
             (
                 vec!["--queries-file", "queries.sql"],
-                vec![
-                    if postgres { "-f" } else { "--queries-file" },
-                    "queries.sql",
-                ],
+                [
+                    &[
+                        if postgres { "-f" } else { "--queries-file" },
+                        "queries.sql",
+                    ][..],
+                    stop,
+                ]
+                .concat(),
             ),
         ];
         let formats = if postgres {
