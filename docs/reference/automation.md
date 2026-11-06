@@ -74,7 +74,7 @@ Local errors redact external logs, subprocess output, and OS details where neede
 | Postgres create/restore/replica | Poll `postgres get`; verify connectivity and credentials separately |
 | Postgres config/restart | Re-read configuration, compare `pg_postmaster_start_time()` before/after restart, then `SHOW` the changed setting |
 | Postgres promote | Poll the replica until `isPrimary: true` |
-| Postgres HA switchover | Service-level state and readiness do not prove the internal node swap |
+| Postgres switchover | No completion signal: it may wait for the maintenance window, and service-level state, `isPrimary` and readiness do not confirm it |
 | CDC stop/update/start | Wait for `Paused`, update, explicitly restart, then verify ingestion |
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
