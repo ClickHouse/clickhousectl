@@ -24043,6 +24043,38 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
 }
 
 #[tokio::test]
+async fn ambiguous_org_name_points_to_org_id_with_every_match() {
+    // Organizations can share a name and have no positional ID, so the
+    // runtime error (exit 1) points to --org-id and lists both IDs (#1200).
+    let mock = MockServer::start().await;
+    mount_cursor_page(
+        &mock,
+        "/v1/organizations",
+        None,
+        serde_json::json!({"result": [
+            {"id": PAGED_ORG_FIRST, "name": "shared"},
+            {"id": PAGED_ORG_SECOND, "name": "shared"}
+        ]}),
+        1,
+    )
+    .await;
+
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-name", "shared"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for token in ["--org-id", PAGED_ORG_FIRST, PAGED_ORG_SECOND] {
+        assert!(message.contains(token), "missing {token}: {message}");
+    }
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
 async fn snapshot_list_reads_every_page_in_json_and_human_output() {
     const SNAPSHOTS_PATH: &str = "/v1/organizations/org-1/services/svc-1/snapshots";
     let mock = MockServer::start().await;
