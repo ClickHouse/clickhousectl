@@ -7,7 +7,7 @@ use clickhouse_cloud_api::models::{
     ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
     ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
     ByocInfrastructureValidation, InvitationPostRequest, MemberPatchRequest, NotificationType,
-    OrganizationPatchRequest, RoleCreateRequest, RoleUpdateRequest,
+    Organization, OrganizationPatchRequest, RoleCreateRequest, RoleUpdateRequest,
 };
 
 impl CloudClient {
@@ -462,10 +462,27 @@ impl CloudClient {
                 .id
                 .map(|id| id.to_string())
                 .ok_or_else(|| CloudError::new("Organization response is missing its id")),
-            _ => Err(CloudError::new(
-                "Multiple organizations found. Specify --org-id or --org-name to choose one. \
-                 Use `clickhousectl cloud org list` to see your organizations.",
-            )),
+            // The caller left out a required selector: a usage error that
+            // names every candidate, since they are already fetched.
+            _ => Err(CloudError::usage(multiple_organizations_message(
+                &organizations,
+            ))),
         }
     }
+}
+
+fn multiple_organizations_message(organizations: &[Organization]) -> String {
+    let mut message = String::from(
+        "these credentials can see more than one organization; \
+         choose one with --org-id <ID> or --org-name <NAME>:",
+    );
+    for organization in organizations {
+        let id = organization
+            .id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(no id)".to_string());
+        let name = organization.name.as_deref().unwrap_or("(no name)");
+        message.push_str(&format!("\n  {id}  {name}"));
+    }
+    message
 }
