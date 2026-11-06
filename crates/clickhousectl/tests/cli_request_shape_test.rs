@@ -21972,6 +21972,7 @@ async fn clickstack_source_create_accepts_all_variants_and_nested_log_fields() {
             "from":{"databaseName":"d","tableName":"logs"},
             "defaultTableSelectExpression":"*", "timestampValueExpression":"Timestamp",
             "serviceVersionExpression":"ServiceVersion",
+            "eventNameExpression":"EventName", "severityNumberExpression":"SeverityNumber",
             "filterSettings":{"databaseName":"d","tableName":"filters","columns":[
                 {"name":"service","label":"Service","allowAll":true,"valueExpression":"ServiceName"}
             ]},
