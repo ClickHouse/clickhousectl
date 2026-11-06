@@ -2,10 +2,10 @@ use super::lifecycle::{build_service_state_patch_request, service_delete_error};
 use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup};
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
-    InstanceServiceQueryApiEndpointsPostRequest, ReplicaAwareRouting,
-    ReplicaAwareRoutingPatchRequest, ScalingSchedule, ScalingSchedulePostRequest,
-    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
-    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    InstanceServiceQueryApiEndpointsPostRequest, JwtProvider, JwtProviderPostRequest,
+    JwtProviderPutRequest, ReplicaAwareRouting, ReplicaAwareRoutingPatchRequest, ScalingSchedule,
+    ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest, Service,
+    ServiceClickhouseSetting, ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
     ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema,
     ServicePasswordPatchRequest, ServicePatchRequest, ServicePostRequest, ServiceProfile,
     ServiceReplicaScalingPatchRequest, ServiceStatePatchRequestCommand, UpgradeWindow,
@@ -297,6 +297,79 @@ impl CloudClient {
         let response = self
             .api()
             .upgrade_window_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
+    pub async fn list_jwt_providers(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<Vec<JwtProvider>> {
+        let response = self
+            .api()
+            .jwt_provider_get_list(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_jwt_provider(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        provider_name: &str,
+    ) -> crate::cloud::client::Result<JwtProvider> {
+        let response = self
+            .api()
+            .jwt_provider_get(org_id, service_id, provider_name)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn create_jwt_provider(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &JwtProviderPostRequest,
+    ) -> crate::cloud::client::Result<JwtProvider> {
+        let response = self
+            .api()
+            .jwt_provider_create(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_jwt_provider(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        provider_name: &str,
+        request: &JwtProviderPutRequest,
+    ) -> crate::cloud::client::Result<JwtProvider> {
+        let response = self
+            .api()
+            .jwt_provider_update(org_id, service_id, provider_name, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_jwt_provider(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        provider_name: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .jwt_provider_delete(org_id, service_id, provider_name)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Ok(DeleteResponse {

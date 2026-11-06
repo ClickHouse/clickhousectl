@@ -54,6 +54,12 @@ clickhousectl cloud service get <service-id>
 
 Cloud validates counts against the organization and warehouse limits. Horizontal autoscaling requires its organization feature; use `scale --help` for the separate minimum/maximum replica controls. BYOC services use `profile list --byoc-id` and the returned profile's exact memory size; see `cloud org byoc --help` for preflight and provisioning.
 
+Enterprise and BYOC organizations can change the instance profile with `scale --profile`. Send a standard profile on its own, without memory flags; a BYOC profile needs `--min-replica-memory-gb` and `--max-replica-memory-gb` both equal to its memory size. While a scaling-schedule window is active, the new profile applies once the window ends.
+
+```bash
+clickhousectl cloud service scale <service-id> --profile v1-highmem-s
+```
+
 Discover service setting names and types before changing them:
 
 ```bash
@@ -76,6 +82,32 @@ clickhousectl cloud service replica-aware-routing update <service-id> --native-e
 ```
 
 Service tag and IP updates have explicit add/remove flags. Add and remove tags in separate calls. Unmatched removals exit 0 with a warning; verify the resulting service rather than relying on exit 0 to prove a match.
+
+## Let users sign in with a JWT
+
+JWT authentication providers are beta and need the Enterprise tier. A service accepts tokens from up to five providers. A token holder signs in as the `default` user and receives the ClickHouse roles listed in the token's roles claim. Cloud fetches the JWKS URL when you create or update a provider, so it must be a public `https://` URL that serves at least one RS256 key.
+
+```bash
+clickhousectl cloud service jwt-provider create <service-id> corp-sso \
+  --issuer https://auth.example.com --audience analytics \
+  --jwks-url https://auth.example.com/.well-known/jwks.json \
+  --roles-claim clickhouse:roles
+clickhousectl cloud service jwt-provider list <service-id>
+```
+
+Provider names use lowercase letters, digits and hyphens. Repeating `create` with the same name and configuration succeeds without a change; the same name with a different configuration fails, so change an existing provider with `update`.
+
+**`update` replaces the whole configuration.** Pass `--issuer`, `--audience` and `--jwks-url` every time, and pass `--roles-claim` again to keep it: omitting it removes the stored roles claim. Read the current values first:
+
+```bash
+clickhousectl cloud service jwt-provider get <service-id> corp-sso
+clickhousectl cloud service jwt-provider update <service-id> corp-sso \
+  --issuer https://auth.example.com --audience analytics \
+  --jwks-url https://auth.example.com/.well-known/jwks-v2.json \
+  --roles-claim clickhouse:roles
+```
+
+`jwt-provider delete <service-id> <name>` removes a provider, and the service stops accepting its tokens. With `--name <service-name>` in place of the service ID, the provider name is the only positional argument.
 
 ## Back up and restore
 

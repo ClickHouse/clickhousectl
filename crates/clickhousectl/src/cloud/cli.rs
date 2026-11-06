@@ -136,7 +136,8 @@ CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
   Reads: list, get, profile list, settings list/get/schema, prometheus, query,
     query-endpoint get, private-endpoint get-config, backup-config get,
-    scaling-schedule get, upgrade-window get. Other commands need API key auth.
+    scaling-schedule get, upgrade-window get, jwt-provider list/get.
+    Other commands need API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]

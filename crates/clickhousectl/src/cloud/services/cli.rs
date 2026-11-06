@@ -350,6 +350,14 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
+        /// Instance profile (enterprise and BYOC only), e.g. v1-highmem-s
+        ///
+        /// Omit to keep the current profile. A BYOC profile needs both memory flags equal to its
+        /// size; any other profile cannot be combined with a memory change.
+        /// `cloud service profile list` shows the available profiles.
+        #[arg(long)]
+        profile: Option<String>,
+
         /// Fixed replica count for vertical autoscaling (up to 50)
         ///
         /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
@@ -468,6 +476,20 @@ CONTEXT FOR AGENTS:
     ReplicaAwareRouting {
         #[command(subcommand)]
         command: ReplicaAwareRoutingCommands,
+    },
+
+    /// Manage JWT authentication providers (Beta)
+    #[command(
+        name = "jwt-provider",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Enterprise tier only; a service has at most 5 providers.
+  Token holders sign in as the `default` user with the roles listed in the token's roles claim.
+  Create and update fetch the JWKS URL first: it must be public https:// with an RS256 key."
+    )]
+    JwtProvider {
+        #[command(subcommand)]
+        command: JwtProviderCommands,
     },
 
     /// Get Prometheus metrics
@@ -829,6 +851,154 @@ pub enum ReplicaAwareRoutingCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum JwtProviderCommands {
+    /// List JWT providers (Beta)
+    List {
+        /// Service ID
+        #[command(flatten)]
+        service_id: NameSelector,
+    },
+
+    /// Get JWT provider details (Beta)
+    Get {
+        #[command(flatten)]
+        target: JwtProviderTarget,
+    },
+
+    /// Create a JWT provider (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Retry-safe: the same name and configuration succeeds unchanged; a different configuration
+    under an existing name fails with 409, so change it with `jwt-provider update`.")]
+    Create {
+        #[command(flatten)]
+        target: JwtProviderTarget,
+
+        /// Expected `iss` claim of the tokens
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        issuer: String,
+
+        /// Expected `aud` claim of the tokens
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        audience: String,
+
+        /// Public https:// URL of the JSON Web Key Set
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        jwks_url: String,
+
+        /// Token claim listing the ClickHouse roles to grant
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        roles_claim: Option<String>,
+    },
+
+    /// Replace a JWT provider's configuration (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Replaces the whole configuration, so omitting --roles-claim removes an existing roles claim.
+  Typical flow: `jwt-provider get` first, then pass every value to keep.")]
+    Update {
+        #[command(flatten)]
+        target: JwtProviderTarget,
+
+        /// Expected `iss` claim of the tokens
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        issuer: String,
+
+        /// Expected `aud` claim of the tokens
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        audience: String,
+
+        /// Public https:// URL of the JSON Web Key Set
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        jwks_url: String,
+
+        /// Token claim listing roles to grant; omit to remove the existing one
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        roles_claim: Option<String>,
+    },
+
+    /// Delete a JWT provider (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Tokens issued by the provider are no longer accepted.")]
+    Delete {
+        #[command(flatten)]
+        target: JwtProviderTarget,
+    },
+}
+
+/// The service selector plus the provider's natural key, with the same
+/// grammar as [`ServiceSettingTarget`]: `<ID> <PROVIDER_NAME>` or
+/// `--name <SERVICE> <PROVIDER_NAME>`.
+#[derive(clap::Args)]
+pub struct JwtProviderTarget {
+    /// Service ID, or provider name with --name
+    #[arg(value_name = "ID_OR_PROVIDER_NAME")]
+    id_or_provider_name: String,
+    /// JWT provider name when selecting by service ID
+    #[arg(
+        value_name = "PROVIDER_NAME",
+        required_unless_present = "name",
+        conflicts_with = "name"
+    )]
+    provider_name: Option<String>,
+    /// Exact service name within the selected organization
+    #[arg(long)]
+    name: Option<String>,
+}
+
+impl JwtProviderTarget {
+    /// The service selector and the validated provider name.
+    ///
+    /// Which positional holds the provider name depends on `--name`, so clap
+    /// cannot check it. The name becomes a request path segment: rejecting
+    /// anything outside the documented `[a-z0-9-]` alphabet keeps a value
+    /// such as `..` from redirecting the request to the service itself.
+    /// Length and reserved prefixes are left to Cloud.
+    pub(in crate::cloud) fn parts(&self) -> crate::cloud::client::Result<(NameSelector, &str)> {
+        let (selector, provider_name) = match &self.name {
+            Some(name) => (
+                NameSelector {
+                    id: None,
+                    name: Some(name.clone()),
+                },
+                self.id_or_provider_name.as_str(),
+            ),
+            None => (
+                NameSelector {
+                    id: Some(self.id_or_provider_name.clone()),
+                    name: None,
+                },
+                self.provider_name
+                    .as_deref()
+                    .expect("clap requires the provider name with a positional ID"),
+            ),
+        };
+        if provider_name.is_empty()
+            || !provider_name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(crate::cloud::client::CloudError::usage(format!(
+                "invalid JWT provider name '{provider_name}': use lowercase letters, digits and hyphens"
+            )));
+        }
+        Ok((selector, provider_name))
+    }
+}
+
+impl JwtProviderCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            JwtProviderCommands::List { .. } | JwtProviderCommands::Get { .. } => false,
+            JwtProviderCommands::Create { .. }
+            | JwtProviderCommands::Update { .. }
+            | JwtProviderCommands::Delete { .. } => true,
+        }
+    }
+}
+
 impl ReplicaAwareRoutingCommands {
     fn is_write(&self) -> bool {
         match self {
@@ -908,6 +1078,7 @@ impl ServiceCommands {
             ServiceCommands::Snapshot { command } => command.is_write(),
             ServiceCommands::UpgradeWindow { command } => command.is_write(),
             ServiceCommands::ReplicaAwareRouting { command } => command.is_write(),
+            ServiceCommands::JwtProvider { command } => command.is_write(),
         }
     }
 }
@@ -1453,6 +1624,177 @@ mod tests {
         );
     }
 
+    fn jwt_provider_command(args: &[&str]) -> JwtProviderCommands {
+        let mut full = vec!["clickhousectl", "cloud", "service", "jwt-provider"];
+        full.extend(args);
+        let ServiceCommands::JwtProvider { command } = parse_service(&full) else {
+            panic!("expected service jwt-provider");
+        };
+        command
+    }
+
+    #[test]
+    fn parses_jwt_provider_create_with_every_flag_and_classifies_writes() {
+        let command = jwt_provider_command(&[
+            "create",
+            "svc-1",
+            "okta",
+            "--issuer",
+            "https://auth.example.com",
+            "--audience",
+            "analytics",
+            "--jwks-url",
+            "https://auth.example.com/jwks.json",
+            "--roles-claim",
+            "clickhouse:roles",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(command.is_write());
+        let JwtProviderCommands::Create {
+            target,
+            issuer,
+            audience,
+            jwks_url,
+            roles_claim,
+        } = command
+        else {
+            panic!("expected jwt-provider create");
+        };
+        let (selector, provider_name) = target.parts().unwrap();
+        assert_eq!(selector.id.as_deref(), Some("svc-1"));
+        assert!(selector.name.is_none());
+        assert_eq!(provider_name, "okta");
+        assert_eq!(issuer, "https://auth.example.com");
+        assert_eq!(audience, "analytics");
+        assert_eq!(jwks_url, "https://auth.example.com/jwks.json");
+        assert_eq!(roles_claim.as_deref(), Some("clickhouse:roles"));
+
+        for (args, write) in [
+            (vec!["list", "svc-1"], false),
+            (vec!["get", "svc-1", "okta"], false),
+            (vec!["delete", "svc-1", "okta"], true),
+            (
+                vec![
+                    "update",
+                    "svc-1",
+                    "okta",
+                    "--issuer",
+                    "i",
+                    "--audience",
+                    "a",
+                    "--jwks-url",
+                    "u",
+                ],
+                true,
+            ),
+        ] {
+            let mut full = vec!["clickhousectl", "cloud", "service", "jwt-provider"];
+            full.extend(args);
+            assert_write(&full, write);
+        }
+    }
+
+    #[test]
+    fn jwt_provider_update_roles_claim_is_optional() {
+        let JwtProviderCommands::Update { roles_claim, .. } = jwt_provider_command(&[
+            "update",
+            "svc-1",
+            "okta",
+            "--issuer",
+            "i",
+            "--audience",
+            "a",
+            "--jwks-url",
+            "u",
+        ]) else {
+            panic!("expected jwt-provider update");
+        };
+        assert!(roles_claim.is_none());
+    }
+
+    #[test]
+    fn jwt_provider_configuration_flags_reject_empty_values() {
+        for flag in ["--issuer", "--audience", "--jwks-url", "--roles-claim"] {
+            for action in ["create", "update"] {
+                let mut args = vec![
+                    "clickhousectl",
+                    "cloud",
+                    "service",
+                    "jwt-provider",
+                    action,
+                    "svc-1",
+                    "okta",
+                    "--issuer",
+                    "i",
+                    "--audience",
+                    "a",
+                    "--jwks-url",
+                    "u",
+                ];
+                if let Some(position) = args.iter().position(|arg| *arg == flag) {
+                    args[position + 1] = "";
+                } else {
+                    args.extend([flag, ""]);
+                }
+                let error = Cli::try_parse_from(&args)
+                    .err()
+                    .unwrap_or_else(|| panic!("empty {flag} on {action} should fail"));
+                assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            }
+        }
+    }
+
+    #[test]
+    fn jwt_provider_target_reads_the_provider_name_after_a_service_name() {
+        for action in ["get", "delete"] {
+            let command = jwt_provider_command(&[action, "--name", "analytics", "okta"]);
+            let (JwtProviderCommands::Get { target } | JwtProviderCommands::Delete { target }) =
+                command
+            else {
+                panic!("expected jwt-provider {action}");
+            };
+            let (selector, provider_name) = target.parts().unwrap();
+            assert_eq!(selector.name.as_deref(), Some("analytics"));
+            assert!(selector.id.is_none());
+            assert_eq!(provider_name, "okta");
+
+            let prefix = ["clickhousectl", "cloud", "service", "jwt-provider", action];
+            for suffix in [
+                vec!["svc-1"],
+                vec!["--name", "analytics"],
+                vec!["svc-1", "okta", "--name", "analytics"],
+            ] {
+                assert!(Cli::try_parse_from(prefix.into_iter().chain(suffix)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn jwt_provider_target_rejects_names_outside_the_documented_alphabet() {
+        for selector in [vec!["svc-1"], vec!["--name", "analytics"]] {
+            for provider_name in ["..", "a/b", "Okta", "okta_1", "a?b"] {
+                let mut args = vec!["get"];
+                args.extend(selector.iter().copied());
+                args.push(provider_name);
+                let JwtProviderCommands::Get { target } = jwt_provider_command(&args) else {
+                    panic!("expected jwt-provider get");
+                };
+                let error = target.parts().unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    crate::cloud::client::CloudErrorKind::Usage,
+                    "{provider_name}"
+                );
+            }
+        }
+        let JwtProviderCommands::Get { target } = jwt_provider_command(&["get", "svc-1", "okta-2"])
+        else {
+            panic!("expected jwt-provider get");
+        };
+        assert_eq!(target.parts().unwrap().1, "okta-2");
+    }
+
     #[test]
     fn parses_scaling_schedule_commands_and_classifies_writes() {
         let get = parse_service(&[
@@ -1798,6 +2140,7 @@ mod tests {
             autoscaling_mode,
             idle_scaling,
             idle_timeout_minutes,
+            profile,
             ..
         } = scale
         else {
@@ -1811,6 +2154,7 @@ mod tests {
         assert!(autoscaling_mode.is_none());
         assert!(idle_scaling.is_none());
         assert!(idle_timeout_minutes.is_none());
+        assert!(profile.is_none());
 
         let reset = parse_service(&[
             "clickhousectl",
@@ -2157,6 +2501,8 @@ mod tests {
             "false",
             "--idle-timeout-minutes",
             "15",
+            "--profile",
+            "v1-highmem-s",
             "--org-id",
             "org-1",
         ]);
@@ -2169,6 +2515,7 @@ mod tests {
             max_replicas,
             idle_scaling,
             idle_timeout_minutes,
+            profile,
             ..
         } = command
         else {
@@ -2182,6 +2529,7 @@ mod tests {
         assert!(max_replicas.is_none());
         assert_eq!(idle_scaling, Some(false));
         assert_eq!(idle_timeout_minutes, Some(15));
+        assert_eq!(profile.as_deref(), Some("v1-highmem-s"));
     }
 
     #[test]
