@@ -603,7 +603,7 @@ impl CloudClient {
             .get_or_try_init(|| async {
                 match (&self.organization_id, &self.organization_name) {
                     (Some(_), Some(_)) => {
-                        Err(CloudError::new("--org-id conflicts with --org-name"))
+                        Err(CloudError::usage("--org-id conflicts with --org-name"))
                     }
                     (Some(id), None) => Ok(id.clone()),
                     (None, Some(name)) => {

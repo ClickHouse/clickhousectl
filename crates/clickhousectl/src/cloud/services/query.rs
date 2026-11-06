@@ -62,11 +62,11 @@ async fn resolve_service(
                 .ok_or_else(|| CloudError::new("resolved service is missing from the list"))
         }
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
-        (Some(_), Some(_)) => Err(CloudError::new(
+        (Some(_), Some(_)) => Err(CloudError::usage(
             "supply either a positional service ID or --name",
         )),
         // Clap rejects this state; retain the check for any future non-CLI caller.
-        (None, None) => Err(CloudError::new(
+        (None, None) => Err(CloudError::usage(
             "supply a positional service ID or --name to identify the service",
         )),
     }
@@ -1184,10 +1184,10 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
 
     if let Some(query) = inline {
         if query.trim().is_empty() {
-            return Err(CloudError::new("--query was empty"));
+            return Err(CloudError::usage("--query was empty"));
         }
         if inline_query_conflicts_with_stdin(inline, stdin_input()) {
-            return Err(CloudError::new(INLINE_QUERY_WITH_STDIN_ERROR));
+            return Err(CloudError::usage(INLINE_QUERY_WITH_STDIN_ERROR));
         }
         return Ok(query.to_string());
     }
@@ -1202,13 +1202,13 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
         };
         let content = decode_query_sql(bytes, &source)?;
         if content.trim().is_empty() {
-            return Err(CloudError::new("queries file was empty"));
+            return Err(CloudError::usage("queries file was empty"));
         }
         return Ok(content);
     }
 
     if std::io::stdin().is_terminal() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.",
         ));
     }
@@ -1217,7 +1217,7 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
     std::io::stdin().read_to_end(&mut bytes)?;
     let content = decode_query_sql(bytes, "stdin")?;
     if content.trim().is_empty() {
-        return Err(CloudError::new("no SQL received on stdin"));
+        return Err(CloudError::usage("no SQL received on stdin"));
     }
     Ok(content)
 }
@@ -1233,6 +1233,28 @@ fn default_query_format() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
+
+    #[test]
+    fn empty_sql_is_a_usage_error_and_an_unreadable_file_is_io() {
+        let directory = tempfile::tempdir().unwrap();
+        let empty = directory.path().join("empty.sql");
+        std::fs::write(&empty, " \n").unwrap();
+        for error in [
+            read_query_sql(Some(" "), None).unwrap_err(),
+            read_query_sql(None, empty.to_str()).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, CloudErrorKind::Usage, "{error}");
+        }
+
+        let missing = directory.path().join("missing.sql");
+        let error = read_query_sql(None, missing.to_str()).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure.map(|failure| failure.kind),
+            Some(FailureKind::Io)
+        );
+    }
 
     #[test]
     fn only_a_401_or_403_counts_as_a_stored_query_key_rejection() {

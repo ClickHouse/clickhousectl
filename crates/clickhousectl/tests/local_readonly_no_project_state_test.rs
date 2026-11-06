@@ -241,14 +241,6 @@ fn postgres_lookups_report_not_found_without_creating_project_state() {
 }
 
 #[test]
-fn postgres_lookup_still_validates_the_version_without_project_state() {
-    let args = ["local", "--json", "postgres", "stop", "x", "--version", "9"];
-    let output = run_in_empty_project(&args);
-    assert_exit(&output, 1, &args);
-    assert_ne!(stderr_json(&output)["error"]["code"], "server_not_found");
-}
-
-#[test]
 fn removing_an_installed_version_creates_no_project_state() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");

@@ -1,6 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::print_human;
 use crate::cloud::shared::resolve_org_id;
+use crate::failure::{ApiFailure, FailureKind};
 use clickhouse_cloud_api::models::{
     PgConfig, PgConfigDefaultToastCompression, PgConfigDefaultTransactionIsolation,
     PgConfigEnableParallelHash, PgConfigIoMethod, PgConfigLogLockWaits,
@@ -10,10 +11,13 @@ use serde::de::DeserializeOwned;
 use std::path::Path;
 
 pub(super) fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| CloudError::new(format!("failed to read {}: {}", path.display(), e)))?;
-    serde_json::from_str(&contents)
-        .map_err(|e| CloudError::new(format!("failed to parse {} as JSON: {}", path.display(), e)))
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        CloudError::new(format!("failed to read {}: {}", path.display(), e))
+            .with_failure(ApiFailure::new(FailureKind::Io))
+    })?;
+    serde_json::from_str(&contents).map_err(|e| {
+        CloudError::usage(format!("failed to parse {} as JSON: {}", path.display(), e))
+    })
 }
 
 /// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
@@ -85,18 +89,18 @@ const PG_CONFIG_KEYS: [&str; 60] = [
 fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
     let config = doc
         .as_object()
-        .ok_or_else(|| CloudError::new("pgConfig must be a JSON object"))?;
+        .ok_or_else(|| CloudError::usage("pgConfig must be a JSON object"))?;
 
     for (key, value) in config {
         if !PG_CONFIG_KEYS.contains(&key.as_str()) {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "unknown pgConfig key '{key}'; expected one of: {}",
                 PG_CONFIG_KEYS.join(", ")
             )));
         }
 
         if value.is_null() {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid pgConfig value for '{key}': null is not supported"
             )));
         }
@@ -113,13 +117,13 @@ fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
         };
         if let Some(allowed) = allowed {
             let Some(value) = value.as_str() else {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "invalid pgConfig value for '{key}': expected one of: {}",
                     allowed.join(", ")
                 )));
             };
             if !allowed.contains(&value) {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "invalid pgConfig value '{value}' for '{key}'; expected one of: {}",
                     allowed.join(", ")
                 )));
@@ -130,14 +134,14 @@ fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
 }
 
 fn pg_config_from_json(doc: serde_json::Value) -> CloudResult<PgConfig> {
-    validate_pg_config(&doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))?;
-    serde_json::from_value(doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))
+    validate_pg_config(&doc).map_err(|e| CloudError::usage(format!("invalid pgConfig: {e}")))?;
+    serde_json::from_value(doc).map_err(|e| CloudError::usage(format!("invalid pgConfig: {e}")))
 }
 
 pub(super) fn load_pg_config_file(path: &Path) -> CloudResult<PgConfig> {
     let doc = load_json_file::<serde_json::Value>(path)?;
     pg_config_from_json(doc)
-        .map_err(|e| CloudError::new(format!("invalid PgConfig file {}: {e}", path.display())))
+        .map_err(|e| CloudError::usage(format!("invalid PgConfig file {}: {e}", path.display())))
 }
 
 /// Builds the `postgres config` write body from a user-supplied JSON document.
@@ -152,28 +156,28 @@ pub(super) fn load_pg_config_file(path: &Path) -> CloudResult<PgConfig> {
 fn instance_config_from_json(doc: &serde_json::Value) -> CloudResult<PostgresInstanceConfig> {
     let root = doc
         .as_object()
-        .ok_or_else(|| CloudError::new("configuration document must be a JSON object"))?;
+        .ok_or_else(|| CloudError::usage("configuration document must be a JSON object"))?;
     for key in root.keys() {
         if key != "pgConfig" && key != "pgBouncerConfig" {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "unknown configuration section '{key}'; expected pgConfig and pgBouncerConfig"
             )));
         }
     }
     let pg_config = root.get("pgConfig").ok_or_else(|| {
-        CloudError::new(
+        CloudError::usage(
             "configuration document is missing required 'pgConfig' section; use {} to make it explicitly empty",
         )
     })?;
     let pg_bouncer_config = root.get("pgBouncerConfig").ok_or_else(|| {
-        CloudError::new(
+        CloudError::usage(
             "configuration document is missing required 'pgBouncerConfig' section; use {} to make it explicitly empty",
         )
     })?;
     Ok(PostgresInstanceConfig {
         pg_config: pg_config_from_json(pg_config.clone())?,
         pg_bouncer_config: serde_json::from_value(pg_bouncer_config.clone())
-            .map_err(|e| CloudError::new(format!("invalid pgBouncerConfig: {e}")))?,
+            .map_err(|e| CloudError::usage(format!("invalid pgBouncerConfig: {e}")))?,
     })
 }
 
@@ -187,11 +191,11 @@ pub(super) fn parse_pg_config_overrides(
     let mut out = serde_json::Map::new();
     for entry in sets {
         let (key, val) = entry.split_once('=').ok_or_else(|| {
-            CloudError::new(format!("invalid --set '{}': expected key=value", entry))
+            CloudError::usage(format!("invalid --set '{}': expected key=value", entry))
         })?;
         let key = key.trim();
         if key.is_empty() {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid --set '{}': key cannot be empty",
                 entry
             )));
@@ -264,7 +268,9 @@ pub async fn postgres_config_patch(
             "pgConfig": serde_json::Value::Object(overrides),
             "pgBouncerConfig": {},
         }))
-        .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
+        .map_err(|e| {
+            CloudError::usage(format!("failed to build config from --set entries: {}", e))
+        })?
     };
 
     let org_id = resolve_org_id(client).await?;

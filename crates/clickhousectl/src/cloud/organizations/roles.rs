@@ -9,7 +9,7 @@ use clickhouse_cloud_api::models::{
 use tabled::{Table, Tabled, settings::Style};
 
 fn invalid_role_request(source: &str, message: impl std::fmt::Display) -> CloudError {
-    CloudError::new(format!(
+    CloudError::usage(format!(
         "invalid request body in config {source}: {message}"
     ))
 }

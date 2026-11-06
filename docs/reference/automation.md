@@ -48,6 +48,8 @@ Paginated commands require command-specific handling. `cloud org list`, `cloud s
 | `3` | Cancellation |
 | `4` | Authentication required/rejected, including OAuth-only writes |
 
+Exit `2` also covers input that is checked after parsing but can never succeed, such as an unknown `--provider`, a malformed `--tag`, `--ip-allow` or `--role-id` entry, `--min-replicas` without `--max-replicas`, empty SQL, a `--file` body that is not valid JSON or has unknown fields, or `cloud auth login --interactive` without a TTY. A file that cannot be read is a runtime error (`1`, code `io`), and so is a check that depends on the resource's current state.
+
 Spawned native clients retain their own output and exit status. A successful wrapper handoff does not prove SQL succeeded.
 
 Local and Cloud runtime errors in JSON mode write an envelope to stderr:
@@ -119,10 +121,10 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | `server_selection_required` | A server name (or, for `clickhouse stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
-| `invalid_server_name` | The server name contains path separators or `..` |
-| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (a pass-through `--config`, or `--http-port`/`--tcp-port` `0`) |
+| `invalid_server_name` | A stored server name contains path separators or `..`; a name given on the command line is rejected as a usage error |
+| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (`--http-port`/`--tcp-port` `0`); a pass-through `--config` or `-C` is a usage error |
 | `config_not_found` | The named `clickhouse start --config` file does not exist, or the name is ambiguous |
-| `invalid_config_name` | The config name is a path rather than a file in the configs dir |
+| `invalid_config_name` | The config name is a path rather than a file in the configs dir; `clickhouse start --config` rejects one as a usage error |
 | `invalid_version` | The version selector is invalid |
 | `version_not_installed` | The requested or configured version is not installed locally |
 | `binary_not_launchable` | The version is installed but its binary cannot be launched (missing, not a regular file, or not executable) |

@@ -184,7 +184,7 @@ async fn resolve_endpoint_id(
         (Some(id), None) => return Ok(id.clone()),
         (None, Some(name)) => name,
         _ => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "supply exactly one positional endpoint ID or --name",
             ));
         }
@@ -297,23 +297,23 @@ fn build_query_api_endpoint_request(value: Value) -> CloudResult<PublicQueryApiE
         ("database", &request.database),
     ] {
         if value.trim().is_empty() {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "`{field}` must contain a non-whitespace character"
             )));
         }
     }
     if request.sql.chars().count() > 4_194_304 {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "`sql` must contain at most 4194304 characters",
         ));
     }
     if request.api_key_ids.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "`apiKeyIds` must contain at least one API key ID",
         ));
     }
     if request.roles.is_empty() || request.roles.iter().any(String::is_empty) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "`roles` must contain at least one nonempty role and no empty roles",
         ));
     }

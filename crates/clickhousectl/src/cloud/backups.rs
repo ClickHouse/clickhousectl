@@ -132,12 +132,12 @@ fn build_snapshot_config_update_request(
     options: &SnapshotConfigUpdateOptions,
 ) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfigurationPatchRequest> {
     if options.enabled.is_none() && options.gap.is_none() && options.time_frame.is_none() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "provide at least one snapshot configuration change",
         ));
     }
     if options.gap.is_some() != options.time_frame.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--gap and --time-frame must be supplied together",
         ));
     }
@@ -473,7 +473,7 @@ fn build_backup_config_update_request(
     options: &BackupConfigUpdateOptions,
 ) -> CloudResult<BackupConfigurationPatchRequest> {
     if options.backup_start_time.is_some() && options.clear_backup_start_time {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--backup-start-time and --clear-backup-start-time cannot be used together",
         ));
     }
@@ -481,7 +481,7 @@ fn build_backup_config_update_request(
     if options.backup_start_time.is_some()
         && matches!(options.backup_period_hours, Some(period) if period != 24 && period != 48)
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--backup-period-hours must be 24 or 48 when --backup-start-time is set",
         ));
     }
@@ -521,26 +521,26 @@ fn bucket_provider<'a>(value: &'a Value, source: &str) -> CloudResult<&'a str> {
     value
         .as_object()
         .ok_or_else(|| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid request body in config {source}: expected a JSON object"
             ))
         })?
         .get("bucketProvider")
         .ok_or_else(|| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid request body in config {source}: missing field `bucketProvider`"
             ))
         })?
         .as_str()
         .ok_or_else(|| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid request body in config {source}: `bucketProvider` must be a string"
             ))
         })
 }
 
 fn unsupported_bucket_provider(source: &str, provider: &str) -> CloudError {
-    CloudError::new(format!(
+    CloudError::usage(format!(
         "invalid request body in config {source}: unsupported `bucketProvider` {provider:?}; expected AWS, GCP, or AZURE"
     ))
 }

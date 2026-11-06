@@ -34,7 +34,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         }
 
         let (key, raw_value) = part.split_once('=').ok_or_else(|| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid remove-private-endpoint segment '{}'",
                 part
             ))
@@ -45,7 +45,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
             "description" => description = Some(raw_value.to_string()),
             "cloud-provider" => {
                 if raw_value.trim().is_empty() {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "remove-private-endpoint '{}' requires a non-empty cloud-provider",
                         value
                     )));
@@ -59,7 +59,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
             }
             "region" => {
                 if raw_value.trim().is_empty() {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "remove-private-endpoint '{}' requires a non-empty region",
                         value
                     )));
@@ -72,7 +72,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
                 );
             }
             _ => {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
                     key
                 )));
@@ -81,7 +81,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
     }
 
     if id.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "remove-private-endpoint '{}' requires a non-empty id",
             value
         )));
@@ -90,19 +90,19 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
     let (cloud_provider, region) = match (cloud_provider, region) {
         (Some(cloud_provider), Some(region)) => (cloud_provider, region),
         (None, None) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "remove-private-endpoint '{}' requires cloud-provider and region",
                 value
             )));
         }
         (None, Some(_)) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "remove-private-endpoint '{}' requires cloud-provider",
                 value
             )));
         }
         (Some(_), None) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "remove-private-endpoint '{}' requires region",
                 value
             )));

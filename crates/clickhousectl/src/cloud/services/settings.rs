@@ -10,7 +10,7 @@ use tabled::{Table, Tabled, settings::Style};
 // rounded and sent, including numbers nested in future setting value shapes.
 fn validate_setting_numbers(value: &serde_json::Value, source: &str) -> CloudResult<()> {
     match value {
-        serde_json::Value::Number(number) if number.is_f64() => Err(CloudError::new(format!(
+        serde_json::Value::Number(number) if number.is_f64() => Err(CloudError::usage(format!(
             "{source}: numeric settings must be integers from {} to {}; decimal and exponent values must be JSON strings",
             i64::MIN,
             u64::MAX
@@ -36,15 +36,15 @@ fn parse_settings_map_document(
     source: &str,
 ) -> CloudResult<BTreeMap<String, serde_json::Value>> {
     let value: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|error| CloudError::new(format!("invalid JSON in {source}: {error}")))?;
+        .map_err(|error| CloudError::usage(format!("invalid JSON in {source}: {error}")))?;
     validate_setting_numbers(&value, source)?;
     let object = value.as_object().ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "{source} must contain a JSON object mapping setting names to values"
         ))
     })?;
     if object.is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "{source} must contain at least one setting"
         )));
     }
@@ -53,7 +53,7 @@ fn parse_settings_map_document(
             .get("settings")
             .is_some_and(|value| value.is_string() || value.is_object())
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "{source} looks like the API request wrapper; provide the decoded settings map, for example {{\"compatibility\":\"24.8\"}}"
         )));
     }
@@ -70,21 +70,21 @@ fn parse_setting_assignments(
     for (index, assignment) in assignments.iter().enumerate() {
         let position = index + 1;
         let (name, raw_value) = assignment.split_once('=').ok_or_else(|| {
-            CloudError::new(format!("--setting #{position} must use NAME=JSON_VALUE"))
+            CloudError::usage(format!("--setting #{position} must use NAME=JSON_VALUE"))
         })?;
         if name.trim().is_empty() {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "--setting #{position} has an empty setting name"
             )));
         }
         let value = serde_json::from_str(raw_value).map_err(|error| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "--setting #{position} value is not valid JSON: {error}; quote string values, for example compatibility=\"24.8\""
             ))
         })?;
         validate_setting_numbers(&value, &format!("--setting #{position} ('{name}')"))?;
         if settings.insert(name.to_string(), value).is_some() {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "setting '{name}' was provided more than once"
             )));
         }
@@ -123,7 +123,7 @@ fn build_service_settings_patch_request(
     settings: &BTreeMap<String, serde_json::Value>,
 ) -> CloudResult<ServiceClickhouseSettingsPatchRequest> {
     if settings.is_empty() {
-        return Err(CloudError::new("provide at least one ClickHouse setting"));
+        return Err(CloudError::usage("provide at least one ClickHouse setting"));
     }
     Ok(ServiceClickhouseSettingsPatchRequest {
         settings: Some(settings.clone()),
@@ -250,6 +250,7 @@ pub(super) async fn service_setting_unset(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
 
     #[test]
     fn builds_settings_patch_with_object_and_preserved_types() {
@@ -378,10 +379,8 @@ mod tests {
             "{}",
             r#"{"settings":{"compatibility":"26.2"}}"#,
         ] {
-            assert!(
-                parse_settings_map_document(document, "settings file").is_err(),
-                "{document}"
-            );
+            let error = parse_settings_map_document(document, "settings file").unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage, "{document}");
         }
         for assignments in [
             vec!["compatibility"],
@@ -390,10 +389,8 @@ mod tests {
             vec!["max_query_size=1", "max_query_size=2"],
         ] {
             let assignments: Vec<String> = assignments.iter().map(|a| a.to_string()).collect();
-            assert!(
-                parse_setting_assignments(&assignments).is_err(),
-                "{assignments:?}"
-            );
+            let error = parse_setting_assignments(&assignments).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage, "{assignments:?}");
         }
     }
 

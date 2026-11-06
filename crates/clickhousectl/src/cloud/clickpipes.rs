@@ -187,7 +187,7 @@ fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSour
         | ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity => {
             Ok(authentication)
         }
-        ClickPipePostKafkaSourceAuthentication::Unknown(value) => Err(CloudError::new(format!(
+        ClickPipePostKafkaSourceAuthentication::Unknown(value) => Err(CloudError::usage(format!(
             "unknown Kafka authentication method '{value}'"
         ))),
     }
@@ -213,7 +213,7 @@ fn parse_pubsub_authentication(value: &str) -> CloudResult<GcpAuthentication> {
                 WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
                     Ok(GcpAuthentication::WorkloadIdentity)
                 }
-                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::usage(format!(
                     "unknown Pub/Sub authentication method '{value}'"
                 ))),
             }
@@ -241,7 +241,7 @@ fn parse_bigquery_authentication(value: &str) -> CloudResult<GcpAuthentication> 
                 WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
                     Ok(GcpAuthentication::WorkloadIdentity)
                 }
-                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::usage(format!(
                     "unknown BigQuery authentication method '{value}'"
                 ))),
             }
@@ -266,7 +266,7 @@ fn parse_object_storage_authentication(
         | Auth::CONNECTION_STRING
         | Auth::SERVICE_ACCOUNT
         | Auth::ServiceAccountWorkloadIdentity) => Ok(authentication),
-        Auth::Unknown(value) => Err(CloudError::new(format!(
+        Auth::Unknown(value) => Err(CloudError::usage(format!(
             "unknown object-storage authentication method '{value}'"
         ))),
     }
@@ -2329,7 +2329,7 @@ async fn resolve_clickpipe_id(
         (Some(id), None) => return Ok(id.clone()),
         (None, Some(name)) => name,
         _ => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "supply exactly one positional ClickPipe ID or --name",
             ));
         }
@@ -2430,7 +2430,7 @@ fn build_object_storage_source(
 
     let source_type: ClickPipePostObjectStorageSourceType = parse_enum(&args.storage_type)?;
     if let ClickPipePostObjectStorageSourceType::Unknown(value) = &source_type {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "unknown object-storage source type '{value}'"
         )));
     }
@@ -2474,15 +2474,15 @@ fn build_object_storage_source(
     match authentication.as_ref() {
         Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE) => {
             if source_type != ClickPipePostObjectStorageSourceType::S3 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "IAM_ROLE authentication requires --storage-type s3",
                 ));
             }
             if !has_iam_role {
-                return Err(CloudError::new("--auth IAM_ROLE requires --iam-role"));
+                return Err(CloudError::usage("--auth IAM_ROLE requires --iam-role"));
             }
             if credential_groups != 1 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth IAM_ROLE accepts only --iam-role credentials",
                 ));
             }
@@ -2494,69 +2494,69 @@ fn build_object_storage_source(
                     | ClickPipePostObjectStorageSourceType::Gcs
                     | ClickPipePostObjectStorageSourceType::Dospaces
             ) {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "IAM_USER authentication requires --storage-type s3, gcs, or dospaces",
                 ));
             }
             if !has_access_key {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth IAM_USER requires --access-key-id and --secret-key",
                 ));
             }
             if credential_groups != 1 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth IAM_USER accepts only access-key credentials",
                 ));
             }
         }
         Some(ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING) => {
             if source_type != ClickPipePostObjectStorageSourceType::Azureblobstorage {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "CONNECTION_STRING authentication requires --storage-type azureblobstorage",
                 ));
             }
             if !has_connection_string {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth CONNECTION_STRING requires --connection-string",
                 ));
             }
             if credential_groups != 1 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth CONNECTION_STRING accepts only --connection-string credentials",
                 ));
             }
         }
         Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT) => {
             if source_type != ClickPipePostObjectStorageSourceType::Gcs {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "SERVICE_ACCOUNT authentication requires --storage-type gcs",
                 ));
             }
             if !has_service_account {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth SERVICE_ACCOUNT requires --service-account-file",
                 ));
             }
             if credential_groups != 1 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth SERVICE_ACCOUNT accepts only --service-account-file credentials",
                 ));
             }
         }
         Some(ClickPipePostObjectStorageSourceAuthentication::ServiceAccountWorkloadIdentity) => {
             if source_type != ClickPipePostObjectStorageSourceType::Gcs {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --storage-type gcs",
                 ));
             }
             if credential_groups != 0 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with credential flags",
                 ));
             }
         }
         Some(ClickPipePostObjectStorageSourceAuthentication::Unknown(value)) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "unknown object-storage authentication method '{value}'"
             )));
         }
@@ -2691,7 +2691,7 @@ fn build_kafka_credentials(
                 (Some(username), Some(password)) => {
                     Ok(serde_json::json!({ "username": username, "password": password }))
                 }
-                _ => Err(CloudError::new(format!(
+                _ => Err(CloudError::usage(format!(
                     "{authentication} requires --username and --password"
                 ))),
             }
@@ -2701,13 +2701,13 @@ fn build_kafka_credentials(
                 "accessKeyId": access_key_id,
                 "secretKey": secret_key
             })),
-            _ => Err(CloudError::new(
+            _ => Err(CloudError::usage(
                 "IAM_USER requires --access-key-id and --secret-key",
             )),
         },
         Auth::IAM_ROLE => {
             if args.iam_role.is_none() {
-                Err(CloudError::new("IAM_ROLE requires --iam-role"))
+                Err(CloudError::usage("IAM_ROLE requires --iam-role"))
             } else {
                 Ok(serde_json::Value::Null)
             }
@@ -2717,12 +2717,12 @@ fn build_kafka_credentials(
                 "certificate": certificate,
                 "privateKey": private_key
             })),
-            None => Err(CloudError::new(
+            None => Err(CloudError::usage(
                 "MUTUAL_TLS requires --client-certificate and --client-key",
             )),
         },
         Auth::ServiceAccountWorkloadIdentity => Ok(serde_json::Value::Null),
-        Auth::Unknown(value) => Err(CloudError::new(format!(
+        Auth::Unknown(value) => Err(CloudError::usage(format!(
             "unknown Kafka authentication method '{value}'"
         ))),
     }
@@ -2743,7 +2743,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
     )?;
 
     if args.protobuf_schema_file.is_some() && format != ClickPipePostKafkaSourceFormat::Protobuf {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--protobuf-schema-file can only be used with --format Protobuf",
         ));
     }
@@ -2752,7 +2752,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             || has_glue_registry_flags(args)
             || args.schema_registry_type.is_some())
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--protobuf-schema-file cannot be combined with schema registry flags",
         ));
     }
@@ -2761,7 +2761,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
     if args.event_hubs_connection_string.is_some()
         && source_type != ClickPipePostKafkaSourceType::Azureeventhub
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--event-hubs-connection-string requires --kafka-type azureeventhub",
         ));
     }
@@ -2771,7 +2771,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             .as_deref()
             .is_some_and(|authentication| authentication != "PLAIN")
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--event-hubs-connection-string supports only --auth PLAIN",
         ));
     }
@@ -2784,7 +2784,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             || args.client_certificate.is_some()
             || args.client_key.is_some())
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--event-hubs-connection-string cannot be combined with other broker credentials",
         ));
     }
@@ -2808,12 +2808,12 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
     match authentication.as_ref() {
         Some(Auth::ServiceAccountWorkloadIdentity) => {
             if source_type != ClickPipePostKafkaSourceType::Gcmk {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --kafka-type gcmk",
                 ));
             }
             if credential_groups != 0 {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with broker credential flags",
                 ));
             }
@@ -2822,7 +2822,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             let expected_groups = usize::from(args.event_hubs_connection_string.is_some())
                 + usize::from(args.username.is_some() || args.password.is_some());
             if credential_groups != expected_groups {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "--auth {} cannot be combined with IAM or mutual-TLS credential flags",
                     args.auth.as_deref().unwrap_or_default()
                 )));
@@ -2830,7 +2830,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
         }
         Some(Auth::IAM_ROLE) => {
             if credential_groups != usize::from(args.iam_role.is_some()) {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth IAM_ROLE accepts only --iam-role credentials",
                 ));
             }
@@ -2839,7 +2839,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             if credential_groups
                 != usize::from(args.access_key_id.is_some() || args.secret_key.is_some())
             {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth IAM_USER accepts only access-key credentials",
                 ));
             }
@@ -2848,13 +2848,13 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             if credential_groups
                 != usize::from(args.client_certificate.is_some() || args.client_key.is_some())
             {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--auth MUTUAL_TLS accepts only client-certificate credentials",
                 ));
             }
         }
         Some(Auth::Unknown(value)) => {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "unknown Kafka authentication method '{value}'"
             )));
         }
@@ -3113,22 +3113,22 @@ fn build_kafka_source(
 fn resolve_kinesis_auth(args: &KinesisSourceFields) -> CloudResult<&str> {
     let has_keys = args.access_key_id.is_some() || args.secret_key.is_some();
     if args.auth.as_deref() == Some("IAM_ROLE") && has_keys {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth IAM_ROLE cannot be combined with --access-key-id or --secret-key; remove the key flags or use IAM_USER",
         ));
     }
     if args.iam_role.is_some() && has_keys {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--iam-role cannot be combined with --access-key-id or --secret-key; choose role authentication or an access-key pair",
         ));
     }
     if args.auth.as_deref() == Some("IAM_USER") && args.iam_role.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth IAM_USER cannot be combined with --iam-role; remove --iam-role or use IAM_ROLE",
         ));
     }
     if args.access_key_id.is_some() != args.secret_key.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--access-key-id and --secret-key must be supplied together",
         ));
     }
@@ -3192,7 +3192,7 @@ fn build_kinesis_source(
             .iterator_timestamp
             .map(|timestamp| {
                 i64::try_from(timestamp).map_err(|_| {
-                    CloudError::new(format!("--iterator-timestamp {timestamp} is out of range"))
+                    CloudError::usage(format!("--iterator-timestamp {timestamp} is out of range"))
                 })
             })
             .transpose()?,
@@ -3305,7 +3305,7 @@ fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chro
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|datetime| datetime.with_timezone(&chrono::Utc))
         .map_err(|error| {
-            CloudError::new(format!(
+            CloudError::usage(format!(
                 "invalid --seek-timestamp '{value}': expected ISO 8601 / RFC 3339 format (e.g. 2026-04-10T12:00:00Z): {error}"
             ))
         })
@@ -3330,7 +3330,7 @@ fn build_pubsub_source(
     // can require the flag for `timestamp` but cannot forbid it for the other
     // values, so the inverse relationship is checked here.
     if args.seek_timestamp.is_some() && seek_type != ClickPipePostPubSubSourceSeektype::Timestamp {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type {}",
             args.seek_type
         )));
@@ -3338,10 +3338,10 @@ fn build_pubsub_source(
 
     let authentication = parse_pubsub_authentication(&args.auth)?;
     match (authentication, args.service_account_file.as_deref()) {
-        (GcpAuthentication::ServiceAccount, None) => Err(CloudError::new(
+        (GcpAuthentication::ServiceAccount, None) => Err(CloudError::usage(
             "--auth SERVICE_ACCOUNT requires --service-account-file",
         )),
-        (GcpAuthentication::WorkloadIdentity, Some(_)) => Err(CloudError::new(
+        (GcpAuthentication::WorkloadIdentity, Some(_)) => Err(CloudError::usage(
             "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
         )),
         (GcpAuthentication::ServiceAccount, Some(path)) => {
@@ -3615,14 +3615,14 @@ fn parse_kafka_patch_credentials(
         .filter_map(|(kind, matched)| matched.then_some(kind));
     match (matches.next(), matches.next()) {
         (Some(kind), None) => Ok(kind),
-        _ => Err(CloudError::new(format!(
+        _ => Err(CloudError::usage(format!(
             "invalid request body in config {source}: `source.kafka.credentials` must be exactly one supported credential object"
         ))),
     }
 }
 
 fn invalid_kafka_patch_auth(config_source: &str, message: &str) -> CloudError {
-    CloudError::new(format!(
+    CloudError::usage(format!(
         "invalid request body in config {config_source}: {message}"
     ))
 }
@@ -3644,7 +3644,7 @@ fn require_patch_object_fields(
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(CloudError::new(format!(
+        Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: `{path}` is missing required field{} {}",
             if missing.len() == 1 { "" } else { "s" },
             missing
@@ -3665,7 +3665,7 @@ fn validate_clickpipe_patch_required_fields(
     };
 
     if source.contains_key("bigquery") {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: `source.bigquery` cannot be updated by the ClickPipes API"
         )));
     }
@@ -3748,14 +3748,14 @@ fn validate_clickpipe_patch_source(
     .filter(|selected| *selected)
     .count();
     if selected_sources > 1 {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: `source` can update at most one provider"
         )));
     }
 
     if let Some(source) = &patch.kafka {
         if let Some(KafkaAuth::Unknown(value)) = &source.authentication {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid request body in config {config_source}: unknown `source.kafka.authentication` value `{value}`"
             )));
         }
@@ -3833,7 +3833,7 @@ fn validate_clickpipe_patch_source(
     if let Some(source) = &patch.kinesis
         && let Some(KinesisAuth::Unknown(value)) = &source.authentication
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: unknown `source.kinesis.authentication` value `{value}`"
         )));
     }
@@ -3841,7 +3841,7 @@ fn validate_clickpipe_patch_source(
     if let Some(source) = &patch.object_storage
         && let Some(ObjectStorageAuth::Unknown(value)) = &source.authentication
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: unknown `source.objectStorage.authentication` value `{value}`"
         )));
     }
@@ -3849,7 +3849,7 @@ fn validate_clickpipe_patch_source(
     if let Some(source) = &patch.pubsub
         && let Some(PubSubAuth::Unknown(value)) = &source.authentication
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: unknown `source.pubsub.authentication` value `{value}`"
         )));
     }
@@ -3859,7 +3859,7 @@ fn validate_clickpipe_patch_source(
         if let Some(mappings) = &source.table_mappings_to_add {
             for mapping in mappings {
                 if let PostgresAddEngine::Unknown(value) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.postgres.tableMappingsToAdd[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3868,7 +3868,7 @@ fn validate_clickpipe_patch_source(
         if let Some(mappings) = &source.table_mappings_to_remove {
             for mapping in mappings {
                 if let Some(PostgresRemoveEngine::Unknown(value)) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.postgres.tableMappingsToRemove[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3879,14 +3879,14 @@ fn validate_clickpipe_patch_source(
     if let Some(source) = &patch.mysql {
         validate_clickpipe_patch_port(source.port, "source.mysql.port", config_source)?;
         if let Some(MySqlAuth::Unknown(value)) = &source.authentication {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid request body in config {config_source}: unknown `source.mysql.authentication` value `{value}`"
             )));
         }
         if let Some(mappings) = &source.table_mappings_to_add {
             for mapping in mappings {
                 if let Some(MySqlAddEngine::Unknown(value)) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.mysql.tableMappingsToAdd[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3895,7 +3895,7 @@ fn validate_clickpipe_patch_source(
         if let Some(mappings) = &source.table_mappings_to_remove {
             for mapping in mappings {
                 if let Some(MySqlRemoveEngine::Unknown(value)) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.mysql.tableMappingsToRemove[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3905,14 +3905,14 @@ fn validate_clickpipe_patch_source(
 
     if let Some(source) = &patch.mongodb {
         if let Some(MongoReadPreference::Unknown(value)) = &source.read_preference {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid request body in config {config_source}: unknown `source.mongodb.readPreference` value `{value}`"
             )));
         }
         if let Some(mappings) = &source.table_mappings_to_add {
             for mapping in mappings {
                 if let Some(MongoAddEngine::Unknown(value)) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.mongodb.tableMappingsToAdd[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3921,7 +3921,7 @@ fn validate_clickpipe_patch_source(
         if let Some(mappings) = &source.table_mappings_to_remove {
             for mapping in mappings {
                 if let Some(MongoRemoveEngine::Unknown(value)) = &mapping.table_engine {
-                    return Err(CloudError::new(format!(
+                    return Err(CloudError::usage(format!(
                         "invalid request body in config {config_source}: unknown `source.mongodb.tableMappingsToRemove[].tableEngine` value `{value}`"
                     )));
                 }
@@ -3938,7 +3938,7 @@ fn validate_clickpipe_patch_port(
     config_source: &str,
 ) -> CloudResult<()> {
     if port.is_some_and(|port| !(1..=u16::MAX.into()).contains(&port)) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: `{path}` must be in the range 1..=65535"
         )));
     }
@@ -3962,7 +3962,7 @@ fn build_clickpipe_update_request(
         && request.field_mappings.is_none()
         && request.settings.is_none()
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: at least one PATCH field is required"
         )));
     }
@@ -4119,7 +4119,7 @@ fn build_cdc_scaling_request(
     if let (Some(cpu_millicores), Some(memory_gb)) = (values.cpu_millicores, values.memory_gb) {
         let required_memory_gb = f64::from(cpu_millicores) / 250.0;
         if memory_gb != required_memory_gb {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "--memory-gb must be {required_memory_gb} when --cpu-millicores is {cpu_millicores}"
             )));
         }
@@ -4295,19 +4295,19 @@ fn parse_create_field_mappings(
         .map(|(index, raw)| {
             let mapping: ClickPipeFieldMappingJson =
                 serde_json::from_str(raw).map_err(|error| {
-                    CloudError::new(format!(
+                    CloudError::usage(format!(
                         "--field-mapping #{}: invalid JSON object: {error}",
                         index + 1
                     ))
                 })?;
             if mapping.source_field.is_empty() {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "--field-mapping #{}: sourceField must not be empty",
                     index + 1
                 )));
             }
             if mapping.destination_field.is_empty() {
-                return Err(CloudError::new(format!(
+                return Err(CloudError::usage(format!(
                     "--field-mapping #{}: destinationField must not be empty",
                     index + 1
                 )));
@@ -4334,7 +4334,7 @@ fn build_create_request_args(
     source: ClickPipeSourceKind,
 ) -> CloudResult<BuiltCreateRequestArgs> {
     if args.start_paused && source.database_source_label().is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--start-paused is not supported for database ClickPipes",
         ));
     }
@@ -4342,15 +4342,17 @@ fn build_create_request_args(
         (None, None, None) => None,
         (Some(replicas), Some(cpu), Some(memory)) => {
             if !(1..=40).contains(&replicas) {
-                return Err(CloudError::new("--replicas must be in the range 1..=40"));
+                return Err(CloudError::usage("--replicas must be in the range 1..=40"));
             }
             if !(125..=2000).contains(&cpu) {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "--cpu-millicores must be in the range 125..=2000",
                 ));
             }
             if !memory.is_finite() || !(0.5..=8.0).contains(&memory) {
-                return Err(CloudError::new("--memory-gb must be in the range 0.5..=8"));
+                return Err(CloudError::usage(
+                    "--memory-gb must be in the range 0.5..=8",
+                ));
             }
             Some(clickhouse_cloud_api::models::ClickPipeScaling {
                 replicas: i64::from(replicas),
@@ -4361,19 +4363,19 @@ fn build_create_request_args(
             })
         }
         _ => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "initial scaling requires --replicas, --cpu-millicores, and --memory-gb together",
             ));
         }
     };
 
     if args.settings.kafka_read_committed.is_some() && !source.is_kafka() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--kafka-read-committed can only be used with clickpipe create kafka",
         ));
     }
     if args.settings.has_object_storage_setting() && source != ClickPipeSourceKind::ObjectStorage {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--object-storage-* settings can only be used with clickpipe create object-storage",
         ));
     }
@@ -4602,7 +4604,7 @@ async fn clickpipe_settings_update(
 /// forwarded to the API (which returns the canonical validation error).
 fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> CloudResult<T> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|error| CloudError::new(format!("invalid value '{}': {}", value, error)))
+        .map_err(|error| CloudError::usage(format!("invalid value '{}': {}", value, error)))
 }
 
 /// Parse `name:type` column specifications into library destination columns.
@@ -4616,7 +4618,7 @@ fn parse_column(
     column: &str,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationColumn> {
     let (name, column_type) = column.split_once(':').ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "Invalid column format '{}': expected name:type",
             column
         ))
@@ -4643,13 +4645,13 @@ const RESERVED_DESTINATION_ROLES: &[&str] = &["clickpipes", "clickpipes_system"]
 fn parse_destination_role_name(role: &str) -> CloudResult<String> {
     let trimmed = role.trim();
     if trimmed.is_empty() {
-        return Err(CloudError::new("a role name must not be empty"));
+        return Err(CloudError::usage("a role name must not be empty"));
     }
     if RESERVED_DESTINATION_ROLES
         .iter()
         .any(|reserved| reserved.eq_ignore_ascii_case(trimmed))
     {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "role names reserved by ClickPipes cannot be granted: {}",
             RESERVED_DESTINATION_ROLES.join(", ")
         )));
@@ -4698,7 +4700,7 @@ fn read_destination_table_definition(
     let definition: clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition =
         deserialize_strict_config(value, config_file)?;
     if let ClickPipeDestinationTableEngineType::Unknown(value) = &definition.engine.r#type {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid destination table definition in config {config_file}: unknown engine.type value `{value}`"
         )));
     }
@@ -4819,31 +4821,31 @@ fn print_created(
 
 fn parse_postgres_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
     let (source, target) = mapping.split_once(':').ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "invalid table mapping '{}': expected schema.table:target_table",
             mapping
         ))
     })?;
     let (schema, table) = source.split_once('.').ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "invalid table mapping '{}': expected schema.table:target_table",
             mapping
         ))
     })?;
     if schema.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': source schema must not be empty",
             mapping
         )));
     }
     if table.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': source table must not be empty",
             mapping
         )));
     }
     if target.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': target table must not be empty",
             mapping
         )));
@@ -4864,31 +4866,31 @@ fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
 
 fn parse_mongodb_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
     let (source, target) = mapping.split_once(':').ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "invalid table mapping '{}': expected database.collection:target_table",
             mapping
         ))
     })?;
     let (database, collection) = source.split_once('.').ok_or_else(|| {
-        CloudError::new(format!(
+        CloudError::usage(format!(
             "invalid table mapping '{}': expected database.collection:target_table",
             mapping
         ))
     })?;
     if database.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': source database must not be empty",
             mapping
         )));
     }
     if collection.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': source collection must not be empty",
             mapping
         )));
     }
     if target.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid table mapping '{}': target table must not be empty",
             mapping
         )));
@@ -4912,7 +4914,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let flag = format!("--table-mapping-json #{}", position + 1);
-    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let invalid = |detail: String| CloudError::usage(format!("{flag}: {detail}"));
     let field_list = fields.join(", ");
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|error| invalid(format!("invalid JSON: {error}")))?;
@@ -4948,7 +4950,7 @@ where
 
 fn required_table_mapping_name(flag: &str, field: &str, value: String) -> CloudResult<String> {
     if value.trim().is_empty() {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "{flag}: {field} is required and must not be empty"
         )));
     }
@@ -4969,12 +4971,12 @@ fn validate_table_mapping_entries(
                 .map(|entry| {
                     let entry = entry.trim().to_string();
                     if entry.is_empty() {
-                        return Err(CloudError::new(format!(
+                        return Err(CloudError::usage(format!(
                             "{flag}: {field} must not contain an empty entry"
                         )));
                     }
                     if unique && !seen.insert(entry.clone()) {
-                        return Err(CloudError::new(format!(
+                        return Err(CloudError::usage(format!(
                             "{flag}: {field} must not contain duplicate entry '{entry}'"
                         )));
                     }
@@ -4994,11 +4996,11 @@ fn resolve_custom_sorting_key(
         .as_ref()
         .is_some_and(|sorting_keys| !sorting_keys.is_empty());
     match use_custom_sorting_key {
-        Some(true) if !has_sorting_keys => Err(CloudError::new(format!(
+        Some(true) if !has_sorting_keys => Err(CloudError::usage(format!(
             "{flag}: useCustomSortingKey is true but sortingKeys is empty; list the destination \
              ORDER BY columns in sortingKeys"
         ))),
-        Some(false) if has_sorting_keys => Err(CloudError::new(format!(
+        Some(false) if has_sorting_keys => Err(CloudError::usage(format!(
             "{flag}: sortingKeys is set but useCustomSortingKey is false, which would ignore the \
              keys; omit useCustomSortingKey or set it to true"
         ))),
@@ -5022,7 +5024,7 @@ where
     if values.contains(&table_engine.as_str()) {
         Ok(())
     } else {
-        Err(CloudError::new(format!(
+        Err(CloudError::usage(format!(
             "{flag}: invalid tableEngine: unknown value '{table_engine}', expected one of: {}",
             values.join(", ")
         )))
@@ -5253,7 +5255,7 @@ fn parse_postgres_table_mapping_json(
     raw: &str,
 ) -> CloudResult<ClickPipePostgresPipeTableMapping> {
     let flag = format!("--table-mapping-json #{}", position + 1);
-    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let invalid = |detail: String| CloudError::usage(format!("{flag}: {detail}"));
     let fields = POSTGRES_TABLE_MAPPING_JSON_FIELDS.join(", ");
 
     let value: serde_json::Value =
@@ -5353,21 +5355,21 @@ fn validate_postgres_create_args(
     args: &PostgresCreateArgs,
 ) -> CloudResult<Vec<ClickPipePostgresPipeTableMapping>> {
     if args.port == 0 {
-        return Err(CloudError::new("--port must be in the range 1..=65535"));
+        return Err(CloudError::usage("--port must be in the range 1..=65535"));
     }
     if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
              --table-mapping-json <JSON> is required",
         ));
     }
     if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
         ));
     }
     if args.auth == "basic" && args.iam_role.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
         ));
     }
@@ -5375,7 +5377,7 @@ fn validate_postgres_create_args(
     // whole credential. Reject the pair rather than silently dropping it, the
     // same way basic auth rejects --iam-role.
     if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
         ));
     }
@@ -5383,27 +5385,27 @@ fn validate_postgres_create_args(
     // already a usage error; this owns the "basic auth needs the pair at all"
     // rule, which clap cannot express because it depends on --auth's value.
     if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
         ));
     }
     if args.replication_slot_name.is_some() && args.replication_mode != "cdc_only" {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--replication-slot-name can only be used with --replication-mode cdc_only",
         ));
     }
     if args.disable_tls && args.tls_host.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--tls-host cannot be used with --disable-tls",
         ));
     }
     if args.disable_tls && args.ca_certificate.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--ca-certificate cannot be used with --disable-tls",
         ));
     }
     if args.disable_tls && args.skip_cert_verification {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--skip-cert-verification cannot be used with --disable-tls",
         ));
     }
@@ -5591,12 +5593,12 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
     // Clap enforces this for parsed input via `required_if_eq`; hand-built
     // args reach it here.
     if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
         ));
     }
     if args.auth == "basic" && args.iam_role.is_some() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
         ));
     }
@@ -5604,7 +5606,7 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
     // whole credential. Reject the pair rather than silently dropping it, the
     // same way basic auth rejects --iam-role.
     if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
         ));
     }
@@ -5612,14 +5614,14 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
     // already a usage error; this owns the "basic auth needs the pair at all"
     // rule, which clap cannot express because it depends on --auth's value.
     if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
         ));
     }
     if args.disable_tls
         && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
         ));
     }
@@ -5643,7 +5645,7 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
         ),
     ] {
         if value.is_some_and(|value| value < minimum) {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "{flag} must be at least {minimum}"
             )));
         }
@@ -5658,7 +5660,7 @@ fn resolve_mysql_table_mappings(
     use clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping;
 
     if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
              --table-mapping-json <JSON> is required",
         ));
@@ -5808,7 +5810,7 @@ fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
     if args.disable_tls
         && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
     {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
         ));
     }
@@ -5832,7 +5834,7 @@ fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
         ),
     ] {
         if value.is_some_and(|value| value < minimum) {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "{flag} must be at least {minimum}"
             )));
         }
@@ -5846,7 +5848,7 @@ fn resolve_mongodb_table_mappings(
     use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping;
 
     if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "at least one --table-mapping <DATABASE.COLLECTION:TARGET_TABLE> or \
              --table-mapping-json <JSON> is required",
         ));
@@ -5969,7 +5971,7 @@ fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
         ("--snapshot-parallel-tables", args.snapshot_parallel_tables),
     ] {
         if value.is_some_and(|value| !value.is_finite()) {
-            return Err(CloudError::new(format!(
+            return Err(CloudError::usage(format!(
                 "invalid {flag}: expected a finite number"
             )));
         }
@@ -6034,17 +6036,17 @@ fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
         args.project_id.as_deref(),
     ) {
         (GcpAuthentication::ServiceAccount, None, _) => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "--auth SERVICE_ACCOUNT requires --service-account-file",
             ));
         }
         (GcpAuthentication::WorkloadIdentity, Some(_), _) => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
             ));
         }
         (GcpAuthentication::WorkloadIdentity, None, None) => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
             ));
         }
@@ -6061,7 +6063,7 @@ fn resolve_bigquery_table_mappings(
     use clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping;
 
     if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "at least one --table-mapping <DATASET.TABLE:TARGET_TABLE> or \
              --table-mapping-json <JSON> is required",
         ));
@@ -6130,7 +6132,7 @@ fn build_bigquery_request(
     let source = match authentication {
         GcpAuthentication::ServiceAccount => {
             let path = args.service_account_file.as_deref().ok_or_else(|| {
-                CloudError::new("--auth SERVICE_ACCOUNT requires --service-account-file")
+                CloudError::usage("--auth SERVICE_ACCOUNT requires --service-account-file")
             })?;
             ClickPipePostBigQueryServiceAccountSource {
                 authentication: None,
@@ -6148,7 +6150,7 @@ fn build_bigquery_request(
             authentication:
                 ClickPipePostBigQueryWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity,
             project_id: args.project_id.clone().ok_or_else(|| {
-                CloudError::new(
+                CloudError::usage(
                     "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
                 )
             })?,
@@ -7125,7 +7127,7 @@ mod tests {
             memory_gb: Some(4.0),
         })
         .unwrap_err();
-        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
         assert_names(&error.message, &["--memory-gb", "--cpu-millicores"]);
         // The user's CPU value and the memory it requires.
         assert!(names_word(&error.message, "2000"), "{}", error.message);

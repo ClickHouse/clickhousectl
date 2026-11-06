@@ -129,7 +129,7 @@ impl NameSelector {
             (Some(id), None) => return Ok(id.clone()),
             (None, Some(_)) => {}
             _ => {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "supply exactly one positional ID or --name",
                 ));
             }
@@ -202,7 +202,7 @@ impl EmailSelector {
             (Some(id), None) => return Ok(id.clone()),
             (None, Some(email)) => email,
             _ => {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "supply exactly one positional ID or --email",
                 ));
             }
@@ -222,7 +222,7 @@ impl EmailSelector {
             (Some(id), None) => return Ok(id.clone()),
             (None, Some(email)) => email,
             _ => {
-                return Err(CloudError::new(
+                return Err(CloudError::usage(
                     "supply exactly one positional ID or --email",
                 ));
             }
@@ -244,7 +244,7 @@ pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
     known_values: &[&str],
 ) -> CloudResult<T> {
     if !known_values.contains(&value) {
-        return Err(CloudError::new(format!(
+        return Err(CloudError::usage(format!(
             "invalid {}: unknown value '{}', expected one of: {}",
             field,
             value,
@@ -252,7 +252,7 @@ pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
         )));
     }
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| CloudError::new(format!("invalid {}: {}", field, e)))
+        .map_err(|e| CloudError::usage(format!("invalid {}: {}", field, e)))
 }
 
 pub(super) fn parse_tag(value: &str) -> CloudResult<ResourceTagsV1> {
@@ -260,7 +260,7 @@ pub(super) fn parse_tag(value: &str) -> CloudResult<ResourceTagsV1> {
         Some((key, tag_value)) => {
             let key = key.trim();
             if key.is_empty() {
-                Err(CloudError::new(format!(
+                Err(CloudError::usage(format!(
                     "invalid tag '{}': tag key cannot be empty",
                     value
                 )))
@@ -274,7 +274,7 @@ pub(super) fn parse_tag(value: &str) -> CloudResult<ResourceTagsV1> {
         None => {
             let key = value.trim();
             if key.is_empty() {
-                Err(CloudError::new(format!(
+                Err(CloudError::usage(format!(
                     "invalid tag '{}': tag key cannot be empty",
                     value
                 )))
@@ -355,7 +355,7 @@ pub(super) fn parse_ip_or_cidr(source: &str) -> Option<IpAddr> {
 }
 
 fn invalid_ip_access_entry(value: &str) -> CloudError {
-    CloudError::new(format!(
+    CloudError::usage(format!(
         "invalid IP allowlist entry '{}': expected IP_OR_CIDR[=DESCRIPTION]",
         value
     ))
@@ -397,6 +397,7 @@ pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::client::CloudErrorKind;
 
     #[test]
     fn parse_tag_rejects_empty_keys() {
@@ -404,7 +405,19 @@ mod tests {
         for value in ["=value", "   "] {
             let err = parse_tag(value).unwrap_err();
             assert!(err.message.contains(&format!("'{value}'")), "{err}");
+            assert_eq!(err.kind, CloudErrorKind::Usage);
         }
+    }
+
+    #[test]
+    fn parse_serde_enum_rejects_unknown_values_as_usage_errors() {
+        let error = parse_serde_enum::<clickhouse_cloud_api::models::PgProvider>(
+            "ibm",
+            "provider",
+            clickhouse_cloud_api::models::PgProvider::VALUES,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
     }
 
     #[test]
@@ -476,6 +489,7 @@ mod tests {
         ] {
             let error = parse_ip_access_entries(&[value.to_string()]).unwrap_err();
             assert!(error.to_string().contains(value), "{error}");
+            assert_eq!(error.kind, CloudErrorKind::Usage);
         }
     }
 }

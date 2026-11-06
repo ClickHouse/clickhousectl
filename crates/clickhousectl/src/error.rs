@@ -1074,6 +1074,16 @@ fn udf_names_verb(names: &[String]) -> String {
 }
 
 impl Error {
+    /// A usage error found after clap parsed the command line: rendered like
+    /// clap's own errors (on stderr, ending in a newline) and exiting 2.
+    pub fn usage(kind: clap::error::ErrorKind, message: impl Into<String>) -> Self {
+        let mut message = message.into();
+        if !message.ends_with('\n') {
+            message.push('\n');
+        }
+        Error::Usage(Box::new(clap::Error::raw(kind, message)))
+    }
+
     /// Process exit code: `0` success, `1` error, `3` cancelled,
     /// `4` auth required. Clap reserves `2` for usage errors.
     pub fn exit_code(&self) -> i32 {

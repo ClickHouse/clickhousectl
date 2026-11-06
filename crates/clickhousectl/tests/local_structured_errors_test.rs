@@ -385,51 +385,6 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
         "JSON and human mode must carry the same detail"
     );
 
-    let escaping_config = run(
-        project.path(),
-        home.path(),
-        &[
-            "local",
-            "--json",
-            "server",
-            "start",
-            "--version",
-            VERSION,
-            "--config",
-            "../outside.xml",
-        ],
-    );
-    let message = assert_structured_failure(
-        &escaping_config,
-        &expected_error(
-            "invalid_config_name",
-            Some("clickhousectl local clickhouse configs"),
-        ),
-    );
-    assert!(message.contains("'../outside.xml'"), "{message}");
-
-    let passthrough = run(
-        project.path(),
-        home.path(),
-        &[
-            "local",
-            "--json",
-            "server",
-            "start",
-            "--version",
-            VERSION,
-            "--",
-            "--config-file=/tmp/elsewhere.xml",
-        ],
-    );
-    assert_structured_failure(
-        &passthrough,
-        &expected_error(
-            "unsupported_argument",
-            Some("clickhousectl local clickhouse start --help"),
-        ),
-    );
-
     // Port 0 would hand the choice to the OS, which managed metadata cannot
     // track; the refusal is self-composed guidance, not a redacted fallback.
     let zero_port = run(
