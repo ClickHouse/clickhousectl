@@ -438,6 +438,8 @@ cargo test --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture # CHC
 cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
 ```
 
+The suites load AWS credentials through the default provider chain: environment variables, shared profiles, SSO, or `credential_process`. `aws login` sessions are not read directly. To use one, export its credentials first with `eval "$(aws configure export-credentials --format env)"`.
+
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
 The managed-Postgres target uses the CLI's default table mapping and compares exact source and destination IDs and values after snapshot, INSERT, UPDATE, and DELETE. Destination reads use `FINAL WHERE _peerdb_is_deleted = 0`. It requires `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN` to point to a built `clickhousectl` binary. From the workspace root, build and run it with:
