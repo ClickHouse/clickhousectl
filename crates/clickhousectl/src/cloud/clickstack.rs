@@ -147,10 +147,29 @@ use clickhouse_cloud_api::models::{
     ClickStackValidateDashboardResponse, ClickStackValidateWebhookResponse, ClickStackWebhook,
     ClickStackWebhookInput,
 };
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
 use tabled::{Table, Tabled, settings::Style};
+
+const SOURCE_BODY_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  `kind` (log, trace, metric, session or promql) selects the body; all need name, connection
+  and from {databaseName, tableName}. log and trace also need timestampValueExpression and
+  defaultTableSelectExpression; trace adds traceIdExpression, spanIdExpression, parentSpanIdExpression,
+  spanNameExpression, spanKindExpression, durationExpression and durationPrecision.
+  metric needs timestampValueExpression, resourceAttributesExpression and metricTables;
+  session needs traceSourceId; promql needs timestampValueExpression.";
+
+const SAVED_SEARCH_BODY_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  Requires name and sourceId (from `clickstack source list`); select, where, whereLanguage,
+  orderBy, tags and filters are optional.";
+
+const WEBHOOK_BODY_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  Requires name, service (slack, incidentio or generic) and url; slack webhooks reject the `body` field.";
 
 #[derive(Subcommand)]
 pub enum ClickStackCommands {
@@ -323,6 +342,7 @@ pub enum WebhookCommands {
         service_id: String,
     },
     /// Create a ClickStack webhook
+    #[command(after_help = WEBHOOK_BODY_CONTEXT)]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -337,6 +357,7 @@ pub enum WebhookCommands {
         config_file: String,
     },
     /// Replace a ClickStack webhook
+    #[command(after_help = WEBHOOK_BODY_CONTEXT)]
     Update {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -411,6 +432,10 @@ pub enum DashboardCommands {
         target: NameSelector,
     },
     /// Create a ClickStack dashboard
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Requires name and tiles; each tile needs name, x, y, w and h, and its config holds the chart.
+  Check a body first with `clickstack dashboard validate`.")]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -427,6 +452,7 @@ pub enum DashboardCommands {
     /// Replace a ClickStack dashboard
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  Requires name and tiles, as for `dashboard create`.
   Every existing filter must retain its `id` in the request body.
   Serialize edits to one dashboard; concurrent updates can overwrite each other.")]
     Update {
@@ -504,6 +530,7 @@ pub enum SavedSearchCommands {
         target: NameSelector,
     },
     /// Create a ClickStack saved search
+    #[command(after_help = SAVED_SEARCH_BODY_CONTEXT)]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -518,6 +545,7 @@ pub enum SavedSearchCommands {
         config_file: String,
     },
     /// Replace a ClickStack saved search
+    #[command(after_help = SAVED_SEARCH_BODY_CONTEXT)]
     Update {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -569,6 +597,7 @@ pub enum SourceCommands {
         target: NameSelector,
     },
     /// Create a ClickStack source
+    #[command(after_help = SOURCE_BODY_CONTEXT)]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -583,6 +612,7 @@ pub enum SourceCommands {
         config_file: String,
     },
     /// Replace a ClickStack source
+    #[command(after_help = SOURCE_BODY_CONTEXT)]
     Update {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -634,6 +664,10 @@ pub enum RoleCommands {
         target: NameSelector,
     },
     /// Create a ClickStack role
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Requires name and permissions (description optional). Each permission needs action, subject
+  and integration (clickhouse or mongodb); conditions, fields and inverted are optional.")]
     Create {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -650,6 +684,7 @@ pub enum RoleCommands {
     /// Replace a ClickStack role
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  Requires permissions, shaped as for `role create`; name and description are optional.
   `permissions` is the complete role permission set.")]
     Update {
         /// Service ID (from `cloud service list`)
@@ -800,26 +835,19 @@ fn build_update_alert_request(config_file: &str) -> CloudResult<ClickStackUpdate
 
 fn build_webhook_request(config_file: &str) -> CloudResult<ClickStackWebhookInput> {
     let value = read_config_value(config_file)?;
+    use clickhouse_cloud_api::models::ClickStackWebhookInputService;
     let request: ClickStackWebhookInput = deserialize_strict_config(value, config_file)?;
-    match &request.service {
-        clickhouse_cloud_api::models::ClickStackWebhookInputService::Slack => {
-            if request.body.is_some() {
-                return Err(invalid_clickstack_request(
-                    config_file,
-                    "body is not supported for slack webhooks",
-                ));
-            }
-        }
-        clickhouse_cloud_api::models::ClickStackWebhookInputService::Incidentio
-        | clickhouse_cloud_api::models::ClickStackWebhookInputService::Generic => {}
-        clickhouse_cloud_api::models::ClickStackWebhookInputService::Unknown(other) => {
-            return Err(invalid_clickstack_request(
-                config_file,
-                format!(
-                    "unknown webhook service `{other}`; expected slack, incidentio, or generic"
-                ),
-            ));
-        }
+    if let ClickStackWebhookInputService::Unknown(_) = &request.service {
+        return Err(invalid_clickstack_request(
+            config_file,
+            unknown_enum_value(&request.service, "service"),
+        ));
+    }
+    if request.service == ClickStackWebhookInputService::Slack && request.body.is_some() {
+        return Err(invalid_clickstack_request(
+            config_file,
+            "body is not supported for slack webhooks",
+        ));
     }
     Ok(request)
 }
@@ -1019,18 +1047,18 @@ fn validate_create_alert_request(
         Some(AlertSource::Saved_search) => Some("saved_search"),
         Some(AlertSource::Tile) => Some("tile"),
         Some(AlertSource::Inline) => Some("inline"),
-        Some(AlertSource::Unknown(value)) => {
+        Some(unknown @ AlertSource::Unknown(_)) => {
             return Err(invalid_clickstack_request(
                 source,
-                format!("unknown source `{value}`"),
+                unknown_enum_value(unknown, "source"),
             ));
         }
         None => None,
     };
-    if let Interval::Unknown(value) = &request.interval {
+    if let Interval::Unknown(_) = &request.interval {
         return Err(invalid_clickstack_request(
             source,
-            format!("unknown interval `{value}`"),
+            unknown_enum_value(&request.interval, "interval"),
         ));
     }
     let threshold_type = match &request.threshold_type {
@@ -1042,10 +1070,10 @@ fn validate_create_alert_request(
         ThresholdType::Not_equal => "not_equal",
         ThresholdType::Between => "between",
         ThresholdType::Not_between => "not_between",
-        ThresholdType::Unknown(value) => {
+        unknown @ ThresholdType::Unknown(_) => {
             return Err(invalid_clickstack_request(
                 source,
-                format!("unknown thresholdType `{value}`"),
+                unknown_enum_value(unknown, "thresholdType"),
             ));
         }
     };
@@ -1080,18 +1108,18 @@ fn validate_update_alert_request(
         Some(AlertSource::Saved_search) => Some("saved_search"),
         Some(AlertSource::Tile) => Some("tile"),
         Some(AlertSource::Inline) => Some("inline"),
-        Some(AlertSource::Unknown(value)) => {
+        Some(unknown @ AlertSource::Unknown(_)) => {
             return Err(invalid_clickstack_request(
                 source,
-                format!("unknown source `{value}`"),
+                unknown_enum_value(unknown, "source"),
             ));
         }
         None => None,
     };
-    if let Interval::Unknown(value) = &request.interval {
+    if let Interval::Unknown(_) = &request.interval {
         return Err(invalid_clickstack_request(
             source,
-            format!("unknown interval `{value}`"),
+            unknown_enum_value(&request.interval, "interval"),
         ));
     }
     let threshold_type = match &request.threshold_type {
@@ -1103,10 +1131,10 @@ fn validate_update_alert_request(
         ThresholdType::Not_equal => "not_equal",
         ThresholdType::Between => "between",
         ThresholdType::Not_between => "not_between",
-        ThresholdType::Unknown(value) => {
+        unknown @ ThresholdType::Unknown(_) => {
             return Err(invalid_clickstack_request(
                 source,
-                format!("unknown thresholdType `{value}`"),
+                unknown_enum_value(unknown, "thresholdType"),
             ));
         }
     };
@@ -1147,14 +1175,88 @@ where
         .map_err(|detail| invalid_clickstack_request(source, detail))
 }
 
+/// The wire values an open library enum accepts, read from its serde derive.
+///
+/// Every open enum's derive tries its named variants before falling back to
+/// `Unknown(String)`, and reports the names it expected through
+/// `de::Error::unknown_variant` on the way. Probing with a value no variant
+/// has captures that list, so an error can name the accepted values without
+/// the CLI keeping its own copy of the spec. `None` if the derive ever stops
+/// reporting them; the error then names only the rejected value.
+fn accepted_enum_values<T: DeserializeOwned>() -> Option<&'static [&'static str]> {
+    use serde::de::{self, Visitor};
+    use std::cell::Cell;
+
+    thread_local! {
+        static EXPECTED: Cell<Option<&'static [&'static str]>> = const { Cell::new(None) };
+    }
+
+    #[derive(Debug)]
+    struct Probe;
+
+    impl std::fmt::Display for Probe {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("enum value probe")
+        }
+    }
+
+    impl std::error::Error for Probe {}
+
+    impl de::Error for Probe {
+        fn custom<M: std::fmt::Display>(_: M) -> Self {
+            Probe
+        }
+
+        fn unknown_variant(_: &str, expected: &'static [&'static str]) -> Self {
+            EXPECTED.with(|cell| cell.set(Some(expected)));
+            Probe
+        }
+    }
+
+    impl<'de> de::Deserializer<'de> for Probe {
+        type Error = Probe;
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Probe> {
+            visitor.visit_str("\u{0}")
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct enum identifier ignored_any
+        }
+    }
+
+    EXPECTED.with(|cell| cell.set(None));
+    let _ = T::deserialize(Probe);
+    EXPECTED
+        .with(Cell::take)
+        .filter(|values| !values.is_empty())
+}
+
+/// An unknown-enum-value error reason naming the value and, when the library
+/// enum reports them, the accepted values.
+fn unknown_enum_value<T>(value: &T, path: impl std::fmt::Display) -> String
+where
+    T: DeserializeOwned + std::fmt::Display,
+{
+    let mut message = format!("unknown {path} value `{value}`");
+    if let Some(values) = accepted_enum_values::<T>() {
+        message.push_str("; expected one of ");
+        message.push_str(&values.join(", "));
+    }
+    message
+}
+
 macro_rules! reject_unknown_enum {
-    ($value:expr, $variant:path, $binding:ident, $path:expr, $source:expr) => {
+    ($value:expr, $variant:path, $path:expr, $source:expr) => {
+        let checked = $value;
         #[allow(clippy::collapsible_match)]
-        match $value {
-            $variant($binding) => {
+        match checked {
+            $variant(_) => {
                 return Err(invalid_clickstack_request(
                     $source,
-                    format!("unknown {} value `{}`", $path, $binding),
+                    unknown_enum_value(checked, $path),
                 ))
             }
             _ => {}
@@ -1173,14 +1275,12 @@ fn validate_number_format(
     reject_unknown_enum!(
         &format.numeric_unit,
         ClickStackNumberFormatNumericunit::Unknown,
-        value,
         format!("{path}.numericUnit"),
         source
     );
     reject_unknown_enum!(
         &format.output,
         ClickStackNumberFormatOutput::Unknown,
-        value,
         format!("{path}.output"),
         source
     );
@@ -1214,7 +1314,6 @@ fn validate_select_items(
         reject_unknown_enum!(
             &item.agg_fn,
             ClickStackSelectItemAggfn::Unknown,
-            value,
             format!("{item_path}.aggFn"),
             source
         );
@@ -1222,7 +1321,6 @@ fn validate_select_items(
             reject_unknown_enum!(
                 level,
                 ClickStackSelectItemLevel::Unknown,
-                value,
                 format!("{item_path}.level"),
                 source
             );
@@ -1231,7 +1329,6 @@ fn validate_select_items(
             reject_unknown_enum!(
                 metric_type,
                 ClickStackSelectItemMetrictype::Unknown,
-                value,
                 format!("{item_path}.metricType"),
                 source
             );
@@ -1240,7 +1337,6 @@ fn validate_select_items(
             reject_unknown_enum!(
                 period_agg_fn,
                 ClickStackSelectItemPeriodaggfn::Unknown,
-                value,
                 format!("{item_path}.periodAggFn"),
                 source
             );
@@ -1249,7 +1345,6 @@ fn validate_select_items(
             reject_unknown_enum!(
                 where_language,
                 ClickStackSelectItemWherelanguage::Unknown,
-                value,
                 format!("{item_path}.whereLanguage"),
                 source
             );
@@ -1271,7 +1366,6 @@ fn validate_on_click_filters(
         reject_unknown_enum!(
             &filter.kind,
             ClickStackOnClickFilterTemplateKind::Unknown,
-            value,
             format!("{path}[{index}].kind"),
             source
         );
@@ -1295,7 +1389,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickSearchType::Unknown,
-                value,
                 format!("{path}.type"),
                 source
             );
@@ -1303,7 +1396,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 reject_unknown_enum!(
                     language,
                     ClickStackOnClickSearchWherelanguage::Unknown,
-                    value,
                     format!("{path}.whereLanguage"),
                     source
                 );
@@ -1319,7 +1411,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickDashboardType::Unknown,
-                value,
                 format!("{path}.type"),
                 source
             );
@@ -1327,7 +1418,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 reject_unknown_enum!(
                     language,
                     ClickStackOnClickDashboardWherelanguage::Unknown,
-                    value,
                     format!("{path}.whereLanguage"),
                     source
                 );
@@ -1343,7 +1433,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
             reject_unknown_enum!(
                 &on_click.r#type,
                 ClickStackOnClickExternalType::Unknown,
-                value,
                 format!("{path}.type"),
                 source
             );
@@ -1368,7 +1457,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 reject_unknown_enum!(
                     &target.mode,
                     ClickStackOnClickTargetIdVariantMode::Unknown,
-                    value,
                     format!("{target_path}.mode"),
                     source
                 );
@@ -1382,7 +1470,6 @@ fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()>
                 reject_unknown_enum!(
                     &target.mode,
                     ClickStackOnClickTargetTemplateVariantMode::Unknown,
-                    value,
                     format!("{target_path}.mode"),
                     source
                 );
@@ -1418,14 +1505,12 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     &condition.color,
                     ClickStackChartColor::Unknown,
-                    value,
                     format!("{rule_path}.color"),
                     source
                 );
                 reject_unknown_enum!(
                     &condition.operator,
                     ClickStackNumericColorConditionOperator::Unknown,
-                    value,
                     format!("{rule_path}.operator"),
                     source
                 );
@@ -1437,14 +1522,12 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     &condition.color,
                     ClickStackChartColor::Unknown,
-                    value,
                     format!("{rule_path}.color"),
                     source
                 );
                 reject_unknown_enum!(
                     &condition.operator,
                     ClickStackBetweenColorConditionOperator::Unknown,
-                    value,
                     format!("{rule_path}.operator"),
                     source
                 );
@@ -1456,14 +1539,12 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     &condition.color,
                     ClickStackChartColor::Unknown,
-                    value,
                     format!("{rule_path}.color"),
                     source
                 );
                 reject_unknown_enum!(
                     &condition.operator,
                     ClickStackEqualityColorConditionOperator::Unknown,
-                    value,
                     format!("{rule_path}.operator"),
                     source
                 );
@@ -1479,7 +1560,9 @@ fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> Cloud
             other => {
                 return Err(invalid_clickstack_request(
                     source,
-                    format!("unknown {rule_path}.operator `{other}`"),
+                    format!(
+                        "unknown {rule_path}.operator `{other}`; expected gt, gte, lt, lte, between, eq, or neq"
+                    ),
                 ));
             }
         }
@@ -1552,7 +1635,6 @@ fn validate_promql_reducible_expressions(
             reject_unknown_enum!(
                 query_type,
                 ClickStackPromqlReducibleExpressionQuerytype::Unknown,
-                value,
                 format!("{path}[{index}].queryType"),
                 source
             );
@@ -1561,7 +1643,6 @@ fn validate_promql_reducible_expressions(
             reject_unknown_enum!(
                 reducer,
                 ClickStackPromqlReducibleExpressionReducer::Unknown,
-                value,
                 format!("{path}[{index}].reducer"),
                 source
             );
@@ -1584,13 +1665,7 @@ fn validate_promql_chart_config(
     macro_rules! check_optional_enum {
         ($value:expr, $variant:path, $name:literal) => {
             if let Some(value) = &$value {
-                reject_unknown_enum!(
-                    value,
-                    $variant,
-                    unknown,
-                    format!("{path}.{}", $name),
-                    source
-                );
+                reject_unknown_enum!(value, $variant, format!("{path}.{}", $name), source);
             }
         };
     }
@@ -1654,7 +1729,6 @@ fn validate_promql_chart_config(
                     reject_unknown_enum!(
                         query_type,
                         ClickStackPromqlInstantExpressionQuerytype::Unknown,
-                        unknown,
                         format!("{expressions_path}[{index}].queryType"),
                         source
                     );
@@ -1674,7 +1748,6 @@ fn validate_promql_chart_config(
                 reject_unknown_enum!(
                     &background.r#type,
                     ClickStackBackgroundChartType::Unknown,
-                    unknown,
                     format!("{path}.backgroundChart.type"),
                     source
                 );
@@ -1748,14 +1821,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackLineRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackLineRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1763,7 +1834,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         interpolation,
                         ClickStackLineRawSqlChartConfigLineinterpolation::Unknown,
-                        unknown,
                         format!("{path}.lineInterpolation"),
                         source
                     );
@@ -1779,7 +1849,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackLineBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1787,7 +1856,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         interpolation,
                         ClickStackLineBuilderChartConfigLineinterpolation::Unknown,
-                        unknown,
                         format!("{path}.lineInterpolation"),
                         source
                     );
@@ -1808,14 +1876,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackBarRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackBarRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1830,7 +1896,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackBarBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1851,14 +1916,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackStackedLineRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1866,7 +1929,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         interpolation,
                         ClickStackStackedLineRawSqlChartConfigLineinterpolation::Unknown,
-                        unknown,
                         format!("{path}.lineInterpolation"),
                         source
                     );
@@ -1883,7 +1945,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackStackedLineBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1891,7 +1952,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         interpolation,
                         ClickStackStackedLineBuilderChartConfigLineinterpolation::Unknown,
-                        unknown,
                         format!("{path}.lineInterpolation"),
                         source
                     );
@@ -1913,14 +1973,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackCategoricalBarRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackCategoricalBarRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1936,7 +1994,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackCategoricalBarBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1956,14 +2013,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackTableRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackTableRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -1978,7 +2033,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackTableBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2001,14 +2055,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackNumberRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2016,7 +2068,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         color,
                         ClickStackChartColor::Unknown,
-                        unknown,
                         format!("{path}.color"),
                         source
                     );
@@ -2033,7 +2084,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackNumberBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2041,7 +2091,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         color,
                         ClickStackChartColor::Unknown,
-                        unknown,
                         format!("{path}.color"),
                         source
                     );
@@ -2050,7 +2099,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         &background.r#type,
                         ClickStackBackgroundChartType::Unknown,
-                        unknown,
                         format!("{path}.backgroundChart.type"),
                         source
                     );
@@ -2058,7 +2106,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                         reject_unknown_enum!(
                             color,
                             ClickStackChartColor::Unknown,
-                            unknown,
                             format!("{path}.backgroundChart.color"),
                             source
                         );
@@ -2081,14 +2128,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.config_type,
                     ClickStackPieRawSqlChartConfigConfigtype::Unknown,
-                    unknown,
                     format!("{path}.configType"),
                     source
                 );
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackPieRawSqlChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2103,7 +2148,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackPieBuilderChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2144,7 +2188,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackHeatmapSeriesChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2162,7 +2205,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     &config.display_type,
                     ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
-                    unknown,
                     format!("{path}.displayType"),
                     source
                 );
@@ -2170,7 +2212,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                     reject_unknown_enum!(
                         language,
                         ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
-                        unknown,
                         format!("{path}.whereLanguage"),
                         source
                     );
@@ -2180,7 +2221,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                         reject_unknown_enum!(
                             scale,
                             ClickStackHeatmapSelectItemHeatmapscaletype::Unknown,
-                            unknown,
                             format!("{path}.select[{index}].heatmapScaleType"),
                             source
                         );
@@ -2198,14 +2238,12 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackSearchChartConfigDisplaytype::Unknown,
-                unknown,
                 format!("{path}.displayType"),
                 source
             );
             reject_unknown_enum!(
                 &config.where_language,
                 ClickStackSearchChartConfigWherelanguage::Unknown,
-                unknown,
                 format!("{path}.whereLanguage"),
                 source
             );
@@ -2216,7 +2254,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackEventPatternsChartConfigDisplaytype::Unknown,
-                unknown,
                 format!("{path}.displayType"),
                 source
             );
@@ -2224,7 +2261,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
                 reject_unknown_enum!(
                     language,
                     ClickStackEventPatternsChartConfigWherelanguage::Unknown,
-                    unknown,
                     format!("{path}.whereLanguage"),
                     source
                 );
@@ -2236,7 +2272,6 @@ fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult
             reject_unknown_enum!(
                 &config.display_type,
                 ClickStackMarkdownChartConfigDisplaytype::Unknown,
-                unknown,
                 format!("{path}.displayType"),
                 source
             );
@@ -2269,7 +2304,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     language,
                     ClickStackAlertChartConfigOverlayWherelanguage::Unknown,
-                    unknown,
                     format!("{path}.whereLanguage"),
                     source
                 );
@@ -2279,13 +2313,7 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
     macro_rules! check_optional_enum {
         ($value:expr, $variant:path, $name:literal) => {
             if let Some(value) = &$value {
-                reject_unknown_enum!(
-                    value,
-                    $variant,
-                    unknown,
-                    format!("{path}.{}", $name),
-                    source
-                );
+                reject_unknown_enum!(value, $variant, format!("{path}.{}", $name), source);
             }
         };
     }
@@ -2297,7 +2325,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
             reject_unknown_enum!(
                 &config.config_type,
                 ClickStackLineRawSqlChartConfigConfigtype::Unknown,
-                unknown,
                 format!("{path}.configType"),
                 source
             );
@@ -2336,7 +2363,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
             reject_unknown_enum!(
                 &config.config_type,
                 ClickStackBarRawSqlChartConfigConfigtype::Unknown,
-                unknown,
                 format!("{path}.configType"),
                 source
             );
@@ -2366,7 +2392,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
             reject_unknown_enum!(
                 &config.config_type,
                 ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
-                unknown,
                 format!("{path}.configType"),
                 source
             );
@@ -2407,7 +2432,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
             reject_unknown_enum!(
                 &config.config_type,
                 ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
-                unknown,
                 format!("{path}.configType"),
                 source
             );
@@ -2429,7 +2453,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     &background.r#type,
                     ClickStackBackgroundChartType::Unknown,
-                    unknown,
                     format!("{path}.backgroundChart.type"),
                     source
                 );
@@ -2499,7 +2522,6 @@ fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     &background.r#type,
                     ClickStackBackgroundChartType::Unknown,
-                    unknown,
                     format!("{path}.backgroundChart.type"),
                     source
                 );
@@ -2546,7 +2568,6 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     kind,
                     ClickStackSavedFilterValueType::Unknown,
-                    unknown,
                     format!("{path}.type"),
                     source
                 );
@@ -2559,7 +2580,6 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
                 reject_unknown_enum!(
                     kind,
                     ClickStackSavedFilterValueType::Unknown,
-                    unknown,
                     format!("{path}.type"),
                     source
                 );
@@ -2572,7 +2592,6 @@ fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> Cloud
             reject_unknown_enum!(
                 &saved.r#type,
                 ClickStackVariableSavedFilterValueType::Unknown,
-                unknown,
                 format!("{path}.type"),
                 source
             );
@@ -2643,7 +2662,6 @@ fn validate_dashboard_filter(
                 reject_unknown_enum!(
                     metric_type,
                     ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
-                    unknown,
                     format!("{path}.sourceMetricType"),
                     source
                 );
@@ -2652,7 +2670,6 @@ fn validate_dashboard_filter(
                 reject_unknown_enum!(
                     language,
                     ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
-                    unknown,
                     format!("{path}.whereLanguage"),
                     source
                 );
@@ -2687,7 +2704,6 @@ fn validate_dashboard_filter(
         reject_unknown_enum!(
             min_selections,
             ClickStackFilterMinSelections::Unknown,
-            unknown,
             format!("{path}.minSelections"),
             source
         );
@@ -2696,7 +2712,6 @@ fn validate_dashboard_filter(
         reject_unknown_enum!(
             max_selections,
             ClickStackFilterMaxSelections::Unknown,
-            unknown,
             format!("{path}.maxSelections"),
             source
         );
@@ -2740,23 +2755,27 @@ fn validate_saved_search_closed_enums(
     request: &ClickStackSavedSearchInput,
     source: &str,
 ) -> CloudResult<()> {
-    if let Some(ClickStackSavedSearchInputWherelanguage::Unknown(value)) = &request.where_language {
-        return Err(CloudError::usage(format!(
-            "invalid request body in config {source}: unknown whereLanguage value `{value}`"
-        )));
+    if let Some(language @ ClickStackSavedSearchInputWherelanguage::Unknown(_)) =
+        &request.where_language
+    {
+        return Err(invalid_clickstack_request(
+            source,
+            unknown_enum_value(language, "whereLanguage"),
+        ));
     }
     if let Some((index, value)) = request.filters.as_ref().and_then(|filters| {
         filters.iter().enumerate().find_map(|(index, filter)| {
-            if let Some(ClickStackSavedSearchFilterType::Unknown(value)) = &filter.r#type {
-                Some((index, value))
+            if let Some(kind @ ClickStackSavedSearchFilterType::Unknown(_)) = &filter.r#type {
+                Some((index, kind))
             } else {
                 None
             }
         })
     }) {
-        return Err(CloudError::usage(format!(
-            "invalid request body in config {source}: unknown filters[{index}].type value `{value}`"
-        )));
+        return Err(invalid_clickstack_request(
+            source,
+            unknown_enum_value(value, format!("filters[{index}].type")),
+        ));
     }
     Ok(())
 }
@@ -2770,7 +2789,6 @@ fn validate_create_dashboard_enums(
         reject_unknown_enum!(
             language,
             ClickStackCreateDashboardRequestSavedquerylanguage::Unknown,
-            unknown,
             "savedQueryLanguage",
             source
         );
@@ -2787,7 +2805,6 @@ fn validate_update_dashboard_enums(
         reject_unknown_enum!(
             language,
             ClickStackUpdateDashboardRequestSavedquerylanguage::Unknown,
-            unknown,
             "savedQueryLanguage",
             source
         );
@@ -2834,17 +2851,17 @@ fn validate_materialized_views(
 ) -> CloudResult<()> {
     if let Some((index, value)) = views.and_then(|views| {
         views.iter().enumerate().find_map(|(index, view)| {
-            if let ClickStackMaterializedViewMingranularity::Unknown(value) = &view.min_granularity
-            {
-                Some((index, value))
+            if let ClickStackMaterializedViewMingranularity::Unknown(_) = &view.min_granularity {
+                Some((index, &view.min_granularity))
             } else {
                 None
             }
         })
     }) {
-        return Err(CloudError::usage(format!(
-            "invalid request body in config {source}: unknown materializedViews[{index}].minGranularity value `{value}`"
-        )));
+        return Err(invalid_clickstack_request(
+            source,
+            unknown_enum_value(value, format!("materializedViews[{index}].minGranularity")),
+        ));
     }
     Ok(())
 }
@@ -2852,22 +2869,24 @@ fn validate_materialized_views(
 fn validate_source_closed_enums(request: &ClickStackSource, source: &str) -> CloudResult<()> {
     match request {
         ClickStackSource::ClickStackLogSource(log) => {
-            if let Some(ClickStackLogSourceUsetextindexforimplicitcolumn::Unknown(value)) =
+            if let Some(value @ ClickStackLogSourceUsetextindexforimplicitcolumn::Unknown(_)) =
                 &log.use_text_index_for_implicit_column
             {
-                return Err(CloudError::usage(format!(
-                    "invalid request body in config {source}: unknown useTextIndexForImplicitColumn value `{value}`"
-                )));
+                return Err(invalid_clickstack_request(
+                    source,
+                    unknown_enum_value(value, "useTextIndexForImplicitColumn"),
+                ));
             }
             validate_materialized_views(log.materialized_views.as_ref(), source)
         }
         ClickStackSource::ClickStackTraceSource(trace) => {
-            if let Some(ClickStackTraceSourceUsetextindexforimplicitcolumn::Unknown(value)) =
+            if let Some(value @ ClickStackTraceSourceUsetextindexforimplicitcolumn::Unknown(_)) =
                 &trace.use_text_index_for_implicit_column
             {
-                return Err(CloudError::usage(format!(
-                    "invalid request body in config {source}: unknown useTextIndexForImplicitColumn value `{value}`"
-                )));
+                return Err(invalid_clickstack_request(
+                    source,
+                    unknown_enum_value(value, "useTextIndexForImplicitColumn"),
+                ));
             }
             validate_materialized_views(trace.materialized_views.as_ref(), source)
         }
@@ -5079,15 +5098,15 @@ mod tests {
         let invalid = [
             (
                 serde_json::json!({"source":"future","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "`future`",
+                "`future` saved_search tile inline",
             ),
             (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"2m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "interval",
+                "interval `2m` 1m 30s 1d",
             ),
             (
                 serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"around","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "thresholdType",
+                "thresholdType `around` above not_between",
             ),
             (
                 serde_json::json!({"source":"tile","dashboardId":"d","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
@@ -5151,12 +5170,9 @@ mod tests {
             r#"{"name":"bad","service":"slack_api","url":"https://example.com"}"#,
         )
         .unwrap();
-        assert!(
-            build_webhook_request(config_file.to_str().unwrap())
-                .unwrap_err()
-                .message
-                .contains("`slack_api`")
-        );
+        let error = build_webhook_request(config_file.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(&error, "service `slack_api` slack incidentio generic");
         std::fs::write(
             &config_file,
             r#"{"name":"bad","service":"slack","url":"https://example.com","body":"secret"}"#,
@@ -5630,7 +5646,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"numberFormat":{"output":"custom","mantissa":0,"thousandSeparated":false,"average":false,"decimalBytes":false,"factor":1.0,"currencySymbol":"","numericUnit":"bytes_iec","unit":""}}}]}),
-                "numberFormat.output",
+                "numberFormat.output `custom` currency duration",
+            ),
+            (
+                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"approx","value":1,"color":"chart-blue"}]}}]}),
+                "colorRules[0].operator `approx` gt between neq",
             ),
             (
                 serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"eq","value":{"nested":true},"color":"chart-blue"}]}}]}),
@@ -6030,11 +6050,11 @@ mod tests {
         for (body, expected) in [
             (
                 serde_json::json!({"name":"bad","sourceId":"s","whereLanguage":"sqlish"}),
-                "whereLanguage `sqlish`",
+                "whereLanguage `sqlish` sql lucene",
             ),
             (
                 serde_json::json!({"name":"bad","sourceId":"s","filters":[{"type":"lucene","condition":"x"}]}),
-                "filters[0].type `lucene`",
+                "filters[0].type `lucene` sql",
             ),
         ] {
             let request: ClickStackSavedSearchInput =
@@ -6067,7 +6087,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"kind":"log","name":"l","connection":"c","from":{"databaseName":"d","tableName":"t"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","useTextIndexForImplicitColumn":"enabledd"}),
-                "useTextIndexForImplicitColumn `enabledd`",
+                "useTextIndexForImplicitColumn `enabledd` auto enabled disabled",
             ),
             (serde_json::json!({"name":"no kind"}), "`kind`"),
         ] {

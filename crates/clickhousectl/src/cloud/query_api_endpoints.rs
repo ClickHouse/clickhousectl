@@ -42,6 +42,17 @@ pub struct QueryApiEndpointArgs {
     command: QueryApiEndpointCommands,
 }
 
+const ENDPOINT_BODY_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  Requires name, sql, database, apiKeyIds (management key IDs from `cloud key list`) and roles;
+  parameters (placeholder name to default value) and allowedOrigins are optional.";
+
+const ENDPOINT_UPDATE_CONTEXT: &str = "\
+CONTEXT FOR AGENTS:
+  Requires name, sql, database, apiKeyIds (management key IDs from `cloud key list`) and roles;
+  parameters (placeholder name to default value) and allowedOrigins are optional.
+  Supply the complete definition; omitted parameters and allowedOrigins reset to empty.";
+
 #[derive(Subcommand)]
 pub enum QueryApiEndpointCommands {
     /// List Query API endpoints
@@ -59,11 +70,10 @@ pub enum QueryApiEndpointCommands {
     /// Get Query API endpoint details
     Get(QueryApiEndpointTarget),
     /// Create a Query API endpoint
+    #[command(after_help = ENDPOINT_BODY_CONTEXT)]
     Create(QueryApiEndpointCreateArgs),
     /// Update a Query API endpoint
-    #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Supply the complete definition; omitted parameters and allowedOrigins reset to empty."
-    )]
+    #[command(after_help = ENDPOINT_UPDATE_CONTEXT)]
     Update {
         #[command(flatten)]
         target: QueryApiEndpointTarget,
