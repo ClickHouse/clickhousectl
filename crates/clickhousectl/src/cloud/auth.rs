@@ -952,6 +952,10 @@ pub struct UnusableTokens;
 pub(super) const OAUTH_LOGIN_REQUIRED: &str =
     "Saved OAuth login can't be used. Run `clickhousectl cloud auth login` to log in again.";
 
+/// A saved login is readable but expired, and refreshing it was not possible
+/// (no refresh token, or the refresh failed). The file is kept.
+pub(super) const OAUTH_LOGIN_EXPIRED: &str = "Saved OAuth login has expired and could not be refreshed. Run `clickhousectl cloud auth login` to log in again.";
+
 pub fn load_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
     let global = tokens_path().map_err(|_| UnusableTokens)?;
     let legacy = legacy_tokens_path();
@@ -1200,6 +1204,11 @@ pub async fn refresh_access_token(
 
 /// If tokens exist and are near-expiry, refresh them. Returns Ok(()) even if
 /// no tokens are present (the user may be using API keys instead).
+///
+/// Never removes the saved login (#1224): a refresh can fail for a transient
+/// reason, and an expired file keeps `auth status` showing `Expired` and lets
+/// the credential resolver report [`OAUTH_LOGIN_EXPIRED`] instead of "no
+/// credentials". Only `auth logout` and a new login replace the file.
 pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Leave unusable files intact. The credential resolver reports the re-login
     // error only if no higher-precedence credential source wins.
@@ -1207,12 +1216,7 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
         return Ok(());
     };
 
-    if is_token_valid(&tokens) {
-        return Ok(());
-    }
-
-    if tokens.refresh_token.is_empty() {
-        clear_tokens();
+    if is_token_valid(&tokens) || tokens.refresh_token.is_empty() {
         return Ok(());
     }
 
@@ -1220,16 +1224,12 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
         Ok(new_tokens) => {
             save_tokens(&new_tokens)?;
         }
-        Err(_) => {
-            // Failed refresh requires a new login.
-            clear_tokens();
-            if !json {
-                eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
-                eprint_line(
-                    "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
-                );
-            }
+        // JSON mode keeps stderr to the single error envelope; the resolver's
+        // expired-login error carries the action in both modes.
+        Err(_) if !json => {
+            eprint_line("Warning: OAuth token refresh failed. The saved login was kept.");
         }
+        Err(_) => {}
     }
 
     Ok(())

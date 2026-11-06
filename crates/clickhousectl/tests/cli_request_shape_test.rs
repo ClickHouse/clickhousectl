@@ -20856,6 +20856,58 @@ async fn incomplete_lower_priority_keys_do_not_prevent_oauth_refresh() {
     }
 }
 
+// An expired login that cannot be refreshed is kept (#1224): no refresh
+// token, a rejected refresh, and an unreachable issuer all exit 4 without
+// deleting the file or calling the API. The resolver unit test
+// `client::expired_oauth_login_reports_expiry_not_missing_credentials` owns
+// which message is reported.
+#[tokio::test]
+async fn unrefreshable_expired_oauth_login_is_kept_and_reported() {
+    for case in ["no-refresh-token", "rejected", "unreachable"] {
+        let api = MockServer::start().await;
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(serde_json::json!({"error": "invalid_grant"})),
+            )
+            .expect(u64::from(case == "rejected"))
+            .mount(&issuer)
+            .await;
+        let auth_url = if case == "unreachable" {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener);
+            url
+        } else {
+            issuer.uri()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        let original = serde_json::to_vec(&serde_json::json!({
+            "access_token": "expired",
+            "refresh_token": if case == "no-refresh-token" { "" } else { "refresh" },
+            "expires_at": 1,
+            "api_url": api.uri(),
+            "auth_config": {"auth_url": auth_url, "client_id": "saved-client"}
+        }))
+        .unwrap();
+        std::fs::write(&token_path, &original).unwrap();
+        let output = custom_oauth_command(dir.path(), &api.uri())
+            .args(["org", "list"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4), "{case}: {output:?}");
+        assert!(output.stdout.is_empty(), "{case}");
+        assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+        assert_eq!(std::fs::read(&token_path).unwrap(), original, "{case}");
+        assert!(api.received_requests().await.unwrap().is_empty(), "{case}");
+        tokio::task::yield_now().await;
+    }
+}
+
 fn custom_oauth_command(root: &Path, api_url: &str) -> Command {
     let mut command = cloud_runtime_error_command(root, api_url, "explicit");
     command
@@ -21181,9 +21233,12 @@ async fn oauth_login_and_refresh_never_follow_redirects() {
             "{status}: {output:?}"
         );
         assert!(destination.received_requests().await.unwrap().is_empty());
-        // A failed refresh clears the login, and in JSON mode its warning
-        // stays off stderr, which holds only the error object.
-        assert!(!token_path.exists());
+        // A refused login saves nothing (a refused refresh keeps the saved
+        // login: `unrefreshable_expired_oauth_login_is_kept_and_reported`),
+        // and in JSON mode stderr holds only the error object.
+        if login {
+            assert!(!token_path.exists());
+        }
         cloud_runtime_error(&output);
     }
     assert!(api.received_requests().await.unwrap().is_empty());
