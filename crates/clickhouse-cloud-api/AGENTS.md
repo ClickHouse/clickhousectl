@@ -13,7 +13,9 @@ CLI capabilities and behaviour, so update them only when a change is exposed thr
   The Query API (`run_query`, `run_query_bearer`, query-host resolution, `query_api_*` errors) is `src/client/query.rs`.
 - `src/models.rs` — the public model facade and the shared `discriminated_union!` macro (its rustdoc owns the
   grammar). Request/response structs, enums, aliases and impls live in private per-domain `src/models/*.rs` and
-  are re-exported without changing the crate-root or `models::*` paths.
+  are re-exported without changing the crate-root or `models::*` paths. A large domain may be a directory:
+  `src/models/clickpipes/mod.rs` holds the top-level pipe types and shared types, and glob re-exports one
+  submodule per source kind plus `schema_discovery.rs` and `reverse_private_endpoints.rs`.
 - `src/convert.rs` — `MissingRequiredFields` and conversion documentation; explicit response→request conversions
   live in private per-domain `src/convert/*.rs`.
 - `src/error.rs` — `Error` is the structural contract for failure modes: a failure a caller must tell apart gets its

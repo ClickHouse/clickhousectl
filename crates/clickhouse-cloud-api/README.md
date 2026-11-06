@@ -334,7 +334,7 @@ and repeat the smoke test with an explicit non-default database.
 | Path | Purpose |
 |------|---------|
 | `src/client.rs`, `src/client/*.rs` | `Client`, shared HTTP machinery, and per-domain endpoint methods |
-| `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models |
+| `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models (`src/models/clickpipes/` is split by source kind) |
 | `src/convert.rs`, `src/convert/*.rs` | Conversion error and per-domain response-to-request conversions |
 | `src/error.rs` | Error types (`Http`, `Json`, `Api`) |
 | `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
