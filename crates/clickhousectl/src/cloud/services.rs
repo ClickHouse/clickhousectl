@@ -275,6 +275,13 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
+        /// Region ID not in the --region list, sent unchecked
+        ///
+        /// Overrides the known region list, for internal or private regions (e.g. sa-east-1).
+        /// The API still validates it.
+        #[arg(long, value_name = "REGION", conflicts_with = "region")]
+        custom_region: Option<String>,
+
         /// Minimum memory per replica in GB
         ///
         /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
@@ -1196,6 +1203,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             name,
             provider,
             region,
+            custom_region,
             min_replica_memory_gb,
             max_replica_memory_gb,
             num_replicas,
@@ -1224,6 +1232,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 name,
                 provider,
                 region,
+                custom_region,
                 min_replica_memory_gb,
                 max_replica_memory_gb,
                 num_replicas,
@@ -2234,6 +2243,7 @@ struct CreateServiceOptions {
     name: String,
     provider: String,
     region: String,
+    custom_region: Option<String>,
     min_replica_memory_gb: Option<u32>,
     max_replica_memory_gb: Option<u32>,
     num_replicas: Option<u32>,
@@ -2352,6 +2362,24 @@ fn read_backup_encryption_config(path: &str) -> CloudResult<BackupEncryptionConf
     }
 }
 
+/// `--custom-region` bypasses the known region list and is sent as given; the API
+/// validates it. Otherwise `--region` must be a known region.
+fn resolve_create_service_region(
+    options: &CreateServiceOptions,
+) -> CloudResult<ServicePostRequestRegion> {
+    match options.custom_region.as_deref() {
+        Some(value) if value.trim().is_empty() => {
+            Err(CloudError::usage("--custom-region cannot be empty"))
+        }
+        Some(value) => Ok(ServicePostRequestRegion::Unknown(value.to_string())),
+        None => parse_serde_enum::<ServicePostRequestRegion>(
+            &options.region,
+            "region",
+            ServicePostRequestRegion::VALUES,
+        ),
+    }
+}
+
 fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<ServicePostRequest> {
     let ip_access_list = if options.ip_allow.is_empty() {
         vec![IpAccessListEntry {
@@ -2399,11 +2427,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             "provider",
             ServicePostRequestProvider::VALUES,
         )?,
-        region: parse_serde_enum::<ServicePostRequestRegion>(
-            &options.region,
-            "region",
-            ServicePostRequestRegion::VALUES,
-        )?,
+        region: resolve_create_service_region(options)?,
         ip_access_list,
         min_replica_memory_gb: options.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: options.max_replica_memory_gb.map(f64::from),
@@ -5144,6 +5168,7 @@ mod tests {
             name,
             provider,
             region,
+            custom_region,
             min_replica_memory_gb,
             max_replica_memory_gb,
             num_replicas,
@@ -5175,6 +5200,7 @@ mod tests {
         assert_eq!(name, "default-service");
         assert_eq!(provider, "aws");
         assert_eq!(region, "us-east-1");
+        assert!(custom_region.is_none());
         assert!(min_replica_memory_gb.is_none());
         assert!(max_replica_memory_gb.is_none());
         assert!(num_replicas.is_none());
@@ -5198,6 +5224,40 @@ mod tests {
         assert!(disable_endpoint.is_empty());
         assert!(!private_preview_terms_checked);
         assert!(enable_core_dumps.is_none());
+    }
+
+    #[test]
+    fn parses_service_create_custom_region_and_conflicts_with_region() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "svc",
+            "--custom-region",
+            "sa-east-1",
+        ]);
+        let crate::cloud::cli::ServiceCommands::Create { custom_region, .. } = command else {
+            panic!("expected service create");
+        };
+        assert_eq!(custom_region.as_deref(), Some("sa-east-1"));
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "svc",
+            "--region",
+            "us-east-1",
+            "--custom-region",
+            "sa-east-1",
+        ])
+        .err()
+        .expect("--region and --custom-region together should fail");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -8756,6 +8816,40 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("awss"));
+    }
+
+    #[test]
+    fn build_create_service_request_sends_custom_region_unchecked() {
+        let request = build_create_service_request(&CreateServiceOptions {
+            custom_region: Some("sa-east-1".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+
+        assert_eq!(
+            request.region,
+            ServicePostRequestRegion::Unknown("sa-east-1".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["region"],
+            serde_json::json!("sa-east-1")
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_empty_custom_region_as_usage() {
+        for value in ["", "   "] {
+            let error = build_create_service_request(&CreateServiceOptions {
+                custom_region: Some(value.to_string()),
+                ..minimal_create_options()
+            })
+            .unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{value:?}"
+            );
+        }
     }
 
     #[test]
