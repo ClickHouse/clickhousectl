@@ -63,6 +63,15 @@ pub struct ServerInfo {
     /// Running ClickHouse version like "25.12.5.44", empty when stopped, or
     /// "postgres:<tag>" for Postgres.
     pub version: String,
+    /// ClickHouse version this server was last seen ready on, so a restart
+    /// without `--version` keeps its data dir on that version (issue #1230).
+    /// A start carries the previous value and sets it to `version` only once
+    /// the server answers readiness probes; stopping never changes it, so a
+    /// start that never became ready leaves the previous version recorded.
+    /// Absent for Postgres, for a server never seen ready, and in metadata
+    /// written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_version: Option<String>,
     /// Running ClickHouse HTTP port; 0 when stopped or for Postgres.
     pub http_port: u16,
     /// Running ClickHouse TCP port, 0 when stopped, or mapped host port for Postgres.
@@ -73,6 +82,56 @@ pub struct ServerInfo {
     pub engine: Engine,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_id: Option<String>,
+}
+
+impl ServerInfo {
+    /// The ClickHouse version this server's data dir is known to run on: the
+    /// one it was last seen ready on. A version whose start has not been seen
+    /// ready is ignored, including a dead start whose metadata was not yet
+    /// normalized. `None` for Postgres, for a server never seen ready, and for
+    /// anything that is not an exact version (such as a recovered server's
+    /// "unknown"). Only exact versions are returned because the value names a
+    /// directory under `~/.clickhouse/versions/` that `start` executes from.
+    pub fn clickhouse_data_version(&self) -> Option<&str> {
+        if self.engine != Engine::Clickhouse {
+            return None;
+        }
+        let version = self.last_version.as_deref()?;
+        matches!(
+            crate::version_manager::parse_version_spec(version),
+            Ok(crate::version_manager::VersionSpec::Exact(_))
+        )
+        .then_some(version)
+    }
+
+    /// Whether this ClickHouse server runs a version it has not yet been seen
+    /// ready on.
+    fn start_unconfirmed(&self) -> bool {
+        self.engine == Engine::Clickhouse
+            && self.pid != 0
+            && !self.version.is_empty()
+            && self.last_version.as_deref() != Some(self.version.as_str())
+    }
+
+    /// Record that the running start answered readiness probes: its version
+    /// becomes the one the data dir last ran. Returns whether anything changed.
+    fn record_ready(&mut self) -> bool {
+        if !self.start_unconfirmed() {
+            return false;
+        }
+        self.last_version = Some(self.version.clone());
+        true
+    }
+
+    /// Record that the ClickHouse process is gone. `last_version` is kept as
+    /// is: it already holds the version last seen ready, so a start that
+    /// never became ready does not move the data dir's version.
+    fn record_stopped(&mut self) {
+        self.pid = 0;
+        self.version.clear();
+        self.http_port = 0;
+        self.tcp_port = 0;
+    }
 }
 
 /// A server entry shown in list output — may or may not be running.
@@ -358,13 +417,57 @@ pub(crate) fn mark_server_stopped_locked(name: &str, pid: u32, lock: &MetadataLo
         return Ok(());
     };
     if info.engine == Engine::Clickhouse && info.pid == pid {
-        info.pid = 0;
-        info.version.clear();
-        info.http_port = 0;
-        info.tcp_port = 0;
+        info.record_stopped();
         save_server_info_locked(&info, lock)?;
     }
     Ok(())
+}
+
+/// Record that the ClickHouse server started as `pid` became ready, so its
+/// version is the one a later bare restart reuses (issue #1230).
+fn mark_server_ready(name: &str, pid: u32) -> Result<()> {
+    let Some(lock) = lock_existing_metadata()? else {
+        return Ok(());
+    };
+    let Some(mut info) = load_info_locked(name, &lock)? else {
+        return Ok(());
+    };
+    if info.pid == pid && info.record_ready() {
+        save_server_info_locked(&info, &lock)?;
+    }
+    Ok(())
+}
+
+/// Confirm a running start that has not been seen ready yet, such as one
+/// started with `--no-wait`, if it now answers readiness probes. A start that
+/// does not answer stays unconfirmed, and stopping it keeps the previous
+/// `last_version`.
+fn confirm_ready_if_answering_locked(info: &mut ServerInfo, lock: &MetadataLock) -> Result<()> {
+    if info.start_unconfirmed()
+        && is_ready_blocking(info.http_port, info.tcp_port)
+        && info.record_ready()
+    {
+        save_server_info_locked(info, lock)?;
+    }
+    Ok(())
+}
+
+/// The ClickHouse version a project server's data dir last ran, if recorded.
+pub(crate) fn clickhouse_data_version_locked(
+    name: &str,
+    lock: &MetadataLock,
+) -> Result<Option<String>> {
+    Ok(load_info_locked(name, lock)?
+        .and_then(|info| info.clickhouse_data_version().map(str::to_string)))
+}
+
+/// [`clickhouse_data_version_locked`] for callers that must not hold the
+/// metadata lock yet; `None` when the project has no server state.
+pub fn clickhouse_data_version(name: &str) -> Result<Option<String>> {
+    match lock_existing_metadata()? {
+        Some(lock) => clickhouse_data_version_locked(name, &lock),
+        None => Ok(None),
+    }
 }
 
 /// Engine-aware liveness check.
@@ -626,6 +729,9 @@ fn server_entry_locked_with(
             load_info_locked(name, lock)?.ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
         running = is_alive(&info)?;
     }
+    if running {
+        confirm_ready_if_answering_locked(&mut info, lock)?;
+    }
 
     Ok(Some(ServerEntry {
         name: name.to_string(),
@@ -796,11 +902,12 @@ pub fn kill_server(name: &str) -> Result<()> {
 }
 
 pub(crate) fn kill_server_locked(name: &str, lock: &MetadataLock) -> Result<()> {
-    let info = load_running_info_locked(name, lock)?
+    let mut info = load_running_info_locked(name, lock)?
         .ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
 
     match info.engine {
         Engine::Clickhouse => {
+            confirm_ready_if_answering_locked(&mut info, lock)?;
             kill_process(info.pid)?;
             mark_server_stopped_locked(name, info.pid, lock)?;
         }
@@ -941,6 +1048,112 @@ async fn stop_starting_child(
     mark_server_stopped(name, pid).map_err(|e| e.to_string())
 }
 
+/// ClickHouse readiness: the TCP port accepts connections and `/ping` on the
+/// HTTP port answers `Ok.`.
+struct ReadinessProbe {
+    client: reqwest::Client,
+    health_url: String,
+    tcp_port: u16,
+}
+
+impl ReadinessProbe {
+    fn new(http_port: u16, tcp_port: u16) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(CONNECT_TIMEOUT)
+            .build()?;
+        Ok(Self {
+            client,
+            health_url: format!("http://localhost:{http_port}/ping"),
+            tcp_port,
+        })
+    }
+
+    async fn ready(&self) -> bool {
+        let tcp_ready = matches!(
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect(("localhost", self.tcp_port))
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        if !tcp_ready {
+            return false;
+        }
+        match self.client.get(&self.health_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                response.text().await.is_ok_and(|body| body.trim() == "Ok.")
+            }
+            _ => false,
+        }
+    }
+}
+
+/// [`ReadinessProbe`] for synchronous callers that inspect a running server,
+/// such as `list` and `stop`.
+fn is_ready_blocking(http_port: u16, tcp_port: u16) -> bool {
+    use std::io::Read;
+    use std::net::ToSocketAddrs;
+
+    let connect = |port: u16| {
+        let addrs = ("localhost", port).to_socket_addrs().ok()?;
+        addrs
+            .into_iter()
+            .find_map(|addr| std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+    };
+    if connect(tcp_port).is_none() {
+        return false;
+    }
+    let Some(mut stream) = connect(http_port) else {
+        return false;
+    };
+    // HTTP/1.0 keeps the response unchunked and closes the connection after it.
+    let mut response = Vec::new();
+    let answered = stream.set_read_timeout(Some(CONNECT_TIMEOUT)).is_ok()
+        && stream.set_write_timeout(Some(CONNECT_TIMEOUT)).is_ok()
+        && stream
+            .write_all(b"GET /ping HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            .is_ok()
+        && stream.take(4096).read_to_end(&mut response).is_ok();
+    if !answered {
+        return false;
+    }
+    let response = String::from_utf8_lossy(&response);
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let status = head.lines().next().unwrap_or_default();
+    status.starts_with("HTTP/1.")
+        && status.split_whitespace().nth(1) == Some("200")
+        && body.trim() == "Ok."
+}
+
+/// Wait for a `--foreground` server to exit, recording it as ready once it
+/// answers readiness probes. A child that exits before that never moves the
+/// version its data dir last ran (issue #1230).
+pub async fn wait_for_foreground_exit(
+    child: &mut std::process::Child,
+    name: &str,
+    http_port: u16,
+    tcp_port: u16,
+) -> Result<std::process::ExitStatus> {
+    let probe = ReadinessProbe::new(http_port, tcp_port)?;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
+            return Ok(status);
+        }
+        if probe.ready().await {
+            // Best effort, as after a background start.
+            let _ = mark_server_ready(name, child.id());
+            break;
+        }
+        tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
+    }
+    child.wait().map_err(|e| Error::Exec(e.to_string()))
+}
+
 /// Wait until ClickHouse responds to HTTP health checks and accepts TCP connections.
 pub async fn wait_for_server_ready(
     child: &mut std::process::Child,
@@ -952,12 +1165,7 @@ pub async fn wait_for_server_ready(
 ) -> Result<()> {
     let started = tokio::time::Instant::now();
     check_spawn_health(child, name, log_path).await?;
-    let health_client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(CONNECT_TIMEOUT)
-        .build()?;
-    let health_url = format!("http://localhost:{http_port}/ping");
+    let probe = ReadinessProbe::new(http_port, tcp_port)?;
 
     loop {
         if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
@@ -982,25 +1190,10 @@ pub async fn wait_for_server_ready(
             });
         }
 
-        let tcp_ready = matches!(
-            tokio::time::timeout(
-                CONNECT_TIMEOUT,
-                tokio::net::TcpStream::connect(("localhost", tcp_port))
-            )
-            .await,
-            Ok(Ok(_))
-        );
-        let http_ready = if tcp_ready {
-            match health_client.get(&health_url).send().await {
-                Ok(response) if response.status().is_success() => {
-                    response.text().await.is_ok_and(|body| body.trim() == "Ok.")
-                }
-                _ => false,
-            }
-        } else {
-            false
-        };
-        if tcp_ready && http_ready {
+        if probe.ready().await {
+            // Best effort: a later `list`, `status` or `stop` confirms a
+            // running server that answers the same probes.
+            let _ = mark_server_ready(name, child.id());
             return Ok(());
         }
 
@@ -1290,6 +1483,7 @@ fn recover_clickhouse_from_discovered_locked(
                 .version
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
+            last_version: None,
             http_port: proc.http_port.unwrap_or(0),
             tcp_port: proc.tcp_port.unwrap_or(0),
             started_at: "recovered".to_string(),
@@ -1479,6 +1673,7 @@ mod tests {
             name: "default".into(),
             pid,
             version: version.into(),
+            last_version: None,
             http_port: 8123,
             tcp_port: 9000,
             started_at: "1700000000".into(),
@@ -1486,6 +1681,121 @@ mod tests {
             engine: Engine::Clickhouse,
             container_id: None,
         }
+    }
+
+    #[test]
+    fn data_version_is_the_last_exact_clickhouse_version_seen_ready() {
+        let info = |version: &str, last: Option<&str>| ServerInfo {
+            last_version: last.map(str::to_string),
+            ..test_info(if version.is_empty() { 0 } else { 1 }, version)
+        };
+        assert_eq!(
+            info("26.8.1.922", Some("26.8.1.922")).clickhouse_data_version(),
+            Some("26.8.1.922")
+        );
+        assert_eq!(
+            info("", Some("26.8.1.922")).clickhouse_data_version(),
+            Some("26.8.1.922")
+        );
+        assert_eq!(info("", None).clickhouse_data_version(), None);
+        // A start not yet seen ready, alive or dead, does not count.
+        assert_eq!(
+            info("26.9.1.585", Some("26.8.1.922")).clickhouse_data_version(),
+            Some("26.8.1.922")
+        );
+        assert_eq!(info("26.9.1.585", None).clickhouse_data_version(), None);
+        // The value names a directory `start` executes from, so anything but
+        // an exact version is ignored.
+        for not_exact in ["unknown", "latest", "26.8", "../../bin/26.8.1.922"] {
+            assert_eq!(
+                info("", Some(not_exact)).clickhouse_data_version(),
+                None,
+                "{not_exact}"
+            );
+        }
+        let postgres = ServerInfo {
+            engine: Engine::Postgres,
+            last_version: Some("26.8.1.922".into()),
+            ..test_info(0, "postgres:18")
+        };
+        assert_eq!(postgres.clickhouse_data_version(), None);
+    }
+
+    #[test]
+    fn only_a_start_seen_ready_moves_the_last_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let starting = |pid| ServerInfo {
+            last_version: Some("26.8.1.1760".into()),
+            ..test_info(pid, "26.9.1.585")
+        };
+        let saved = || load_info_locked("default", &lock).unwrap().unwrap();
+
+        // Stopped, or found dead, before it was seen ready: the data dir's
+        // version stays where it was.
+        save_server_info_locked(&starting(41), &lock).unwrap();
+        mark_server_stopped_locked("default", 41, &lock).unwrap();
+        assert_eq!(saved().pid, 0);
+        assert_eq!(saved().version, "");
+        assert_eq!(saved().clickhouse_data_version(), Some("26.8.1.1760"));
+
+        // Seen ready, then stopped: the version it ran is recorded.
+        let mut info = starting(42);
+        assert!(info.record_ready());
+        assert!(!info.record_ready(), "a confirmed start changes nothing");
+        save_server_info_locked(&info, &lock).unwrap();
+        mark_server_stopped_locked("default", 42, &lock).unwrap();
+        assert_eq!(saved().clickhouse_data_version(), Some("26.9.1.585"));
+
+        // A new server whose first start fails records no version.
+        save_server_info_locked(&test_info(43, "26.9.1.585"), &lock).unwrap();
+        mark_server_stopped_locked("default", 43, &lock).unwrap();
+        assert_eq!(saved().clickhouse_data_version(), None);
+
+        // Neither a stopped server nor Postgres has a start to confirm.
+        assert!(!saved().record_ready());
+        assert!(
+            !ServerInfo {
+                engine: Engine::Postgres,
+                ..test_info(1, "postgres:18")
+            }
+            .record_ready()
+        );
+    }
+
+    #[test]
+    fn readiness_probe_needs_tcp_and_an_ok_ping() {
+        use std::io::Read;
+
+        fn http_server(response: &'static [u8]) -> u16 {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let mut stream = stream.unwrap();
+                    let mut request = [0; 1024];
+                    let _ = stream.read(&mut request);
+                    let _ = stream.write_all(response);
+                }
+            });
+            port
+        }
+        let tcp = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let tcp_port = tcp.local_addr().unwrap().port();
+        let closed = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+
+        let ok = http_server(b"HTTP/1.0 200 OK\r\nContent-Length: 4\r\n\r\nOk.\n");
+        assert!(is_ready_blocking(ok, tcp_port));
+        assert!(!is_ready_blocking(ok, closed));
+        assert!(!is_ready_blocking(closed, tcp_port));
+        let failing = http_server(b"HTTP/1.0 503 Service Unavailable\r\n\r\nOk.\n");
+        assert!(!is_ready_blocking(failing, tcp_port));
+        let other = http_server(b"HTTP/1.0 200 OK\r\n\r\nhello\n");
+        assert!(!is_ready_blocking(other, tcp_port));
     }
 
     #[test]
@@ -1523,6 +1833,7 @@ mod tests {
             name: "dev".into(),
             pid: 0,
             version: "postgres:17".into(),
+            last_version: None,
             http_port: 0,
             tcp_port: 5432,
             started_at: "1700000000".into(),

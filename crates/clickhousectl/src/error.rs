@@ -436,6 +436,11 @@ pub enum Error {
         minimum: &'static str,
     },
 
+    #[error(
+        "Server '{name}' last ran ClickHouse {version}, which is not installed. Reinstall it with `clickhousectl local install {version}`, or pass `--version <version>` to run this server's data on another version."
+    )]
+    ServerVersionNotInstalled { name: String, version: String },
+
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 

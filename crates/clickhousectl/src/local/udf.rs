@@ -2608,6 +2608,7 @@ mod tests {
             name: "default".into(),
             pid: 1,
             version: "26.9.1.1312".into(),
+            last_version: None,
             http_port: 8123,
             tcp_port: 9000,
             started_at: started_at.into(),

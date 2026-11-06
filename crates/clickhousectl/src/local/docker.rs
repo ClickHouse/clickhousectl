@@ -1199,6 +1199,7 @@ pub fn recover_project_postgres_blocking(
             name: key,
             pid: 0,
             version: c.image,
+            last_version: None,
             http_port: 0,
             tcp_port: c.host_port.unwrap_or(0),
             started_at: "recovered".to_string(),

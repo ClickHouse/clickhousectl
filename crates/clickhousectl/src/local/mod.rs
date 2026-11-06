@@ -547,10 +547,15 @@ async fn start_server(
         return Err(Error::ServerAlreadyRunning(server_name));
     }
 
+    // A restart without --version keeps the data dir on the version it last
+    // ran instead of silently moving it to the default (issue #1230).
+    let explicit_version = version_spec.is_some();
     let version = if let Some(spec) = version_spec {
         let spec = spec.into_spec();
         let platform = version_manager::platform::Platform::detect()?;
         version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?
+    } else if let Some(last) = server::clickhouse_data_version(&server_name)? {
+        last
     } else {
         match version_manager::get_default_version() {
             Ok(v) => v,
@@ -576,11 +581,6 @@ async fn start_server(
             Err(e) => return Err(e),
         }
     };
-    let binary = paths::binary_path(&version)?;
-
-    if !binary.exists() {
-        return Err(Error::VersionNotFound(version));
-    }
 
     // Metadata locking is always acquired after version installation locks.
     // Hold it from the final collision check through the process metadata
@@ -590,6 +590,31 @@ async fn start_server(
     let server_name = server::resolve_name_locked(name.as_deref(), &metadata_lock)?;
     if name.is_some() && server::is_server_running_locked(&server_name, &metadata_lock)? {
         return Err(Error::ServerAlreadyRunning(server_name));
+    }
+    // Re-read under the lock: the selected server's recorded version wins
+    // over the unlocked read above. Neither path installs anything, so the
+    // lock order with install locks is kept. The new metadata carries it as
+    // `last_version`, which only a readiness observation replaces, so a start
+    // that never becomes ready keeps it instead of the attempted version.
+    let previous_version = server::clickhouse_data_version_locked(&server_name, &metadata_lock)?;
+    let restart_version = if explicit_version {
+        None
+    } else {
+        previous_version.clone()
+    };
+    let restarting = restart_version.is_some();
+    let version = restart_version.unwrap_or(version);
+    let binary = paths::binary_path(&version)?;
+
+    if !binary.exists() {
+        return Err(if restarting {
+            Error::ServerVersionNotInstalled {
+                name: server_name,
+                version,
+            }
+        } else {
+            Error::VersionNotFound(version)
+        });
     }
     init::ensure_runtime_gitignore()?;
 
@@ -670,6 +695,7 @@ async fn start_server(
             name: server_name.clone(),
             pid,
             version: version.clone(),
+            last_version: previous_version,
             http_port,
             tcp_port,
             started_at: server::now_timestamp(),
@@ -713,6 +739,7 @@ async fn start_server(
             name: server_name.clone(),
             pid,
             version: version.clone(),
+            last_version: previous_version,
             http_port,
             tcp_port,
             started_at: server::now_timestamp(),
@@ -730,7 +757,8 @@ async fn start_server(
             server_name, pid, http_port, tcp_port
         );
 
-        let status = child.wait().map_err(|e| Error::Exec(e.to_string()))?;
+        let status =
+            server::wait_for_foreground_exit(&mut child, &server_name, http_port, tcp_port).await?;
         server::mark_server_stopped(&server_name, pid)?;
 
         if !status.success()
@@ -1135,12 +1163,13 @@ pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Res
                             } else {
                                 None
                             };
-                            // ClickHouse resolves its version and ports on each
-                            // start, so stopped entries expose identity only.
+                            // A stopped ClickHouse server shows the version it
+                            // last ran, which a restart without --version reuses.
+                            // Its ports are resolved again on each start.
                             let version = if !is_ch || running {
-                                Some(info.version)
+                                Some(info.version.clone())
                             } else {
-                                None
+                                info.clickhouse_data_version().map(str::to_string)
                             };
                             let http_port = if is_ch && running {
                                 Some(info.http_port)
@@ -1610,6 +1639,7 @@ mod tests {
             name: name.to_string(),
             pid: 1,
             version: version.to_string(),
+            last_version: None,
             http_port: 0,
             tcp_port: 0,
             started_at: "test".to_string(),
