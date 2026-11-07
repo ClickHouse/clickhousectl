@@ -418,3 +418,60 @@ fn public_preview_patch_request_sends_explicit_false() {
         serde_json::json!({})
     );
 }
+
+#[test]
+fn notification_setting_missing_and_null_fields_are_none() {
+    let missing: NotificationSetting = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, NotificationSetting::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: NotificationSetting = serde_json::from_value(serde_json::json!({
+        "type": null, "resourceType": null, "resourceId": null,
+        "channelType": null, "effect": null
+    }))
+    .unwrap();
+    assert_eq!(null, NotificationSetting::default());
+}
+
+#[test]
+fn member_notification_settings_patch_response_missing_and_null_settings_are_none() {
+    for json in ["{}", r#"{"settings":null}"#] {
+        let response: MemberNotificationSettingsPatchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.settings, None, "{json}");
+    }
+}
+
+#[test]
+fn notification_setting_rule_is_strict_and_omits_absent_channels() {
+    let rule = NotificationSettingRule {
+        effect: "enabled".to_string(),
+        notifications: vec!["service_backup_failed".to_string()],
+        resources: vec!["svc-1".to_string()],
+        channels: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&rule).unwrap(),
+        serde_json::json!({
+            "effect": "enabled",
+            "notifications": ["service_backup_failed"],
+            "resources": ["svc-1"]
+        })
+    );
+
+    let missing_resources = serde_json::from_value::<NotificationSettingRule>(serde_json::json!({
+        "effect": "enabled",
+        "notifications": ["service_backup_failed"]
+    }));
+    assert!(missing_resources.is_err());
+}
+
+#[test]
+fn member_notification_settings_patch_request_omits_absent_rules() {
+    assert_eq!(
+        serde_json::to_value(MemberNotificationSettingsPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}

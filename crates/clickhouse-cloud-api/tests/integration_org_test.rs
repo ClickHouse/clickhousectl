@@ -445,6 +445,92 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             }
         }
 
+        // ── Member Notification Settings ────────────────────────────
+        //
+        // Lists the secondary member's explicit settings, then reapplies one
+        // of them with its current effect, so the fixture's settings are
+        // unchanged. A member with no explicit setting gets no write.
+
+        log_phase("Member Notification Settings");
+        let notification_settings = failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "list member notification settings",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let user_id = secondary_user_id.clone();
+                    async move {
+                        let resp = client
+                            .member_notification_settings_get_list(
+                                &org_id,
+                                &user_id,
+                                Some(1),
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await?;
+                        if resp.limit.is_none() {
+                            return Err("notification settings page returned no limit".into());
+                        }
+                        resp.result
+                            .ok_or_else(|| "notification settings returned no result".into())
+                    }
+                },
+            )
+            .await?;
+        let existing_setting = notification_settings
+            .into_iter()
+            .flatten()
+            .find_map(|setting| {
+                Some(NotificationSettingRule {
+                    effect: setting.effect?,
+                    notifications: vec![setting.r#type?],
+                    resources: vec![setting.resource_id?],
+                    channels: Some(vec![setting.channel_type?]),
+                })
+            });
+        match existing_setting {
+            None => eprintln!("  SKIP notification settings write-back: no explicit setting"),
+            Some(rule) => {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "member notification settings write-back",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let user_id = secondary_user_id.clone();
+                            let rule = rule.clone();
+                            async move {
+                                let effect = rule.effect.clone();
+                                let body = MemberNotificationSettingsPatchRequest {
+                                    rules: Some(vec![rule]),
+                                };
+                                let settings = client
+                                    .member_notification_settings_update(&org_id, &user_id, &body)
+                                    .await?
+                                    .result
+                                    .and_then(|response| response.settings)
+                                    .ok_or("notification settings update returned no settings")?;
+                                assert!(
+                                    settings
+                                        .iter()
+                                        .any(|setting| setting.effect.as_deref() == Some(&effect)),
+                                    "write-back did not return the reapplied setting"
+                                );
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+            }
+        }
+
         // ── Invitations ─────────────────────────────────────────────
         //
         // Cover the full invitation CRUD against a synthetic recipient.

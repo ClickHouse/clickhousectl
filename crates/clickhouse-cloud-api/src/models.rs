@@ -187,7 +187,11 @@ pub use invitations::{
     Invitation, InvitationPostRequest, InvitationPostRequestRole, InvitationRole,
 };
 pub use jwt_providers::{JwtProvider, JwtProviderPostRequest, JwtProviderPutRequest};
-pub use members::{Member, MemberPatchRequest, MemberPatchRequestRole, MemberRole};
+pub use members::{
+    Member, MemberNotificationSettingsPatchRequest, MemberNotificationSettingsPatchResponse,
+    MemberPatchRequest, MemberPatchRequestRole, MemberRole, NotificationSetting,
+    NotificationSettingRule,
+};
 pub use organization_private_endpoints::{
     OrganizationCloudRegionPrivateEndpointConfig, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,

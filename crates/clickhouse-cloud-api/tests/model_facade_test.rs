@@ -216,6 +216,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PublicPreviewPatchRequest::default(),
     );
     assert_same_type(
+        api::NotificationSetting::default(),
+        api::models::NotificationSetting::default(),
+    );
+    assert_same_type(
+        api::NotificationSettingRule::default(),
+        api::models::NotificationSettingRule::default(),
+    );
+    assert_same_type(
+        api::MemberNotificationSettingsPatchRequest::default(),
+        api::models::MemberNotificationSettingsPatchRequest::default(),
+    );
+    assert_same_type(
+        api::MemberNotificationSettingsPatchResponse::default(),
+        api::models::MemberNotificationSettingsPatchResponse::default(),
+    );
+    assert_same_type(
         api::ClickStackChartColor::default(),
         api::models::ClickStackChartColor::default(),
     );

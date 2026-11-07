@@ -6,6 +6,25 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+The beta member notification-settings methods are
+`member_notification_settings_get_list` and
+`member_notification_settings_update`. The list takes the organization and
+user IDs, then `limit`, `cursor`, `type`, `resource_id` and `resource_type`,
+and returns one page of `Vec<NotificationSetting>` (`type`, `resource_type`,
+`resource_id`, `channel_type`, `effect`). It holds only settings the member
+has explicitly chosen; an empty list means every notification follows the
+platform default for their role. Pass `next_cursor` unchanged as `cursor`
+until it is absent. The update takes `MemberNotificationSettingsPatchRequest`,
+whose `rules` hold 1 to 100 `NotificationSettingRule`s. Each rule applies
+`effect` (`enabled`, `disabled` or `inherit`, which removes the setting) to
+every combination of its `notifications`, `resources` and optional `channels`
+(`ui`, `email`; `None` means every channel). Types that no rule names keep
+their settings, and the request applies completely or not at all. It returns
+`MemberNotificationSettingsPatchResponse` with the resulting `settings`. The
+string fields are `String` because the spec documents their values as open
+sets. `rules` is an `Option` because the analyzer treats PATCH bodies as
+partial, but the server requires it.
+
 The beta BYOC customer-authorized access methods are
 `organization_byoc_infrastructure_customer_authorized_access_get` and
 `organization_byoc_infrastructure_customer_authorized_access_update`. Both return
