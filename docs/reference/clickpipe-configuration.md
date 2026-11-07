@@ -89,7 +89,7 @@ For Postgres, snapshot worker/partition settings, nullability, failover slots, a
 
 Kafka/Kinesis Protobuf schema inputs accept `.proto` or serialized `FileDescriptorSet`; use `--protobuf-schema-file -` for stdin. The encoded limit is 1 MiB. Kafka Protobuf input conflicts with registry flags; `--exactly-once` is create-only. Pub/Sub timestamp seek requires `--seek-timestamp`; `earliest` reads backlog and `latest` reads new messages only.
 
-Object storage `--skip-initial-load` and `--start-after` cannot be combined. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
+Object storage `--skip-initial-load` and `--start-after` cannot be combined. `--skip-first-lines` works only with `TabSeparated` and `TabSeparatedWithNames`, and it cannot be changed after creation. `--object-storage-max-file-size` (on create and `settings update`) skips larger files without retrying them and can only lower the limit. It is a private preview that support must enable for the organization. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
 
 ## Configure BigQuery CDC
 

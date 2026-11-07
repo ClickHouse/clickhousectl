@@ -767,6 +767,7 @@ pub enum ClickPipeSettingsCommands {
                 "object_storage_polling_interval_ms",
                 "object_storage_max_insert_bytes",
                 "object_storage_max_file_count",
+                "object_storage_max_file_size",
                 "clickhouse_max_threads",
                 "clickhouse_max_insert_threads",
                 "clickhouse_max_download_threads",
@@ -820,6 +821,13 @@ pub struct ClickPipeSettingsValues {
     /// Max files per insert batch (1-10000)
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
     object_storage_max_file_count: Option<u32>,
+
+    /// Skip files larger than this many bytes (1048576-536870912000)
+    ///
+    /// Private preview that support must enable. Can only lower the limit;
+    /// skipped files are not retried.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1048576..=536870912000))]
+    object_storage_max_file_size: Option<u64>,
 
     /// Max concurrent threads for file processing (0-64)
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=64))]
@@ -1110,6 +1118,12 @@ pub struct ObjectStorageSourceFields {
     /// CSV delimiter character (e.g., ",")
     #[arg(long)]
     pub delimiter: Option<String>,
+
+    /// Lines to skip at the start of each file (0-100)
+    ///
+    /// Only with --format TabSeparated or TabSeparatedWithNames.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+    pub skip_first_lines: Option<u8>,
 
     /// IAM role ARN (selects IAM_ROLE auth)
     #[arg(long)]
@@ -2482,7 +2496,7 @@ fn build_object_storage_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
     use clickhouse_cloud_api::models::{
         ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
-        ClickPipePostObjectStorageSourceType, MskIamUser,
+        ClickPipePostObjectStorageSourceFormat, ClickPipePostObjectStorageSourceType, MskIamUser,
     };
 
     let source_type: ClickPipePostObjectStorageSourceType = parse_enum(&args.storage_type)?;
@@ -2490,6 +2504,19 @@ fn build_object_storage_source(
         return Err(CloudError::usage(format!(
             "unknown object-storage source type '{value}'"
         )));
+    }
+
+    let format: ClickPipePostObjectStorageSourceFormat = parse_enum(&args.format)?;
+    if args.skip_first_lines.is_some()
+        && !matches!(
+            format,
+            ClickPipePostObjectStorageSourceFormat::TabSeparated
+                | ClickPipePostObjectStorageSourceFormat::TabSeparatedWithNames
+        )
+    {
+        return Err(CloudError::usage(
+            "--skip-first-lines requires --format TabSeparated or TabSeparatedWithNames",
+        ));
     }
 
     let credential_groups = [
@@ -2640,7 +2667,7 @@ fn build_object_storage_source(
 
     Ok(ClickPipePostObjectStorageSource {
         r#type: source_type,
-        format: parse_enum(&args.format)?,
+        format,
         url: args.source_url.clone(),
         compression: Some(parse_enum(&args.compression)?),
         is_continuous: if args.continuous { Some(true) } else { None },
@@ -2653,7 +2680,7 @@ fn build_object_storage_source(
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
         service_account_key,
-        skip_first_lines: None,
+        skip_first_lines: args.skip_first_lines.map(i64::from),
         skip_initial_load: if args.skip_initial_load {
             Some(true)
         } else {
@@ -4400,6 +4427,7 @@ impl ClickPipeSettingsValues {
             || self.object_storage_polling_interval_ms.is_some()
             || self.object_storage_max_insert_bytes.is_some()
             || self.object_storage_max_file_count.is_some()
+            || self.object_storage_max_file_size.is_some()
             || self.clickhouse_max_threads.is_some()
             || self.clickhouse_max_insert_threads.is_some()
             || self.clickhouse_max_download_threads.is_some()
@@ -4415,6 +4443,7 @@ impl ClickPipeSettingsValues {
             || self.object_storage_polling_interval_ms.is_some()
             || self.object_storage_max_insert_bytes.is_some()
             || self.object_storage_max_file_count.is_some()
+            || self.object_storage_max_file_size.is_some()
             || self.object_storage_use_cluster_function.is_some()
     }
 }
@@ -4542,7 +4571,10 @@ fn build_create_request_args(
                     .settings
                     .object_storage_max_file_count
                     .map(i64::from),
-                object_storage_max_file_size: None,
+                object_storage_max_file_size: args
+                    .settings
+                    .object_storage_max_file_size
+                    .map(|value| value as i64),
                 clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
                 clickhouse_max_insert_threads: args
                     .settings
@@ -4676,7 +4708,9 @@ fn build_clickpipe_settings_request(
             .object_storage_max_insert_bytes
             .map(|value| value as i64),
         object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
-        object_storage_max_file_size: None,
+        object_storage_max_file_size: values
+            .object_storage_max_file_size
+            .map(|value| value as i64),
         clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
         clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function: values.object_storage_use_cluster_function,
@@ -7437,6 +7471,51 @@ mod tests {
     }
 
     #[test]
+    fn object_storage_max_file_size_boundaries_match_create_and_settings_update() {
+        for size in [
+            1_048_575_u64,
+            1_048_576,
+            10_737_418_240,
+            536_870_912_000,
+            536_870_912_001,
+        ] {
+            let size_arg = size.to_string();
+            let mut create = object_storage_create_cli_args();
+            create.extend(["--column", "id:Int64"]);
+            for mut args in [create, vec!["settings", "update", "svc-1", "pipe-1"]] {
+                args.extend(["--object-storage-max-file-size", &size_arg]);
+                let result = Cli::try_parse_from(
+                    ["chctl", "cloud", "clickpipe"]
+                        .into_iter()
+                        .chain(args.iter().copied()),
+                );
+                if (1_048_576..=536_870_912_000).contains(&size) {
+                    assert!(result.is_ok(), "{args:?}");
+                    let settings = match parse_clickpipe(&args) {
+                        ClickPipeCommands::Create {
+                            command: ClickPipeCreateCommands::ObjectStorage(args),
+                        } => args.request.settings,
+                        ClickPipeCommands::Settings {
+                            command: ClickPipeSettingsCommands::Update { settings, .. },
+                        } => settings,
+                        _ => panic!("unexpected command"),
+                    };
+                    assert_eq!(settings.object_storage_max_file_size, Some(size));
+                    assert!(settings.has_object_storage_setting());
+                    let request = build_clickpipe_settings_request(&settings, None);
+                    assert_eq!(request.object_storage_max_file_size, Some(size as i64));
+                } else {
+                    assert_eq!(
+                        result.err().expect("out-of-range size must fail").kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn parses_settings_commands_flags_and_defaults() {
         let ClickPipeCommands::Settings {
             command:
@@ -7782,6 +7861,7 @@ mod tests {
                     object_storage_polling_interval_ms: Some(100),
                     object_storage_max_insert_bytes: Some(524_288_000),
                     object_storage_max_file_count: Some(1),
+                    object_storage_max_file_size: Some(1_048_576),
                     object_storage_use_cluster_function: Some(false),
                     ..Default::default()
                 },
@@ -7792,6 +7872,7 @@ mod tests {
         .unwrap();
         let settings = object_storage.settings.unwrap();
         assert_eq!(settings.object_storage_concurrency, Some(1));
+        assert_eq!(settings.object_storage_max_file_size, Some(1_048_576));
         assert_eq!(settings.object_storage_use_cluster_function, Some(false));
         assert_eq!(settings.kafka_read_committed, None);
     }
@@ -7835,6 +7916,18 @@ mod tests {
                 .message,
             &["--kafka-read-committed", "clickpipe create kafka"],
         );
+
+        let max_file_size_on_kafka = ClickPipeCreateRequestArgs {
+            settings: ClickPipeSettingsValues {
+                object_storage_max_file_size: Some(1_048_576),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = build_create_request_args(&max_file_size_on_kafka, ClickPipeSourceKind::Kafka)
+            .unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(&error.message, &["clickpipe create object-storage"]);
     }
 
     // A non-Kafka pipe must not carry `kafka_read_committed`: the API rejects
@@ -7871,6 +7964,7 @@ mod tests {
             object_storage_polling_interval_ms: Some(3000),
             object_storage_max_insert_bytes: Some(4000),
             object_storage_max_file_count: Some(5),
+            object_storage_max_file_size: Some(1_048_576),
             clickhouse_max_threads: Some(6),
             clickhouse_max_insert_threads: Some(7),
             clickhouse_max_download_threads: Some(8),
@@ -7886,6 +7980,7 @@ mod tests {
         assert_eq!(request.object_storage_polling_interval_ms, Some(3000));
         assert_eq!(request.object_storage_max_insert_bytes, Some(4000));
         assert_eq!(request.object_storage_max_file_count, Some(5));
+        assert_eq!(request.object_storage_max_file_size, Some(1_048_576));
         assert_eq!(request.clickhouse_max_threads, Some(6));
         assert_eq!(request.clickhouse_max_insert_threads, Some(7));
         assert_eq!(request.clickhouse_max_download_threads, Some(8));
@@ -8397,6 +8492,34 @@ mod tests {
             "key-1",
         ]);
         assert_rejected(&conflict);
+    }
+
+    #[test]
+    fn parses_object_storage_skip_first_lines_range() {
+        for (value, expected) in [("0", Some(0)), ("100", Some(100)), ("101", None)] {
+            let mut args = object_storage_create_cli_args();
+            args.extend(["--column", "id:Int64", "--skip-first-lines", value]);
+            let result = Cli::try_parse_from(
+                ["chctl", "cloud", "clickpipe"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            );
+            match expected {
+                Some(lines) => {
+                    let ClickPipeCommands::Create {
+                        command: ClickPipeCreateCommands::ObjectStorage(create),
+                    } = parse_clickpipe(&args)
+                    else {
+                        panic!("expected object-storage create");
+                    };
+                    assert_eq!(create.source.skip_first_lines, Some(lines));
+                }
+                None => assert_eq!(
+                    result.err().expect("out-of-range value must fail").kind(),
+                    clap::error::ErrorKind::ValueValidation
+                ),
+            }
+        }
     }
 
     #[test]
@@ -15318,25 +15441,49 @@ mod tests {
     }
 
     #[test]
-    fn object_storage_create_request_omits_skip_first_lines_and_max_file_size() {
-        let args = parse_object_storage_discovery(&[
+    fn object_storage_source_sends_skip_first_lines_only_when_set() {
+        let tsv = [
             "--source-url",
             "https://bucket.example/data/*.tsv",
             "--format",
             "TabSeparatedWithNames",
+        ];
+        let source = build_object_storage_source(&parse_object_storage_discovery(&tsv)).unwrap();
+        assert_eq!(source.skip_first_lines, None);
+
+        for (format, lines) in [("TabSeparated", "0"), ("TabSeparatedWithNames", "100")] {
+            let args = parse_object_storage_discovery(&[
+                "--source-url",
+                "https://bucket.example/data/*.tsv",
+                "--format",
+                format,
+                "--skip-first-lines",
+                lines,
+            ]);
+            let source = build_object_storage_source(&args).unwrap();
+            assert_eq!(source.skip_first_lines, Some(lines.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn object_storage_skip_first_lines_requires_a_tab_separated_format() {
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSVWithNames",
+            "--skip-first-lines",
+            "1",
         ]);
-        let source = serde_json::to_value(build_object_storage_source(&args).unwrap())
-            .expect("source serializes");
-        assert!(source.get("skipFirstLines").is_none(), "{source}");
-        let values = ClickPipeSettingsValues {
-            object_storage_max_file_count: Some(1),
-            ..Default::default()
-        };
-        let settings = serde_json::to_value(build_clickpipe_settings_request(&values, None))
-            .expect("settings serialize");
-        assert!(
-            settings.get("object_storage_max_file_size").is_none(),
-            "{settings}"
+        let error = build_object_storage_source(&args).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(
+            &error.message,
+            &[
+                "--skip-first-lines",
+                "TabSeparated",
+                "TabSeparatedWithNames",
+            ],
         );
     }
 
