@@ -330,6 +330,8 @@ pub struct ClickPipeObjectStorageSource {
     pub path: Option<String>,
     #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none")]
     pub queue_url: Option<String>,
+    #[serde(rename = "skipFirstLines", skip_serializing_if = "Option::is_none")]
+    pub skip_first_lines: Option<i64>,
     #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none")]
     pub skip_initial_load: Option<bool>,
     #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none")]
@@ -389,6 +391,10 @@ pub struct ClickPipePostObjectStorageSource {
     pub queue_url: Option<String>,
     #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<String>,
+    /// TabSeparated formats only, and only at pipe creation. Leave `None` for
+    /// every other format.
+    #[serde(rename = "skipFirstLines", skip_serializing_if = "Option::is_none")]
+    pub skip_first_lines: Option<i64>,
     #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none")]
     pub skip_initial_load: Option<bool>,
     #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none")]

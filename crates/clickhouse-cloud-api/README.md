@@ -6,6 +6,22 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+`ClickPipePostObjectStorageSource` and `ClickPipeObjectStorageSource` gain
+optional `skip_first_lines`, the number of lines (0 to 100) to skip at the
+start of each file. It applies only to the `TabSeparated` and
+`TabSeparatedWithNames` formats and can only be set when the pipe is created.
+`ClickPipeSettings`, `ClickPipeSettingsResponse` and
+`ClickPipeSettingsPutRequest` gain optional `object_storage_max_file_size`, in
+bytes: files larger than this are skipped and not retried. It can only lower
+the limit and is a private preview that support must enable for the
+organization. Both stay optional in requests; `None` omits the key.
+Struct-literal callers need the new fields set to `None` or
+`..Default::default()`. `ActivityType` adds
+`Byoc_infrastructure_update_customer_authorized_access`, and
+`ReversePrivateEndpointDnsTargetKind` adds `AVAILABILITY_ZONE`, used for
+zonal `VPC_ENDPOINT_SERVICE` targets; exhaustive matches without a wildcard arm
+need the new arms.
+
 ClickStack chart configs gain a PromQL variant that queries a `promql` source.
 Each of the line, stacked-bar, stacked-line, categorical-bar, table, number,
 pie and heatmap chart config unions (and their `*Response` unions) adds a

@@ -2653,6 +2653,7 @@ fn build_object_storage_source(
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
         service_account_key,
+        skip_first_lines: None,
         skip_initial_load: if args.skip_initial_load {
             Some(true)
         } else {
@@ -4541,6 +4542,7 @@ fn build_create_request_args(
                     .settings
                     .object_storage_max_file_count
                     .map(i64::from),
+                object_storage_max_file_size: None,
                 clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
                 clickhouse_max_insert_threads: args
                     .settings
@@ -4674,6 +4676,7 @@ fn build_clickpipe_settings_request(
             .object_storage_max_insert_bytes
             .map(|value| value as i64),
         object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
+        object_storage_max_file_size: None,
         clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
         clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function: values.object_storage_use_cluster_function,
@@ -7846,6 +7849,7 @@ mod tests {
         let request = build_clickpipe_settings_request(&values, None);
         assert_eq!(request.kafka_read_committed, None);
         assert_eq!(request.object_storage_max_file_count, Some(200));
+        assert_eq!(request.object_storage_max_file_size, None);
         assert_eq!(request.streaming_max_insert_wait_ms, None);
         assert_eq!(request.object_storage_concurrency, None);
         assert_eq!(request.object_storage_polling_interval_ms, None);
@@ -15311,6 +15315,29 @@ mod tests {
         ] {
             assert!(json.get(field).is_none(), "{field} leaked into {json}");
         }
+    }
+
+    #[test]
+    fn object_storage_create_request_omits_skip_first_lines_and_max_file_size() {
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.tsv",
+            "--format",
+            "TabSeparatedWithNames",
+        ]);
+        let source = serde_json::to_value(build_object_storage_source(&args).unwrap())
+            .expect("source serializes");
+        assert!(source.get("skipFirstLines").is_none(), "{source}");
+        let values = ClickPipeSettingsValues {
+            object_storage_max_file_count: Some(1),
+            ..Default::default()
+        };
+        let settings = serde_json::to_value(build_clickpipe_settings_request(&values, None))
+            .expect("settings serialize");
+        assert!(
+            settings.get("object_storage_max_file_size").is_none(),
+            "{settings}"
+        );
     }
 
     #[test]

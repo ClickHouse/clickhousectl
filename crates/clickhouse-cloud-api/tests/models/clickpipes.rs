@@ -238,6 +238,83 @@ fn serialize_clickpipe_object_storage_ingestion_controls() {
 }
 
 #[test]
+fn clickpipe_object_storage_skip_first_lines_is_omitted_unless_set() {
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    assert!(json.get("skipFirstLines").is_none());
+
+    let source = ClickPipePostObjectStorageSource {
+        format: ClickPipePostObjectStorageSourceFormat::TabSeparatedWithNames,
+        skip_first_lines: Some(2),
+        ..Default::default()
+    };
+    assert_eq!(serde_json::to_value(&source).unwrap()["skipFirstLines"], 2);
+}
+
+#[test]
+fn clickpipe_object_storage_response_skip_first_lines_tolerates_absence() {
+    let set: ClickPipeObjectStorageSource =
+        serde_json::from_str(r#"{"skipFirstLines":1}"#).unwrap();
+    assert_eq!(set.skip_first_lines, Some(1));
+    let missing: ClickPipeObjectStorageSource = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing.skip_first_lines, None);
+    let null: ClickPipeObjectStorageSource =
+        serde_json::from_str(r#"{"skipFirstLines":null}"#).unwrap();
+    assert_eq!(null.skip_first_lines, None);
+}
+
+#[test]
+fn clickpipe_settings_max_file_size_is_omitted_unless_set() {
+    for json in [
+        serde_json::to_value(ClickPipeSettings::default()).unwrap(),
+        serde_json::to_value(ClickPipeSettingsPutRequest::default()).unwrap(),
+    ] {
+        assert!(json.get("object_storage_max_file_size").is_none());
+    }
+
+    let size = 10_737_418_240_i64;
+    let create = ClickPipeSettings {
+        object_storage_max_file_size: Some(size),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&create).unwrap(),
+        serde_json::json!({ "object_storage_max_file_size": size })
+    );
+    let put = ClickPipeSettingsPutRequest {
+        object_storage_max_file_size: Some(size),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&put).unwrap(),
+        serde_json::json!({ "object_storage_max_file_size": size })
+    );
+}
+
+#[test]
+fn clickpipe_settings_response_max_file_size_tolerates_absence() {
+    let set: ClickPipeSettingsResponse =
+        serde_json::from_str(r#"{"object_storage_max_file_size":1048576}"#).unwrap();
+    assert_eq!(set.object_storage_max_file_size, Some(1_048_576));
+    let missing: ClickPipeSettingsResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing.object_storage_max_file_size, None);
+    let null: ClickPipeSettingsResponse =
+        serde_json::from_str(r#"{"object_storage_max_file_size":null}"#).unwrap();
+    assert_eq!(null.object_storage_max_file_size, None);
+}
+
+#[test]
+fn reverse_private_endpoint_dns_target_kind_availability_zone_round_trips() {
+    let parsed: ReversePrivateEndpointDnsTargetKind =
+        serde_json::from_str(r#""AVAILABILITY_ZONE""#).unwrap();
+    assert_eq!(
+        parsed,
+        ReversePrivateEndpointDnsTargetKind::AVAILABILITY_ZONE
+    );
+    assert_eq!(parsed.to_string(), "AVAILABILITY_ZONE");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "AVAILABILITY_ZONE");
+}
+
+#[test]
 fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
     // IAM_ROLE authentication has no username or password: `iamRole` is the
     // whole credential, so the `credentials` object must not reach the wire.

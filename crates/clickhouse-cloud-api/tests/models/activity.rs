@@ -91,6 +91,18 @@ fn activity_type_approved_domain_and_org_update_values_round_trip() {
 }
 
 #[test]
+fn activity_type_byoc_customer_authorized_access_round_trips() {
+    let wire = "byoc_infrastructure_update_customer_authorized_access";
+    let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
+    assert_eq!(
+        parsed,
+        ActivityType::Byoc_infrastructure_update_customer_authorized_access
+    );
+    assert_eq!(parsed.to_string(), wire);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+}
+
+#[test]
 fn activity_type_postgres_action_round_trips() {
     let parsed: ActivityType = serde_json::from_str("\"postgres_action\"").unwrap();
     assert_eq!(parsed, ActivityType::Postgres_action);

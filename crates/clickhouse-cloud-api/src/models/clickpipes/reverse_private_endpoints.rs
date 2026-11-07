@@ -145,6 +145,7 @@ impl std::fmt::Display for ReversePrivateEndpointType {
 pub enum ReversePrivateEndpointDnsTargetKind {
     #[default]
     RESOURCE_CONFIGURATION,
+    AVAILABILITY_ZONE,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -154,6 +155,7 @@ impl std::fmt::Display for ReversePrivateEndpointDnsTargetKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RESOURCE_CONFIGURATION => write!(f, "RESOURCE_CONFIGURATION"),
+            Self::AVAILABILITY_ZONE => write!(f, "AVAILABILITY_ZONE"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
