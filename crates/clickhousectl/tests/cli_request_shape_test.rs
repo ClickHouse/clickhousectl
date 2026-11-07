@@ -16441,6 +16441,108 @@ async fn member_update_sends_set_and_cleared_role_lists() {
     }
 }
 
+#[tokio::test]
+async fn member_notification_settings_commands_send_exact_paths_queries_and_bodies() {
+    let mock = MockServer::start().await;
+    let settings_path = "/v1/organizations/org-1/members/user-1/notificationSettings";
+    let setting = serde_json::json!({
+        "type": "service_backup_failed",
+        "resourceType": "service",
+        "resourceId": "svc-1",
+        "channelType": "email",
+        "effect": "disabled"
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/members"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"userId": "user-1", "email": "dev@example.com"}],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(settings_path))
+        .and(query_param("limit", "10"))
+        .and(query_param("cursor", "page-2"))
+        .and(query_param("type", "service_backup_failed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [setting.clone()],
+            "limit": 10,
+            "nextCursor": "page-3",
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(settings_path))
+        .and(body_json(serde_json::json!({
+            "rules": [{
+                "effect": "disabled",
+                "notifications": ["service_backup_failed"],
+                "resources": ["svc-1"],
+                "channels": ["email"]
+            }]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": [setting.clone()]},
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "member",
+            "notification-settings",
+            "list",
+            "--email",
+            "dev@example.com",
+            "--limit",
+            "10",
+            "--cursor",
+            "page-2",
+            "--type",
+            "service_backup_failed",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&list);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        serde_json::json!({"result": [setting.clone()], "limit": 10, "nextCursor": "page-3"})
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "member",
+            "notification-settings",
+            "update",
+            "user-1",
+            "--effect",
+            "disabled",
+            "--type",
+            "service_backup_failed",
+            "--resource-id",
+            "svc-1",
+            "--channel",
+            "email",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        serde_json::json!({"settings": [setting]})
+    );
+}
+
 const CLEAR_TAGS_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
 
 #[tokio::test]

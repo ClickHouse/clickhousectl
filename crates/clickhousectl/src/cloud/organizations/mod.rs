@@ -100,6 +100,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
     Permission::api("member remove", &[&op::MEMBER_DELETE])
         .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api(
+        "member notification-settings list",
+        &[&op::MEMBER_NOTIFICATION_SETTINGS_GET_LIST],
+    )
+    .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api(
+        "member notification-settings update",
+        &[&op::MEMBER_NOTIFICATION_SETTINGS_UPDATE],
+    )
+    .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
     Permission::api("invitation list", &[&op::INVITATION_GET_LIST]),
     Permission::api("invitation create", &[&op::INVITATION_CREATE]),
     Permission::api("invitation get", &[&op::INVITATION_GET])
@@ -109,8 +119,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    ByocAccessCommands, ByocCommands, InvitationCommands, MemberCommands, OrgCommands,
-    PreviewCommands, PrometheusCommands, QuotaCommands, RoleCommands,
+    ByocAccessCommands, ByocCommands, InvitationCommands, MemberCommands,
+    MemberNotificationSettingsCommands, OrgCommands, PreviewCommands, PrometheusCommands,
+    QuotaCommands, RoleCommands,
 };
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
@@ -121,8 +132,9 @@ use byoc::{
     byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update, byoc_validate,
 };
 use members::{
-    invitation_create, invitation_delete, invitation_get, invitation_list, member_get, member_list,
-    member_remove, member_update,
+    build_member_notification_settings_request, invitation_create, invitation_delete,
+    invitation_get, invitation_list, member_get, member_list, member_notification_settings_list,
+    member_notification_settings_update, member_remove, member_update,
 };
 use org::{
     OrgUpdateOptions, build_preview_update_request, org_balance, org_get, org_list,
@@ -345,6 +357,17 @@ pub async fn run_member(
         MemberCommands::Remove { user_id } => {
             member_remove(client, &user_id.resolve_member(client).await?, json).await
         }
+        MemberCommands::NotificationSettings { command } => match command {
+            MemberNotificationSettingsCommands::List(args) => {
+                let user_id = args.user_id.resolve_member(client).await?;
+                member_notification_settings_list(client, &user_id, &args, json).await
+            }
+            MemberNotificationSettingsCommands::Update(args) => {
+                let request = build_member_notification_settings_request(&args);
+                let user_id = args.user_id.resolve_member(client).await?;
+                member_notification_settings_update(client, &user_id, request, json).await
+            }
+        },
     }
 }
 

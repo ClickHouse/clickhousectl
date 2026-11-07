@@ -1,4 +1,5 @@
-use super::cli::NotificationListArgs;
+use super::cli::{MemberNotificationSettingsListArgs, NotificationListArgs};
+use super::members::NotificationSettingsPage;
 use super::org::NotificationPage;
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
@@ -9,9 +10,10 @@ use clickhouse_cloud_api::models::{
     ByocInfrastructureDetails, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
     ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
-    ByocInfrastructureValidation, InvitationPostRequest, MemberPatchRequest, NotificationType,
-    Organization, OrganizationPatchRequest, PublicPreview, PublicPreviewPatchRequest,
-    RoleCreateRequest, RoleUpdateRequest,
+    ByocInfrastructureValidation, InvitationPostRequest, MemberNotificationSettingsPatchRequest,
+    MemberNotificationSettingsPatchResponse, MemberPatchRequest, NotificationType, Organization,
+    OrganizationPatchRequest, PublicPreview, PublicPreviewPatchRequest, RoleCreateRequest,
+    RoleUpdateRequest,
 };
 
 impl CloudClient {
@@ -498,6 +500,58 @@ impl CloudClient {
         let response = self
             .api()
             .member_get(org_id, user_id)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub(super) async fn list_member_notification_settings(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        args: &MemberNotificationSettingsListArgs,
+    ) -> CloudResult<NotificationSettingsPage> {
+        let mut response = self
+            .api()
+            .member_notification_settings_get_list(
+                org_id,
+                user_id,
+                args.limit,
+                args.cursor.as_deref(),
+                args.notification_type.as_deref(),
+                args.resource_id.as_deref(),
+                args.resource_type.as_deref(),
+            )
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
+        let limit = response.limit;
+        let next_cursor = response.next_cursor.take();
+        Ok(NotificationSettingsPage {
+            result: Self::unwrap_response(response)?,
+            limit,
+            next_cursor,
+        })
+    }
+
+    pub async fn update_member_notification_settings(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        request: &MemberNotificationSettingsPatchRequest,
+    ) -> CloudResult<MemberNotificationSettingsPatchResponse> {
+        let response = self
+            .api()
+            .member_notification_settings_update(org_id, user_id, request)
             .await
             .map_err(|error| {
                 self.convert_error_for_resource(

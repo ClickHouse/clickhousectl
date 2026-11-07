@@ -588,6 +588,16 @@ pub enum MemberCommands {
         #[command(flatten)]
         user_id: EmailSelector,
     },
+
+    /// Manage a member's notification settings (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Settings are the member's explicit choices; anything unset follows their role's platform default.
+  Notification type names come from `cloud org notification-types`.")]
+    NotificationSettings {
+        #[command(subcommand)]
+        command: MemberNotificationSettingsCommands,
+    },
 }
 
 impl MemberCommands {
@@ -597,8 +607,118 @@ impl MemberCommands {
             MemberCommands::Get { .. } => false,
             MemberCommands::Update { .. } => true,
             MemberCommands::Remove { .. } => true,
+            MemberCommands::NotificationSettings { command } => command.is_write(),
         }
     }
+}
+
+#[derive(Subcommand)]
+pub enum MemberNotificationSettingsCommands {
+    /// List a member's explicit notification settings
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Returns one page; JSON exposes result, limit, and nextCursor when provided.
+  Pass nextCursor unchanged as --cursor until it is absent.
+  An empty list means every notification follows the default, not that notifications are off.")]
+    List(MemberNotificationSettingsListArgs),
+
+    /// Apply one notification setting rule to a member
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Sets --effect for every --type, --resource-id and --channel combination; other settings are kept.
+  `inherit` removes the setting so the default applies again. Rerunning the same update is safe.
+  Resource IDs have no wildcards; organization-wide types such as billing take the organization ID.
+  The update applies completely or not at all.")]
+    Update(MemberNotificationSettingsUpdateArgs),
+}
+
+impl MemberNotificationSettingsCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List(_) => false,
+            Self::Update(_) => true,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct MemberNotificationSettingsListArgs {
+    /// User ID
+    #[command(flatten)]
+    pub(super) user_id: EmailSelector,
+
+    /// Maximum settings per page, 1-250; omit for 100
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..=250))]
+    pub(super) limit: Option<i64>,
+
+    /// Opaque nextCursor from the previous page
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) cursor: Option<String>,
+
+    /// Notification type from `cloud org notification-types`
+    #[arg(long = "type")]
+    pub(super) notification_type: Option<String>,
+
+    /// Resource ID
+    #[arg(long)]
+    pub(super) resource_id: Option<String>,
+
+    /// Resource kind, such as service, organization, clickpipe or postgres
+    #[arg(long)]
+    pub(super) resource_type: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MemberNotificationSettingsUpdateArgs {
+    /// User ID
+    #[command(flatten)]
+    pub(super) user_id: EmailSelector,
+
+    /// Setting to apply to every named combination
+    #[arg(long, value_enum)]
+    pub(super) effect: NotificationSettingEffect,
+
+    /// Notification type from `cloud org notification-types` (repeatable)
+    #[arg(
+        long = "type",
+        value_name = "TYPE",
+        required = true,
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    pub(super) notification_types: Vec<String>,
+
+    /// Resource ID the setting applies to (repeatable)
+    #[arg(
+        long = "resource-id",
+        value_name = "ID",
+        required = true,
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    pub(super) resource_ids: Vec<String>,
+
+    /// Delivery channel (repeatable); omit for every channel
+    #[arg(long = "channel", value_name = "CHANNEL", value_enum)]
+    pub(super) channels: Vec<NotificationChannel>,
+}
+
+/// What a notification setting rule does to the settings it names.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationSettingEffect {
+    /// Receive the notification
+    Enabled,
+    /// Do not receive the notification
+    Disabled,
+    /// Remove the setting and follow the role's default
+    Inherit,
+}
+
+/// A member notification delivery channel.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationChannel {
+    /// Cloud console notifications
+    Ui,
+    /// Email
+    Email,
 }
 
 #[derive(Subcommand)]
@@ -1886,5 +2006,184 @@ mod tests {
             "--enabled",
         ]);
         assert!(bare_flag.is_err(), "--enabled needs a value");
+    }
+
+    fn parse_member_notification_settings(args: &[&str]) -> MemberNotificationSettingsCommands {
+        let mut full = vec!["clickhousectl", "cloud", "member", "notification-settings"];
+        full.extend(args);
+        let CloudCommands::Member {
+            command: MemberCommands::NotificationSettings { command },
+        } = parse_cloud_command(&full)
+        else {
+            panic!("expected member notification-settings");
+        };
+        command
+    }
+
+    #[test]
+    fn member_notification_settings_list_is_a_read_with_page_and_filter_flags() {
+        let MemberNotificationSettingsCommands::List(minimal) =
+            parse_member_notification_settings(&["list", "user-1"])
+        else {
+            panic!("expected list");
+        };
+        assert_eq!(minimal.user_id.id.as_deref(), Some("user-1"));
+        assert_eq!(minimal.limit, None);
+        assert_eq!(minimal.cursor, None);
+        assert_eq!(minimal.notification_type, None);
+        assert_eq!(minimal.resource_id, None);
+        assert_eq!(minimal.resource_type, None);
+
+        let MemberNotificationSettingsCommands::List(maximal) =
+            parse_member_notification_settings(&[
+                "list",
+                "--email",
+                "dev@example.com",
+                "--limit",
+                "250",
+                "--cursor",
+                "-opaque",
+                "--type",
+                "service_backup_failed",
+                "--resource-id",
+                "svc-1",
+                "--resource-type",
+                "service",
+            ])
+        else {
+            panic!("expected list");
+        };
+        assert_eq!(maximal.user_id.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(maximal.limit, Some(250));
+        assert_eq!(maximal.cursor.as_deref(), Some("-opaque"));
+        assert_eq!(
+            maximal.notification_type.as_deref(),
+            Some("service_backup_failed")
+        );
+        assert_eq!(maximal.resource_id.as_deref(), Some("svc-1"));
+        assert_eq!(maximal.resource_type.as_deref(), Some("service"));
+
+        for limit in ["0", "251"] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "member",
+                "notification-settings",
+                "list",
+                "user-1",
+                "--limit",
+                limit,
+            ])
+            .err()
+            .expect("out-of-range limit must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "member",
+                "notification-settings",
+                "list",
+                "user-1",
+            ],
+            false,
+        );
+    }
+
+    #[test]
+    fn member_notification_settings_update_is_a_write_with_repeatable_rule_flags() {
+        let base = [
+            "update",
+            "user-1",
+            "--effect",
+            "disabled",
+            "--type",
+            "service_backup_failed",
+            "--type",
+            "billing_credit_low",
+            "--resource-id",
+            "svc-1",
+            "--resource-id",
+            "org-1",
+            "--channel",
+            "ui",
+            "--channel",
+            "email",
+        ];
+        let MemberNotificationSettingsCommands::Update(update) =
+            parse_member_notification_settings(&base)
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(update.effect, NotificationSettingEffect::Disabled);
+        assert_eq!(
+            update.notification_types,
+            ["service_backup_failed", "billing_credit_low"]
+        );
+        assert_eq!(update.resource_ids, ["svc-1", "org-1"]);
+        assert_eq!(
+            update.channels,
+            [NotificationChannel::Ui, NotificationChannel::Email]
+        );
+
+        let mut write = vec!["clickhousectl", "cloud", "member", "notification-settings"];
+        write.extend(base);
+        assert_write(&write, true);
+
+        let without_channel = parse_member_notification_settings(&[
+            "update",
+            "user-1",
+            "--effect",
+            "inherit",
+            "--type",
+            "service_backup_failed",
+            "--resource-id",
+            "svc-1",
+        ]);
+        let MemberNotificationSettingsCommands::Update(without_channel) = without_channel else {
+            panic!("expected update");
+        };
+        assert_eq!(without_channel.effect, NotificationSettingEffect::Inherit);
+        assert!(without_channel.channels.is_empty());
+
+        for missing in [
+            &["--type", "service_backup_failed", "--resource-id", "svc-1"][..],
+            &["--effect", "enabled", "--resource-id", "svc-1"][..],
+            &["--effect", "enabled", "--type", "service_backup_failed"][..],
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "member",
+                "notification-settings",
+                "update",
+                "user-1",
+            ];
+            args.extend(missing);
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("a required flag is missing");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing:?}"
+            );
+        }
+        let empty_type = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "member",
+            "notification-settings",
+            "update",
+            "user-1",
+            "--effect",
+            "enabled",
+            "--type",
+            "",
+            "--resource-id",
+            "svc-1",
+        ]);
+        assert!(empty_type.is_err(), "an empty --type must be rejected");
     }
 }

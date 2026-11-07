@@ -118,6 +118,16 @@ Notifications are Beta and support OAuth reads. Each invocation returns one page
 
 Use `--type` with a name from `notification-types`, `--severity`, `--resource-id`, or `--resource-type` to narrow results. A service ID also matches its ClickPipes unless a resource kind narrows it. `--from-date` and `--to-date` are inclusive RFC 3339 timestamps. Human output shows a table and the next cursor as a JSON string; JSON preserves notification descriptions and resource names too.
 
+A member's notification settings (Beta) are the choices they have made explicitly. An empty list means every notification follows the platform default for their role; it does not mean notifications are off. `list` pages and filters the same way as `org notifications`. `update` applies one rule: `--effect` is set for every combination of the repeatable `--type`, `--resource-id`, and `--channel` flags, and omitting `--channel` covers every channel. Notification types that the rule does not name keep their settings, and `--effect inherit` removes a setting so the default applies again:
+
+```bash
+clickhousectl cloud member notification-settings list <user-id> --json
+clickhousectl cloud member notification-settings update <user-id> --effect disabled \
+  --type service_backup_failed --resource-id <service-id> --channel email
+```
+
+Resource IDs have no wildcards, so a rule does not cover resources created later. Organization-wide types such as billing take the organization ID. The server rejects the whole update if any type, resource, or channel combination is invalid or appears twice. Updating requires an API key with the manage-notification-settings permission.
+
 ## Other organization tasks
 
 Use `cloud org --help` for quotas, credit balance, notifications, notification types, usage, settings, BYOC infrastructure, preview features, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
