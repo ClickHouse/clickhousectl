@@ -5,11 +5,13 @@ use crate::cloud::client::{
 };
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
+    ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
     ByocInfrastructureDetails, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
     ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
     ByocInfrastructureValidation, InvitationPostRequest, MemberPatchRequest, NotificationType,
-    Organization, OrganizationPatchRequest, RoleCreateRequest, RoleUpdateRequest,
+    Organization, OrganizationPatchRequest, PublicPreview, PublicPreviewPatchRequest,
+    RoleCreateRequest, RoleUpdateRequest,
 };
 
 impl CloudClient {
@@ -204,6 +206,76 @@ impl CloudClient {
                 self.convert_error_for_resource(
                     error,
                     ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_customer_authorized_access(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<ByocCustomerAuthorizedAccess> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_customer_authorized_access_get(org_id, byoc_id)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_byoc_customer_authorized_access(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+        request: &ByocCustomerAuthorizedAccessPatchRequest,
+    ) -> crate::cloud::client::Result<ByocCustomerAuthorizedAccess> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_customer_authorized_access_update(
+                org_id, byoc_id, request,
+            )
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn list_preview_features(
+        &self,
+        org_id: &str,
+    ) -> crate::cloud::client::Result<Vec<PublicPreview>> {
+        let response = self
+            .api()
+            .organization_public_previews_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_preview_feature(
+        &self,
+        org_id: &str,
+        preview_id: &str,
+        request: &PublicPreviewPatchRequest,
+    ) -> crate::cloud::client::Result<PublicPreview> {
+        let response = self
+            .api()
+            .organization_public_preview_patch(org_id, preview_id, request)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::PreviewFeature, preview_id, org_id),
                 )
             })?;
         Self::unwrap_response(response)

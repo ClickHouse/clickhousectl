@@ -1,9 +1,10 @@
-use super::cli::{ByocInfrastructureArgs, ByocUpdateArgs};
+use super::cli::{ByocAccessMode, ByocAccessUpdateArgs, ByocInfrastructureArgs, ByocUpdateArgs};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::print_human;
 use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
-    ByocAvailabilityZoneSuffix, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
+    ByocAvailabilityZoneSuffix, ByocCustomerAuthorizedAccessPatchRequest,
+    ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePostRequestRegionid, ByocInfrastructureTags,
     ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
     ByocInfrastructureValidation,
@@ -184,6 +185,63 @@ pub(super) fn build_byoc_update_request(
         gcp_psc_subnet_id: changes.gcp_psc_subnet_id.clone(),
         tags: parse_byoc_tags(&changes.tags)?,
     })
+}
+
+pub(super) fn build_byoc_access_update_request(
+    args: &ByocAccessUpdateArgs,
+) -> CloudResult<ByocCustomerAuthorizedAccessPatchRequest> {
+    let mode = match args.mode {
+        ByocAccessMode::Always => "always",
+        ByocAccessMode::Never => "never",
+        ByocAccessMode::Window => "window",
+    };
+    if args.mode != ByocAccessMode::Window
+        && (args.start_time.is_some() || args.duration_seconds.is_some())
+    {
+        return Err(CloudError::usage(format!(
+            "--start-time and --duration-seconds are only accepted with --mode window, not --mode {mode}"
+        )));
+    }
+    Ok(ByocCustomerAuthorizedAccessPatchRequest {
+        duration_seconds: args.duration_seconds,
+        mode: Some(mode.to_string()),
+        start_timestamp: args.start_time,
+    })
+}
+
+pub(super) async fn byoc_access_get(
+    client: &CloudClient,
+    byoc_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let access = client
+        .get_byoc_customer_authorized_access(&org_id, byoc_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&access)?);
+    } else {
+        print_human(&access)?;
+    }
+    Ok(())
+}
+
+pub(super) async fn byoc_access_update(
+    client: &CloudClient,
+    byoc_id: &str,
+    request: ByocCustomerAuthorizedAccessPatchRequest,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let access = client
+        .update_byoc_customer_authorized_access(&org_id, byoc_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&access)?);
+    } else {
+        print_human(&access)?;
+    }
+    Ok(())
 }
 
 pub(super) async fn byoc_get(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResult<()> {
@@ -702,5 +760,56 @@ pub(super) mod tests {
         assert!(
             byoc_validation_failure(&validation(serde_json::json!({"allPassed": false}))).is_some()
         );
+    }
+
+    #[test]
+    fn build_byoc_access_update_request_sends_only_the_mode_outside_a_window() {
+        for (mode, wire) in [
+            (ByocAccessMode::Always, "always"),
+            (ByocAccessMode::Never, "never"),
+        ] {
+            let request = build_byoc_access_update_request(&ByocAccessUpdateArgs {
+                mode,
+                start_time: None,
+                duration_seconds: None,
+            })
+            .unwrap();
+            assert_eq!(request.mode.as_deref(), Some(wire));
+            assert_eq!(request.start_timestamp, None);
+            assert_eq!(request.duration_seconds, None);
+        }
+    }
+
+    #[test]
+    fn build_byoc_access_update_request_sends_the_whole_window() {
+        let start = "2026-11-07T08:00:00Z".parse().unwrap();
+        let request = build_byoc_access_update_request(&ByocAccessUpdateArgs {
+            mode: ByocAccessMode::Window,
+            start_time: Some(start),
+            duration_seconds: Some(14_400),
+        })
+        .unwrap();
+        assert_eq!(request.mode.as_deref(), Some("window"));
+        assert_eq!(request.start_timestamp, Some(start));
+        assert_eq!(request.duration_seconds, Some(14_400));
+    }
+
+    #[test]
+    fn build_byoc_access_update_request_rejects_window_flags_for_other_modes() {
+        for (start_time, duration_seconds) in [
+            (Some("2026-11-07T08:00:00Z".parse().unwrap()), None),
+            (None, Some(60)),
+        ] {
+            let error = build_byoc_access_update_request(&ByocAccessUpdateArgs {
+                mode: ByocAccessMode::Never,
+                start_time,
+                duration_seconds,
+            })
+            .unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            for name in ["--start-time", "--duration-seconds", "--mode window"] {
+                assert!(error.message.contains(name), "{}", error.message);
+            }
+        }
     }
 }

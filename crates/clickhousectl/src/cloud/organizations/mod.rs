@@ -62,6 +62,24 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc access get",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc access update",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org preview list",
+        &[&op::ORGANIZATION_PUBLIC_PREVIEWS_GET_LIST],
+    ),
+    Permission::api(
+        "org preview update",
+        &[&op::ORGANIZATION_PUBLIC_PREVIEW_PATCH],
+    ),
     Permission::api("org role list", &[&op::ORGANIZATION_ROLES_GET_LIST]),
     Permission::api("org role get", &[&op::ORGANIZATION_ROLE_GET]).when(&[Conditional::flag(
         "name",
@@ -91,24 +109,25 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    ByocCommands, InvitationCommands, MemberCommands, OrgCommands, PrometheusCommands,
-    QuotaCommands, RoleCommands,
+    ByocAccessCommands, ByocCommands, InvitationCommands, MemberCommands, OrgCommands,
+    PreviewCommands, PrometheusCommands, QuotaCommands, RoleCommands,
 };
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::shared::{NamedResource, resolve_org_id};
 use byoc::{
-    build_byoc_create_request, build_byoc_update_request, build_byoc_validate_request, byoc_create,
-    byoc_delete, byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update,
-    byoc_validate,
+    build_byoc_access_update_request, build_byoc_create_request, build_byoc_update_request,
+    build_byoc_validate_request, byoc_access_get, byoc_access_update, byoc_create, byoc_delete,
+    byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update, byoc_validate,
 };
 use members::{
     invitation_create, invitation_delete, invitation_get, invitation_list, member_get, member_list,
     member_remove, member_update,
 };
 use org::{
-    OrgUpdateOptions, org_balance, org_get, org_list, org_notification_types, org_notifications,
-    org_prometheus, org_prometheus_discovery, org_update, org_usage, quota_get, quota_list,
+    OrgUpdateOptions, build_preview_update_request, org_balance, org_get, org_list,
+    org_notification_types, org_notifications, org_prometheus, org_prometheus_discovery,
+    org_update, org_usage, preview_list, preview_update, quota_get, quota_list,
 };
 use roles::{
     build_role_create_request, build_role_update_request, role_create, role_delete, role_get,
@@ -127,6 +146,16 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         OrgCommands::Notifications(args) => org_notifications(client, args, json).await,
         OrgCommands::NotificationTypes => org_notification_types(client, json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
+        OrgCommands::Preview { command } => match command {
+            PreviewCommands::List => preview_list(client, json).await,
+            PreviewCommands::Update {
+                preview_id,
+                enabled,
+            } => {
+                let request = build_preview_update_request(enabled);
+                preview_update(client, &preview_id, request, json).await
+            }
+        },
         OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
             name,
@@ -259,6 +288,26 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             )
             .await
         }
+        ByocCommands::Access { command } => match command {
+            ByocAccessCommands::Get { byoc_id } => {
+                byoc_access_get(
+                    client,
+                    &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                    json,
+                )
+                .await
+            }
+            ByocAccessCommands::Update { byoc_id, access } => {
+                let request = build_byoc_access_update_request(&access)?;
+                byoc_access_update(
+                    client,
+                    &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                    request,
+                    json,
+                )
+                .await
+            }
+        },
     }
 }
 

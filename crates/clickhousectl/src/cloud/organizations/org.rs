@@ -5,7 +5,8 @@ use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
     Notification, NotificationType, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, PublicPreview,
+    PublicPreviewPatchRequest,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -316,6 +317,73 @@ fn notifications_table(notifications: Vec<Notification>) -> String {
         })
         .collect();
     Table::new(rows).with(Style::markdown()).to_string()
+}
+
+pub(super) async fn preview_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let previews = client.list_preview_features(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&previews)?);
+    } else {
+        if previews.is_empty() {
+            println!("No preview features found");
+            return Ok(());
+        }
+        println!("{}", preview_table(previews));
+    }
+    Ok(())
+}
+
+fn preview_table(previews: Vec<PublicPreview>) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "Enabled")]
+        enabled: String,
+        #[tabled(rename = "Can Toggle")]
+        can_toggle: String,
+        #[tabled(rename = "Docs")]
+        docs_url: String,
+    }
+    let rows: Vec<Row> = previews
+        .into_iter()
+        .map(|preview| Row {
+            id: or_absent(preview.id.as_deref()),
+            name: or_absent(preview.name.as_deref()),
+            enabled: or_absent(preview.enabled),
+            can_toggle: or_absent(preview.can_toggle),
+            docs_url: or_absent(preview.docs_url.as_deref()),
+        })
+        .collect();
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+pub(super) fn build_preview_update_request(enabled: bool) -> PublicPreviewPatchRequest {
+    PublicPreviewPatchRequest {
+        enabled: Some(enabled),
+    }
+}
+
+pub(super) async fn preview_update(
+    client: &CloudClient,
+    preview_id: &str,
+    request: PublicPreviewPatchRequest,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let preview = client
+        .update_preview_feature(&org_id, preview_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&preview)?);
+    } else {
+        print_human(&preview)?;
+    }
+    Ok(())
 }
 
 pub(super) async fn org_notification_types(client: &CloudClient, json: bool) -> CloudResult<()> {
@@ -700,5 +768,41 @@ pub(super) mod tests {
                 .collect::<Vec<_>>(),
             vec![ABSENT; 7]
         );
+    }
+
+    #[test]
+    fn preview_table_renders_absent_fields() {
+        let table = preview_table(vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "preview-1",
+                "name": "Preview one",
+                "description": "Not shown in the table",
+                "docsUrl": "https://clickhouse.com/docs",
+                "enabled": false,
+                "canToggle": true
+            }))
+            .unwrap(),
+            PublicPreview::default(),
+        ]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 4, "{table}");
+        for value in ["preview-1", "false", "true", "https://clickhouse.com/docs"] {
+            assert!(lines[2].contains(value), "{value}: {table}");
+        }
+        assert_eq!(
+            lines[3]
+                .split('|')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .collect::<Vec<_>>(),
+            vec![ABSENT; 5]
+        );
+    }
+
+    #[test]
+    fn build_preview_update_request_sends_explicit_values() {
+        for enabled in [true, false] {
+            assert_eq!(build_preview_update_request(enabled).enabled, Some(enabled));
+        }
     }
 }

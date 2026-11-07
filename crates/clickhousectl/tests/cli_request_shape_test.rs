@@ -17511,6 +17511,127 @@ fn byoc_envelope(result: Value, request_id: &str) -> ResponseTemplate {
 }
 
 #[tokio::test]
+async fn byoc_access_commands_send_exact_paths_and_bodies() {
+    let mock = MockServer::start().await;
+    let access_path = "/v1/organizations/org-1/byocInfrastructure/byoc-1/customerAuthorizedAccess";
+    let stored = serde_json::json!({"mode": "always", "allowed": true});
+    let window = serde_json::json!({
+        "mode": "window",
+        "startTimestamp": "2026-11-07T08:00:00Z",
+        "durationSeconds": 3600,
+        "allowed": true,
+        "windowEndTimestamp": "2026-11-07T09:00:00Z"
+    });
+    Mock::given(method("GET"))
+        .and(path(access_path))
+        .respond_with(byoc_envelope(stored.clone(), "stub-access-get"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(access_path))
+        .and(body_json(serde_json::json!({
+            "mode": "window",
+            "startTimestamp": "2026-11-07T08:00:00Z",
+            "durationSeconds": 3600
+        })))
+        .respond_with(byoc_envelope(window.clone(), "stub-access-update"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let get = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org", "byoc", "access", "get", "byoc-1", "--org-id", "org-1",
+        ],
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        stored
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "access",
+            "update",
+            "byoc-1",
+            "--mode",
+            "window",
+            "--start-time",
+            "2026-11-07T10:00:00+02:00",
+            "--duration-seconds",
+            "3600",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        window
+    );
+}
+
+#[tokio::test]
+async fn preview_commands_send_exact_paths_and_bodies() {
+    let mock = MockServer::start().await;
+    let previews = serde_json::json!([{
+        "id": "preview-1",
+        "name": "Preview one",
+        "enabled": false,
+        "canToggle": true
+    }]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/previews"))
+        .respond_with(byoc_envelope(previews.clone(), "stub-preview-list"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/preview-1"))
+        .and(body_json(serde_json::json!({"enabled": false})))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"id": "preview-1", "enabled": false}),
+            "stub-preview-update",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "preview", "list", "--org-id", "org-1"]);
+    assert_success(&list);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        previews
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "preview",
+            "update",
+            "preview-1",
+            "--enabled",
+            "false",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        serde_json::json!({"id": "preview-1", "enabled": false})
+    );
+}
+
+#[tokio::test]
 async fn byoc_get_and_progress_send_exact_paths_and_print_results() {
     let mock = MockServer::start().await;
     let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";

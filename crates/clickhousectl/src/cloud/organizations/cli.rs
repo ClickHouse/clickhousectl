@@ -3,7 +3,7 @@ use crate::cloud::shared::{
     EmailSelector, NameSelector, parse_date_only, parse_datetime, parse_tag_filter,
 };
 use clap::builder::NonEmptyStringValueParser;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Subcommand)]
 pub enum OrgCommands {
@@ -37,6 +37,12 @@ CONTEXT FOR AGENTS:
     Byoc {
         #[command(subcommand)]
         command: ByocCommands,
+    },
+
+    /// Manage organization preview features (Beta)
+    Preview {
+        #[command(subcommand)]
+        command: PreviewCommands,
     },
 
     /// Manage organization roles
@@ -118,6 +124,7 @@ impl OrgCommands {
             OrgCommands::Notifications(_) => false,
             OrgCommands::NotificationTypes => false,
             OrgCommands::Byoc { command } => command.is_write(),
+            OrgCommands::Preview { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
@@ -306,6 +313,86 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         byoc_id: NameSelector,
     },
+
+    /// Manage ClickHouse personnel access to BYOC (Beta)
+    Access {
+        #[command(subcommand)]
+        command: ByocAccessCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ByocAccessCommands {
+    /// Get the customer-authorized access setting
+    Get {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
+    /// Replace the customer-authorized access setting
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Replaces the whole setting; the previous mode and window are discarded.
+  The output's `allowed` is the data plane's verdict at request time, not the stored mode.")]
+    Update {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+
+        #[command(flatten)]
+        access: ByocAccessUpdateArgs,
+    },
+}
+
+impl ByocAccessCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+/// When ClickHouse personnel may access BYOC infrastructure.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByocAccessMode {
+    /// Allow access
+    Always,
+    /// Deny access
+    Never,
+    /// Allow access during one window
+    Window,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ByocAccessUpdateArgs {
+    /// When ClickHouse personnel may access the infrastructure
+    #[arg(long, value_enum)]
+    pub(super) mode: ByocAccessMode,
+
+    /// Window start (RFC 3339); required with `--mode window`
+    #[arg(
+        long,
+        value_parser = parse_access_window_start,
+        required_if_eq("mode", "window")
+    )]
+    pub(super) start_time: Option<chrono::DateTime<chrono::Utc>>,
+
+    /// Window length in seconds (1-172800); required with `--mode window`
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(i64).range(1..=172800),
+        required_if_eq("mode", "window")
+    )]
+    pub(super) duration_seconds: Option<i64>,
+}
+
+fn parse_access_window_start(value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let value = parse_datetime(value)?;
+    chrono::DateTime::parse_from_rfc3339(&value)
+        .map(|start| start.with_timezone(&chrono::Utc))
+        .map_err(|error| error.to_string())
 }
 
 /// The changes `cloud org byoc update` can send; at least one is required.
@@ -409,6 +496,42 @@ impl ByocCommands {
             ByocCommands::Create { .. } => true,
             ByocCommands::Update { .. } => true,
             ByocCommands::Delete { .. } => true,
+            ByocCommands::Access { command } => command.is_write(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum PreviewCommands {
+    /// List preview features offered to the organization
+    List,
+
+    /// Switch a preview feature on or off
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only features listed with canToggle true can be switched by the caller.
+  Switching on a feature not offered to the organization fails; switching off always works.")]
+    Update {
+        /// Preview feature ID (from `cloud org preview list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        preview_id: String,
+
+        /// Turn the preview feature on or off
+        #[arg(
+            long,
+            value_name = "BOOL",
+            action = clap::ArgAction::Set,
+            required = true
+        )]
+        enabled: bool,
+    },
+}
+
+impl PreviewCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List => false,
+            Self::Update { .. } => true,
         }
     }
 }
@@ -1546,5 +1669,222 @@ mod tests {
             }
             assert_write(&args, true);
         }
+    }
+
+    fn access_update(extra: &[&str]) -> Result<ByocAccessUpdateArgs, clap::Error> {
+        let mut args = vec![
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "access",
+            "update",
+            "byoc-1",
+        ];
+        args.extend(extra);
+        let cli = Cli::try_parse_from(args)?;
+        let Commands::Cloud(cloud_args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org {
+            command:
+                OrgCommands::Byoc {
+                    command:
+                        ByocCommands::Access {
+                            command: ByocAccessCommands::Update { byoc_id, access },
+                        },
+                },
+        } = cloud_args.command
+        else {
+            panic!("expected BYOC access update");
+        };
+        assert_eq!(byoc_id.id.as_deref(), Some("byoc-1"));
+        Ok(access)
+    }
+
+    #[test]
+    fn byoc_access_get_is_a_read_and_update_is_a_write() {
+        let ByocCommands::Access {
+            command: ByocAccessCommands::Get { byoc_id },
+        } = parse_byoc_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "access",
+            "get",
+            "--name",
+            "production",
+        ])
+        else {
+            panic!("expected BYOC access get");
+        };
+        assert_eq!(byoc_id.name.as_deref(), Some("production"));
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                "access",
+                "get",
+                "byoc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                "access",
+                "update",
+                "byoc-1",
+                "--mode",
+                "never",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn byoc_access_update_parses_modes_and_window_bounds() {
+        let never = access_update(&["--mode", "never"]).unwrap();
+        assert_eq!(never.mode, ByocAccessMode::Never);
+        assert_eq!(never.start_time, None);
+        assert_eq!(never.duration_seconds, None);
+
+        let window = access_update(&[
+            "--mode",
+            "window",
+            "--start-time",
+            "2026-11-07T10:00:00+02:00",
+            "--duration-seconds",
+            "172800",
+        ])
+        .unwrap();
+        assert_eq!(window.mode, ByocAccessMode::Window);
+        assert_eq!(
+            window.start_time.map(|start| start.to_rfc3339()),
+            Some("2026-11-07T08:00:00+00:00".to_string())
+        );
+        assert_eq!(window.duration_seconds, Some(172_800));
+
+        for missing in [
+            &["--mode", "window", "--duration-seconds", "60"][..],
+            &["--mode", "window", "--start-time", "2026-11-07T08:00:00Z"][..],
+            &[][..],
+        ] {
+            assert_eq!(
+                access_update(missing).unwrap_err().kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing:?}"
+            );
+        }
+        for invalid in [
+            &[
+                "--mode",
+                "window",
+                "--start-time",
+                "2026-11-07",
+                "--duration-seconds",
+                "60",
+            ][..],
+            &[
+                "--mode",
+                "window",
+                "--start-time",
+                "2026-11-07T08:00:00Z",
+                "--duration-seconds",
+                "172801",
+            ][..],
+            &[
+                "--mode",
+                "window",
+                "--start-time",
+                "2026-11-07T08:00:00Z",
+                "--duration-seconds",
+                "0",
+            ][..],
+        ] {
+            assert_eq!(
+                access_update(invalid).unwrap_err().kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_list_is_a_read_and_update_requires_an_explicit_value() {
+        assert_write(&["clickhousectl", "cloud", "org", "preview", "list"], false);
+        for value in ["true", "false"] {
+            let args = [
+                "clickhousectl",
+                "cloud",
+                "org",
+                "preview",
+                "update",
+                "preview-1",
+                "--enabled",
+                value,
+            ];
+            let CloudCommands::Org {
+                command:
+                    OrgCommands::Preview {
+                        command:
+                            PreviewCommands::Update {
+                                preview_id,
+                                enabled,
+                            },
+                    },
+            } = parse_cloud_command(&args)
+            else {
+                panic!("expected preview update");
+            };
+            assert_eq!(preview_id, "preview-1");
+            assert_eq!(enabled.to_string(), value);
+            assert_write(&args, true);
+        }
+
+        for args in [
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "preview",
+                "update",
+                "preview-1",
+            ][..],
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "preview",
+                "update",
+                "--enabled",
+                "true",
+            ][..],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args)
+                    .err()
+                    .expect("a required argument is missing")
+                    .kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{args:?}"
+            );
+        }
+        let bare_flag = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "preview",
+            "update",
+            "preview-1",
+            "--enabled",
+        ]);
+        assert!(bare_flag.is_err(), "--enabled needs a value");
     }
 }
