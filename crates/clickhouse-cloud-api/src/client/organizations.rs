@@ -178,6 +178,59 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// List the preview features offered to the organization (Beta)
+    ///
+    /// Each entry says whether the feature is on and whether the caller can switch it.
+    pub async fn organization_public_previews_get_list(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<Vec<PublicPreview>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/previews");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Switch an organization preview feature on or off (Beta)
+    ///
+    /// `preview_id` comes from `organization_public_previews_get_list`; an unknown
+    /// ID returns 404. Switching on a preview not offered to the organization
+    /// returns 403; switching off is always allowed.
+    pub async fn organization_public_preview_patch(
+        &self,
+        organization_id: &str,
+        preview_id: &str,
+        body: &PublicPreviewPatchRequest,
+    ) -> Result<ApiResponse<PublicPreview>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/previews/{preview_id}");
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get one page of organization notifications, most recent first (Beta).
     ///
     /// Pass `next_cursor` unchanged as `cursor` until it is absent. The server

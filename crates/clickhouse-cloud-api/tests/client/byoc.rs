@@ -394,6 +394,108 @@ async fn get_byoc_infrastructure_private_endpoint_config() {
 }
 
 #[tokio::test]
+async fn get_byoc_infrastructure_customer_authorized_access() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/customerAuthorizedAccess",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "mode": "window",
+            "startTimestamp": "2026-11-07T08:00:00Z",
+            "durationSeconds": 14400,
+            "allowed": true,
+            "windowEndTimestamp": "2026-11-07T12:00:00Z"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_customer_authorized_access_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let access = resp.result.unwrap();
+    assert_eq!(access.mode.as_deref(), Some("window"));
+    assert_eq!(access.allowed, Some(true));
+    assert_eq!(access.duration_seconds, Some(14400));
+    assert_eq!(
+        access.window_end_timestamp.unwrap().to_rfc3339(),
+        "2026-11-07T12:00:00+00:00"
+    );
+}
+
+#[tokio::test]
+async fn update_byoc_infrastructure_customer_authorized_access_sends_window() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/customerAuthorizedAccess",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({
+            "mode": "window",
+            "startTimestamp": "2026-11-07T08:00:00Z",
+            "durationSeconds": 3600
+        })))
+        .respond_with(ok_json(
+            serde_json::json!({"mode": "window", "allowed": false}),
+        ))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocCustomerAuthorizedAccessPatchRequest {
+        mode: Some("window".to_string()),
+        start_timestamp: Some("2026-11-07T08:00:00Z".parse().unwrap()),
+        duration_seconds: Some(3600),
+    };
+    let resp = c
+        .organization_byoc_infrastructure_customer_authorized_access_update(
+            "org-1", "byoc-1", &body,
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().allowed, Some(false));
+}
+
+#[tokio::test]
+async fn update_byoc_infrastructure_customer_authorized_access_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/customerAuthorizedAccess",
+        ))
+        .and(body_json(serde_json::json!({"mode": "never"})))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "durationSeconds is not allowed"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocCustomerAuthorizedAccessPatchRequest {
+        mode: Some("never".to_string()),
+        ..Default::default()
+    };
+    let err = c
+        .organization_byoc_infrastructure_customer_authorized_access_update(
+            "org-1", "byoc-1", &body,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, clickhouse_cloud_api::Error::Api { status: 400, .. }),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
 async fn get_byoc_infrastructure_tags() {
     let (s, c) = setup().await;
 

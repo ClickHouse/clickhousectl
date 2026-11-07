@@ -6,6 +6,28 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+The beta BYOC customer-authorized access methods are
+`organization_byoc_infrastructure_customer_authorized_access_get` and
+`organization_byoc_infrastructure_customer_authorized_access_update`. Both return
+`ByocCustomerAuthorizedAccess`: `mode`, the window's `start_timestamp` and
+`duration_seconds`, `allowed` (whether the data plane allowed ClickHouse
+personnel access when the request was evaluated), and `window_end_timestamp`
+while access is allowed until a deadline. The update takes
+`ByocCustomerAuthorizedAccessPatchRequest` and replaces the whole setting:
+`mode` is `always`, `never` or `window`, and `window` also needs
+`start_timestamp` and `duration_seconds` (1 to 172800), which the other modes
+reject. `mode` is a `String` because the spec documents its values as an open
+set. The request fields are `Option` because the analyzer treats PATCH bodies
+as partial, but the server requires `mode`.
+
+The beta preview-feature methods are `organization_public_previews_get_list`,
+which returns `Vec<PublicPreview>` (`id`, `name`, `description`, `docs_url`,
+`enabled`, `can_toggle`), and `organization_public_preview_patch`, which takes
+a preview ID and `PublicPreviewPatchRequest { enabled }` and returns the
+updated `PublicPreview`. The server requires `enabled`. Switching on a preview
+that is not offered to the organization returns 403, and an unknown ID returns
+404.
+
 `ClickPipePostObjectStorageSource` and `ClickPipeObjectStorageSource` gain
 optional `skip_first_lines`, the number of lines (0 to 100) to skip at the
 start of each file. It applies only to the `TabSeparated` and

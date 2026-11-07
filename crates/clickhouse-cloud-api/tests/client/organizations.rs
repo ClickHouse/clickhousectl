@@ -1,5 +1,7 @@
 use clickhouse_cloud_api::{Client, models::*};
-use wiremock::matchers::{basic_auth, bearer_token, body_partial_json, method, path, query_param};
+use wiremock::matchers::{
+    basic_auth, bearer_token, body_json, body_partial_json, method, path, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::{ok_json, setup};
@@ -657,5 +659,90 @@ async fn notification_get_list_surfaces_api_errors() {
         .unwrap_err();
     assert!(
         matches!(error, clickhouse_cloud_api::Error::Api { status: 400, message } if message == "invalid cursor")
+    );
+}
+
+#[tokio::test]
+async fn list_organization_public_previews() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/previews"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([{
+            "id": "preview-1",
+            "name": "Preview one",
+            "description": "Does one thing",
+            "docsUrl": "https://clickhouse.com/docs",
+            "enabled": false,
+            "canToggle": true
+        }])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let previews = c
+        .organization_public_previews_get_list("org-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(previews.len(), 1);
+    assert_eq!(previews[0].id.as_deref(), Some("preview-1"));
+    assert_eq!(previews[0].enabled, Some(false));
+    assert_eq!(previews[0].can_toggle, Some(true));
+}
+
+#[tokio::test]
+async fn patch_organization_public_preview() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/preview-1"))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"enabled": true})))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "preview-1",
+            "enabled": true
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = PublicPreviewPatchRequest {
+        enabled: Some(true),
+    };
+    let preview = c
+        .organization_public_preview_patch("org-1", "preview-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(preview.enabled, Some(true));
+}
+
+#[tokio::test]
+async fn patch_organization_public_preview_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/missing"))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(serde_json::json!({"error": "preview not found"})),
+        )
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = PublicPreviewPatchRequest {
+        enabled: Some(false),
+    };
+    let error = c
+        .organization_public_preview_patch("org-1", "missing", &body)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, clickhouse_cloud_api::Error::Api { status: 404, message } if message == "preview not found")
     );
 }

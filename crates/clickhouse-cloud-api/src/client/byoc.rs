@@ -103,6 +103,64 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get BYOC infrastructure customer-authorized access (Beta)
+    ///
+    /// Returns when ClickHouse personnel may access the infrastructure, and whether
+    /// the data plane allowed it at request time.
+    pub async fn organization_byoc_infrastructure_customer_authorized_access_get(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+    ) -> Result<ApiResponse<ByocCustomerAuthorizedAccess>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/customerAuthorizedAccess"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Update BYOC infrastructure customer-authorized access (Beta)
+    ///
+    /// Replaces the whole setting and returns the stored setting with the data
+    /// plane's verdict.
+    pub async fn organization_byoc_infrastructure_customer_authorized_access_update(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+        body: &ByocCustomerAuthorizedAccessPatchRequest,
+    ) -> Result<ApiResponse<ByocCustomerAuthorizedAccess>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/customerAuthorizedAccess"
+        );
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get BYOC infrastructure private endpoint configuration
     ///
     /// For BYOC organizations this replaces the deprecated organization-level

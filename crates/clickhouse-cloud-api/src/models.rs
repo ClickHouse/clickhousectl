@@ -170,7 +170,8 @@ pub use backups::{
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
-    ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
+    ByocConfigState, ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
+    ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
     ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
     ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePostRequestRegionid, ByocInfrastructurePrivateEndpointConfig,
@@ -197,6 +198,7 @@ pub use organizations::{
     ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Notification,
     NotificationType, NotificationTypeSeverity, Organization, OrganizationCapabilities,
     OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
+    PublicPreview, PublicPreviewPatchRequest,
 };
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,

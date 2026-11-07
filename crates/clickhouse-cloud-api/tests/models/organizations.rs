@@ -386,3 +386,35 @@ fn notification_tolerates_missing_null_and_future_values() {
     assert_eq!(future.severity.as_deref(), Some("future.severity"));
     assert_eq!(future.resource_type.as_deref(), Some("future.resource"));
 }
+
+#[test]
+fn public_preview_missing_and_null_fields_are_none() {
+    let missing: PublicPreview = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, PublicPreview::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: PublicPreview = serde_json::from_value(serde_json::json!({
+        "id": null, "name": null, "description": null, "docsUrl": null,
+        "enabled": null, "canToggle": null
+    }))
+    .unwrap();
+    assert_eq!(null, PublicPreview::default());
+}
+
+#[test]
+fn public_preview_patch_request_sends_explicit_false() {
+    let off = PublicPreviewPatchRequest {
+        enabled: Some(false),
+    };
+    assert_eq!(
+        serde_json::to_value(&off).unwrap(),
+        serde_json::json!({"enabled": false})
+    );
+    assert_eq!(
+        serde_json::to_value(PublicPreviewPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}

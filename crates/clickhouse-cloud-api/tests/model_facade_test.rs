@@ -200,6 +200,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ByocInfrastructureTagsResponse::default(),
     );
     assert_same_type(
+        api::ByocCustomerAuthorizedAccess::default(),
+        api::models::ByocCustomerAuthorizedAccess::default(),
+    );
+    assert_same_type(
+        api::ByocCustomerAuthorizedAccessPatchRequest::default(),
+        api::models::ByocCustomerAuthorizedAccessPatchRequest::default(),
+    );
+    assert_same_type(
+        api::PublicPreview::default(),
+        api::models::PublicPreview::default(),
+    );
+    assert_same_type(
+        api::PublicPreviewPatchRequest::default(),
+        api::models::PublicPreviewPatchRequest::default(),
+    );
+    assert_same_type(
         api::ClickStackChartColor::default(),
         api::models::ClickStackChartColor::default(),
     );

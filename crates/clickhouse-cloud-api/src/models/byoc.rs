@@ -653,6 +653,49 @@ pub struct ByocInfrastructurePatchRequest {
     pub tags: Option<ByocInfrastructureTags>,
 }
 
+/// `ByocCustomerAuthorizedAccess` from the ClickHouse Cloud API.
+///
+/// The customer setting that controls when ClickHouse personnel may access a
+/// BYOC infrastructure, with the data plane's verdict at request time.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocCustomerAuthorizedAccess {
+    /// Whether the data plane allowed ClickHouse personnel access when the
+    /// request was evaluated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<bool>,
+    /// Window length in seconds from `start_timestamp`; only for `window` mode.
+    #[serde(rename = "durationSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i64>,
+    /// Currently `always`, `never` or `window`; new values may be added.
+    /// `always` when the setting has never been configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Start of the access window; only for `window` mode.
+    #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
+    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// End of the current window, present only while access is allowed until
+    /// a deadline.
+    #[serde(rename = "windowEndTimestamp", skip_serializing_if = "Option::is_none")]
+    pub window_end_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `ByocCustomerAuthorizedAccessPatchRequest` from the ClickHouse Cloud API.
+///
+/// Replaces the whole setting. The server requires `mode`; `start_timestamp`
+/// and `duration_seconds` are required for `window` and rejected otherwise.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocCustomerAuthorizedAccessPatchRequest {
+    /// Window length in seconds, 1 to 172800 (48 hours).
+    #[serde(rename = "durationSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i64>,
+    /// `always` allows access, `never` denies it, and `window` allows it for
+    /// one window. New values may be added.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
+    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// `ByocInfrastructurePrivateEndpointConfig` from the ClickHouse Cloud API.
 ///
 /// Private link endpoint service details of a BYOC infrastructure.

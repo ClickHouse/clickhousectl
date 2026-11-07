@@ -122,6 +122,37 @@ pub struct OrganizationPatchRequest {
     pub private_endpoints: Option<OrganizationPrivateEndpointsPatch>,
 }
 
+/// `PublicPreview` from the ClickHouse Cloud API.
+///
+/// A preview feature offered to the organization.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublicPreview {
+    /// Whether the caller may switch the preview feature on or off.
+    #[serde(rename = "canToggle", skip_serializing_if = "Option::is_none")]
+    pub can_toggle: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "docsUrl", skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    /// Whether the preview feature is on for the organization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Stable identifier, used by `organization_public_preview_patch`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// `PublicPreviewPatchRequest` from the ClickHouse Cloud API.
+///
+/// The server requires `enabled`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublicPreviewPatchRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 /// Values of `CreditBalanceType` in the Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CreditBalanceType {

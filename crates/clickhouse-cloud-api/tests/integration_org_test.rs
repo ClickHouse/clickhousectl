@@ -663,6 +663,59 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             )
             .await?;
 
+        // ── Preview Features ────────────────────────────────────────
+        //
+        // Lists the org's preview features, then sets the first switchable
+        // one to the value it already has, so no feature changes state.
+
+        log_phase("Preview Features");
+        let previews = failures
+            .run(&ctx, StepKind::NonBlocking, "list preview features", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let resp = client.organization_public_previews_get_list(&org_id).await?;
+                    resp.result
+                        .ok_or_else(|| "preview list returned no result".into())
+                }
+            })
+            .await?;
+        let switchable = previews.into_iter().flatten().find_map(|preview| {
+            match (preview.id, preview.enabled, preview.can_toggle) {
+                (Some(id), Some(enabled), Some(true)) => Some((id, enabled)),
+                _ => None,
+            }
+        });
+        match switchable {
+            None => eprintln!("  SKIP preview write-back: no switchable preview feature"),
+            Some((preview_id, enabled)) => {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "preview feature write-back",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let preview_id = preview_id.clone();
+                            async move {
+                                let body = PublicPreviewPatchRequest {
+                                    enabled: Some(enabled),
+                                };
+                                let preview = client
+                                    .organization_public_preview_patch(&org_id, &preview_id, &body)
+                                    .await?
+                                    .result
+                                    .ok_or("preview patch returned no result")?;
+                                assert_eq!(preview.enabled, Some(enabled));
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+            }
+        }
+
         // ── BYOC Infrastructure ─────────────────────────────────────
         //
         // Read-only checks against the org's first BYOC infrastructure.
@@ -672,7 +725,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         log_phase("BYOC Infrastructure");
         match byoc_infrastructure_id {
             None => eprintln!(
-                "  SKIP BYOC private endpoint config and tags: org has no BYOC infrastructure"
+                "  SKIP BYOC private endpoint config, tags and customer-authorized access: org has no BYOC infrastructure"
             ),
             Some(byoc_id) => {
                 failures
@@ -724,6 +777,51 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             Ok(())
                         }
                     })
+                    .await?;
+
+                // Writes back the stored mode so the fixture's access policy is
+                // unchanged. A window cannot be replayed once its start has
+                // passed, so window mode is read but not written.
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "byoc customer-authorized access get and write-back",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let byoc_id = byoc_id.clone();
+                            async move {
+                                let access = client
+                                    .organization_byoc_infrastructure_customer_authorized_access_get(
+                                        &org_id, &byoc_id,
+                                    )
+                                    .await?
+                                    .result
+                                    .ok_or("customer-authorized access returned no result")?;
+                                let mode = access
+                                    .mode
+                                    .ok_or("customer-authorized access returned no mode")?;
+                                if mode != "always" && mode != "never" {
+                                    eprintln!("  SKIP write-back: mode is {mode}");
+                                    return Ok(());
+                                }
+                                let body = ByocCustomerAuthorizedAccessPatchRequest {
+                                    mode: Some(mode.clone()),
+                                    ..Default::default()
+                                };
+                                let updated = client
+                                    .organization_byoc_infrastructure_customer_authorized_access_update(
+                                        &org_id, &byoc_id, &body,
+                                    )
+                                    .await?
+                                    .result
+                                    .ok_or("customer-authorized access update returned no result")?;
+                                assert_eq!(updated.mode.as_deref(), Some(mode.as_str()));
+                                Ok(())
+                            }
+                        },
+                    )
                     .await?;
             }
         }
