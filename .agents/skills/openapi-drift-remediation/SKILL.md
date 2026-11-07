@@ -43,7 +43,32 @@ the workflow; those files are the rules.
   the planned commands, including any new library methods you chose not to expose and why.
 - Write the plan down before starting, and check it with the user if the split isn't obvious.
 
-## 3. API PR
+## 3. Work the plan through subagents
+
+A drift report can run to hundreds of findings. One agent that reads every spec snippet, model file and test fills
+its context and starts making mistakes. If you can start subagents, act as the orchestrator and delegate the
+implementation:
+
+- Keep for yourself: the inventory and plan, the snapshot refresh, the regeneration scripts, commits, branches,
+  pull requests and the final gates. Don't read model or client files in bulk; send a subagent.
+- Split each API PR into units. A unit is one library domain (`src/client/<domain>.rs`, `src/models/<domain>.rs`
+  and their tests) or one cross-cutting finding kind, such as enum values or stale exemptions. If a domain has many
+  findings, split it by schema so each unit fits comfortably in a subagent's context.
+- Run the units one at a time in the same checkout, never two at once. They share files such as `models.rs` and
+  the generated lists.
+- Give each subagent a brief that stands on its own:
+  - its findings verbatim (`kind`, `spec_pointer`, `rust_item`) and the files it owns;
+  - the rules to read: the crate `AGENTS.md`, [references/analyzer.md](references/analyzer.md) and section 4;
+  - the tests to add;
+  - the checks to run before reporting: the library tests with `--no-fail-fast`, and the dry run for its findings.
+- Tell each subagent not to commit, push, open pull requests or edit outside its files. It reports the files it
+  changed, its test results, any findings it couldn't fix, and any open questions.
+- After each unit, review the diff and rerun the dry run to confirm its findings are gone and nothing new appeared,
+  then commit. Give a failed or incomplete unit to a fresh subagent along with the error, rather than taking it
+  over yourself.
+- CLI PRs: use one subagent per command or flag group, each following the `add-cli-command` skill.
+
+## 4. API PR
 
 1. Replace `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json` with the same live document being remediated
    (first API PR only). Never hand-edit the spec; snapshot operation/schema findings mean this file is stale.
@@ -79,6 +104,6 @@ the workflow; those files are the rules.
    `clickhousectl` clippy configurations (a library change can break the CLI build). Re-run the dry run: the last
    API PR must report no actionable drift.
 
-## 4. CLI PR
+## 5. CLI PR
 
 Use the `add-cli-command` skill (`.agents/skills/add-cli-command/SKILL.md`) for each new command or flag.
