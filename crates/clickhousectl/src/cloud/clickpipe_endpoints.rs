@@ -96,8 +96,8 @@ pub enum ReversePrivateEndpointCommands {
 
         /// Custom private DNS name (repeatable; replaces the whole list)
         ///
-        /// =TARGET_ID (VPC_RESOURCE only) routes the name to that `dnsTargets` ID
-        /// from `get`.
+        /// =TARGET_ID (VPC_RESOURCE, VPC_ENDPOINT_SERVICE) routes the name to that
+        /// `dnsTargets` ID from `get`.
         #[arg(
             long = "custom-private-dns-mapping",
             value_name = "NAME[=TARGET_ID]",
@@ -167,8 +167,9 @@ pub struct ReversePrivateEndpointCreateArgs {
     /// Custom private DNS name, exact or leading wildcard (repeatable)
     ///
     /// Rejected with --type MSK_MULTI_VPC. On the AWS PrivateLink types ClickHouse
-    /// support must enable it first. =TARGET_ID (only with --type VPC_RESOURCE) routes
-    /// the name to that `dnsTargets` ID; it is not served until listed there.
+    /// support must enable it first. =TARGET_ID (VPC_RESOURCE: resource configuration
+    /// ID; VPC_ENDPOINT_SERVICE: AZ ID such as use1-az1) routes the name to that
+    /// target; it is not served until `dnsTargets` lists it.
     #[arg(
         long = "custom-private-dns-mapping",
         value_name = "NAME[=TARGET_ID]",
@@ -517,16 +518,19 @@ fn validate_create_args(args: &ReversePrivateEndpointCreateArgs) -> CloudResult<
         ));
     }
 
-    // "Supported only for VPC_RESOURCE", per `CustomPrivateDnsMapping.targetId`.
+    // `CustomPrivateDnsMapping.targetId` is "Not supported for other endpoint types"
+    // than VPC_RESOURCE and VPC_ENDPOINT_SERVICE. Cross-region endpoint services
+    // also reject it, which only the server can tell.
     if requested != TYPE_VPC_RESOURCE
+        && requested != TYPE_VPC_ENDPOINT_SERVICE
         && args
             .custom_private_dns_mappings
             .iter()
             .any(|mapping| mapping.target_id.is_some())
     {
         return Err(CloudError::usage(format!(
-            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type {TYPE_VPC_RESOURCE}, \
-             not --type {requested}"
+            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type {TYPE_VPC_RESOURCE} \
+             or --type {TYPE_VPC_ENDPOINT_SERVICE}, not --type {requested}"
         )));
     }
 
@@ -1343,7 +1347,7 @@ mod tests {
         }
     }
 
-    /// "Supported only for VPC_RESOURCE", per the spec's `targetId`.
+    /// `targetId` is only for VPC_RESOURCE and VPC_ENDPOINT_SERVICE, per the spec.
     #[test]
     fn validation_rejects_a_target_id_outside_vpc_resource() {
         let args = create_args(&[
@@ -1359,9 +1363,23 @@ mod tests {
             &[
                 "--custom-private-dns-mapping NAME=TARGET_ID",
                 "--type VPC_RESOURCE",
+                "--type VPC_ENDPOINT_SERVICE",
                 "--type GCP_PSC_SERVICE_ATTACHMENT",
             ],
         );
+    }
+
+    #[test]
+    fn validation_accepts_an_availability_zone_target_for_vpc_endpoint_service() {
+        let args = create_args(&[
+            "--type",
+            TYPE_VPC_ENDPOINT_SERVICE,
+            "--vpc-endpoint-service-name",
+            "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            "--custom-private-dns-mapping",
+            "db.example.com=use1-az1",
+        ]);
+        assert!(validate_create_args(&args).is_ok());
     }
 
     #[test]
