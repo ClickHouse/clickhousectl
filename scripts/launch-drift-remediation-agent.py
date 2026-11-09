@@ -42,6 +42,10 @@ watching it, so do not stop to ask questions.
   (`.agents/skills/openapi-drift-remediation/SKILL.md`) and the root and
   `crates/clickhouse-cloud-api` `AGENTS.md` files. They define the API and CLI
   pull request split, the tests and the gates.
+- Act as the orchestrator described in the skill's "Work the plan through
+  subagents" section. Delegate each unit of implementation to a subagent, one
+  at a time, and keep your own context for planning, review, commits and pull
+  requests.
 - Where the skill says to check the plan with the user, decide yourself. Put
   the plan, and any decision you were unsure about, at the top of the first API
   pull request description.
