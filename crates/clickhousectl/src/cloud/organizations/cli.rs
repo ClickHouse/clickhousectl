@@ -3,7 +3,7 @@ use crate::cloud::shared::{
     EmailSelector, NameSelector, parse_date_only, parse_datetime, parse_tag_filter,
 };
 use clap::builder::NonEmptyStringValueParser;
-use clap::{Args, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Subcommand, ValueEnum};
 
 #[derive(Subcommand)]
 pub enum OrgCommands {
@@ -48,6 +48,12 @@ CONTEXT FOR AGENTS:
     Role {
         #[command(subcommand)]
         command: RoleCommands,
+    },
+
+    /// Manage organization preview features (Beta)
+    Preview {
+        #[command(subcommand)]
+        command: PreviewCommands,
     },
 
     /// Update organization settings
@@ -119,6 +125,7 @@ impl OrgCommands {
             OrgCommands::NotificationTypes => false,
             OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
+            OrgCommands::Preview { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
@@ -227,6 +234,36 @@ impl RoleCommands {
 }
 
 #[derive(Subcommand)]
+pub enum PreviewCommands {
+    /// List organization preview features (Beta)
+    List,
+
+    /// Turn an organization preview feature on or off (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  `list` shows canToggle: whether you may switch a preview. Only previews offered to the
+  organization can be turned on (else 403); turning one off is always allowed.")]
+    Update {
+        /// Preview ID (from `cloud org preview list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        preview_id: String,
+
+        /// Turn the preview feature on (true) or off (false)
+        #[arg(long, value_name = "BOOL", action = ArgAction::Set, required = true)]
+        enabled: bool,
+    },
+}
+
+impl PreviewCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
 pub enum ByocCommands {
     /// Get BYOC infrastructure details
     Get {
@@ -306,6 +343,85 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         byoc_id: NameSelector,
     },
+
+    /// Manage when ClickHouse personnel may access BYOC infrastructure (Beta)
+    Access {
+        #[command(subcommand)]
+        command: ByocAccessCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ByocAccessCommands {
+    /// Get BYOC customer-authorized access (Beta)
+    Get {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
+    /// Update BYOC customer-authorized access (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Replaces the whole setting: `always` allows ClickHouse personnel access, `never` denies it,
+  `window` allows it for --duration seconds from --start. The response's `allowed` is the
+  data plane verdict at request time.")]
+    Update {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+
+        #[command(flatten)]
+        access: ByocAccessArgs,
+    },
+}
+
+impl ByocAccessCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+/// When ClickHouse personnel may access BYOC infrastructure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ByocAccessMode {
+    Always,
+    Never,
+    Window,
+}
+
+impl ByocAccessMode {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+            Self::Window => "window",
+        }
+    }
+}
+
+/// The setting `cloud org byoc access update` sends.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ByocAccessArgs {
+    /// When ClickHouse personnel may access the infrastructure
+    #[arg(long, value_enum)]
+    pub(super) mode: ByocAccessMode,
+
+    /// Window start (RFC 3339); only with `--mode window`, where it is required
+    #[arg(
+        long,
+        value_name = "DATETIME",
+        value_parser = parse_datetime,
+        required_if_eq("mode", "window")
+    )]
+    pub(super) start: Option<String>,
+
+    /// Window length in seconds; only with `--mode window`, where it is required
+    #[arg(long, value_name = "SECONDS", required_if_eq("mode", "window"))]
+    pub(super) duration: Option<i64>,
 }
 
 /// The changes `cloud org byoc update` can send; at least one is required.
@@ -409,6 +525,7 @@ impl ByocCommands {
             ByocCommands::Create { .. } => true,
             ByocCommands::Update { .. } => true,
             ByocCommands::Delete { .. } => true,
+            ByocCommands::Access { command } => command.is_write(),
         }
     }
 }
@@ -465,6 +582,156 @@ pub enum MemberCommands {
         #[command(flatten)]
         user_id: EmailSelector,
     },
+
+    /// Manage a member's notification settings (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Settings are the member's own overrides; an empty list means role defaults apply,
+  not that notifications are off. Slack is organization-wide and never appears here.
+  Notification type names come from `cloud org notification-types`.")]
+    NotificationSettings {
+        #[command(subcommand)]
+        command: NotificationSettingsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum NotificationSettingsCommands {
+    /// List a member's notification settings (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Returns one page; JSON exposes result, limit, and nextCursor when provided.
+  Pass nextCursor unchanged as --cursor until it is absent.")]
+    List {
+        /// User ID
+        #[command(flatten)]
+        user_id: EmailSelector,
+
+        #[command(flatten)]
+        page: NotificationSettingsListArgs,
+    },
+
+    /// Update a member's notification settings (Beta)
+    #[command(
+        group(ArgGroup::new("settings_source").required(true).args(["effect", "file"])),
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Flags send one rule: its effect applies to every --notification x --resource x --channel
+  combination. --file sends a whole request ({\"rules\": [...]}, up to 100 rules, in order).
+  `inherit` removes the override so the role default applies again. Unnamed types keep their setting.
+  All or nothing: an unknown type, inaccessible resource or duplicate is rejected whole;
+  repeating a request is safe."
+    )]
+    Update {
+        /// User ID
+        #[command(flatten)]
+        user_id: EmailSelector,
+
+        #[command(flatten)]
+        changes: NotificationSettingsUpdateArgs,
+    },
+}
+
+impl NotificationSettingsCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Args, Debug, Default, Clone, PartialEq, Eq)]
+pub struct NotificationSettingsListArgs {
+    /// Maximum settings per page; omit for 100
+    #[arg(long)]
+    pub(super) limit: Option<i64>,
+
+    /// Opaque nextCursor from the previous page
+    #[arg(long, allow_hyphen_values = true)]
+    pub(super) cursor: Option<String>,
+
+    /// Notification type from `cloud org notification-types`
+    #[arg(long = "type")]
+    pub(super) notification_type: Option<String>,
+
+    /// Resource ID the setting applies to
+    #[arg(long)]
+    pub(super) resource_id: Option<String>,
+
+    /// Resource kind, such as service, organization, clickpipe or postgres
+    #[arg(long)]
+    pub(super) resource_type: Option<String>,
+}
+
+/// What a notification setting rule does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NotificationSettingEffect {
+    Enabled,
+    Disabled,
+    Inherit,
+}
+
+impl NotificationSettingEffect {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Inherit => "inherit",
+        }
+    }
+}
+
+/// A notification delivery channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum NotificationChannel {
+    Ui,
+    Email,
+}
+
+impl NotificationChannel {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ui => "ui",
+            Self::Email => "email",
+        }
+    }
+}
+
+/// One rule from flags, or a whole request body from `--file`.
+#[derive(Args, Debug, Default, Clone, PartialEq, Eq)]
+pub struct NotificationSettingsUpdateArgs {
+    /// Rule effect; needs --notification and --resource
+    #[arg(long, value_enum, requires_all = ["notifications", "resources"])]
+    pub(super) effect: Option<NotificationSettingEffect>,
+
+    /// Notification type from `cloud org notification-types` (repeatable)
+    #[arg(long = "notification", value_name = "TYPE", requires = "effect")]
+    pub(super) notifications: Vec<String>,
+
+    /// Resource ID the rule applies to (repeatable)
+    ///
+    /// An ID of the notification type's resource type; use the organization ID
+    /// for organization-level types such as billing. No wildcards.
+    #[arg(long = "resource", value_name = "ID", requires = "effect")]
+    pub(super) resources: Vec<String>,
+
+    /// Delivery channel (repeatable); omit for every channel
+    #[arg(
+        long = "channel",
+        value_name = "CHANNEL",
+        value_enum,
+        requires = "effect"
+    )]
+    pub(super) channels: Vec<NotificationChannel>,
+
+    /// JSON request body path, or `-` for stdin; not with rule flags
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["effect", "notifications", "resources", "channels"]
+    )]
+    pub(super) file: Option<String>,
 }
 
 impl MemberCommands {
@@ -474,6 +741,7 @@ impl MemberCommands {
             MemberCommands::Get { .. } => false,
             MemberCommands::Update { .. } => true,
             MemberCommands::Remove { .. } => true,
+            MemberCommands::NotificationSettings { command } => command.is_write(),
         }
     }
 }
@@ -533,6 +801,17 @@ mod tests {
             &["cloud", "org", "role", "update", "role-1"],
             "config_file",
             &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "member",
+                "notification-settings",
+                "update",
+                "user-1",
+            ],
+            "file",
+            &[],
         );
     }
 
@@ -1545,6 +1824,348 @@ mod tests {
                 args.extend(["--file", "role.json"]);
             }
             assert_write(&args, true);
+        }
+    }
+
+    #[test]
+    fn new_beta_commands_classify_reads_and_writes() {
+        for (args, expected) in [
+            (&["org", "byoc", "access", "get", "byoc-1"][..], false),
+            (
+                &[
+                    "org", "byoc", "access", "update", "byoc-1", "--mode", "never",
+                ][..],
+                true,
+            ),
+            (&["org", "preview", "list"][..], false),
+            (
+                &["org", "preview", "update", "p-1", "--enabled", "true"][..],
+                true,
+            ),
+            (
+                &["member", "notification-settings", "list", "user-1"][..],
+                false,
+            ),
+            (
+                &[
+                    "member",
+                    "notification-settings",
+                    "update",
+                    "user-1",
+                    "--file",
+                    "-",
+                ][..],
+                true,
+            ),
+        ] {
+            let mut argv = vec!["clickhousectl", "cloud"];
+            argv.extend(args);
+            assert_write(&argv, expected);
+        }
+    }
+
+    fn parse_byoc_access(extra: &[&str]) -> Result<ByocAccessArgs, clap::Error> {
+        let mut argv = vec!["clickhousectl", "cloud", "org", "byoc", "access", "update"];
+        argv.extend(extra);
+        let cli = Cli::try_parse_from(argv)?;
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org {
+            command:
+                OrgCommands::Byoc {
+                    command:
+                        ByocCommands::Access {
+                            command: ByocAccessCommands::Update { access, .. },
+                        },
+                },
+        } = cloud.command
+        else {
+            panic!("expected BYOC access update");
+        };
+        Ok(access)
+    }
+
+    #[test]
+    fn byoc_access_update_requires_window_start_and_duration() {
+        assert_eq!(
+            parse_byoc_access(&["byoc-1", "--mode", "always"]).unwrap(),
+            ByocAccessArgs {
+                mode: ByocAccessMode::Always,
+                start: None,
+                duration: None,
+            }
+        );
+        assert_eq!(
+            parse_byoc_access(&[
+                "--name",
+                "production",
+                "--mode",
+                "window",
+                "--start",
+                "2026-11-10T09:00:00Z",
+                "--duration",
+                "14400",
+            ])
+            .unwrap(),
+            ByocAccessArgs {
+                mode: ByocAccessMode::Window,
+                start: Some("2026-11-10T09:00:00Z".into()),
+                duration: Some(14400),
+            }
+        );
+        for extra in [
+            &["byoc-1", "--mode", "window"][..],
+            &[
+                "byoc-1",
+                "--mode",
+                "window",
+                "--start",
+                "2026-11-10T09:00:00Z",
+            ][..],
+            &["byoc-1", "--mode", "window", "--duration", "60"][..],
+            &["byoc-1"][..],
+        ] {
+            let error = parse_byoc_access(extra).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{extra:?}"
+            );
+        }
+        let error = parse_byoc_access(&[
+            "byoc-1",
+            "--mode",
+            "window",
+            "--start",
+            "2026-11-10",
+            "--duration",
+            "60",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn org_preview_update_requires_an_explicit_enabled_value() {
+        for (value, expected) in [("true", true), ("false", false)] {
+            let CloudCommands::Org {
+                command:
+                    OrgCommands::Preview {
+                        command:
+                            PreviewCommands::Update {
+                                preview_id,
+                                enabled,
+                            },
+                    },
+            } = parse_cloud_command(&[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "preview",
+                "update",
+                "preview-1",
+                "--enabled",
+                value,
+            ])
+            else {
+                panic!("expected preview update");
+            };
+            assert_eq!(preview_id, "preview-1");
+            assert_eq!(enabled, expected);
+        }
+        for extra in [&["preview-1"][..], &["preview-1", "--enabled"][..]] {
+            let error = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "org", "preview", "update"]
+                    .into_iter()
+                    .chain(extra.iter().copied()),
+            )
+            .err()
+            .expect("--enabled needs a value");
+            assert!(
+                matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument
+                        | clap::error::ErrorKind::InvalidValue
+                ),
+                "{extra:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_member_notification_settings_list_filters_and_defaults() {
+        let CloudCommands::Member {
+            command:
+                MemberCommands::NotificationSettings {
+                    command: NotificationSettingsCommands::List { user_id, page },
+                },
+        } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "member",
+            "notification-settings",
+            "list",
+            "--email",
+            "dev@example.com",
+        ])
+        else {
+            panic!("expected notification-settings list");
+        };
+        assert_eq!(user_id.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(page, NotificationSettingsListArgs::default());
+
+        let CloudCommands::Member {
+            command:
+                MemberCommands::NotificationSettings {
+                    command: NotificationSettingsCommands::List { user_id, page },
+                },
+        } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "member",
+            "notification-settings",
+            "list",
+            "user-1",
+            "--limit",
+            "250",
+            "--cursor",
+            "-opaque +/=&?",
+            "--type",
+            "service_backup_failed",
+            "--resource-id",
+            "service-1",
+            "--resource-type",
+            "service",
+        ])
+        else {
+            panic!("expected notification-settings list");
+        };
+        assert_eq!(user_id.id.as_deref(), Some("user-1"));
+        assert_eq!(
+            page,
+            NotificationSettingsListArgs {
+                limit: Some(250),
+                cursor: Some("-opaque +/=&?".into()),
+                notification_type: Some("service_backup_failed".into()),
+                resource_id: Some("service-1".into()),
+                resource_type: Some("service".into()),
+            }
+        );
+    }
+
+    fn parse_notification_settings_update(
+        extra: &[&str],
+    ) -> Result<NotificationSettingsUpdateArgs, clap::Error> {
+        let cli = Cli::try_parse_from(
+            [
+                "clickhousectl",
+                "cloud",
+                "member",
+                "notification-settings",
+                "update",
+                "user-1",
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )?;
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Member {
+            command:
+                MemberCommands::NotificationSettings {
+                    command: NotificationSettingsCommands::Update { changes, .. },
+                },
+        } = cloud.command
+        else {
+            panic!("expected notification-settings update");
+        };
+        Ok(changes)
+    }
+
+    #[test]
+    fn member_notification_settings_update_takes_one_rule_from_repeatable_flags() {
+        assert_eq!(
+            parse_notification_settings_update(&[
+                "--effect",
+                "disabled",
+                "--notification",
+                "service_backup_failed",
+                "--notification",
+                "billing.credit_low",
+                "--resource",
+                "service-1",
+                "--resource",
+                "org-1",
+                "--channel",
+                "ui",
+                "--channel",
+                "email",
+            ])
+            .unwrap(),
+            NotificationSettingsUpdateArgs {
+                effect: Some(NotificationSettingEffect::Disabled),
+                notifications: vec!["service_backup_failed".into(), "billing.credit_low".into()],
+                resources: vec!["service-1".into(), "org-1".into()],
+                channels: vec![NotificationChannel::Ui, NotificationChannel::Email],
+                file: None,
+            }
+        );
+        assert_eq!(
+            parse_notification_settings_update(&[
+                "--effect",
+                "inherit",
+                "--notification",
+                "a",
+                "--resource",
+                "r"
+            ])
+            .unwrap()
+            .channels,
+            []
+        );
+    }
+
+    #[test]
+    fn member_notification_settings_update_rule_flags_and_file_are_exclusive() {
+        use clap::error::ErrorKind;
+        for (extra, kind) in [
+            (
+                &["--effect", "enabled"][..],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                &["--effect", "enabled", "--notification", "a"][..],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                &["--effect", "enabled", "--resource", "r"][..],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                &["--notification", "a", "--resource", "r"][..],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                &["--file", "body.json", "--effect", "enabled"][..],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                &["--file", "body.json", "--notification", "a"][..],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                &["--file", "body.json", "--resource", "r"][..],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                &["--file", "body.json", "--channel", "ui"][..],
+                ErrorKind::ArgumentConflict,
+            ),
+        ] {
+            let error = parse_notification_settings_update(extra).unwrap_err();
+            assert_eq!(error.kind(), kind, "{extra:?}: {error}");
         }
     }
 }
