@@ -73,3 +73,58 @@ pub struct MemberPatchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberPatchRequestRole>,
 }
+
+/// `NotificationSetting` from the ClickHouse Cloud API (Beta).
+///
+/// One member-level override of a notification's delivery. `type`,
+/// `resource_type`, `channel_type` (`ui`, `email`) and `effect` (`enabled`,
+/// `disabled`) are open sets on the wire, so they stay strings.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NotificationSetting {
+    #[serde(rename = "channelType", skip_serializing_if = "Option::is_none")]
+    pub channel_type: Option<String>,
+    #[serde(rename = "effect", skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
+    /// Organization ID for settings that apply to the organization itself.
+    #[serde(rename = "resourceId", skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
+    #[serde(rename = "resourceType", skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+}
+
+/// `NotificationSettingRule` from the ClickHouse Cloud API (Beta).
+///
+/// `effect` is `enabled`, `disabled` or `inherit`; `inherit` removes the setting
+/// so the role default applies again. Every resource must be named: there are no
+/// wildcards. Omitting `channels` applies the rule to every channel.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NotificationSettingRule {
+    #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<String>>,
+    #[serde(rename = "effect")]
+    pub effect: String,
+    #[serde(rename = "notifications")]
+    pub notifications: Vec<String>,
+    #[serde(rename = "resources")]
+    pub resources: Vec<String>,
+}
+
+/// `MemberNotificationSettingsPatchRequest` from the ClickHouse Cloud API (Beta).
+///
+/// The server requires `rules` (1 to 100), applied in order.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MemberNotificationSettingsPatchRequest {
+    #[serde(rename = "rules", skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<NotificationSettingRule>>,
+}
+
+/// `MemberNotificationSettingsPatchResponse` from the ClickHouse Cloud API (Beta).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MemberNotificationSettingsPatchResponse {
+    /// Settings for what the request addressed, after the change. A setting set
+    /// to `inherit` is absent.
+    #[serde(rename = "settings", skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<NotificationSetting>>,
+}

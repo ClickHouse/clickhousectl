@@ -466,3 +466,69 @@ fn byoc_config_deprecated_account_name_is_hidden_by_default() {
             .is_none()
     );
 }
+
+#[test]
+fn byoc_customer_authorized_access_missing_and_null_fields_are_none() {
+    let missing: ByocCustomerAuthorizedAccess = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocCustomerAuthorizedAccess::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocCustomerAuthorizedAccess = serde_json::from_value(serde_json::json!({
+        "mode": null, "startTimestamp": null, "durationSeconds": null,
+        "allowed": null, "windowEndTimestamp": null, "futureField": 1
+    }))
+    .unwrap();
+    assert_eq!(null, ByocCustomerAuthorizedAccess::default());
+}
+
+#[test]
+fn byoc_customer_authorized_access_keeps_window_fields_and_open_mode() {
+    let access: ByocCustomerAuthorizedAccess = serde_json::from_value(serde_json::json!({
+        "mode": "window", "startTimestamp": "2026-11-09T10:00:00Z",
+        "durationSeconds": 3600, "allowed": true,
+        "windowEndTimestamp": "2026-11-09T11:00:00Z"
+    }))
+    .unwrap();
+    assert_eq!(access.mode.as_deref(), Some("window"));
+    assert_eq!(access.duration_seconds, Some(3600));
+    assert_eq!(access.allowed, Some(true));
+    assert_eq!(
+        access.start_timestamp.unwrap().to_rfc3339(),
+        "2026-11-09T10:00:00+00:00"
+    );
+    assert!(access.window_end_timestamp.is_some());
+
+    let future: ByocCustomerAuthorizedAccess =
+        serde_json::from_value(serde_json::json!({"mode": "on_request", "allowed": false}))
+            .unwrap();
+    assert_eq!(future.mode.as_deref(), Some("on_request"));
+}
+
+#[test]
+fn byoc_customer_authorized_access_patch_request_omits_unset_fields() {
+    let always = ByocCustomerAuthorizedAccessPatchRequest {
+        mode: Some("always".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&always).unwrap(),
+        serde_json::json!({"mode": "always"})
+    );
+
+    let window = ByocCustomerAuthorizedAccessPatchRequest {
+        mode: Some("window".into()),
+        start_timestamp: Some("2026-11-09T10:00:00Z".parse().unwrap()),
+        duration_seconds: Some(172_800),
+    };
+    assert_eq!(
+        serde_json::to_value(&window).unwrap(),
+        serde_json::json!({
+            "mode": "window",
+            "startTimestamp": "2026-11-09T10:00:00Z",
+            "durationSeconds": 172800
+        })
+    );
+}
