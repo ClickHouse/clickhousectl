@@ -28,7 +28,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
         with:
-          toolchain: "1.94"
+          toolchain: "1.94.1"
 
       - name: Check all targets
         run: |
