@@ -37,7 +37,12 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
-            output::print_output(&init_output(init::init()?), json);
+            // Before anything is created, which would make this directory the
+            // nearest project.
+            let enclosing = init::enclosing_project()?;
+            let mut out = init_output(init::init()?);
+            out.enclosing_project = enclosing.map(|dir| dir.display().to_string());
+            output::print_output(&out, json);
             Ok(())
         }
         LocalCommands::Client {
@@ -357,13 +362,13 @@ fn run_client(
         } else {
             ManagedClientSelection::Default
         };
-        // Resolve symlinks so diagnostics identify the one physical directory
-        // whose project-local state was inspected.
-        let project_dir = init::canonical_project_dir()?;
+        // The canonical project root, so diagnostics identify the one physical
+        // directory whose project-local state was inspected.
+        let project = init::project_root()?;
         let managed_error = |kind, binary_version| {
             Error::ManagedClient(ManagedClientError {
                 kind,
-                project_dir: project_dir.clone(),
+                project: project.clone(),
                 selection,
                 server_name: server_name.to_string(),
                 binary_version,
@@ -675,8 +680,10 @@ async fn start_server(
         cmd.args(&args);
     }
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
+    // The project root, not the directory the command ran from, so global
+    // listings name the project that owns the server.
+    let cwd = init::project_root()
+        .map(|root| root.dir.display().to_string())
         .unwrap_or_default();
 
     if !foreground {
@@ -945,8 +952,8 @@ fn stop_server(
     if let Some(name) = explicit_name {
         server::validate_server_name(name)?;
     }
-    let project_dir = init::canonical_project_dir()?;
-    let project_state_missing = !init::local_dir().is_dir();
+    let project = init::project_root()?;
+    let project_state_missing = !project.is_marked();
 
     // Recover orphaned servers so we can stop processes that lost their
     // metadata files. Without server state or an orphan there is nothing to
@@ -975,9 +982,12 @@ fn stop_server(
                             selection: output::ServerSelection::Implicit,
                             reason: "no_clickhouse_servers",
                             project_scope: project_state_missing
-                                .then(|| output::exact_current_project_scope(&project_dir)),
+                                .then(|| output::server_project_scope(project)),
                             guidance: if project_state_missing {
-                                output::project_scope_guidance(Some(ProjectServerCommand::Stop))
+                                output::project_scope_guidance(
+                                    project.kind,
+                                    Some(ProjectServerCommand::Stop),
+                                )
                             } else {
                                 Vec::new()
                             },
@@ -1000,7 +1010,7 @@ fn stop_server(
         // Only reachable for an explicit name: an omitted one returned above.
         return Err(Error::ProjectServerNotFound(ProjectServerNotFound {
             command: ProjectServerCommand::Stop,
-            project_dir,
+            project: project.clone(),
             server_name: name,
         }));
     };
@@ -1036,7 +1046,7 @@ fn stop_server(
         // No such server in this project — surface the typo.
         StopOutcome::NotFound => Err(Error::ProjectServerNotFound(ProjectServerNotFound {
             command: ProjectServerCommand::Stop,
-            project_dir,
+            project: project.clone(),
             server_name: name,
         })),
     }
@@ -1050,8 +1060,8 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     if let Some(name) = explicit_name {
         server::validate_server_name(name)?;
     }
-    let project_dir = init::canonical_project_dir()?;
-    let project_state_missing = !init::local_dir().is_dir();
+    let project = init::project_root()?;
+    let project_state_missing = !project.is_marked();
 
     // Recover orphaned servers so we correctly detect a running process even
     // when its metadata file is missing. Without server state or an orphan
@@ -1073,7 +1083,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
                     return Err(Error::ProjectServerStateMissing(
                         ProjectServerStateMissing {
                             command: ProjectServerCommand::Remove,
-                            project_dir,
+                            project_dir: project.dir.clone(),
                         },
                     ));
                 }
@@ -1087,7 +1097,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     let server_not_found = |server_name| {
         Error::ProjectServerNotFound(ProjectServerNotFound {
             command: ProjectServerCommand::Remove,
-            project_dir,
+            project: project.clone(),
             server_name,
         })
     };
@@ -1139,7 +1149,7 @@ fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
 
 /// List this project's servers for one engine's `list` or for `local status`.
 pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Result<()> {
-    let project_dir = init::canonical_project_dir()?;
+    let project = init::project_root()?;
     let engine = match list {
         output::ProjectList::Clickhouse => Some(server::Engine::Clickhouse),
         output::ProjectList::Postgres => Some(server::Engine::Postgres),
@@ -1223,9 +1233,9 @@ pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Res
             .collect(),
         total_servers: total,
         total_running_servers: running_count,
-        project_scope: Some(output::exact_current_project_scope(&project_dir)),
+        project_scope: Some(output::server_project_scope(project)),
         guidance: if total == 0 {
-            output::empty_list_guidance(list)
+            output::empty_list_guidance(list, project.kind)
         } else {
             Vec::new()
         },
@@ -1450,6 +1460,7 @@ fn init_output(result: init::InitResult) -> output::InitOutput {
     output::InitOutput {
         paths,
         already_initialized: !result.clickhouse_dir_created,
+        enclosing_project: None,
     }
 }
 

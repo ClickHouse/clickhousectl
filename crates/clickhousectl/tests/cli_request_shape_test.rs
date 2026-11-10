@@ -277,9 +277,13 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
     // DO_NOT_TRACK (here and on every other spawn in this file) keeps the
     // binary's telemetry fully silent: no `~/.clickhouse/telemetry.json` write
     // in the developer's real home, no POST to the production endpoint.
+    // An owned cwd keeps project discovery away from any `.clickhouse/` above
+    // the checkout.
+    let cwd = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
         .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .current_dir(cwd.path())
         .args(&full_args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -320,9 +324,11 @@ async fn invoke_cli_capture_body_with_stdin(
     full_args.push("--json");
     full_args.extend(cli_args);
 
+    let cwd = tempfile::tempdir().unwrap();
     let mut child = Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
         .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .current_dir(cwd.path())
         .args(&full_args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -1058,6 +1064,49 @@ async fn saved_key_is_sent_only_to_its_saved_api() {
         }
     }
     assert!(other_api.received_requests().await.unwrap().is_empty());
+}
+
+/// #1290: saved API keys live with the project, so a command run from a
+/// subdirectory sends the enclosing project's key.
+#[tokio::test]
+async fn saved_key_is_found_from_a_project_subdirectory() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200,
+            "requestId": "stub-org-list",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
+    let sub = dir.path().join("src/app");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .current_dir(&sub)
+        .args(["cloud", "--json", "org", "list"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    let auth = requests[0].headers.get("Authorization").unwrap();
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "file-key:file-secret",
+        )
+    );
+    assert_eq!(auth.to_str().unwrap(), expected);
+    assert!(!sub.join(".clickhouse").exists());
 }
 
 #[tokio::test]
@@ -6499,6 +6548,7 @@ async fn kinesis_auth_conflicts_are_secret_free_usage_errors_before_credentials_
         .isolated_env()
         .env("HOME", home.path())
         .env("DO_NOT_TRACK", "1")
+        .current_dir(home.path())
         .args(["cloud", "--url", &mock.uri(), "--json"])
         .args(kinesis_auth_args("create", &flags))
         .output()
@@ -6698,8 +6748,8 @@ async fn dotenv_creds_produce_basic_auth_request() {
         .await;
 
     // Put `.env` in the working directory and run the binary cd'd into it,
-    // because the loader reads `cwd/.env` rather than walking ancestor
-    // directories. The parent process's env vars are cleared in the child so
+    // because the loader reads `cwd/.env` first (the project root's only when
+    // `cwd` has none). The parent process's env vars are cleared in the child so
     // the .env is the only source of credentials — otherwise the test could
     // silently pass for the wrong reason.
     let dir = tempfile::tempdir().unwrap();
@@ -11465,9 +11515,11 @@ async fn agent_session_and_trace_headers_are_forwarded() {
 
     let url = mock.uri();
     let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    let cwd = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
         .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .current_dir(cwd.path())
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -18359,11 +18411,13 @@ async fn service_settings_set_reads_a_map_from_stdin() {
         .await;
 
     let url = mock.uri();
+    let cwd = tempfile::tempdir().unwrap();
     let mut child = Command::new(clickhousectl_binary())
         .isolated_env()
         .env("DO_NOT_TRACK", "1")
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(cwd.path())
         .args([
             "cloud", "--url", &url, "--json", "service", "settings", "set", "svc-1", "--file", "-",
             "--org-id", "org-1",

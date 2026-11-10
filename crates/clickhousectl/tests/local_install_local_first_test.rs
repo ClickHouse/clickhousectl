@@ -40,6 +40,7 @@ fn install_with_existing_version(installed_version: &str, requested_spec: &str) 
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", tempdir.path())
+        .current_dir(tempdir.path())
         // Any remote resolve fails fast through this closed port.
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
         .env("HTTP_PROXY", "http://127.0.0.1:9")

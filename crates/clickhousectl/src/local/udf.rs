@@ -96,7 +96,7 @@ pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
             dir,
             server,
             python,
-        } => deploy(&name, &dir.dir, &server.server, python.as_deref(), json).await,
+        } => deploy(&name, &dir, &server.server, python.as_deref(), json).await,
         UdfCommands::List { server } => list(&server.server, json).await,
         UdfCommands::Remove { name, server } => remove(&name, &server.server, json).await,
         UdfCommands::Reload { server } => reload(&server.server, json).await,
@@ -250,8 +250,8 @@ fn input_error(error: UdfInputError) -> Error {
 // ── init ────────────────────────────────────────────────────────────────────
 
 fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) -> Result<()> {
-    let parent = Path::new(DEFAULT_UDF_PARENT);
-    if let Some(existing) = case_only_clash(parent, name)? {
+    let parent = udf::default_udf_parent()?;
+    if let Some(existing) = case_only_clash(&parent, name)? {
         return Err(Error::Usage(Box::new(clap::Error::raw(
             clap::error::ErrorKind::ValueValidation,
             format!(
@@ -319,7 +319,7 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
 
     let out = UdfInitOutput {
         name: name.to_owned(),
-        dir: target.display().to_string(),
+        dir: display_path(&target),
         created,
         next_step,
         warnings,
@@ -430,18 +430,19 @@ fn python_template(name: &str) -> String {
 
 async fn deploy(
     name: &str,
-    parent: &Path,
+    dir_arg: &udf::UdfDirArg,
     server_name: &str,
     python: Option<&Path>,
     json: bool,
 ) -> Result<()> {
     // Everything that can be wrong with the input fails here, before the
     // server is even looked up and long before anything is written.
-    let dir = udf::resolve_source_dir(parent, name).map_err(|error| match error {
+    let parent = dir_arg.parent()?;
+    let dir = udf::resolve_source_dir(&parent, name).map_err(|error| match error {
         UdfInputError::Missing { path } => Error::UdfSourceMissing {
-            path,
+            path: PathBuf::from(display_path(&path)),
             name: name.to_owned(),
-            scaffold_here: parent == Path::new(DEFAULT_UDF_PARENT),
+            scaffold_here: dir_arg.is_default(),
         },
         other => input_error(other),
     })?;
@@ -526,7 +527,7 @@ async fn deploy(
 
     let loaded = match &target.running {
         Some(info) => {
-            let deploy_command = deploy_command(name, parent, server_name);
+            let deploy_command = deploy_command(name, dir_arg, server_name);
             let probe = LoadProbe {
                 name,
                 data_dir: &target.data_dir,
@@ -597,15 +598,14 @@ async fn deploy(
 }
 
 /// The command that reruns this deployment, naming `--dir` only when the user
-/// gave a non-default one, spelled as they gave it.
-fn deploy_command(name: &str, parent: &Path, server: &str) -> String {
-    if parent == Path::new(udf::DEFAULT_UDF_PARENT) {
-        format!("clickhousectl local udf deploy {name} --server {server}")
-    } else {
-        format!(
+/// gave one, spelled as they gave it.
+fn deploy_command(name: &str, dir: &udf::UdfDirArg, server: &str) -> String {
+    match &dir.dir {
+        None => format!("clickhousectl local udf deploy {name} --server {server}"),
+        Some(parent) => format!(
             "clickhousectl local udf deploy {name} --dir {} --server {server}",
             parent.display()
-        )
+        ),
     }
 }
 
@@ -1100,8 +1100,13 @@ fn staged_udfs(data_dir: &Path) -> Result<Vec<StagedUdf>> {
     Ok(staged)
 }
 
+/// `path` relative to the current directory when it is beneath it, else in
+/// full. Server paths are under the canonical project root, so the current
+/// directory is canonicalized to match; from a subdirectory of the project
+/// they print in full.
 fn display_path(path: &Path) -> String {
     std::env::current_dir()
+        .and_then(|cwd| cwd.canonicalize())
         .ok()
         .and_then(|cwd| path.strip_prefix(&cwd).ok().map(Path::to_path_buf))
         .unwrap_or_else(|| path.to_path_buf())
@@ -1150,31 +1155,19 @@ fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
 }
 
 fn server_not_found(name: &str) -> Result<Error> {
-    let project_dir = crate::init::canonical_project_dir()?;
+    let project = crate::init::project_root()?;
     Ok(Error::UdfServerNotFound {
         name: name.to_owned(),
-        project_has_state: looks_like_project_root(&project_dir),
-        project_dir,
+        project_has_state: is_project(project),
+        project_dir: project.dir.clone(),
     })
 }
 
-/// Whether `dir` is plausibly where servers are started: it has the
-/// `clickhouse/` scaffold or some server's state. Local commands never search
-/// parent directories, so a subdirectory of a project has neither.
-fn looks_like_project_root(dir: &Path) -> bool {
-    if dir.join("clickhouse").is_dir() {
-        return true;
-    }
-    // Dotfiles are metadata bookkeeping (the lock file, interrupted temporary
-    // writes), not a server's state. Read-only commands no longer create the
-    // lock file (#1077), but it outlives the last removed server.
-    std::fs::read_dir(dir.join(".clickhouse").join("servers"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        })
-        .unwrap_or(false)
+/// Whether starting the server in `project` is the remedy: a project was found,
+/// or the directory holds the `clickhouse/` scaffold (a fresh clone, whose
+/// git-ignored `.clickhouse/` is not there yet).
+fn is_project(project: &crate::init::ProjectRoot) -> bool {
+    project.is_marked() || project.dir.join("clickhouse").is_dir()
 }
 
 fn require_running<'a>(target: &'a ServerTarget, name: &str) -> Result<&'a ServerInfo> {
