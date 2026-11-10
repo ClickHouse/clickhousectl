@@ -18,7 +18,7 @@ pub const UDF_POLL_INTERVAL_ENV: &str = "CHCTL_UDF_POLL_INTERVAL_MS";
 pub const QUERY_READINESS_TIMEOUT_ENV: &str = "CHCTL_QUERY_READINESS_TIMEOUT_MS";
 /// Bounds how long a key-binding upsert is retried while a new key propagates.
 pub const KEY_PROPAGATION_TIMEOUT_ENV: &str = "CHCTL_KEY_PROPAGATION_TIMEOUT_MS";
-/// Bounds the background update check; `0` skips it.
+/// Bounds the background and `--version` update checks; `0` skips them.
 pub const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
 /// Bounds the `feedback` send.
 #[cfg(feature = "feedback")]
