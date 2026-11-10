@@ -1,6 +1,7 @@
 use super::query::query_api_error;
 use super::{Auth, Client};
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -30,10 +31,11 @@ impl Client {
                 ));
             }
         };
-        let url = format!(
-            "{}/service/{service_id}/runPostgres",
+        let url = super::endpoint_url(
             self.resolved_query_host().trim_end_matches('/'),
-        );
+            "/service/{serviceId}/runPostgres",
+            &[service_id],
+        )?;
         let response = self
             .http
             .post(url)
@@ -65,8 +67,7 @@ impl Client {
         organization_id: &str,
         body: &PostgresServicePostRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::POSTGRES_SERVICE_CREATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -87,8 +88,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<PostgresServiceListItem>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::POSTGRES_SERVICE_GET_LIST, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -110,8 +110,10 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::POSTGRES_SERVICE_GET,
+            &[organization_id, postgres_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -133,8 +135,10 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::POSTGRES_SERVICE_DELETE,
+            &[organization_id, postgres_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -157,8 +161,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServicePatchRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_SERVICE_PATCH,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -181,9 +187,10 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<String, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/caCertificates");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::POSTGRES_SERVICE_CERTS_GET,
+            &[organization_id, postgres_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -205,8 +212,10 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<ApiResponse<PostgresInstanceConfigResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::POSTGRES_INSTANCE_CONFIG_GET,
+            &[organization_id, postgres_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -229,8 +238,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresInstanceConfig,
     ) -> Result<ApiResponse<PostgresInstanceUpdateConfigResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_INSTANCE_CONFIG_POST,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -254,8 +265,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresInstanceConfig,
     ) -> Result<ApiResponse<PostgresInstanceUpdateConfigResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_INSTANCE_CONFIG_PATCH,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -279,8 +292,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceSetPassword,
     ) -> Result<ApiResponse<PostgresServicePasswordResource>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/password");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_SERVICE_SET_PASSWORD,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -304,9 +319,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceReadReplicaRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/readReplica");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_INSTANCE_CREATE_READ_REPLICA,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -329,8 +345,10 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/prometheus");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::POSTGRES_INSTANCE_PROMETHEUS_GET,
+            &[organization_id, postgres_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
@@ -351,8 +369,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/prometheus");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::POSTGRES_ORG_PROMETHEUS_GET, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
@@ -375,9 +392,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceRestoreRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/restoredService");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_INSTANCE_RESTORE,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -401,8 +419,10 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceSetState,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/state");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_SERVICE_PATCH_STATE,
+            &[organization_id, postgres_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -433,8 +453,10 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresLogEntry>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/logs");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_LOGS_GET_LIST,
+            &[organization_id, postgres_id],
+        )?;
         req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
         if let Some(v) = body_contains {
             req = req.query(&[("body_contains", v)]);
@@ -476,8 +498,10 @@ impl Client {
         to_date: &str,
         bucket_size_seconds: Option<i64>,
     ) -> Result<ApiResponse<PostgresMetrics>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/metrics");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_INSTANCE_METRICS_GET,
+            &[organization_id, postgres_id],
+        )?;
         req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
         if let Some(v) = bucket_size_seconds {
             req = req.query(&[("bucket_size_seconds", v)]);
@@ -514,9 +538,10 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresSlowQueryPattern>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/slowQueryPatterns");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::SLOW_QUERY_PATTERNS_GET_LIST,
+            &[organization_id, postgres_id],
+        )?;
         req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
         if let Some(v) = db_name {
             req = req.query(&[("db_name", v)]);
@@ -570,10 +595,10 @@ impl Client {
         app: Option<&str>,
         timestamp: Option<&str>,
     ) -> Result<ApiResponse<PostgresSlowQueryPatternDetail>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/postgres/{postgres_id}/slowQueryPatterns/{query_id}"
-        );
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::SLOW_QUERY_PATTERN_GET,
+            &[organization_id, postgres_id, query_id],
+        )?;
         req = req.query(&[
             ("db_name", db_name),
             ("db_user", db_user),
@@ -614,8 +639,10 @@ impl Client {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresBackup>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/backups");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::POSTGRES_SERVICE_BACKUP_GET_LIST,
+            &[organization_id, postgres_id],
+        )?;
         if let Some(cursor) = cursor {
             req = req.query(&[("cursor", cursor)]);
         }
