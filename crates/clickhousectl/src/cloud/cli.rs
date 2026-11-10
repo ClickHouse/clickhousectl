@@ -134,9 +134,10 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Reads: list, get, profile list, settings list/get/schema, prometheus, query,
-    query-endpoint get, private-endpoint get-config, backup-config get,
-    scaling-schedule get, upgrade-window get, jwt-provider list/get.
+  Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query,
+    query-endpoint get, private-endpoint get-config, backup-config get, snapshot list/get,
+    snapshot config get, scaling-schedule get, upgrade-window get, replica-aware-routing get,
+    jwt-provider list/get.
     Other commands need API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")]
     Service {
@@ -603,7 +604,10 @@ pub(crate) mod tests {
             (&["org", "get"], false),
             (&["org", "balance"], false),
             (&["org", "notifications"], false),
+            (&["org", "prometheus"], false),
             (&["org", "prometheus", "discovery"], false),
+            (&["org", "quota", "list"], false),
+            (&["org", "quota", "get", "q-1"], false),
             (&["org", "role", "list"], false),
             (&["org", "update", "--new-name", "renamed"], true),
             (&["org", "role", "delete", "role-1"], true),
@@ -617,6 +621,7 @@ pub(crate) mod tests {
             ),
             (&["backup", "list", "svc-1"], false),
             (&["backup", "get", "svc-1", "bk-1"], false),
+            (&["backup", "bucket", "delete", "svc-1"], true),
             (&["member", "list"], false),
             (&["member", "update", "user-1", "--role-id", "role-1"], true),
             (&["invitation", "list"], false),
@@ -756,7 +761,7 @@ pub(crate) mod tests {
         assert_eq!(
             writes,
             all.into_iter()
-                .filter(|domain| !matches!(*domain, "activity" | "auth" | "backup"))
+                .filter(|domain| !matches!(*domain, "activity" | "auth"))
                 .collect()
         );
     }

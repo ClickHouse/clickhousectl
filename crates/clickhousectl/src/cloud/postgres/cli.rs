@@ -575,6 +575,22 @@ pub enum SlowQueryCommands {
     },
 }
 
+impl PrometheusCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Service { .. } | Self::Org => false,
+        }
+    }
+}
+
+impl SlowQueryCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Get { .. } => false,
+        }
+    }
+}
+
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
@@ -582,9 +598,9 @@ impl PostgresCommands {
             | PostgresCommands::Get { .. }
             | PostgresCommands::Query { .. }
             | PostgresCommands::Metrics { .. }
-            | PostgresCommands::Logs { .. }
-            | PostgresCommands::SlowQueries(_)
-            | PostgresCommands::Prometheus(_) => false,
+            | PostgresCommands::Logs { .. } => false,
+            PostgresCommands::SlowQueries(command) => command.is_write(),
+            PostgresCommands::Prometheus(command) => command.is_write(),
             PostgresCommands::Backup(PostgresBackupCommands::List { .. }) => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
