@@ -9,16 +9,27 @@
 //!   - the command exits 0, which it cannot if any remote request is made,
 //!   - stderr names the requested spec, the installed version and `--force`,
 //!   - stdout has no generic "Installed version" confirmation.
+//!
+//! Issue #1302: the same no-op, with stderr a pipe whose reader has gone, must
+//! still exit 0 rather than panic (exit 101) on its stderr notice.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
 fn install_with_existing_version(installed_version: &str, requested_spec: &str) -> Output {
+    install_with_existing_version_to(installed_version, requested_spec, Stdio::piped())
+}
+
+fn install_with_existing_version_to(
+    installed_version: &str,
+    requested_spec: &str,
+    stderr: Stdio,
+) -> Output {
     let tempdir = tempfile::tempdir().expect("create tempdir");
 
     let version_dir = tempdir
@@ -46,6 +57,7 @@ fn install_with_existing_version(installed_version: &str, requested_spec: &str) 
         .env("HTTP_PROXY", "http://127.0.0.1:9")
         .env("ALL_PROXY", "http://127.0.0.1:9")
         .args(["local", "install", requested_spec])
+        .stderr(stderr)
         .output()
         .expect("run clickhousectl");
     // A zero timeout skips the background update request, so nothing writes
@@ -99,4 +111,15 @@ fn local_install_exact_with_existing_match_is_a_successful_no_op() {
         "expected no generic install confirmation, got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+#[test]
+fn local_install_no_op_survives_a_closed_stderr() {
+    // EPIPE, not EBADF: a closed descriptor (`2>&-`) is treated as success by
+    // std, so only a pipe whose reader is gone reaches the failing write.
+    let (reader, writer) = std::io::pipe().expect("create pipe");
+    drop(reader);
+    let version = "25.12.9.61";
+    let output = install_with_existing_version_to(version, version, writer.into());
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }

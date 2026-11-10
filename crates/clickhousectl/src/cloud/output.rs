@@ -30,28 +30,11 @@ pub(crate) fn or_absent<T: std::fmt::Display>(value: Option<T>) -> String {
         .unwrap_or_else(|| ABSENT.to_string())
 }
 
-/// Write one line to stderr, discarding a write failure.
-///
-/// `eprintln!` *panics* when the write fails, and the write fails with
-/// `BrokenPipe` as soon as whatever was reading stderr goes away (a pager the
-/// user quit, a supervising harness that stopped reading). That turns a
-/// long-running command into a panic and exit 101 — see #598, where
-/// `cloud service delete --force` streamed stop-poll progress for minutes and
-/// crashed instead of deleting the service. Progress and status lines are never
-/// worth a panic: the exit code, not the line, reports the outcome.
-///
-/// Same rule as `telemetry::print_first_run_notice` and
-/// `update::print_cached_update_notice`.
-pub(crate) fn eprint_line(line: impl std::fmt::Display) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr(), "{line}");
-}
-
 /// Write one line through the shared stdout policy.
 ///
-/// The stdout counterpart of [`eprint_line`], for a result line printed after
-/// the operation it describes already succeeded: a closed stdout must not
-/// convert a completed deletion into a panic.
+/// For a result line printed after the operation it describes already
+/// succeeded: a closed stdout must not convert a completed deletion into a
+/// panic.
 pub(crate) fn print_line(line: impl std::fmt::Display) {
     println!("{line}");
 }
@@ -227,9 +210,9 @@ struct CloudErrorOutput<'a> {
 
 /// Write exactly one cloud error object to stderr, for `--json` mode.
 ///
-/// Serialization failure is swallowed for the same reason [`eprint_line`]
-/// swallows a write failure: the exit code reports the outcome, so a closed
-/// stderr must not become a panic.
+/// Serialization failure is swallowed for the same reason the crate's
+/// `eprintln!` swallows a write failure (see `crate::stdout`): the exit code
+/// reports the outcome, so a closed stderr must not become a panic.
 pub fn print_error(error: &crate::error::Error) {
     use std::io::Write;
     let detail = CloudErrorDetail::from_error(error);
@@ -319,10 +302,10 @@ pub(crate) fn cloud_command(args: &[&str], org_id: &str) -> String {
 /// the background, so the response printed with it still shows the old value
 /// (#1241). `check` is the read to repeat; JSON mode carries `next` instead.
 pub(crate) fn eprint_background_change(change: &str, check: &str) {
-    eprint_line(format!(
+    eprintln!(
         "{change} applies in the background and can take several minutes; the values shown \
          may not include it yet. Check progress with: {check}"
-    ));
+    );
 }
 
 /// Serialize the library's own values, so a hint names exactly what the poll

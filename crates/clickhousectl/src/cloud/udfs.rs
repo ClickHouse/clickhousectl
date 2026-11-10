@@ -48,9 +48,7 @@ use crate::cloud::client::{
     CloudClient, CloudError, CloudErrorKind, ResourceKind, ResourceLookup, Result as CloudResult,
 };
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{
-    CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
-};
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, or_absent, print_human, print_line};
 use crate::cloud::shared::{PollProgress, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
@@ -687,9 +685,9 @@ const LOCAL_ONLY_SANDBOX_VERSION: &str = "sandboxVersion";
 /// definition sets `sandboxVersion`, which the cloud builders omit.
 fn warn_local_only_fields(definition: &Value) {
     if definition.get(LOCAL_ONLY_SANDBOX_VERSION).is_some() {
-        eprint_line(
+        eprintln!(
             "Warning: ignoring sandboxVersion in the UDF definition; ClickHouse Cloud no longer \
-             accepts it",
+             accepts it"
         );
     }
 }
@@ -965,7 +963,7 @@ where
     let started = Instant::now();
     let mut progress = PollProgress::default();
     if verbose {
-        eprint_line(format!("Waiting for {what} (up to {}s)", timeout.as_secs()));
+        eprintln!("Waiting for {what} (up to {}s)", timeout.as_secs());
     }
     loop {
         let value = fetch().await?;
@@ -978,7 +976,7 @@ where
             }
             Outcome::Pending(state) => {
                 if verbose && let Some(line) = progress.render(&state, false) {
-                    eprint_line(line);
+                    eprintln!("{line}");
                 }
             }
         }
@@ -1582,9 +1580,7 @@ async fn attach_with_wake(
     }
     if action == WakeAction::Wake {
         if verbose {
-            eprint_line(format!(
-                "Service {service} is idle; waking it before attaching"
-            ));
+            eprintln!("Service {service} is idle; waking it before attaching");
         }
         if let Err(wake_error) = client
             .change_service_state(org, service, ServiceStatePatchRequestCommand::Awake)
@@ -1598,9 +1594,7 @@ async fn attach_with_wake(
             }
         }
     } else if verbose {
-        eprint_line(format!(
-            "Service {service} is starting; waiting before attaching"
-        ));
+        eprintln!("Service {service} is starting; waiting before attaching");
     }
     wait_for_service_running(client, org, service, policy.timeout, verbose).await?;
     match client
