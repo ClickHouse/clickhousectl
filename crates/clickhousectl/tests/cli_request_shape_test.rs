@@ -12378,6 +12378,36 @@ async fn postgres_config_files_reach_every_write_path() {
     }
 }
 
+// `config patch` and `config replace` read `--file -` from stdin (#1297).
+#[tokio::test]
+async fn postgres_config_file_can_be_read_from_stdin() {
+    let configuration = serde_json::json!({
+        "pgConfig": {"max_connections": 500},
+        "pgBouncerConfig": {"default_pool_size": "16"}
+    });
+    for (command, verb) in [("patch", "PATCH"), ("replace", "POST")] {
+        let mock = MockServer::start().await;
+        Mock::given(method(verb))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": configuration, "status": 200,
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let args = [
+            "postgres", "config", command, "pg-1", "--file", "-", "--org-id", "org-1",
+        ];
+        let output =
+            invoke_cli_with_cloud_credentials_and_stdin(&mock, &args, &configuration.to_string());
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "{command}");
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, configuration, "{command}");
+    }
+}
+
 #[tokio::test]
 async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
     let mock = MockServer::start().await;
@@ -12657,73 +12687,6 @@ async fn pg_config_set_preserves_false_zero_and_valid_enums() {
             "pgBouncerConfig": {}
         })
     );
-}
-
-#[tokio::test]
-async fn postgres_config_file_dash_remains_a_literal_filename() {
-    for (action, verb) in [("patch", "PATCH"), ("replace", "POST")] {
-        let directory = tempfile::tempdir().unwrap();
-        let home = directory.path().join("home");
-        std::fs::create_dir(&home).unwrap();
-        let mock = MockServer::start().await;
-        let document = serde_json::json!({
-            "pgConfig": {"max_connections": 300}, "pgBouncerConfig": {}
-        });
-        Mock::given(method(verb))
-            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
-            .and(body_json(document.clone()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": document, "status": 200
-            })))
-            .expect(1)
-            .mount(&mock)
-            .await;
-        for exists in [false, true] {
-            if exists {
-                std::fs::write(directory.path().join("-"), document.to_string()).unwrap();
-            }
-            let mut child = Command::new(clickhousectl_binary())
-                .isolated_env()
-                .env("DO_NOT_TRACK", "1")
-                .env("HOME", &home)
-                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-                .current_dir(directory.path())
-                .args([
-                    "cloud",
-                    "--url",
-                    &mock.uri(),
-                    "--json",
-                    "postgres",
-                    "config",
-                    action,
-                    "pg-1",
-                    "--file",
-                    "-",
-                    "--org-id",
-                    "org-1",
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
-            // A distinct, valid stdin document must never replace the file input.
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(br#"{"pgConfig":{"max_connections":999},"pgBouncerConfig":{}}"#)
-                .unwrap();
-            let output = child.wait_with_output().unwrap();
-            if exists {
-                assert_success(&output);
-            } else {
-                assert_eq!(output.status.code(), Some(1));
-                assert!(mock.received_requests().await.unwrap().is_empty());
-            }
-        }
-    }
 }
 
 // ── ClickStack source and role commands (issue #692) ────────────────────────

@@ -78,7 +78,7 @@ clickhousectl cloud postgres restart <postgres-id>
 
 Run `SELECT pg_postmaster_start_time()` again: only a later timestamp confirms a restart after your baseline. Readiness or `state=running` alone does not. Use `SHOW log_min_duration_statement` to confirm the setting is active.
 
-`config replace --file` replaces the whole configuration. Start from `config get --json` and retain both sections and all settings you want to keep. Files for both patch and replace must contain `pgConfig` and `pgBouncerConfig`, even if one is `{}`. PgBouncer values are strings, including numeric values:
+`config replace --file` replaces the whole configuration. Start from `config get --json` and retain both sections and all settings you want to keep. `config patch` and `config replace` read the document from stdin with `--file -`. Files for both patch and replace must contain `pgConfig` and `pgBouncerConfig`, even if one is `{}`. PgBouncer values are strings, including numeric values:
 
 ```json
 {"pgConfig":{},"pgBouncerConfig":{"default_pool_size":"16"}}
