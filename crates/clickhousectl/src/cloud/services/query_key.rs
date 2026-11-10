@@ -9,7 +9,7 @@
 
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, eprint_line};
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
 use crate::failure::{ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clickhouse_cloud_api::models::{
     ApiKey, InstanceServiceQueryApiEndpointsPostRequest, QueryEndpointRole,
@@ -115,7 +115,7 @@ where
         if !waiting {
             // A closed stderr must not panic here: the caller has yet to
             // report the upsert's outcome.
-            crate::cloud::output::eprint_line(KEY_PROPAGATION_NOTICE);
+            eprintln!("{KEY_PROPAGATION_NOTICE}");
             waiting = true;
         }
         crate::failure::note_retry();
@@ -452,7 +452,7 @@ pub(crate) async fn bind_caller_query_key(
 /// one. Stderr in every output mode, so `--json` stdout stays one value.
 pub(crate) fn retire_legacy_query_key_record(service_id: &str, org_id: &str) {
     if let Ok(Some(record)) = credentials::take_legacy_service_query_key(service_id) {
-        eprint_line(legacy_query_key_notice(&record, service_id, org_id));
+        eprintln!("{}", legacy_query_key_notice(&record, service_id, org_id));
     }
 }
 

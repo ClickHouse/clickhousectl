@@ -81,7 +81,7 @@ use crate::cloud::config::{
 };
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, NextStep, cloud_command, eprint_background_change,
-    eprint_line, json_with_next, or_absent, print_human,
+    json_with_next, or_absent, print_human,
 };
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
@@ -4317,7 +4317,7 @@ async fn clickpipe_cdc_scaling_update(
             "The new allocation",
             &cloud_command(&["clickpipe", "cdc-scaling", "get", service_id], &org_id),
         );
-        eprint_line("Another scaling update before it applies fails with a conflict.");
+        eprintln!("Another scaling update before it applies fails with a conflict.");
     }
     Ok(())
 }

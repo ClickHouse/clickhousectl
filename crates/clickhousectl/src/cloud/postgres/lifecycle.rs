@@ -1,8 +1,8 @@
 use super::config::{load_json_file, load_pg_config_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{
-    ABSENT, NextStep, cloud_command, eprint_background_change, eprint_line, json_with_next,
-    or_absent, print_line,
+    ABSENT, NextStep, cloud_command, eprint_background_change, json_with_next, or_absent,
+    print_line,
 };
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
@@ -761,7 +761,7 @@ pub async fn postgres_update(
             );
         }
         if changes_ha {
-            eprint_line(HA_CHANGE_NOTE);
+            eprintln!("{HA_CHANGE_NOTE}");
         }
     } else {
         println!("Postgres service updated");
