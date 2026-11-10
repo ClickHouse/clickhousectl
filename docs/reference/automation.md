@@ -144,7 +144,7 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 
 | Code | Meaning |
 | ---- | ------- |
-| `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
+| `server_not_found` | The selected local server does not exist |
 | `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason). Cloud `udf create` and `udf version create` report it too, without `details` |
 | `udf_source_invalid` | The UDF directory does not exist (the message and `command` suggest `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote. Cloud `udf create` and `udf version create` report it for a missing `udf.json` or entrypoint or a symbolic link inside the directory; a missing or symlinked directory there is a usage error |
 | `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |

@@ -281,6 +281,43 @@ pub(crate) fn is_pg_instance_key(name: &str) -> bool {
     })
 }
 
+/// Refuse a ClickHouse server name that is a local Postgres instance. Both
+/// engines share `.clickhouse/servers/`, so a ClickHouse command given a
+/// Postgres key would write config into, or delete, its PGDATA (#1296).
+/// Metadata decides when there is any; without it (a crash, or a new name) a
+/// `<name>-pg<major>` key is reserved for Postgres.
+pub(crate) fn reject_postgres_instance_locked(
+    name: &str,
+    lock: Option<&MetadataLock>,
+) -> Result<()> {
+    let info = match lock {
+        Some(lock) => load_info_locked(name, lock)?,
+        None => None,
+    };
+    reject_postgres_instance(name, info.as_ref())
+}
+
+fn reject_postgres_instance(name: &str, info: Option<&ServerInfo>) -> Result<()> {
+    let is_postgres = match info {
+        Some(info) => info.engine == Engine::Postgres,
+        None => is_pg_instance_key(name),
+    };
+    if !is_postgres {
+        return Ok(());
+    }
+    let instance = info.map_or_else(
+        || crate::local::postgres::user_name_from_key(name),
+        |info| info.name.as_str(),
+    );
+    Err(Error::Usage(Box::new(clap::Error::raw(
+        clap::error::ErrorKind::ValueValidation,
+        format!(
+            "'{name}' is the local Postgres instance '{instance}', not a ClickHouse server; \
+             manage it with `clickhousectl local postgres` (see `clickhousectl local postgres list`)\n"
+        ),
+    ))))
+}
+
 /// Join a child name onto the servers directory. Exposed so handlers can
 /// remove a whole `<key>/` wrapper without poking at internals.
 pub fn servers_dir_join(child: &str) -> PathBuf {
@@ -1677,6 +1714,41 @@ mod tests {
             cwd: "/tmp/project".into(),
             engine: Engine::Clickhouse,
             container_id: None,
+        }
+    }
+
+    #[test]
+    fn postgres_instances_are_rejected_as_clickhouse_servers() {
+        let postgres = ServerInfo {
+            name: "dev".into(),
+            engine: Engine::Postgres,
+            ..test_info(0, "postgres:17")
+        };
+        let clickhouse = test_info(0, "26.8.1.922");
+
+        // Metadata decides, whatever the name looks like.
+        for name in ["dev-pg17", "dev"] {
+            let error = reject_postgres_instance(name, Some(&postgres)).unwrap_err();
+            let Error::Usage(error) = error else {
+                panic!("{name}: {error:?}");
+            };
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(&format!("'{name}'")), "{message}");
+            assert!(message.contains("local postgres"), "{message}");
+        }
+        for name in ["default", "legacy-pg1"] {
+            reject_postgres_instance(name, Some(&clickhouse)).unwrap();
+        }
+
+        // Without metadata a `<name>-pg<major>` key is reserved for Postgres.
+        let error = reject_postgres_instance("old-pg16", None).unwrap_err();
+        let Error::Usage(error) = error else {
+            panic!("{error:?}");
+        };
+        assert!(error.to_string().contains("'old'"), "{error}");
+        for name in ["default", "dev-pg", "pg17", "dev-pgx"] {
+            reject_postgres_instance(name, None).unwrap();
         }
     }
 

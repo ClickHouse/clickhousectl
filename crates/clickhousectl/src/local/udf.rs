@@ -13,7 +13,7 @@ use crate::local::output::{
     self, UdfDeployOutput, UdfInitOutput, UdfListEntry, UdfListOutput, UdfReloadOutput,
     UdfRemoveOutput,
 };
-use crate::local::server::{self, Engine, MetadataLock, ServerInfo};
+use crate::local::server::{self, MetadataLock, ServerInfo};
 use crate::udf::{
     self, DEFAULT_UDF_PARENT, DEFINITION_FILE, NATIVE_ARCH_DIRS, NATIVE_ENTRYPOINT,
     PYTHON_ENTRYPOINT, SourceEntry, UdfInputError, UdfRuntimeKind,
@@ -1130,20 +1130,14 @@ struct ServerTarget {
 fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
     // Without server state or an orphan there is no server to target, and
     // nothing is created to find that out.
+    // `local udf` must never write ClickHouse config into a Postgres data
+    // directory.
     let Some(lock) = server::lock_recovered_metadata()? else {
-        if server::is_pg_instance_key(name) {
-            return Err(Error::UdfServerIsPostgres(name.to_owned()));
-        }
+        server::reject_postgres_instance_locked(name, None)?;
         return Err(server_not_found(name)?);
     };
+    server::reject_postgres_instance_locked(name, Some(&lock))?;
     let entry = server::server_entry_locked(name, &lock)?;
-    let is_postgres = match entry.as_ref().and_then(|entry| entry.info.as_ref()) {
-        Some(info) => info.engine != Engine::Clickhouse,
-        None => server::is_pg_instance_key(name),
-    };
-    if is_postgres {
-        return Err(Error::UdfServerIsPostgres(name.to_owned()));
-    }
     let running = entry
         .filter(|entry| entry.running)
         .and_then(|entry| entry.info);
@@ -1755,6 +1749,7 @@ async fn reload(server_name: &str, json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local::server::Engine;
     use serde_json::json;
 
     fn definition(kind: LocalUdfType, runtime: LocalUdfRuntime) -> LocalUdfDefinition {
