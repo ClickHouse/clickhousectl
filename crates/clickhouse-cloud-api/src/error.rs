@@ -49,6 +49,13 @@ pub enum Error {
         details: String,
     },
 
+    /// A path parameter cannot be sent as a single URL path segment: it is
+    /// empty, `.` or `..`, which URL parsing would drop or resolve and so
+    /// re-target the request. Returned before any request is made. Any other
+    /// value is percent-encoded into its own segment.
+    #[error("invalid path parameter {0:?}: it cannot be empty, \".\" or \"..\"")]
+    InvalidPathParameter(String),
+
     /// Operation requires a different auth mode than the client was configured with.
     #[error("auth mismatch: {0}")]
     AuthMismatch(String),

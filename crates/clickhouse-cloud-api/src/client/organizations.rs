@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -8,8 +9,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<CreditBalances>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/creditBalances");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::CREDIT_BALANCES_GET, &[organization_id])?;
 
         let resp = req.send().await?;
         let status = resp.status();
@@ -33,8 +33,7 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<ActiveBalances>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/activeBalances");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::ACTIVE_BALANCES_GET, &[organization_id])?;
         if let Some(v) = limit {
             req = req.query(&[("limit", v)]);
         }
@@ -65,8 +64,7 @@ impl Client {
         limit: Option<i64>,
         cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<Organization>>, Error> {
-        let path = "/v1/organizations".to_string();
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::ORGANIZATION_GET_LIST, &[])?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -92,8 +90,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Organization>, Error> {
-        let path = format!("/v1/organizations/{organization_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::ORGANIZATION_GET, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -114,8 +111,10 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<OrganizationQuota>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/quotas");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_QUOTAS_GET_LIST,
+            &[organization_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -137,8 +136,10 @@ impl Client {
         organization_id: &str,
         quota_code: &str,
     ) -> Result<ApiResponse<OrganizationQuota>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/quotas/{quota_code}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_QUOTA_GET,
+            &[organization_id, quota_code],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -160,8 +161,7 @@ impl Client {
         organization_id: &str,
         body: &OrganizationPatchRequest,
     ) -> Result<ApiResponse<Organization>, Error> {
-        let path = format!("/v1/organizations/{organization_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(&operations::ORGANIZATION_UPDATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -196,8 +196,7 @@ impl Client {
         from_date: Option<&str>,
         to_date: Option<&str>,
     ) -> Result<ApiResponse<Vec<Notification>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/notifications");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::NOTIFICATION_GET_LIST, &[organization_id])?;
         if let Some(value) = limit {
             req = req.query(&[("limit", value)]);
         }
@@ -245,8 +244,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<NotificationType>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/notificationTypes");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::NOTIFICATION_TYPES_GET_LIST, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -271,8 +269,10 @@ impl Client {
         cloud_provider: &str,
         region_id: &str,
     ) -> Result<ApiResponse<OrganizationCloudRegionPrivateEndpointConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/privateEndpointConfig");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_PRIVATE_ENDPOINT_CONFIG_GET_LIST,
+            &[organization_id],
+        )?;
         req = req.query(&[("cloud_provider", cloud_provider)]);
         req = req.query(&[("region_id", region_id)]);
         let resp = req.send().await?;
@@ -296,8 +296,7 @@ impl Client {
         organization_id: &str,
         filtered_metrics: Option<&str>,
     ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/prometheus");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::ORGANIZATION_PROMETHEUS_GET, &[organization_id])?;
         if let Some(v) = filtered_metrics {
             req = req.query(&[("filtered_metrics", v)]);
         }
@@ -322,8 +321,10 @@ impl Client {
         organization_id: &str,
         filtered_metrics: Option<&str>,
     ) -> Result<Vec<PrometheusDiscoveryTargetGroup>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/prometheus/discovery");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_PROMETHEUS_DISCOVERY_GET,
+            &[organization_id],
+        )?;
         if let Some(v) = filtered_metrics {
             req = req.query(&[("filtered_metrics", v)]);
         }
@@ -350,8 +351,7 @@ impl Client {
         to_date: &str,
         filters: &[&str],
     ) -> Result<ApiResponse<UsageCost>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/usageCost");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::USAGE_COST_GET, &[organization_id])?;
         req = req.query(&[("from_date", from_date)]);
         req = req.query(&[("to_date", to_date)]);
         for f in filters {
@@ -377,8 +377,10 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<PublicPreview>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/previews");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_PUBLIC_PREVIEWS_GET_LIST,
+            &[organization_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -404,8 +406,10 @@ impl Client {
         preview_id: &str,
         body: &PublicPreviewPatchRequest,
     ) -> Result<ApiResponse<PublicPreview>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/previews/{preview_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_PUBLIC_PREVIEW_PATCH,
+            &[organization_id, preview_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();

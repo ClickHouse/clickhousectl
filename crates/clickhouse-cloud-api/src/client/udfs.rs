@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -9,8 +10,7 @@ impl Client {
         organization_id: &str,
         function_name: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(&operations::UDF_DELETE, &[organization_id, function_name])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -32,10 +32,10 @@ impl Client {
         function_name: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/udfs/{function_name}/attachments/{service_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::UDF_DETACH,
+            &[organization_id, function_name, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -57,9 +57,10 @@ impl Client {
         function_name: &str,
         version: i64,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/udfs/{function_name}/versions/{version}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::UDF_VERSION_DELETE,
+            &[organization_id, function_name, &version.to_string()],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -82,8 +83,7 @@ impl Client {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<ApiResponse<Vec<Udf>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::UDF_LIST, &[organization_id])?;
         if let Some(v) = cursor {
             req = req.query(&[("cursor", v)]);
         }
@@ -111,8 +111,7 @@ impl Client {
         organization_id: &str,
         function_name: &str,
     ) -> Result<ApiResponse<Udf>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::UDF_GET, &[organization_id, function_name])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -136,8 +135,10 @@ impl Client {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<ApiResponse<Vec<UdfAttachment>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}/attachments");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::UDF_ATTACHMENT_LIST,
+            &[organization_id, function_name],
+        )?;
         if let Some(v) = cursor {
             req = req.query(&[("cursor", v)]);
         }
@@ -166,10 +167,10 @@ impl Client {
         function_name: &str,
         service_id: &str,
     ) -> Result<ApiResponse<UdfAttachment>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/udfs/{function_name}/attachments/{service_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::UDF_ATTACHMENT_GET,
+            &[organization_id, function_name, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -193,8 +194,10 @@ impl Client {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<ApiResponse<Vec<Udf>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}/versions");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::UDF_VERSION_LIST,
+            &[organization_id, function_name],
+        )?;
         if let Some(v) = cursor {
             req = req.query(&[("cursor", v)]);
         }
@@ -221,8 +224,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<UdfUploadSession>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfUploads/url");
-        let req = self.request(reqwest::Method::POST, &path);
+        let req = self.request(&operations::UDF_UPLOAD_SESSION_CREATE, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -244,8 +246,7 @@ impl Client {
         organization_id: &str,
         body: &UdfCreateRequest,
     ) -> Result<ApiResponse<Udf>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::UDF_CREATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -269,8 +270,10 @@ impl Client {
         function_name: &str,
         body: &UdfVersionCreateRequest,
     ) -> Result<ApiResponse<Udf>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}/versions");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::UDF_VERSION_CREATE,
+            &[organization_id, function_name],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -295,13 +298,13 @@ impl Client {
         service_id: &str,
         version: Option<i64>,
     ) -> Result<ApiResponse<UdfAttachment>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/udfs/{function_name}/attachments/{service_id}"
-        );
         let body = version
             .map(|version| serde_json::json!({ "version": version }))
             .unwrap_or_else(|| serde_json::json!({}));
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::UDF_ATTACH,
+            &[organization_id, function_name, service_id],
+        )?;
         req = req.json(&body);
         let resp = req.send().await?;
         let status = resp.status();

@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -8,8 +9,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<Member>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::MEMBER_GET_LIST, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -31,8 +31,7 @@ impl Client {
         organization_id: &str,
         user_id: &str,
     ) -> Result<ApiResponse<Member>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::MEMBER_GET, &[organization_id, user_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -55,8 +54,7 @@ impl Client {
         user_id: &str,
         body: &MemberPatchRequest,
     ) -> Result<ApiResponse<Member>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(&operations::MEMBER_UPDATE, &[organization_id, user_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -79,8 +77,7 @@ impl Client {
         organization_id: &str,
         user_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(&operations::MEMBER_DELETE, &[organization_id, user_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -112,9 +109,10 @@ impl Client {
         resource_id: Option<&str>,
         resource_type: Option<&str>,
     ) -> Result<ApiResponse<Vec<NotificationSetting>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/members/{user_id}/notificationSettings");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::MEMBER_NOTIFICATION_SETTINGS_GET_LIST,
+            &[organization_id, user_id],
+        )?;
         if let Some(value) = limit {
             req = req.query(&[("limit", value)]);
         }
@@ -155,9 +153,10 @@ impl Client {
         user_id: &str,
         body: &MemberNotificationSettingsPatchRequest,
     ) -> Result<ApiResponse<MemberNotificationSettingsPatchResponse>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/members/{user_id}/notificationSettings");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::MEMBER_NOTIFICATION_SETTINGS_UPDATE,
+            &[organization_id, user_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();

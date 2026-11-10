@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -8,8 +9,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<RBACRole>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::ORGANIZATION_ROLES_GET_LIST, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -31,8 +31,7 @@ impl Client {
         organization_id: &str,
         body: &RoleCreateRequest,
     ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::ORGANIZATION_ROLE_POST, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -55,8 +54,10 @@ impl Client {
         organization_id: &str,
         role_id: &str,
     ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_ROLE_GET,
+            &[organization_id, role_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -79,8 +80,10 @@ impl Client {
         role_id: &str,
         body: &RoleUpdateRequest,
     ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_ROLE_PATCH,
+            &[organization_id, role_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -103,8 +106,10 @@ impl Client {
         organization_id: &str,
         role_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_ROLE_DELETE,
+            &[organization_id, role_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
