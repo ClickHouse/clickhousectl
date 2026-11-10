@@ -30,7 +30,7 @@ Feedback does not send your name, email, user ID, API key or key ID, organizatio
 
 ## Cloud organizations
 
-With Cloud credentials, feedback is not anonymous at the organization level: it names your organizations, so the team can see which organizations are asking. The credentials are the ones any Cloud command would use, in the usual order: a project API key, `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` (also read from `.env`), then the OAuth login saved in `~/.clickhouse/tokens.json`. A login that an older version saved under the project's `.clickhouse/` directory is ignored, and feedback never moves, rewrites or removes a saved login. Before sending, the command asks the Cloud API who the credentials belong to, and keeps only the organization IDs:
+With Cloud credentials, feedback is not anonymous at the organization level: it names your organizations, so the team can see which organizations are asking. The credentials are the ones any Cloud command would use, in the usual order: a project API key, `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` (also read from `.env`), then the OAuth login saved in `~/.clickhouse/tokens.json`. Feedback never rewrites or removes a saved login. Before sending, the command asks the Cloud API who the credentials belong to, and keeps only the organization IDs:
 
 | Credentials | `cloud_auth` | `org_ids` |
 | --- | --- | --- |
