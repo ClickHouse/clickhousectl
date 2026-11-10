@@ -892,9 +892,9 @@ mod tests {
             (
                 &[
                     "--type",
-                    "VPC_ENDPOINT_SERVICE",
-                    "--vpc-endpoint-service-name",
-                    "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                    "GCP_PSC_SERVICE_ATTACHMENT",
+                    "--gcp-service-attachment",
+                    "projects/p/regions/us-central1/serviceAttachments/s",
                     "--custom-private-dns-mapping",
                     "db.example.com=rcfg-1",
                 ],

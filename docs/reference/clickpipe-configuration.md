@@ -89,7 +89,7 @@ For Postgres, snapshot worker/partition settings, nullability, failover slots, a
 
 Kafka/Kinesis Protobuf schema inputs accept `.proto` or serialized `FileDescriptorSet`; use `--protobuf-schema-file -` for stdin. The encoded limit is 1 MiB. Kafka Protobuf input conflicts with registry flags; `--exactly-once` is create-only. Pub/Sub timestamp seek requires `--seek-timestamp`; `earliest` reads backlog and `latest` reads new messages only.
 
-Object storage `--skip-initial-load` and `--start-after` cannot be combined. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
+Object storage `--skip-initial-load` and `--start-after` cannot be combined. `--skip-first-lines` applies only to TabSeparated formats and is set at creation; the API validates the format and range. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
 
 ## Configure BigQuery CDC
 
@@ -153,7 +153,7 @@ For object storage, root `fieldMappings` requires `destination.columns` in the s
 
 Kafka credentials must match the authentication mode. IAM role carries `iamRole` without a credentials object; workload identity carries neither. Unrelated credential/CA/endpoint fields may be omitted. For CDC table changes use `tableMappingsToAdd`/`tableMappingsToRemove`; these are distinct from root field mappings. Omitting a Postgres source port preserves it.
 
-`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. To change `object_storage_max_insert_bytes`, use `settings update`: the whole-pipe PATCH currently validates but does not apply that value.
+`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. To change `object_storage_max_insert_bytes`, use `settings update`: the whole-pipe PATCH currently validates but does not apply that value. `--object-storage-max-file-size` is a private preview and can only lower the default maximum file size.
 
 ## Connect a private source
 
@@ -170,7 +170,7 @@ AWS `PendingAcceptance` means the source account must accept the connection. Onl
 
 Other types are `VPC_RESOURCE`, `MSK_MULTI_VPC`, and private-preview `GCP_PSC_SERVICE_ATTACHMENT`; help lists their required fields. Custom private DNS mappings use exact or leading-wildcard names. They are unsupported for MSK and require support enablement for AWS PrivateLink. Update replaces the entire custom DNS list, so repeat every mapping to retain, or deliberately use `--clear-custom-private-dns-mappings`.
 
-For `VPC_RESOURCE`, `--custom-private-dns-mapping NAME=TARGET_ID` routes a name to one resource configuration; `get` lists the valid IDs under `dnsTargets`, with provider DNS names under `privateDnsMappings`. A plain `NAME` uses the default target, and a target not yet listed is not served until it appears:
+For `VPC_RESOURCE`, `--custom-private-dns-mapping NAME=TARGET_ID` routes a name to one resource configuration. For `VPC_ENDPOINT_SERVICE`, `TARGET_ID` is an AWS availability zone ID such as `use1-az1`; cross-region endpoint services reject it. `get` lists the valid IDs under `dnsTargets`, with provider DNS names under `privateDnsMappings`. A plain `NAME` uses the default target, and a target not yet listed is not served until it appears:
 
 ```bash
 clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \

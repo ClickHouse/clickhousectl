@@ -767,6 +767,7 @@ pub enum ClickPipeSettingsCommands {
                 "object_storage_polling_interval_ms",
                 "object_storage_max_insert_bytes",
                 "object_storage_max_file_count",
+                "object_storage_max_file_size",
                 "clickhouse_max_threads",
                 "clickhouse_max_insert_threads",
                 "clickhouse_max_download_threads",
@@ -820,6 +821,10 @@ pub struct ClickPipeSettingsValues {
     /// Max files per insert batch (1-10000)
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
     object_storage_max_file_count: Option<u32>,
+
+    /// Max file size in bytes (private preview; can only lower the limit)
+    #[arg(long, value_name = "BYTES", value_parser = clap::value_parser!(i64).range(0..))]
+    object_storage_max_file_size: Option<i64>,
 
     /// Max concurrent threads for file processing (0-64)
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=64))]
@@ -1110,6 +1115,10 @@ pub struct ObjectStorageSourceFields {
     /// CSV delimiter character (e.g., ",")
     #[arg(long)]
     pub delimiter: Option<String>,
+
+    /// Leading lines to skip in each file (TabSeparated formats only)
+    #[arg(long, value_name = "N")]
+    pub skip_first_lines: Option<u32>,
 
     /// IAM role ARN (selects IAM_ROLE auth)
     #[arg(long)]
@@ -2659,7 +2668,7 @@ fn build_object_storage_source(
             None
         },
         start_after: args.start_after.clone(),
-        skip_first_lines: None,
+        skip_first_lines: args.skip_first_lines.map(i64::from),
     })
 }
 
@@ -4400,6 +4409,7 @@ impl ClickPipeSettingsValues {
             || self.object_storage_polling_interval_ms.is_some()
             || self.object_storage_max_insert_bytes.is_some()
             || self.object_storage_max_file_count.is_some()
+            || self.object_storage_max_file_size.is_some()
             || self.clickhouse_max_threads.is_some()
             || self.clickhouse_max_insert_threads.is_some()
             || self.clickhouse_max_download_threads.is_some()
@@ -4415,6 +4425,7 @@ impl ClickPipeSettingsValues {
             || self.object_storage_polling_interval_ms.is_some()
             || self.object_storage_max_insert_bytes.is_some()
             || self.object_storage_max_file_count.is_some()
+            || self.object_storage_max_file_size.is_some()
             || self.object_storage_use_cluster_function.is_some()
     }
 }
@@ -4542,7 +4553,7 @@ fn build_create_request_args(
                     .settings
                     .object_storage_max_file_count
                     .map(i64::from),
-                object_storage_max_file_size: None,
+                object_storage_max_file_size: args.settings.object_storage_max_file_size,
                 clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
                 clickhouse_max_insert_threads: args
                     .settings
@@ -4676,7 +4687,7 @@ fn build_clickpipe_settings_request(
             .object_storage_max_insert_bytes
             .map(|value| value as i64),
         object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
-        object_storage_max_file_size: None,
+        object_storage_max_file_size: values.object_storage_max_file_size,
         clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
         clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function: values.object_storage_use_cluster_function,
@@ -7473,6 +7484,8 @@ mod tests {
             "524288000",
             "--object-storage-max-file-count",
             "5",
+            "--object-storage-max-file-size",
+            "1048576",
             "--clickhouse-max-threads",
             "6",
             "--clickhouse-max-insert-threads",
@@ -7502,6 +7515,7 @@ mod tests {
         assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
         assert_eq!(settings.object_storage_max_insert_bytes, Some(524_288_000));
         assert_eq!(settings.object_storage_max_file_count, Some(5));
+        assert_eq!(settings.object_storage_max_file_size, Some(1_048_576));
         assert_eq!(settings.clickhouse_max_threads, Some(6));
         assert_eq!(settings.clickhouse_max_insert_threads, Some(7));
         assert_eq!(settings.clickhouse_max_download_threads, Some(8));
@@ -7535,6 +7549,7 @@ mod tests {
         assert_eq!(settings.object_storage_polling_interval_ms, None);
         assert_eq!(settings.object_storage_max_insert_bytes, None);
         assert_eq!(settings.object_storage_max_file_count, Some(200));
+        assert_eq!(settings.object_storage_max_file_size, None);
         assert_eq!(settings.clickhouse_max_threads, None);
         assert_eq!(settings.clickhouse_max_insert_threads, None);
         assert_eq!(settings.clickhouse_max_download_threads, None);
@@ -7543,6 +7558,28 @@ mod tests {
         assert_eq!(settings.kafka_read_committed, None);
         assert_eq!(settings.object_storage_use_cluster_function, None);
         assert_eq!(settings.clickhouse_parallel_view_processing, None);
+
+        // The max file size alone satisfies the required settings group.
+        let ClickPipeCommands::Settings {
+            command: ClickPipeSettingsCommands::Update { settings, .. },
+        } = parse_clickpipe(&[
+            "settings",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--object-storage-max-file-size",
+            "0",
+        ])
+        else {
+            panic!("expected settings update");
+        };
+        assert_eq!(
+            settings,
+            ClickPipeSettingsValues {
+                object_storage_max_file_size: Some(0),
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
@@ -7782,6 +7819,7 @@ mod tests {
                     object_storage_polling_interval_ms: Some(100),
                     object_storage_max_insert_bytes: Some(524_288_000),
                     object_storage_max_file_count: Some(1),
+                    object_storage_max_file_size: Some(1_048_576),
                     object_storage_use_cluster_function: Some(false),
                     ..Default::default()
                 },
@@ -7792,6 +7830,7 @@ mod tests {
         .unwrap();
         let settings = object_storage.settings.unwrap();
         assert_eq!(settings.object_storage_concurrency, Some(1));
+        assert_eq!(settings.object_storage_max_file_size, Some(1_048_576));
         assert_eq!(settings.object_storage_use_cluster_function, Some(false));
         assert_eq!(settings.kafka_read_committed, None);
     }
@@ -7835,6 +7874,20 @@ mod tests {
                 .message,
             &["--kafka-read-committed", "clickpipe create kafka"],
         );
+
+        let non_object_storage = ClickPipeCreateRequestArgs {
+            settings: ClickPipeSettingsValues {
+                object_storage_max_file_size: Some(1_048_576),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_names(
+            &build_create_request_args(&non_object_storage, ClickPipeSourceKind::Kafka)
+                .unwrap_err()
+                .message,
+            &["clickpipe create object-storage"],
+        );
     }
 
     // A non-Kafka pipe must not carry `kafka_read_committed`: the API rejects
@@ -7849,6 +7902,7 @@ mod tests {
         let request = build_clickpipe_settings_request(&values, None);
         assert_eq!(request.kafka_read_committed, None);
         assert_eq!(request.object_storage_max_file_count, Some(200));
+        assert_eq!(request.object_storage_max_file_size, None);
         assert_eq!(request.streaming_max_insert_wait_ms, None);
         assert_eq!(request.object_storage_concurrency, None);
         assert_eq!(request.object_storage_polling_interval_ms, None);
@@ -7870,6 +7924,7 @@ mod tests {
             object_storage_polling_interval_ms: Some(3000),
             object_storage_max_insert_bytes: Some(4000),
             object_storage_max_file_count: Some(5),
+            object_storage_max_file_size: Some(1_048_576),
             clickhouse_max_threads: Some(6),
             clickhouse_max_insert_threads: Some(7),
             clickhouse_max_download_threads: Some(8),
@@ -7885,6 +7940,7 @@ mod tests {
         assert_eq!(request.object_storage_polling_interval_ms, Some(3000));
         assert_eq!(request.object_storage_max_insert_bytes, Some(4000));
         assert_eq!(request.object_storage_max_file_count, Some(5));
+        assert_eq!(request.object_storage_max_file_size, Some(1_048_576));
         assert_eq!(request.clickhouse_max_threads, Some(6));
         assert_eq!(request.clickhouse_max_insert_threads, Some(7));
         assert_eq!(request.clickhouse_max_download_threads, Some(8));
@@ -8245,6 +8301,8 @@ mod tests {
             "key-1",
             "--delimiter",
             ",",
+            "--skip-first-lines",
+            "3",
             "--iam-role",
             "arn:role",
             "--access-key-id",
@@ -8283,6 +8341,7 @@ mod tests {
         assert!(!args.source.skip_initial_load);
         assert_eq!(args.source.start_after.as_deref(), Some("key-1"));
         assert_eq!(args.source.delimiter.as_deref(), Some(","));
+        assert_eq!(args.source.skip_first_lines, Some(3));
         assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
         assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
         assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
@@ -8328,6 +8387,7 @@ mod tests {
         assert!(!args.source.skip_initial_load);
         assert_eq!(args.source.start_after, None);
         assert_eq!(args.source.delimiter, None);
+        assert_eq!(args.source.skip_first_lines, None);
         assert_eq!(args.source.iam_role, None);
         assert_eq!(args.source.access_key_id, None);
         assert_eq!(args.source.secret_key, None);
@@ -11319,6 +11379,7 @@ mod tests {
         assert_eq!(source.is_continuous, None);
         assert_eq!(source.skip_initial_load, None);
         assert_eq!(source.start_after, None);
+        assert_eq!(source.skip_first_lines, None);
     }
 
     #[test]
@@ -11353,6 +11414,8 @@ mod tests {
             "key-1",
             "--delimiter",
             ",",
+            "--skip-first-lines",
+            "2",
             "--azure-container-name",
             "container",
             "--path",
@@ -11396,6 +11459,7 @@ mod tests {
         assert_eq!(source.is_continuous, Some(true));
         assert_eq!(source.skip_initial_load, None);
         assert_eq!(source.start_after.as_deref(), Some("key-1"));
+        assert_eq!(source.skip_first_lines, Some(2));
 
         // Without --iam-role the access key pair infers IAM_USER, and
         // --skip-initial-load is carried through.
