@@ -1,6 +1,7 @@
 use super::lifecycle::{
     build_service_state_patch_request, service_delete_error, service_delete_rejected,
 };
+use super::query_key::{KeyPropagation, upsert_until_key_propagates};
 use crate::cloud::client::{CloudClient, CloudError, ResourceKind, ResourceLookup};
 use crate::cloud::output::or_absent;
 use crate::cloud::types::DeleteResponse;
@@ -16,12 +17,6 @@ use clickhouse_cloud_api::models::{
 };
 
 impl CloudClient {
-    /// The Query API host the library would send queries to, when one is
-    /// configured or derivable from the control-plane URL.
-    pub(super) fn configured_query_host(&self) -> Option<String> {
-        self.api().configured_query_host()
-    }
-
     /// Send one statement to a service's Query API with an API key.
     ///
     /// Unlike every other wrapper, this returns the library error as-is and
@@ -625,6 +620,44 @@ impl CloudClient {
             .instance_query_endpoint_upsert(org_id, service_id, request)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// The service's query endpoint, or `None` when the service has none yet.
+    /// Only a 404 means "none": any other failure is reported.
+    pub(super) async fn get_query_endpoint_for_binding(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>>
+    {
+        match self
+            .api()
+            .instance_query_endpoint_get(org_id, service_id)
+            .await
+        {
+            Ok(response) => Self::unwrap_response(response).map(Some),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
+
+    /// Upsert the endpoint configuration that binds the caller's own key on
+    /// first use (#1043), waiting out key propagation (#658). Everything else
+    /// about the request is the caller's business.
+    pub(super) async fn upsert_query_endpoint_binding(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &InstanceServiceQueryApiEndpointsPostRequest,
+        propagation: KeyPropagation,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
+        let response = upsert_until_key_propagates(propagation, || {
+            self.api()
+                .instance_query_endpoint_upsert(org_id, service_id, request)
+        })
+        .await
+        .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
     }
 

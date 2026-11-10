@@ -158,4 +158,4 @@ clickhousectl cloud auth logout --api-keys
 clickhousectl cloud auth logout
 ```
 
-The last command clears both saved credential types. It does not unset environment variables or remove `.env` values. Clearing API keys deletes the entire local credentials file, including stored per-service Query API records from earlier versions or explicit repair. Before doing so, delete any CLI-created cloud-side keys you no longer need (`cloud service delete` handles stored-key cleanup, or use `cloud key delete <key-id>`); otherwise their management IDs are lost locally. Review [stored Query API keys](query-api.md#stored-keys-and-deliberate-repair) first.
+The last command clears both saved credential types. It does not unset environment variables or remove `.env` values. Clearing API keys deletes the entire local credentials file, including any per-service Query API key records left by earlier versions. Those keys still exist in the organization; find them with `cloud key list` (named `clickhousectl-query-<service-name>`) and delete them with `cloud key delete <key-id>`. See [keys stored by earlier versions](query-api.md#keys-stored-by-earlier-versions).

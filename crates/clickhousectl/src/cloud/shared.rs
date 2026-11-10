@@ -534,7 +534,6 @@ mod selector_tests {
             (&["service", "scale"], &[]),
             (&["service", "reset-password"], &[]),
             (&["service", "prometheus"], &[]),
-            (&["service", "repair-query-key"], &[]),
             (&["service", "settings", "list"], &[]),
             (&["service", "settings", "schema"], &[]),
             (
