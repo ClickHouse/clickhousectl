@@ -567,8 +567,6 @@ impl LocalErrorOutput {
             }),
             Error::UdfServerNotRunning(name) => Mapping::parity(LocalErrorCode::ServerNotRunning)
                 .command(format!("clickhousectl local clickhouse start {name}")),
-            Error::UdfServerIsPostgres(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
-                .command("clickhousectl local clickhouse list"),
             // `deploy --help` states the Linux amd64/arm64 limit.
             Error::UdfRuntimeUnsupported(_) => {
                 Mapping::parity(LocalErrorCode::UdfRuntimeUnsupported)
@@ -2364,10 +2362,6 @@ mod tests {
                 },
                 "udf_reload_blocked",
             ),
-            (
-                Error::UdfServerIsPostgres("dev-pg18".into()),
-                "server_not_found",
-            ),
         ];
 
         for (error, expected) in cases {
@@ -2765,14 +2759,6 @@ mod tests {
         }
         // Each role names which path it is.
         assert_ne!(unquotable_messages[0], unquotable_messages[1]);
-
-        let postgres = error_json(&Error::UdfServerIsPostgres("dev-pg18".into()));
-        let message = postgres["error"]["message"].as_str().unwrap();
-        assert!(message.contains("'dev-pg18'"), "{message}");
-        assert_eq!(
-            postgres["error"]["command"],
-            "clickhousectl local clickhouse list"
-        );
 
         // The validator composes the reason; the message carries it after
         // the path.

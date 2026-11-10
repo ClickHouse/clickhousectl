@@ -27,7 +27,7 @@ clickhousectl local clickhouse list
 
 Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
 
-Without a name, the first server is `default`; if it is already running, another start generates a new name. Use an explicit name for a repeatable workflow.
+Without a name, the first server is `default`; if it is already running, another start generates a new name. Use an explicit name for a repeatable workflow. Names ending in `-pg` and digits, such as `dev-pg17`, are how Postgres instances are stored on disk, so `local clickhouse` and `local udf` refuse them with a usage error (exit 2) unless an existing ClickHouse server already has that name.
 
 ## Choose a version
 
