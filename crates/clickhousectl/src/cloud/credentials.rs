@@ -1,4 +1,5 @@
 use crate::cloud::client::{CloudError, Result as CloudResult};
+use crate::failure::{ApiFailure, FailureKind};
 use crate::init;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -77,6 +78,7 @@ fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
             "failed to lock credential mutations at {}: {error}",
             path.display()
         ))
+        .with_failure(ApiFailure::new(FailureKind::Io))
     })
 }
 
@@ -105,6 +107,7 @@ pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLo
                 "failed to lock query provisioning at {}: {error}",
                 display_path.display()
             ))
+            .with_failure(ApiFailure::new(FailureKind::Io))
         })?;
     Ok(QueryProvisioningLock { _file: file })
 }
@@ -121,10 +124,10 @@ fn try_load_credentials() -> CloudResult<Option<Credentials>> {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(CloudError::new(format!(
-                "failed to read {}: {error}",
-                path.display()
-            )));
+            return Err(
+                CloudError::new(format!("failed to read {}: {error}", path.display()))
+                    .with_failure(ApiFailure::new(FailureKind::Io)),
+            );
         }
     };
     let credentials = serde_json::from_str(&data)
