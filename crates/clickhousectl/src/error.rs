@@ -395,7 +395,6 @@ impl std::error::Error for ProjectServerStateMissing {}
 pub(crate) const NO_PROJECT_FOUND: &str = "No `.clickhouse` project directory was found here or in a parent directory (`~/.clickhouse` is global, not a project); `clickhousectl local init` creates one.";
 
 #[derive(Error, Debug)]
-#[allow(dead_code)]
 pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -408,9 +407,6 @@ pub enum Error {
 
     #[error("Version {0} not found")]
     VersionNotFound(String),
-
-    #[error("No versions installed")]
-    NoVersionsInstalled,
 
     #[error("No default version set. Run: clickhousectl local use <version>")]
     NoDefaultVersion,
@@ -744,6 +740,7 @@ pub enum Error {
 
     /// `feedback` could not deliver the message (network, timeout, or a
     /// rejection by the feedback service).
+    #[cfg(feature = "feedback")]
     #[error("{0}")]
     Feedback(String),
 
@@ -1139,7 +1136,6 @@ mod tests {
     #[test]
     fn generic_errors_map_to_1() {
         assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
-        assert_eq!(Error::NoVersionsInstalled.exit_code(), 1);
         assert_eq!(Error::VersionNotFound("25.12".into()).exit_code(), 1);
         assert_eq!(
             Error::VersionInUse {
