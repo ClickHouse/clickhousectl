@@ -798,6 +798,24 @@ pub const MEMBER_GET_LIST: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `GET /v1/organizations/{organizationId}/members/{userId}/notificationSettings` (`memberNotificationSettingsGetList`).
+pub const MEMBER_NOTIFICATION_SETTINGS_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "memberNotificationSettingsGetList",
+    rust_method: "member_notification_settings_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/members/{userId}/notificationSettings",
+    required_permissions: &["control-plane:organization:view-notification-settings"],
+};
+
+/// `PATCH /v1/organizations/{organizationId}/members/{userId}/notificationSettings` (`memberNotificationSettingsUpdate`).
+pub const MEMBER_NOTIFICATION_SETTINGS_UPDATE: OperationMetadata = OperationMetadata {
+    operation_id: "memberNotificationSettingsUpdate",
+    rust_method: "member_notification_settings_update",
+    method: "PATCH",
+    path: "/v1/organizations/{organizationId}/members/{userId}/notificationSettings",
+    required_permissions: &["control-plane:organization:manage-notification-settings"],
+};
+
 /// `PATCH /v1/organizations/{organizationId}/members/{userId}` (`memberUpdate`).
 pub const MEMBER_UPDATE: OperationMetadata = OperationMetadata {
     operation_id: "memberUpdate",
@@ -878,6 +896,26 @@ pub const ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE: OperationMetadata = Operation
     path: "/v1/organizations/{organizationId}/byocInfrastructure",
     required_permissions: &["control-plane:organization:manage"],
 };
+
+/// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/customerAuthorizedAccess` (`organizationByocInfrastructureCustomerAuthorizedAccessGet`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET: OperationMetadata =
+    OperationMetadata {
+        operation_id: "organizationByocInfrastructureCustomerAuthorizedAccessGet",
+        rust_method: "organization_byoc_infrastructure_customer_authorized_access_get",
+        method: "GET",
+        path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/customerAuthorizedAccess",
+        required_permissions: &["control-plane:organization:view"],
+    };
+
+/// `PATCH /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/customerAuthorizedAccess` (`organizationByocInfrastructureCustomerAuthorizedAccessUpdate`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE: OperationMetadata =
+    OperationMetadata {
+        operation_id: "organizationByocInfrastructureCustomerAuthorizedAccessUpdate",
+        rust_method: "organization_byoc_infrastructure_customer_authorized_access_update",
+        method: "PATCH",
+        path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/customerAuthorizedAccess",
+        required_permissions: &["control-plane:organization:manage"],
+    };
 
 /// `DELETE /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}` (`organizationByocInfrastructureDelete`).
 pub const ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE: OperationMetadata = OperationMetadata {
@@ -986,6 +1024,24 @@ pub const ORGANIZATION_PROMETHEUS_GET: OperationMetadata = OperationMetadata {
     method: "GET",
     path: "/v1/organizations/{organizationId}/prometheus",
     required_permissions: &[],
+};
+
+/// `PATCH /v1/organizations/{organizationId}/previews/{previewId}` (`organizationPublicPreviewPatch`).
+pub const ORGANIZATION_PUBLIC_PREVIEW_PATCH: OperationMetadata = OperationMetadata {
+    operation_id: "organizationPublicPreviewPatch",
+    rust_method: "organization_public_preview_patch",
+    method: "PATCH",
+    path: "/v1/organizations/{organizationId}/previews/{previewId}",
+    required_permissions: &["control-plane:organization:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/previews` (`organizationPublicPreviewsGetList`).
+pub const ORGANIZATION_PUBLIC_PREVIEWS_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "organizationPublicPreviewsGetList",
+    rust_method: "organization_public_previews_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/previews",
+    required_permissions: &["control-plane:organization:view"],
 };
 
 /// `GET /v1/organizations/{organizationId}/quotas/{quotaCode}` (`organizationQuotaGet`).
@@ -1714,6 +1770,8 @@ pub const ALL: &[OperationMetadata] = &[
     MEMBER_DELETE,
     MEMBER_GET,
     MEMBER_GET_LIST,
+    MEMBER_NOTIFICATION_SETTINGS_GET_LIST,
+    MEMBER_NOTIFICATION_SETTINGS_UPDATE,
     MEMBER_UPDATE,
     NOTIFICATION_GET_LIST,
     NOTIFICATION_TYPES_GET_LIST,
@@ -1723,6 +1781,8 @@ pub const ALL: &[OperationMetadata] = &[
     OPENAPI_KEY_GET_LIST,
     OPENAPI_KEY_UPDATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET,
@@ -1735,6 +1795,8 @@ pub const ALL: &[OperationMetadata] = &[
     ORGANIZATION_PRIVATE_ENDPOINT_CONFIG_GET_LIST,
     ORGANIZATION_PROMETHEUS_DISCOVERY_GET,
     ORGANIZATION_PROMETHEUS_GET,
+    ORGANIZATION_PUBLIC_PREVIEW_PATCH,
+    ORGANIZATION_PUBLIC_PREVIEWS_GET_LIST,
     ORGANIZATION_QUOTA_GET,
     ORGANIZATION_QUOTAS_GET_LIST,
     ORGANIZATION_ROLE_DELETE,

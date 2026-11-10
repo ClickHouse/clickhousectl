@@ -250,3 +250,33 @@ pub struct CreditBalances {
     #[serde(rename = "balances", skip_serializing_if = "Option::is_none")]
     pub balances: Option<Vec<CreditBalance>>,
 }
+
+/// `PublicPreview` from the ClickHouse Cloud API (Beta).
+///
+/// A preview feature and whether it is on for the organization.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublicPreview {
+    /// Whether the caller may switch the preview feature on or off.
+    #[serde(rename = "canToggle", skip_serializing_if = "Option::is_none")]
+    pub can_toggle: Option<bool>,
+    #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "docsUrl", skip_serializing_if = "Option::is_none")]
+    pub docs_url: Option<String>,
+    #[serde(rename = "enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Stable identifier, used as the preview ID when patching.
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// `PublicPreviewPatchRequest` from the ClickHouse Cloud API (Beta).
+///
+/// The server requires `enabled`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PublicPreviewPatchRequest {
+    #[serde(rename = "enabled", skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}

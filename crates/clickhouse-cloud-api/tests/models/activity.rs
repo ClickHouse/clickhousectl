@@ -78,6 +78,10 @@ fn activity_type_approved_domain_and_org_update_values_round_trip() {
             ActivityType::Organization_update_public_preview,
         ),
         (
+            "byoc_infrastructure_update_customer_authorized_access",
+            ActivityType::Byoc_infrastructure_update_customer_authorized_access,
+        ),
+        (
             "organization_update_saml_query_ownership_migration",
             ActivityType::Organization_update_saml_query_ownership_migration,
         ),

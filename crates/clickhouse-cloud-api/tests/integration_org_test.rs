@@ -140,6 +140,31 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        // ── Public Previews ─────────────────────────────────────────
+        //
+        // Read-only: toggling a preview changes org-wide behaviour, so
+        // `organization_public_preview_patch` is covered offline only.
+
+        log_phase("Public Previews");
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list organization previews", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let resp = client.organization_public_previews_get_list(&org_id).await?;
+                    let previews = resp.result.ok_or("previews returned no result")?;
+                    if let Some(preview) = previews
+                        .iter()
+                        .find(|preview| preview.id.as_deref().is_none_or(str::is_empty))
+                    {
+                        return Err(format!("preview without an id: {preview:?}").into());
+                    }
+                    eprintln!("  {} preview features", previews.len());
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── Members ─────────────────────────────────────────────────
         //
         // Cover `member_get_list`, `member_get`, and `member_update`
@@ -199,6 +224,46 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         .ok_or_else(|| "member get returned no result".into())
                 }
             })
+            .await?;
+
+        // Read-only: the suite authenticates as an API key, which has no
+        // member of its own, and the secondary user's settings are not
+        // ours to change. `member_notification_settings_update` is covered
+        // offline only.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "list secondary member notification settings",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let user_id = secondary_user_id.clone();
+                    async move {
+                        let page = client
+                            .member_notification_settings_get_list(
+                                &org_id, &user_id, Some(1), None, None, None, None,
+                            )
+                            .await?;
+                        let settings = page
+                            .result
+                            .ok_or("notification settings returned no result")?;
+                        if settings.len() > 1 {
+                            return Err("notification settings page exceeded requested limit".into());
+                        }
+                        if let Some(cursor) = page.next_cursor {
+                            client
+                                .member_notification_settings_get_list(
+                                    &org_id, &user_id, Some(1), Some(&cursor), None, None, None,
+                                )
+                                .await?
+                                .result
+                                .ok_or("next notification settings page returned no result")?;
+                        }
+                        Ok(())
+                    }
+                },
+            )
             .await?;
 
         if let Some(secondary_member) = secondary_member {
@@ -672,7 +737,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         log_phase("BYOC Infrastructure");
         match byoc_infrastructure_id {
             None => eprintln!(
-                "  SKIP BYOC private endpoint config and tags: org has no BYOC infrastructure"
+                "  SKIP BYOC private endpoint config, tags and customer-authorized access: org has no BYOC infrastructure"
             ),
             Some(byoc_id) => {
                 failures
@@ -724,6 +789,37 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             Ok(())
                         }
                     })
+                    .await?;
+
+                // Read-only: changing who may access customer
+                // infrastructure is never done from a test.
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "byoc infrastructure customer-authorized access",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let byoc_id = byoc_id.clone();
+                            async move {
+                                let access = client
+                                    .organization_byoc_infrastructure_customer_authorized_access_get(
+                                        &org_id, &byoc_id,
+                                    )
+                                    .await?
+                                    .result
+                                    .ok_or("customer-authorized access returned no result")?;
+                                if access.mode.as_deref().is_none_or(str::is_empty) {
+                                    return Err(format!(
+                                        "customer-authorized access without a mode: {access:?}"
+                                    )
+                                    .into());
+                                }
+                                Ok(())
+                            }
+                        },
+                    )
                     .await?;
             }
         }
