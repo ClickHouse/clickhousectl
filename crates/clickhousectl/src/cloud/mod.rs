@@ -89,7 +89,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         // reports it as expired; returned errors are storage failures.
         auth::ensure_fresh_tokens(json)
             .await
-            .map_err(|e| Error::Cloud(e.to_string()))?;
+            .map_err(cloud_error_to_top_level)?;
     }
 
     let client = CloudClient::new(
