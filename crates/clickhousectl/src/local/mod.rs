@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod docker;
 pub mod output;
 pub mod postgres;
+pub(crate) mod procinfo;
 pub mod server;
 pub mod symlink;
 pub mod udf;
@@ -229,7 +230,18 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     // version. The lookup spans every project, not just this one: a server
     // started from another directory is invisible to project-scoped metadata,
     // but deleting its binary breaks `local client` there just the same.
-    let in_use = server::servers_using_version(version)?;
+    let server::VersionUsers {
+        users: in_use,
+        scan_error,
+    } = server::servers_using_version(version)?;
+    if let Some(scan_error) = incomplete_scan_guard(scan_error, force)?
+        && !json
+    {
+        eprintln!(
+            "Warning: could not scan running processes ({scan_error}); --force is removing \
+             {version} without checking for servers in other projects."
+        );
+    }
     if !in_use.is_empty() {
         if !force {
             return Err(Error::VersionInUse {
@@ -303,6 +315,22 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// Decide what a failed process scan means for `local remove`.
+///
+/// The scan is what finds servers in other projects, so its failure must not
+/// read as "none are running" (issue #1301): without `--force` it is the
+/// error. With `--force` the removal goes ahead, stopping only what this
+/// project's metadata knows, and the scan error comes back to warn with.
+fn incomplete_scan_guard(
+    scan_error: Option<std::io::Error>,
+    force: bool,
+) -> Result<Option<std::io::Error>> {
+    match scan_error {
+        Some(error) if !force => Err(Error::ProcessScan(error)),
+        other => Ok(other),
+    }
 }
 
 /// Prefer the newest installed version that `local use` can select and launch.
@@ -1259,7 +1287,7 @@ pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Res
 }
 
 fn list_servers_global(json: bool) -> Result<()> {
-    let entries = server::list_all_servers_global();
+    let entries = server::list_all_servers_global()?;
     let total = entries.len();
 
     let out = output::ServerListOutput {
@@ -1292,7 +1320,7 @@ fn stop_server_global(
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let all = server::list_all_servers_global();
+    let all = server::list_all_servers_global()?;
     let (name, selection) = global_stop_target(name_input)?;
     let matches: Vec<_> = all
         .iter()
@@ -1403,7 +1431,7 @@ where
 }
 
 fn stop_all_servers_global(json: bool) -> Result<()> {
-    let servers = server::list_all_servers_global();
+    let servers = server::list_all_servers_global()?;
     let mut stop_entries = Vec::new();
     for s in &servers {
         if !json {
@@ -1480,6 +1508,20 @@ fn init_output(result: init::InitResult) -> output::InitOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_process_scan_blocks_remove_unless_forced() {
+        let scan_error = || Some(std::io::Error::other("no process table"));
+
+        assert!(matches!(
+            incomplete_scan_guard(scan_error(), false),
+            Err(Error::ProcessScan(_))
+        ));
+        assert!(incomplete_scan_guard(scan_error(), true).unwrap().is_some());
+        for force in [false, true] {
+            assert!(incomplete_scan_guard(None, force).unwrap().is_none());
+        }
+    }
 
     #[test]
     fn init_output_lists_created_paths_and_flags_a_rerun() {

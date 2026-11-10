@@ -11,6 +11,7 @@ on:
       - "crates/clickhousectl/src/local/output.rs"
       - "crates/clickhousectl/src/local/server.rs"
       - "crates/clickhousectl/src/local/discovery.rs"
+      - "crates/clickhousectl/src/local/procinfo.rs"
       - "crates/clickhousectl/src/local/symlink.rs"
       - "crates/clickhousectl/src/init.rs"
       - "crates/clickhousectl/src/paths.rs"

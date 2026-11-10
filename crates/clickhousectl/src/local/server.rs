@@ -608,15 +608,8 @@ fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<Se
 ///
 /// Scans `.clickhouse/servers/*.json` for metadata. Each metadata file is one
 /// entry — for ClickHouse the disk id is the user-facing name; for Postgres
-/// it's `<name>-pg<major>`. Also runs process/container discovery so
-/// orphaned instances reappear.
-pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
-    let Some(lock) = lock_recovered_metadata()? else {
-        return Ok(Vec::new());
-    };
-    list_all_servers_locked(&lock)
-}
-
+/// it's `<name>-pg<major>`. Orphaned instances appear once the lock came from
+/// [`lock_recovered_metadata`], which recovers them first.
 pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerEntry>> {
     list_all_servers_locked_inner(lock, None, false)
 }
@@ -778,14 +771,6 @@ fn server_entry_locked_with(
 }
 
 /// List only currently running servers.
-pub fn list_running_servers() -> Result<Vec<ServerInfo>> {
-    Ok(list_all_servers()?
-        .into_iter()
-        .filter(|e| e.running)
-        .filter_map(|e| e.info)
-        .collect())
-}
-
 pub(crate) fn list_running_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerInfo>> {
     Ok(list_all_servers_locked(lock)?
         .into_iter()
@@ -863,19 +848,8 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 /// and it has to read the children before the parent dies, because afterwards
 /// the relation is gone. A process-group kill is not an alternative:
 /// `Command::spawn` leaves the watchdog in clickhousectl's own process group.
-fn child_pids(pid: u32) -> Vec<u32> {
-    let output = std::process::Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|line| line.trim().parse::<u32>().ok())
-            .filter(|&child| child != 0 && child != pid)
-            .collect(),
-        _ => Vec::new(),
-    }
+fn child_pids(pid: u32) -> std::io::Result<Vec<u32>> {
+    super::procinfo::child_pids(pid)
 }
 
 /// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
@@ -895,8 +869,26 @@ fn kill_process(pid: u32) -> Result<()> {
         return Ok(());
     }
 
-    let supervised = child_pids(pid);
+    kill_escalated(pid, child_pids(pid))
+}
+
+/// The SIGKILL half of [`kill_process`], given the children of `pid` read
+/// while it was still alive.
+///
+/// When the children could not be read, `pid` is still killed, but the result
+/// is an error: a server the watchdog supervised may have survived it, and
+/// reporting success would hide exactly that (issue #1301).
+fn kill_escalated(pid: u32, supervised: std::io::Result<Vec<u32>>) -> Result<()> {
     send_signal(pid, libc::SIGKILL)?;
+    let supervised = match supervised {
+        Ok(supervised) => supervised,
+        Err(error) => {
+            return Err(Error::Exec(format!(
+                "Process {pid} was sent SIGKILL, but the server it supervised could not be \
+                 found to stop with it: {error}"
+            )));
+        }
+    };
     for &child in &supervised {
         // Losing the race to a child that exited with its parent is not a
         // failure; the verification below is what decides.
@@ -1387,10 +1379,16 @@ fn recover_current_project_engine_locked(
 
 /// The ClickHouse process scan an engine's discovery needs: none for Postgres,
 /// whose instances are found through Docker.
+///
+/// Recovery is best-effort: the project's metadata stays authoritative, so a
+/// process table that cannot be read recovers nothing rather than failing
+/// every command. The guards that must not mistake "could not look" for
+/// "nothing is running" read the scan's error themselves
+/// ([`servers_using_version`], [`list_all_servers_global`]).
 fn engine_processes(engine: Option<Engine>) -> Vec<discovery::DiscoveredProcess> {
     match engine {
         Some(Engine::Postgres) => Vec::new(),
-        _ => discovery::discover_clickhouse_processes(),
+        _ => discovery::discover_clickhouse_processes().unwrap_or_default(),
     }
 }
 
@@ -1492,7 +1490,7 @@ fn current_project_processes<'a>(
 }
 
 /// Recovery over an already-completed process scan, so a caller that also needs
-/// the global view pays for `pgrep`/`lsof` once.
+/// the global view scans the process table once.
 fn recover_from_discovered_locked(
     processes: &[discovery::DiscoveredProcess],
     lock: &MetadataLock,
@@ -1554,8 +1552,11 @@ pub struct GlobalServerEntry {
 /// List all running ClickHouse servers across all projects via process discovery.
 /// (Postgres containers are not currently merged in — a future change will add
 /// `docker ps` based discovery here as well.)
-pub fn list_all_servers_global() -> Vec<GlobalServerEntry> {
-    global_entries(&discovery::discover_clickhouse_processes())
+///
+/// A process table that cannot be read is an error, not an empty list.
+pub fn list_all_servers_global() -> Result<Vec<GlobalServerEntry>> {
+    let processes = discovery::discover_clickhouse_processes().map_err(Error::ProcessScan)?;
+    Ok(global_entries(&processes))
 }
 
 fn global_entries(processes: &[discovery::DiscoveredProcess]) -> Vec<GlobalServerEntry> {
@@ -1588,26 +1589,54 @@ pub struct VersionUser {
     pub current_project: bool,
 }
 
+/// The running servers that occupy a version, as far as they could be found.
+#[derive(Debug)]
+pub struct VersionUsers {
+    pub users: Vec<VersionUser>,
+    /// Why the process table could not be read. `users` then holds only what
+    /// this project's metadata knows, and servers in other projects may be
+    /// missing from it, so the caller must not treat it as complete.
+    pub scan_error: Option<std::io::Error>,
+}
+
 /// Every running server — in this project and in every other project — that is
 /// running `version`.
 ///
 /// `local remove` deletes a binary that running servers hold open, so the guard
 /// has to see past the current project's metadata (issue #600).
-pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
-    // One process scan feeds both sources: discovery shells out to
-    // `pgrep`/`lsof`/`ps`, so scanning twice would double the cost of the guard.
-    let processes = discovery::discover_clickhouse_processes();
-    // Recover orphans first so a server whose metadata file is missing is
-    // still counted as this project's.
-    let project_servers = match lock_recovered_metadata_from(&processes, None)? {
-        Some(lock) => list_running_servers_locked(&lock)?,
-        None => Vec::new(),
-    };
-    Ok(select_version_users(
-        &project_servers,
-        &global_entries(&processes),
+pub fn servers_using_version(version: &str) -> Result<VersionUsers> {
+    servers_using_version_from(
+        discovery::discover_clickhouse_processes(),
         version,
-    ))
+        |processes| {
+            // Recover orphans first so a server whose metadata file is missing
+            // is still counted as this project's.
+            match lock_recovered_metadata_from(processes, None)? {
+                Some(lock) => list_running_servers_locked(&lock),
+                None => Ok(Vec::new()),
+            }
+        },
+    )
+}
+
+/// [`servers_using_version`] over an already-completed process scan, with the
+/// project's running servers read by `project_servers` from that same scan.
+fn servers_using_version_from(
+    scan: std::io::Result<Vec<discovery::DiscoveredProcess>>,
+    version: &str,
+    project_servers: impl FnOnce(&[discovery::DiscoveredProcess]) -> Result<Vec<ServerInfo>>,
+) -> Result<VersionUsers> {
+    // One process scan feeds both sources, so the guard reads the process
+    // table once.
+    let (processes, scan_error) = match scan {
+        Ok(processes) => (processes, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    let project_servers = project_servers(&processes)?;
+    Ok(VersionUsers {
+        users: select_version_users(&project_servers, &global_entries(&processes), version),
+        scan_error,
+    })
 }
 
 /// Merge project-scoped metadata with global process discovery and select the
@@ -1615,7 +1644,7 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
 ///
 /// Both sources are consulted because each covers a gap in the other: metadata
 /// is project-scoped but survives a failed process scan, while discovery spans
-/// projects but depends on `pgrep`/`lsof`/`/proc`. The same server appears in
+/// projects but depends on reading the process table. The same server appears in
 /// both, so entries are de-duplicated by PID: when the watchdog is resolved,
 /// metadata for a running server carries the live PID of the discovered
 /// process, because discovery reports the supervising watchdog that
@@ -2521,7 +2550,7 @@ mod tests {
 
         assert_ne!(watchdog, server, "the fixture must fork a real child");
         assert!(
-            child_pids(watchdog).contains(&server),
+            child_pids(watchdog).unwrap().contains(&server),
             "the child lookup must see the supervised process"
         );
 
@@ -2537,7 +2566,51 @@ mod tests {
 
     #[test]
     fn a_process_with_no_children_has_no_supervised_pids() {
-        assert!(child_pids(exited_pid()).is_empty());
+        assert!(child_pids(exited_pid()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_process_table_fails_the_escalation_after_killing_the_watchdog() {
+        let (watchdog, server) = spawn_sigterm_ignoring_pair();
+        let _cleanup = KillOnDrop(vec![watchdog, server]);
+
+        let result = kill_escalated(watchdog, Err(std::io::Error::other("no process table")));
+
+        assert!(
+            matches!(result, Err(Error::Exec(_))),
+            "a supervised server that could not be found must not be reported stopped: {result:?}"
+        );
+        assert!(
+            wait_for_exit(watchdog, KILL_TIMEOUT),
+            "the watchdog is still killed"
+        );
+    }
+
+    #[test]
+    fn a_failed_scan_keeps_the_projects_version_users_and_reports_the_error() {
+        let result = servers_using_version_from(
+            Err(std::io::Error::other("no process table")),
+            "26.9.1.217",
+            |processes| {
+                assert!(processes.is_empty(), "a failed scan discovers nothing");
+                Ok(vec![named_info("dev", 42, "26.9.1.217", "/project")])
+            },
+        )
+        .expect("project metadata is still read");
+
+        assert!(result.scan_error.is_some());
+        assert_eq!(result.users.len(), 1);
+        assert_eq!(result.users[0].name, "dev");
+        assert!(result.users[0].current_project);
+    }
+
+    #[test]
+    fn a_successful_scan_reports_no_error() {
+        let result = servers_using_version_from(Ok(Vec::new()), "26.9.1.217", |_| Ok(Vec::new()))
+            .expect("nothing failed");
+
+        assert!(result.scan_error.is_none());
+        assert!(result.users.is_empty());
     }
 
     // ── select_version_users / describe_version_users (issue #600) ──────

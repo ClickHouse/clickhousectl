@@ -746,7 +746,7 @@ impl LocalErrorOutput {
 
             // ── filesystem and metadata ─────────────────────────────────────
             // The OS's or serde's text goes in `details`; the paths stay out.
-            Error::Io(source) => io_mapping(source),
+            Error::Io(source) | Error::ProcessScan(source) => io_mapping(source),
             Error::Json(source) => io_mapping(source),
             Error::CreateDir { source, .. }
             | Error::ServerMetadataPermission { source, .. }

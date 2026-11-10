@@ -1,8 +1,15 @@
 //! End-to-end coverage for the project-local ClickHouse server state machine.
+//!
+//! The fake servers are compiled stand-ins (see `support/fake_clickhouse.rs`)
+//! that native process discovery finds like real ones. Discovery also sees the
+//! other scenarios' fixtures running in parallel, so every global lookup here
+//! is filtered by this fixture's project.
+
+#[path = "support/fake_clickhouse.rs"]
+mod fake_clickhouse;
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -14,35 +21,14 @@ fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
-struct ProcessGuard {
-    pid_file: PathBuf,
-}
-
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        let Ok(contents) = std::fs::read_to_string(&self.pid_file) else {
-            return;
-        };
-        for pid in contents.lines().filter_map(|line| {
-            line.split_once('|')
-                .and_then(|(pid, _)| pid.parse::<i32>().ok())
-        }) {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
 struct Fixture {
     // Drop the process guard before removing directories used as process CWDs.
-    _processes: ProcessGuard,
+    _processes: fake_clickhouse::ProcessGuard,
     _root: tempfile::TempDir,
     home: PathBuf,
     project: PathBuf,
     child: PathBuf,
     pid_file: PathBuf,
-    runner: PathBuf,
     path: String,
 }
 
@@ -57,82 +43,19 @@ impl Fixture {
         let child = project.join("child");
         let pid_file = root.path().join("fake-clickhouse-pids");
         let binary = home.join(format!(".clickhouse/versions/{VERSION}/clickhouse"));
-        let runner = PathBuf::from("/bin/sleep");
-        let tools = root.path().join("fake-tools");
 
         std::fs::create_dir_all(&home).expect("create isolated HOME");
         std::fs::create_dir_all(&child).expect("create project child directory");
-        std::fs::create_dir_all(binary.parent().expect("fake binary parent"))
-            .expect("create fake version directory");
-        std::fs::create_dir_all(&tools).expect("create fake process tools directory");
-
-        std::fs::write(
-            &binary,
-            b"#!/bin/sh\nprintf '%s|%s\\n' \"$$\" \"$PWD\" >> \"$FAKE_CLICKHOUSE_PID_FILE\"\nexec \"$FAKE_CLICKHOUSE_RUNNER\" 300\n",
-        )
-        .expect("install fake ClickHouse wrapper");
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
-            .expect("make fake ClickHouse wrapper executable");
+        fake_clickhouse::install(&binary);
         std::fs::write(home.join(".clickhouse/default"), VERSION)
             .expect("select fake latest version");
 
-        // Process discovery is part of the shipped lifecycle. Deterministic
-        // stand-ins expose only this fixture's live fake processes, avoiding
-        // dependence on platform process names or unrelated user processes.
-        write_executable(
-            &tools.join("pgrep"),
-            // `-P <ppid>` is the child lookup in the SIGKILL escalation path.
-            // These fake servers `exec` a sleep and have no children, so there
-            // is nothing to report.
-            r#"#!/bin/sh
-[ "$1" = "-P" ] && exit 1
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r pid cwd; do
-  if kill -0 "$pid" 2>/dev/null; then
-    printf '%s\n' "$pid"
-    found=0
-  fi
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#,
-        );
-        write_executable(
-            &tools.join("lsof"),
-            "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nwhile IFS='|' read -r pid cwd; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf 'p%s\\nfcwd\\nn%s\\n' \"$pid\" \"$cwd\"\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\n",
-        );
-        // `ps -o pid=,ppid=,args= -p <pid,...>`: one batched call is the only
-        // shape discovery uses. The fake servers are reparented to init once
-        // the CLI that spawned them exits, so their PPID is 1.
-        write_executable(
-            &tools.join("ps"),
-            &format!(
-                r#"#!/bin/sh
-targets=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -p) targets="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r pid cwd; do
-  case ",$targets," in
-    *",$pid,"*) ;;
-    *) continue ;;
-  esac
-  printf '%5s %5s %s\n' "$pid" 1 "$HOME/.clickhouse/versions/{VERSION}/clickhouse server"
-  found=0
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#
-            ),
-        );
-        let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
+        // No /usr/local/bin or /opt/homebrew/bin, so a developer's `docker`
+        // is unreachable and recovery never takes its Postgres leg.
+        let path = "/usr/bin:/bin:/usr/sbin:/sbin".to_string();
 
         Self {
-            _processes: ProcessGuard {
+            _processes: fake_clickhouse::ProcessGuard {
                 pid_file: pid_file.clone(),
             },
             _root: root,
@@ -140,7 +63,6 @@ exit "$found"
             project,
             child,
             pid_file,
-            runner,
             path,
         }
     }
@@ -155,7 +77,6 @@ exit "$found"
             .env("HOME", &self.home)
             .env("PATH", &self.path)
             .env("FAKE_CLICKHOUSE_PID_FILE", &self.pid_file)
-            .env("FAKE_CLICKHOUSE_RUNNER", &self.runner)
             .current_dir(cwd);
         command
     }
@@ -570,12 +491,6 @@ impl ExpectedOutput {
 
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
-}
-
-fn write_executable(path: &Path, contents: &str) {
-    std::fs::write(path, contents).expect("write fake process tool");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake process tool executable");
 }
 
 fn canonical(path: &Path) -> String {
