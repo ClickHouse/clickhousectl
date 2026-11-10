@@ -25615,3 +25615,222 @@ async fn service_create_dotenv_rejects_an_unwritable_target_before_creating() {
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
+
+// BYOC customer-authorized access, organization previews and member
+// notification settings (#1279).
+
+#[tokio::test]
+async fn byoc_access_get_and_update_send_exact_paths_and_bodies() {
+    let mock = MockServer::start().await;
+    let access = "/v1/organizations/org-1/byocInfrastructure/byoc-1/customerAuthorizedAccess";
+    let stored = serde_json::json!({
+        "mode": "window",
+        "startTimestamp": "2026-11-10T07:00:00Z",
+        "durationSeconds": 14400,
+        "allowed": false
+    });
+    Mock::given(method("GET"))
+        .and(path(access))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"mode": "always", "allowed": true}),
+            "stub-access-get",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(access))
+        .and(body_json(serde_json::json!({
+            "mode": "window",
+            "startTimestamp": "2026-11-10T07:00:00Z",
+            "durationSeconds": 14400
+        })))
+        .respond_with(byoc_envelope(stored.clone(), "stub-access-update"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let get = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org", "byoc", "access", "get", "byoc-1", "--org-id", "org-1",
+        ],
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        serde_json::json!({"mode": "always", "allowed": true})
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "access",
+            "update",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+            "--mode",
+            "window",
+            "--start",
+            "2026-11-10T09:00:00+02:00",
+            "--duration",
+            "14400",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        stored
+    );
+}
+
+#[tokio::test]
+async fn org_preview_list_and_update_send_exact_paths_and_bodies() {
+    let mock = MockServer::start().await;
+    let previews = serde_json::json!([{
+        "id": "preview-1",
+        "name": "Feature",
+        "description": "What it does",
+        "docsUrl": "https://clickhouse.com/docs",
+        "enabled": true,
+        "canToggle": true
+    }]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/previews"))
+        .respond_with(byoc_envelope(previews.clone(), "stub-previews"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/preview-1"))
+        .and(body_json(serde_json::json!({"enabled": false})))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"id": "preview-1", "enabled": false}),
+            "stub-preview-update",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "preview", "list", "--org-id", "org-1"]);
+    assert_success(&list);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        previews
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "preview",
+            "update",
+            "preview-1",
+            "--enabled",
+            "false",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        serde_json::json!({"id": "preview-1", "enabled": false})
+    );
+}
+
+#[tokio::test]
+async fn member_notification_settings_list_and_update_send_exact_requests() {
+    let mock = MockServer::start().await;
+    let settings = "/v1/organizations/org-1/members/user-1/notificationSettings";
+    let setting = serde_json::json!({
+        "type": "service_backup_failed",
+        "resourceType": "service",
+        "resourceId": "service-1",
+        "channelType": "email",
+        "effect": "disabled"
+    });
+    Mock::given(method("GET"))
+        .and(path(settings))
+        .and(query_param("limit", "10"))
+        .and(query_param("cursor", "-opaque"))
+        .and(query_param("type", "service_backup_failed"))
+        .and(query_param("resource_id", "service-1"))
+        .and(query_param("resource_type", "service"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [setting.clone()], "limit": 10, "nextCursor": "next"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(settings))
+        .and(body_json(serde_json::json!({"rules": [{
+            "effect": "disabled",
+            "notifications": ["service_backup_failed"],
+            "resources": ["service-1"],
+            "channels": ["email"]
+        }]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": [setting.clone()]}, "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "member",
+            "notification-settings",
+            "list",
+            "user-1",
+            "--org-id",
+            "org-1",
+            "--limit",
+            "10",
+            "--cursor",
+            "-opaque",
+            "--type",
+            "service_backup_failed",
+            "--resource-id",
+            "service-1",
+            "--resource-type",
+            "service",
+        ],
+    );
+    assert_success(&list);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        serde_json::json!({"result": [setting.clone()], "limit": 10, "nextCursor": "next"})
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "member",
+            "notification-settings",
+            "update",
+            "user-1",
+            "--org-id",
+            "org-1",
+            "--effect",
+            "disabled",
+            "--notification",
+            "service_backup_failed",
+            "--resource",
+            "service-1",
+            "--channel",
+            "email",
+        ],
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        serde_json::json!({"settings": [setting]})
+    );
+}

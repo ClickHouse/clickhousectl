@@ -5,7 +5,8 @@ use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
     Notification, NotificationType, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, PublicPreview,
+    PublicPreviewPatchRequest,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -250,9 +251,10 @@ pub(super) async fn quota_get(
     Ok(())
 }
 
+/// One page of a cursor-paginated list, printed as-is with `--json`.
 #[derive(serde::Serialize)]
-pub(super) struct NotificationPage {
-    pub(super) result: Vec<Notification>,
+pub(super) struct CursorPage<T> {
+    pub(super) result: Vec<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) limit: Option<i64>,
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
@@ -274,13 +276,19 @@ pub(super) async fn org_notifications(
         } else {
             println!("{}", notifications_table(page.result));
         }
-        if let Some(cursor) = page.next_cursor {
-            // JSON escaping keeps opaque tokens visible without suggesting shell execution.
-            println!(
-                "Next cursor (JSON string): {}",
-                serde_json::to_string(&cursor)?
-            );
-        }
+        print_next_cursor(page.next_cursor.as_deref())?;
+    }
+    Ok(())
+}
+
+/// Print the cursor of the next page, if there is one, for human output.
+pub(super) fn print_next_cursor(cursor: Option<&str>) -> CloudResult<()> {
+    if let Some(cursor) = cursor {
+        // JSON escaping keeps opaque tokens visible without suggesting shell execution.
+        println!(
+            "Next cursor (JSON string): {}",
+            serde_json::to_string(cursor)?
+        );
     }
     Ok(())
 }
@@ -365,6 +373,66 @@ fn notification_types_table(types: Vec<NotificationType>) -> String {
         })
         .collect();
     Table::new(rows).with(Style::markdown()).to_string()
+}
+
+pub(super) async fn preview_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let previews = client.list_public_previews(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&previews)?);
+    } else if previews.is_empty() {
+        println!("No preview features found");
+    } else {
+        println!("{}", previews_table(previews));
+    }
+    Ok(())
+}
+
+fn previews_table(previews: Vec<PublicPreview>) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "Enabled")]
+        enabled: String,
+        #[tabled(rename = "Can Toggle")]
+        can_toggle: String,
+    }
+    let rows: Vec<Row> = previews
+        .into_iter()
+        .map(|preview| Row {
+            id: or_absent(preview.id.as_deref()),
+            name: or_absent(preview.name.as_deref()),
+            enabled: or_absent(preview.enabled),
+            can_toggle: or_absent(preview.can_toggle),
+        })
+        .collect();
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+pub(super) async fn preview_update(
+    client: &CloudClient,
+    preview_id: &str,
+    enabled: bool,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let request = PublicPreviewPatchRequest {
+        enabled: Some(enabled),
+    };
+    let preview = client
+        .update_public_preview(&org_id, preview_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&preview)?);
+    } else {
+        print_human(&preview)?;
+    }
+    Ok(())
 }
 
 pub(super) async fn org_balance(client: &CloudClient, json: bool) -> CloudResult<()> {
@@ -561,6 +629,35 @@ pub(super) mod tests {
             [
                 vec!["-", "-", "-", "-", "-", "-", "-"],
                 vec!["-", "-", "future", "-", "-", "-", "Backup failed"],
+            ],
+            "{table}"
+        );
+    }
+
+    #[test]
+    fn previews_table_renders_absent_fields() {
+        let table = previews_table(vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "preview-1",
+                "name": "Feature",
+                "description": "What it does",
+                "docsUrl": "https://clickhouse.com/docs",
+                "enabled": false,
+                "canToggle": true
+            }))
+            .unwrap(),
+            PublicPreview::default(),
+        ]);
+        let rows: Vec<Vec<&str>> = table
+            .lines()
+            .skip(2)
+            .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                vec!["preview-1", "Feature", "false", "true"],
+                vec![ABSENT; 4],
             ],
             "{table}"
         );
