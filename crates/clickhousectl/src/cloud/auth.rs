@@ -1030,9 +1030,12 @@ fn read_tokens(path: &std::path::Path) -> Result<Option<TokenStore>, UnusableTok
 
 pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>> {
     let path = tokens_path()?;
+    let _lock = lock_tokens(&path)?;
     save_tokens_to(&path, tokens)
 }
 
+/// Write the token file atomically and owner-only. Callers hold the
+/// [`lock_tokens`] lock.
 fn save_tokens_to(
     path: &std::path::Path,
     tokens: &TokenStore,
@@ -1040,21 +1043,27 @@ fn save_tokens_to(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-
     let json = serde_json::to_string_pretty(tokens)?;
-    std::fs::write(path, &json)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
+    crate::paths::atomic_write(path, json.as_bytes(), 0o600)?;
     Ok(())
+}
+
+/// Serializes token-file mutations across processes, so parallel commands
+/// refresh a near-expiry login once instead of racing on the refresh token.
+/// The lock is held by the open handle and released when it is dropped; it
+/// lives beside the token file as `tokens.lock`. Not reentrant: a holder
+/// writes with [`save_tokens_to`], never [`save_tokens`].
+fn lock_tokens(tokens: &std::path::Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = tokens.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    credentials::open_lock_file(&tokens.with_extension("lock"))
 }
 
 pub fn clear_tokens() {
     if let Ok(path) = tokens_path() {
+        // Logout removes the file even if the lock cannot be taken.
+        let _lock = lock_tokens(&path);
         let _ = std::fs::remove_file(path);
     }
 }
@@ -1250,14 +1259,33 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
     let Ok(Some(tokens)) = load_tokens() else {
         return Ok(());
     };
+    if is_token_valid(&tokens) || tokens.refresh_token.is_empty() {
+        return Ok(());
+    }
+    refresh_saved_tokens(&tokens_path()?, json).await
+}
 
+/// Refresh the login at `path` under [`lock_tokens`]. The file is re-read once
+/// the lock is held: another process may have refreshed it while this one
+/// waited, and its refresh token may already be spent.
+async fn refresh_saved_tokens(
+    path: &std::path::Path,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let lock_path = path.to_path_buf();
+    // Waiting can last as long as another process's refresh request.
+    let _lock = tokio::task::spawn_blocking(move || lock_tokens(&lock_path)).await??;
+
+    let Ok(Some(tokens)) = read_tokens(path) else {
+        return Ok(());
+    };
     if is_token_valid(&tokens) || tokens.refresh_token.is_empty() {
         return Ok(());
     }
 
     match refresh_access_token(&tokens).await {
         Ok(new_tokens) => {
-            save_tokens(&new_tokens)?;
+            save_tokens_to(path, &new_tokens)?;
         }
         // JSON mode keeps stderr to the single error envelope; the resolver's
         // expired-login error carries the action in both modes.
@@ -1620,13 +1648,69 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nested/dir/tokens.json");
         save_tokens_to(&path, &sample_tokens()).unwrap();
-        assert!(path.exists());
+        let replacement = TokenStore {
+            access_token: "replaced".into(),
+            ..sample_tokens()
+        };
+        save_tokens_to(&path, &replacement).unwrap();
+        assert_eq!(
+            read_tokens(&path).unwrap().unwrap().access_token,
+            "replaced"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "tokens file should be 0o600");
         }
+        // Only the token file is left: the temporary file was renamed over it.
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["tokens.json"]);
+    }
+
+    /// The saved login is re-read under the lock, so a login another process
+    /// refreshed while this one waited is not refreshed again.
+    #[tokio::test]
+    async fn locked_refresh_skips_a_login_already_fresh_on_disk() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "refreshed", "expires_in": 3600, "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(&issuer)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("tokens.json");
+        let fresh = TokenStore {
+            auth_config: AuthConfig {
+                auth_url: issuer.uri(),
+                client_id: "c".into(),
+            },
+            ..sample_tokens()
+        };
+
+        save_tokens_to(&file, &fresh).unwrap();
+        refresh_saved_tokens(&file, true).await.unwrap();
+        assert_eq!(read_tokens(&file).unwrap().unwrap().access_token, "a");
+
+        let expired = TokenStore {
+            expires_at: chrono::Utc::now().timestamp() - 10,
+            ..fresh
+        };
+        save_tokens_to(&file, &expired).unwrap();
+        refresh_saved_tokens(&file, true).await.unwrap();
+        assert_eq!(
+            read_tokens(&file).unwrap().unwrap().access_token,
+            "refreshed"
+        );
     }
 
     /// Neither override is set: the error names both variables.
