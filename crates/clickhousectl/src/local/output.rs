@@ -609,10 +609,8 @@ impl LocalErrorOutput {
                 Mapping::parity(LocalErrorCode::VersionNotInstalled)
                     .command("clickhousectl local list")
             }
-            Error::NoVersionsInstalled | Error::NoClientVersionInstalled => {
-                Mapping::parity(LocalErrorCode::VersionNotInstalled)
-                    .command("clickhousectl local install latest")
-            }
+            Error::NoClientVersionInstalled => Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                .command("clickhousectl local install latest"),
             Error::ClientVersionNotInstalled(version)
             | Error::ServerVersionNotInstalled { version, .. } => {
                 Mapping::parity(LocalErrorCode::VersionNotInstalled)
@@ -788,9 +786,12 @@ impl LocalErrorOutput {
             | Error::AuthRequired(_)
             | Error::Usage(_)
             | Error::Skills(_)
-            | Error::Feedback(_)
             | Error::UpdateCheck(_)
             | Error::ChildExit(_) => {
+                Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
+            }
+            #[cfg(feature = "feedback")]
+            Error::Feedback(_) => {
                 Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
             }
             Error::Cancelled => Mapping::parity(LocalErrorCode::LocalError),
@@ -2116,7 +2117,6 @@ mod tests {
                 Error::StaleDefaultVersion("25.12.9.61".into()),
                 "version_not_installed",
             ),
-            (Error::NoVersionsInstalled, "version_not_installed"),
             (
                 Error::ClientVersionNotInstalled("25.12.9.61".into()),
                 "version_not_installed",
@@ -3007,7 +3007,6 @@ mod tests {
             Error::ConfigNotFound("config 'x' not found in /configs (available: y.xml)".into()),
             Error::InvalidConfigName("../etc/passwd".into()),
             Error::VersionNotFound("25.12.9.61".into()),
-            Error::NoVersionsInstalled,
             Error::NoDefaultVersion,
             Error::NoClientVersionInstalled,
             Error::AmbiguousClientVersion,

@@ -551,9 +551,7 @@ fn interactive_select(
                 );
                 return Ok(selected_agents);
             }
-            Key::Cancel => {
-                return Err(Error::Skills("Installation cancelled.".into()));
-            }
+            Key::Cancel => return Err(Error::Cancelled),
         }
     }
 }
@@ -773,7 +771,7 @@ fn interactive_scope_select(json: bool) -> Result<InstallScope> {
                 }
             }
             Key::Confirm => return Ok(scopes[cursor].0),
-            Key::Cancel => return Err(Error::Skills("Installation cancelled.".into())),
+            Key::Cancel => return Err(Error::Cancelled),
             Key::Toggle => {}
         }
     }
