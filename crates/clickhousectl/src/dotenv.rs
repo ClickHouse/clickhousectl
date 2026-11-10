@@ -117,22 +117,29 @@ pub fn get() -> &'static DotenvVars {
 }
 
 /// Format a dotenv line. Values that are plain alphanumeric tokens are written
-/// bare; anything containing spaces, `#`, quotes, backslashes, or newlines is
-/// double-quoted with inner `"`, `\`, and newlines escaped.
+/// bare. A value containing `$`, which dotenvy, docker compose and shells
+/// substitute in bare and double-quoted values, is single-quoted so it reads
+/// literally, unless it also has a `'`, backslash or newline (dotenvy's line
+/// splitter treats `\'` as an escape even inside single quotes). Anything else
+/// containing spaces, `#`, quotes, backslashes, `$`, or newlines is
+/// double-quoted with inner `"`, `\`, `$`, and newlines escaped.
 fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
     let needs_quoting = val.is_empty()
         || val
             .bytes()
-            .any(|b| b == b' ' || b == b'#' || b == b'"' || b == b'\'' || b == b'\\' || b == b'\n');
+            .any(|b| matches!(b, b' ' | b'#' | b'"' | b'\'' | b'\\' | b'\n' | b'$'));
 
-    if needs_quoting {
+    if !needs_quoting {
+        format!("{}{}={}", prefix, key, val)
+    } else if val.contains('$') && !val.bytes().any(|b| matches!(b, b'\'' | b'\\' | b'\n')) {
+        format!("{}{}='{}'", prefix, key, val)
+    } else {
         let escaped = val
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
+            .replace('$', "\\$")
             .replace('\n', "\\n");
         format!("{}{}=\"{}\"", prefix, key, escaped)
-    } else {
-        format!("{}{}={}", prefix, key, val)
     }
 }
 
@@ -337,12 +344,35 @@ mod tests {
             ("", r#"a"b\c"#, r#"KEY="a\"b\\c""#),
             ("", "line1\nline2", r#"KEY="line1\nline2""#),
             ("", "", r#"KEY="""#),
+            ("", "pa$$word", "KEY='pa$$word'"),
+            ("", "it's $HOME", r#"KEY="it's \$HOME""#),
         ] {
             assert_eq!(
                 format_dotenv_line(prefix, "KEY", value),
                 expected,
                 "{value:?}"
             );
+        }
+    }
+
+    /// Values containing `$` survive a write and a re-read through dotenvy,
+    /// which substitutes `$NAME` and `${NAME}` in bare and double-quoted values.
+    #[test]
+    fn values_with_dollar_signs_round_trip_through_dotenvy() {
+        for value in [
+            "pa$word",
+            "${HOME}x",
+            "$",
+            "it's $HOME",
+            "a $b c",
+            "$a\nb",
+            r#"$"\"#,
+        ] {
+            let line = format_dotenv_line("", "KEY", value);
+            let parsed: Vec<(String, String)> = dotenvy::from_read_iter(line.as_bytes())
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|e| panic!("{line:?}: {e}"));
+            assert_eq!(parsed, [("KEY".to_string(), value.to_string())], "{line:?}");
         }
     }
 
