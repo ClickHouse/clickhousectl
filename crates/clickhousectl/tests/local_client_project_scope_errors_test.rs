@@ -96,9 +96,12 @@ fn start_command(selection: &str) -> &'static str {
 }
 
 /// The guidance commands for each code, in order; `None` is advice without a
-/// command.
-fn expected_commands(code: &str, selection: &str) -> Vec<Option<&'static str>> {
+/// command. Changing directory is advised only when no project was found.
+fn expected_commands(code: &str, selection: &str, marked: bool) -> Vec<Option<&'static str>> {
     match code {
+        "managed_client_server_not_found" if marked => {
+            vec![Some(LIST), Some(start_command(selection)), Some(DIRECT)]
+        }
         "managed_client_server_not_found" => {
             vec![
                 Some(LIST),
@@ -145,7 +148,8 @@ fn assert_managed_error(
         .iter()
         .map(|item| item.get("command").map(|command| command.as_str().unwrap()))
         .collect();
-    assert_eq!(commands, expected_commands(code, selection));
+    let marked = Path::new(project).join(".clickhouse").is_dir();
+    assert_eq!(commands, expected_commands(code, selection, marked));
 }
 
 /// Human mode fails the same way and names the scope, the server and every
@@ -203,37 +207,48 @@ fn empty_project_identifies_default_managed_mode_and_exact_scope() {
     );
 }
 
+/// A subdirectory reaches the enclosing project's server, and its errors name
+/// that project, identically for an agent.
 #[test]
-fn child_of_valid_parent_does_not_search_parent_and_agent_gets_json() {
+fn child_of_a_project_reaches_its_server_and_agent_gets_json() {
+    use std::os::unix::fs::PermissionsExt;
     let parent = tempfile::tempdir().expect("create parent project");
     let home = tempfile::tempdir().expect("create home");
     install_fake_clickhouse(home.path(), VERSION);
+    let binary = home
+        .path()
+        .join(".clickhouse/versions")
+        .join(VERSION)
+        .join("clickhouse");
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake ClickHouse executable");
     write_server(parent.path(), "default", std::process::id(), VERSION);
-    let child = parent.path().join("child");
-    std::fs::create_dir(&child).expect("create child directory");
-    let child_path = canonical(&child);
+    let child = parent.path().join("child/deeper");
+    std::fs::create_dir_all(&child).expect("create child directory");
 
-    let explicit = error_json(&run(&child, home.path(), true, &[]));
+    let reached = run(&child, home.path(), false, &[]);
+    assert!(
+        reached.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&reached.stderr)
+    );
+
+    let explicit = error_json(&run(&child, home.path(), true, &["--name", "missing"]));
     assert_managed_error(
         &explicit,
-        &child_path,
+        &canonical(parent.path()),
         "managed_client_server_not_found",
-        "default",
-        "default",
+        "named",
+        "missing",
         None,
     );
     let agent = command(&child, home.path())
         .env("AGENT", "opencode")
-        .args(["local", "client"])
+        .args(["local", "client", "--name", "missing"])
         .output()
         .expect("run agent-mode client");
     assert_eq!(error_json(&agent), explicit);
-    assert!(
-        parent
-            .path()
-            .join(".clickhouse/servers/default.json")
-            .exists()
-    );
+    assert!(!child.join(".clickhouse").exists());
 }
 
 #[test]

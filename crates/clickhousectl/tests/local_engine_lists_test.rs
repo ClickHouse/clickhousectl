@@ -176,7 +176,7 @@ async fn postgres_list_shows_only_postgres_and_status_shows_both() {
     );
     assert_eq!(body["total_servers"], 2);
     assert_eq!(body["total_running_servers"], 1);
-    assert_eq!(body["project_scope"]["kind"], "exact_current_project");
+    assert_eq!(body["project_scope"]["kind"], "project_root");
     let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
     keys.sort();
     assert_eq!(

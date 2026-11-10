@@ -95,7 +95,7 @@ pub enum UdfCommands {
     Create(UdfCreateArgs),
     /// Deploy a UDF directory and attach it to a service
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Creates the UDF, or a new version when the name exists, from clickhouse/udfs/NAME/ (or --dir PATH).\n  Waits for the build, attaches that exact version, then waits until it is deployed.\n  The service is checked first: an unknown or stopped one, or an idle one with --no-wake, fails before any upload.\n  Otherwise an idle service is woken when attaching.\n  Typical flow: `local udf deploy NAME` to test locally, then `cloud udf deploy NAME --service <id>`."
+        after_help = "CONTEXT FOR AGENTS:\n  Creates the UDF, or a new version when the name exists, from <project root>/clickhouse/udfs/NAME/ (or --dir PATH).\n  Waits for the build, attaches that exact version, then waits until it is deployed.\n  The service is checked first: an unknown or stopped one, or an idle one with --no-wake, fails before any upload.\n  Otherwise an idle service is woken when attaching.\n  Typical flow: `local udf deploy NAME` to test locally, then `cloud udf deploy NAME --service <id>`."
     )]
     Deploy(UdfDeployArgs),
     /// Delete a UDF
@@ -605,7 +605,8 @@ fn print_pagination(limit: Option<i64>, total_count: Option<i64>, next_cursor: O
 
 /// `<--dir>/<NAME>/`, a real directory (no symlink), or a usage error.
 fn resolve_source(dir: &UdfDirArg, name: &str) -> CloudResult<PathBuf> {
-    udf::resolve_source_dir(&dir.dir, name).map_err(|error| CloudError::usage(error.to_string()))
+    let parent = dir.parent()?;
+    udf::resolve_source_dir(&parent, name).map_err(|error| CloudError::usage(error.to_string()))
 }
 
 /// The definition JSON: `--file` (only with `--artifact`), else `DIR/udf.json`.
@@ -2310,7 +2311,7 @@ mod tests {
         let dir = parent.join("my_udf");
         write_python_dir(&dir);
         let dir_arg = UdfDirArg {
-            dir: parent.clone(),
+            dir: Some(parent.clone()),
         };
         assert_eq!(resolve_source(&dir_arg, "my_udf").unwrap(), dir);
         // Each rejection is a usage error naming the path it rejected; the
@@ -2873,7 +2874,7 @@ mod tests {
         };
         assert_eq!(args.name, "my_udf");
         assert_eq!(args.service, "svc-1");
-        assert_eq!(args.dir.dir, PathBuf::from("clickhouse/udfs"));
+        assert_eq!(args.dir.dir, None);
         assert_eq!(args.timeout, 1800);
         assert!(!args.no_wake);
 
@@ -2892,7 +2893,7 @@ mod tests {
         else {
             panic!("deploy");
         };
-        assert_eq!(args.dir.dir, PathBuf::from("funcs"));
+        assert_eq!(args.dir.dir, Some(PathBuf::from("funcs")));
         assert_eq!(args.timeout, 30);
         assert!(args.no_wake);
 
@@ -2967,7 +2968,7 @@ mod tests {
             panic!("create");
         };
         assert_eq!(input.name.as_deref(), Some("my_udf"));
-        assert_eq!(input.dir.dir, PathBuf::from("clickhouse/udfs"));
+        assert_eq!(input.dir.dir, None);
         assert!(input.config.is_none());
         assert!(input.artifact.is_none());
 
@@ -2976,7 +2977,7 @@ mod tests {
         else {
             panic!("create");
         };
-        assert_eq!(input.dir.dir, PathBuf::from("../shared/udfs"));
+        assert_eq!(input.dir.dir, Some(PathBuf::from("../shared/udfs")));
         assert!(input.config.is_none());
 
         let UdfCommands::Create(input) =
@@ -2994,7 +2995,7 @@ mod tests {
             panic!("version create");
         };
         assert_eq!(name.function_name, "my_udf");
-        assert_eq!(input.dir.dir, PathBuf::from("funcs"));
+        assert_eq!(input.dir.dir, Some(PathBuf::from("funcs")));
         assert!(input.artifact.is_none());
 
         let UdfCommands::Attach { wake, version, .. } =

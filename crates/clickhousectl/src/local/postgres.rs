@@ -289,9 +289,8 @@ async fn start(
     let password_from_env = preflight.password_from_env;
 
     let docker = docker::connect().await?;
-    let project_cwd = std::env::current_dir()
-        .and_then(|p| p.canonicalize())
-        .map(|p| p.display().to_string())
+    let project_cwd = crate::init::project_root()
+        .map(|root| root.dir.display().to_string())
         .unwrap_or_default();
 
     loop {

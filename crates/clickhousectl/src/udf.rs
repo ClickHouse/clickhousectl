@@ -33,12 +33,35 @@ pub const EXCLUDED_DIRS: &[&str] = &["__pycache__"];
 
 /// `--dir PATH`: the parent directory that contains `<NAME>/`. Flattened into
 /// every command that takes a UDF name, so the flag reads identically
-/// everywhere.
+/// everywhere. Omitted, it is [`DEFAULT_UDF_PARENT`] under the project root,
+/// so it works from any subdirectory; a given path stays relative to the
+/// current directory. clap cannot render that default, so the help names it.
 #[derive(clap::Args, Debug, Clone)]
 pub struct UdfDirArg {
-    /// Parent directory containing NAME/
-    #[arg(long = "dir", value_name = "PATH", default_value = DEFAULT_UDF_PARENT)]
-    pub dir: PathBuf,
+    /// Parent directory containing NAME/ [default: <project root>/clickhouse/udfs]
+    #[arg(long = "dir", value_name = "PATH")]
+    pub dir: Option<PathBuf>,
+}
+
+impl UdfDirArg {
+    /// Whether `--dir` was omitted, so [`Self::parent`] is the project default.
+    pub fn is_default(&self) -> bool {
+        self.dir.is_none()
+    }
+
+    /// The parent directory: `--dir` as given, else the project root's
+    /// [`DEFAULT_UDF_PARENT`].
+    pub fn parent(&self) -> std::io::Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => Ok(dir.clone()),
+            None => default_udf_parent(),
+        }
+    }
+}
+
+/// [`DEFAULT_UDF_PARENT`] under this invocation's project root.
+pub fn default_udf_parent() -> std::io::Result<PathBuf> {
+    Ok(crate::init::project_root()?.dir.join(DEFAULT_UDF_PARENT))
 }
 
 /// Runtime a definition targets; drives entrypoint checks on both targets.

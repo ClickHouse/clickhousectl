@@ -66,6 +66,8 @@ pub struct ServiceQueryKey {
     pub created_at: DateTime<Utc>,
 }
 
+/// Saved API keys live with the project, so commands run anywhere beneath its
+/// root find them; outside any project they are in the current directory.
 pub fn credentials_path() -> PathBuf {
     init::local_dir().join("credentials.json")
 }

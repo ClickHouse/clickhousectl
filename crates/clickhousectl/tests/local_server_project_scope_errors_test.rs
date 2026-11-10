@@ -68,10 +68,28 @@ fn json_error(output: &Output) -> Value {
     serde_json::from_slice(&output.stderr).expect("parse structured error")
 }
 
-fn assert_exact_scope(value: &Value, project: &Path) {
-    assert_eq!(value["kind"], "exact_current_project");
+/// `project_scope` names `project`, found through its `.clickhouse/` marker.
+fn assert_project_scope(value: &Value, project: &Path) {
+    assert_eq!(value["kind"], "project_root");
     assert_eq!(value["path"], canonical(project));
-    assert_eq!(value["parent_projects_searched"], false);
+}
+
+/// `project_scope` names `dir`, used because no project was found.
+fn assert_no_project_scope(value: &Value, dir: &Path) {
+    assert_eq!(value["kind"], "current_directory");
+    assert_eq!(value["path"], canonical(dir));
+}
+
+fn guidance_actions(guidance: &Value) -> Vec<&str> {
+    guidance
+        .as_array()
+        .map(|hints| {
+            hints
+                .iter()
+                .map(|hint| hint["action"].as_str().unwrap())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[test]
@@ -89,7 +107,7 @@ fn omitted_commands_explain_absent_project_state() {
         &["local", "--json", "server", "stop"],
     ));
     assert_eq!(stop["stopped"], false);
-    assert_exact_scope(&stop["project_scope"], &stop_project);
+    assert_no_project_scope(&stop["project_scope"], &stop_project);
     assert_eq!(stop["guidance"][0]["action"], "return_to_project_root");
 
     let remove = json_error(&run(
@@ -100,7 +118,7 @@ fn omitted_commands_explain_absent_project_state() {
     assert_eq!(remove["error"]["code"], "server_selection_required");
     assert!(remove["error"].get("command").is_none());
     assert!(remove["error"].get("server").is_none());
-    assert_exact_scope(&remove["error"]["project_scope"], &remove_project);
+    assert_no_project_scope(&remove["error"]["project_scope"], &remove_project);
     assert_eq!(
         remove["error"]["guidance"][0]["action"],
         "return_to_project_root"
@@ -117,69 +135,82 @@ fn omitted_commands_explain_absent_project_state() {
         stderr.contains("`clickhousectl local clickhouse list`"),
         "{stderr}"
     );
+    assert!(stderr.contains("`clickhousectl local init`"), "{stderr}");
 }
 
+/// A subdirectory acts on the enclosing project: the same servers, the same
+/// state, and errors that name the project rather than the subdirectory.
 #[test]
-fn root_and_child_scope_running_and_stopped_metadata_independently() {
+fn a_subdirectory_acts_on_the_enclosing_project() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     write_server(project.path(), "running", std::process::id());
     write_server(project.path(), "stopped", 0);
+    let child = project.path().join("child/deeper");
+    std::fs::create_dir_all(&child).expect("create child directory");
 
-    let root_list = json_stdout(&run(
-        project.path(),
-        home.path(),
-        &["local", "--json", "server", "list"],
-    ));
-    assert_eq!(root_list["total_servers"], 2);
-    assert_eq!(root_list["total_running_servers"], 1);
-    assert_exact_scope(&root_list["project_scope"], project.path());
-    assert!(root_list.get("guidance").is_none());
-    assert_eq!(root_list["servers"][0]["name"], "running");
-    assert_eq!(root_list["servers"][0]["running"], true);
-    assert_eq!(root_list["servers"][1]["name"], "stopped");
-    assert_eq!(root_list["servers"][1]["running"], false);
+    for dir in [project.path(), child.as_path()] {
+        let list = json_stdout(&run(
+            dir,
+            home.path(),
+            &["local", "--json", "server", "list"],
+        ));
+        assert_eq!(list["total_servers"], 2);
+        assert_eq!(list["total_running_servers"], 1);
+        assert_project_scope(&list["project_scope"], project.path());
+        assert!(list.get("guidance").is_none());
+        assert_eq!(list["servers"][0]["name"], "running");
+        assert_eq!(list["servers"][0]["running"], true);
+        assert_eq!(list["servers"][1]["name"], "stopped");
+        assert_eq!(list["servers"][1]["running"], false);
+    }
 
-    let root_stop = json_stdout(&run(
-        project.path(),
+    let child_stop = json_stdout(&run(
+        &child,
         home.path(),
         &["local", "--json", "server", "stop", "stopped"],
     ));
-    assert_eq!(root_stop["already_stopped"], true);
+    assert_eq!(child_stop["already_stopped"], true);
 
-    let child = project.path().join("child");
-    std::fs::create_dir(&child).expect("create child directory");
+    // Inside a project, changing directory is no remedy: guidance lists this
+    // project and the others, and only `stop` offers the global recovery.
     let stop = json_error(&run(
         &child,
         home.path(),
-        &["local", "--json", "server", "stop", "running"],
+        &["local", "--json", "server", "stop", "missing"],
     ));
     assert_eq!(stop["error"]["code"], "server_not_found");
-    assert_eq!(stop["error"]["server"]["name"], "running");
-    assert_exact_scope(&stop["error"]["project_scope"], &child);
+    assert_eq!(stop["error"]["server"]["name"], "missing");
+    assert_project_scope(&stop["error"]["project_scope"], project.path());
     assert_eq!(
-        stop["error"]["guidance"][3]["command"],
-        "clickhousectl local clickhouse stop <name> --global --project <project-root>"
+        guidance_actions(&stop["error"]["guidance"]),
+        [
+            "list_project_servers",
+            "list_global_servers",
+            "stop_global_project_server"
+        ]
     );
-
     let remove = json_error(&run(
         &child,
         home.path(),
-        &["local", "--json", "server", "remove", "stopped"],
+        &["local", "--json", "server", "remove", "missing"],
     ));
     assert_eq!(remove["error"]["code"], "server_not_found");
-    assert_eq!(remove["error"]["server"]["name"], "stopped");
-    assert_exact_scope(&remove["error"]["project_scope"], &child);
-    assert_eq!(remove["error"]["guidance"].as_array().unwrap().len(), 3);
+    assert_project_scope(&remove["error"]["project_scope"], project.path());
+    assert_eq!(
+        guidance_actions(&remove["error"]["guidance"]),
+        ["list_project_servers", "list_global_servers"]
+    );
 
     let human_remove = run(
         &child,
         home.path(),
-        &["local", "server", "remove", "stopped"],
+        &["local", "server", "remove", "missing"],
     );
     assert_eq!(human_remove.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human_remove.stderr);
-    assert!(stderr.contains(&canonical(&child)), "stderr: {stderr}");
+    assert!(stderr.contains(&canonical(project.path())), "{stderr}");
+    assert!(!stderr.contains(&canonical(&child)), "{stderr}");
     assert!(
         stderr.contains("`clickhousectl local clickhouse list --global`"),
         "{stderr}"
@@ -187,53 +218,21 @@ fn root_and_child_scope_running_and_stopped_metadata_independently() {
     // The global stop recovery belongs to `stop` only.
     assert!(!stderr.contains("stop <name> --global"), "{stderr}");
 
-    for error in [&stop, &remove] {
-        for guidance in error["error"]["guidance"].as_array().unwrap() {
-            if let Some(command) = guidance.get("command").and_then(Value::as_str) {
-                assert!(
-                    !command.contains(&canonical(&child)),
-                    "recovery command interpolated a raw path: {command}"
-                );
-            }
-        }
-    }
-
-    let child_list = json_stdout(&run(
+    let removed = json_stdout(&run(
         &child,
         home.path(),
-        &["local", "--json", "server", "list"],
+        &["local", "--json", "server", "remove", "stopped"],
     ));
-    assert_eq!(child_list["total_servers"], 0);
-    assert_exact_scope(&child_list["project_scope"], &child);
-    assert_eq!(
-        child_list["guidance"][2]["command"],
-        "clickhousectl local clickhouse list --global"
-    );
-
-    let human = run(&child, home.path(), &["local", "server", "list"]);
-    assert!(human.status.success());
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    assert!(stdout.contains(&canonical(&child)), "stdout: {stdout}");
-    assert!(stdout.contains("clickhousectl local clickhouse list --global"));
-
+    assert_eq!(removed["name"], "stopped");
+    assert!(!project.path().join(".clickhouse/servers/stopped").exists());
     assert!(
         project
             .path()
             .join(".clickhouse/servers/running.json")
             .exists()
     );
-    assert!(
-        project
-            .path()
-            .join(".clickhouse/servers/stopped/data")
-            .is_dir()
-    );
-    let removed = json_stdout(&run(
-        project.path(),
-        home.path(),
-        &["local", "--json", "server", "remove", "stopped"],
-    ));
-    assert_eq!(removed["name"], "stopped");
+    assert!(!project.path().join("child/.clickhouse").exists());
+    assert!(!child.join(".clickhouse").exists());
 }
 
 #[test]
@@ -244,22 +243,26 @@ fn nested_project_state_wins_over_parent_state() {
     std::fs::create_dir(&nested).expect("create nested project");
     write_server(project.path(), "outer", 0);
     write_server(&nested, "inner", 0);
+    let below_nested = nested.join("src");
+    std::fs::create_dir(&below_nested).expect("create nested subdirectory");
 
-    let list = json_stdout(&run(
-        &nested,
-        home.path(),
-        &["local", "--json", "server", "list"],
-    ));
-    assert_eq!(list["total_servers"], 1);
-    assert_eq!(list["servers"][0]["name"], "inner");
-    assert_exact_scope(&list["project_scope"], &nested);
+    for dir in [nested.as_path(), below_nested.as_path()] {
+        let list = json_stdout(&run(
+            dir,
+            home.path(),
+            &["local", "--json", "server", "list"],
+        ));
+        assert_eq!(list["total_servers"], 1);
+        assert_eq!(list["servers"][0]["name"], "inner");
+        assert_project_scope(&list["project_scope"], &nested);
+    }
 
     let outer = json_error(&run(
         &nested,
         home.path(),
         &["local", "--json", "server", "stop", "outer"],
     ));
-    assert_exact_scope(&outer["error"]["project_scope"], &nested);
+    assert_project_scope(&outer["error"]["project_scope"], &nested);
 
     let inner = json_stdout(&run(
         &nested,
@@ -285,23 +288,114 @@ fn symlinked_cwd_reports_and_uses_the_canonical_project() {
     std::fs::create_dir(&project).expect("create project");
     std::os::unix::fs::symlink(&project, &alias).expect("create project symlink");
     write_server(&project, "dev", 0);
+    std::fs::create_dir(project.join("sub")).expect("create subdirectory");
 
-    let list = json_stdout(&run(
-        &alias,
-        home.path(),
-        &["local", "--json", "server", "list"],
-    ));
-    assert_eq!(list["servers"][0]["name"], "dev");
-    assert_exact_scope(&list["project_scope"], &project);
-    assert!(!list.to_string().contains("project-alias"));
+    for dir in [alias.clone(), alias.join("sub")] {
+        let list = json_stdout(&run(
+            &dir,
+            home.path(),
+            &["local", "--json", "server", "list"],
+        ));
+        assert_eq!(list["servers"][0]["name"], "dev");
+        assert_project_scope(&list["project_scope"], &project);
+        assert!(!list.to_string().contains("project-alias"));
+    }
 
     let missing = json_error(&run(
         &alias,
         home.path(),
         &["local", "--json", "server", "remove", "missing"],
     ));
-    assert_exact_scope(&missing["error"]["project_scope"], &project);
+    assert_project_scope(&missing["error"]["project_scope"], &project);
     assert!(!missing.to_string().contains("project-alias"));
+}
+
+/// `~/.clickhouse` holds global state, so it never makes the home directory a
+/// project for the directories beneath it.
+#[test]
+fn the_home_directory_is_never_an_enclosing_project() {
+    let home = tempfile::tempdir().expect("create home");
+    write_server(home.path(), "global-looking", 0);
+    let app = home.path().join("work/app");
+    std::fs::create_dir_all(&app).expect("create app directory");
+
+    let list = json_stdout(&run(
+        &app,
+        home.path(),
+        &["local", "--json", "server", "list"],
+    ));
+    assert_eq!(list["total_servers"], 0);
+    assert_no_project_scope(&list["project_scope"], &app);
+    assert_eq!(list["guidance"][0]["action"], "return_to_project_root");
+    assert!(!app.join(".clickhouse").exists());
+
+    // From the home directory itself its `.clickhouse/` is the current
+    // directory's own, as before.
+    let at_home = json_stdout(&run(
+        home.path(),
+        home.path(),
+        &["local", "--json", "server", "list"],
+    ));
+    assert_eq!(at_home["servers"][0]["name"], "global-looking");
+    assert_project_scope(&at_home["project_scope"], home.path());
+}
+
+fn install_fake_clickhouse(home: &Path, version: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let binary = home
+        .join(".clickhouse/versions")
+        .join(version)
+        .join("clickhouse");
+    std::fs::create_dir_all(binary.parent().unwrap()).expect("create fake version dir");
+    std::fs::write(&binary, b"#!/bin/sh\nexec sleep 30\n").expect("write fake ClickHouse");
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake ClickHouse executable");
+}
+
+struct ProcessGuard(u32);
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.0 as i32, libc::SIGKILL);
+        }
+    }
+}
+
+/// A server started from a subdirectory belongs to the enclosing project: its
+/// state lands in that project's `.clickhouse/`, and no new one is created.
+#[test]
+fn a_server_started_from_a_subdirectory_joins_the_enclosing_project() {
+    const VERSION: &str = "25.12.9.61";
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    install_fake_clickhouse(home.path(), VERSION);
+    std::fs::create_dir(project.path().join(".clickhouse")).expect("mark the project");
+    let child = project.path().join("src/app");
+    std::fs::create_dir_all(&child).expect("create child directory");
+
+    let mut command = Command::new(clickhousectl_binary());
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
+        .env("HOME", home.path())
+        .current_dir(&child)
+        .args(["local", "--json", "server", "start", "dev", "--no-wait"])
+        .args(["--version", VERSION])
+        .output()
+        .expect("run clickhousectl");
+    let body = json_stdout(&output);
+    let _process = ProcessGuard(body["pid"].as_u64().expect("start PID") as u32);
+
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(project.path().join(".clickhouse/servers/dev.json"))
+            .expect("metadata in the enclosing project"),
+    )
+    .expect("parse metadata");
+    assert_eq!(metadata["cwd"], canonical(project.path()));
+    assert!(project.path().join(".clickhouse/servers/dev/data").is_dir());
+    assert!(!child.join(".clickhouse").exists());
+    assert!(!project.path().join("src/.clickhouse").exists());
 }
 
 #[test]

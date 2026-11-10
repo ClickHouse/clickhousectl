@@ -631,24 +631,39 @@ fn error(code: &str, command: Option<&str>) -> Value {
     json!({ "error": detail })
 }
 
-fn scope_guidance(include_global_stop: bool) -> Value {
-    let mut guidance = vec![
-        json!({
+/// Whether `project` holds a `.clickhouse/` marker, which decides its scope
+/// kind and guidance. Read when the expectation is built.
+fn is_marked(project: &Path) -> bool {
+    project.join(".clickhouse").is_dir()
+}
+
+fn project_scope(project: &Path) -> Value {
+    json!({
+        "kind": if is_marked(project) { "project_root" } else { "current_directory" },
+        "path": canonical(project)
+    })
+}
+
+/// Changing directory is advised only when no project was found.
+fn scope_guidance(project: &Path, include_global_stop: bool) -> Value {
+    let mut guidance = Vec::new();
+    if !is_marked(project) {
+        guidance.push(json!({
             "action": "return_to_project_root",
             "message": ANY_MESSAGE,
             "command": "cd <project-root>"
-        }),
-        json!({
-            "action": "list_project_servers",
-            "message": ANY_MESSAGE,
-            "command": "clickhousectl local clickhouse list"
-        }),
-        json!({
-            "action": "list_global_servers",
-            "message": ANY_MESSAGE,
-            "command": "clickhousectl local clickhouse list --global"
-        }),
-    ];
+        }));
+    }
+    guidance.push(json!({
+        "action": "list_project_servers",
+        "message": ANY_MESSAGE,
+        "command": "clickhousectl local clickhouse list"
+    }));
+    guidance.push(json!({
+        "action": "list_global_servers",
+        "message": ANY_MESSAGE,
+        "command": "clickhousectl local clickhouse list --global"
+    }));
     if include_global_stop {
         guidance.push(json!({
             "action": "stop_global_project_server",
@@ -664,13 +679,9 @@ fn project_not_found(project: &Path, name: &str, stop: bool) -> Value {
         "error": {
             "code": "server_not_found",
             "message": ANY_MESSAGE,
-            "project_scope": {
-                "kind": "exact_current_project",
-                "path": canonical(project),
-                "parent_projects_searched": false
-            },
+            "project_scope": project_scope(project),
             "server": { "name": name },
-            "guidance": scope_guidance(stop)
+            "guidance": scope_guidance(project, stop)
         }
     })
 }
@@ -690,17 +701,23 @@ fn human_project_not_found(project: &Path, name: &str, command: &str) -> Vec<Str
     fragments
 }
 
+/// Inside a project an empty list only points at other projects.
 fn empty_server_list(project: &Path) -> Value {
+    let guidance = if is_marked(project) {
+        json!([{
+            "action": "list_global_servers",
+            "message": ANY_MESSAGE,
+            "command": "clickhousectl local clickhouse list --global"
+        }])
+    } else {
+        scope_guidance(project, false)
+    };
     json!({
         "servers": [],
         "total_servers": 0,
         "total_running_servers": 0,
-        "project_scope": {
-            "kind": "exact_current_project",
-            "path": canonical(project),
-            "parent_projects_searched": false
-        },
-        "guidance": scope_guidance(false)
+        "project_scope": project_scope(project),
+        "guidance": guidance
     })
 }
 
@@ -735,11 +752,7 @@ fn server_list(project: &Path, servers: &[ListedServer<'_>]) -> Value {
         "servers": entries,
         "total_servers": servers.len(),
         "total_running_servers": running,
-        "project_scope": {
-            "kind": "exact_current_project",
-            "path": canonical(project),
-            "parent_projects_searched": false
-        }
+        "project_scope": project_scope(project)
     })
 }
 
@@ -761,12 +774,8 @@ fn fresh_project(fixture: &Fixture) {
                 "stopped": false,
                 "selection": "implicit",
                 "reason": "no_clickhouse_servers",
-                "project_scope": {
-                    "kind": "exact_current_project",
-                    "path": canonical(&fixture.project),
-                    "parent_projects_searched": false
-                },
-                "guidance": scope_guidance(true)
+                "project_scope": project_scope(&fixture.project),
+                "guidance": scope_guidance(&fixture.project, true)
             })),
         },
         CommandCase {
@@ -787,12 +796,8 @@ fn fresh_project(fixture: &Fixture) {
                 "error": {
                     "code": "server_selection_required",
                     "message": ANY_MESSAGE,
-                    "project_scope": {
-                        "kind": "exact_current_project",
-                        "path": canonical(&fixture.project),
-                        "parent_projects_searched": false
-                    },
-                    "guidance": scope_guidance(false)
+                    "project_scope": project_scope(&fixture.project),
+                    "guidance": scope_guidance(&fixture.project, false)
                 }
             })),
         },
@@ -1156,33 +1161,38 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
     fixture.assert_list(TestCwd::Root, &[]);
 }
 
-fn exact_cwd_and_explicit_project(fixture: &Fixture) {
+/// A subdirectory acts on the enclosing project; `--global --project` still
+/// selects a project explicitly from anywhere.
+fn child_cwd_and_explicit_project(fixture: &Fixture) {
     let scoped = fixture.start(Some("scoped"));
     fixture.write_marker("scoped", "scoped-data");
     fixture.run_cases(&[
         CommandCase {
-            label: "child exact-CWD list".into(),
+            label: "child list".into(),
             cwd: TestCwd::Child,
             args: strings(&["local", "--json", "server", "list"]),
-            expected: ExpectedOutput::JsonSuccess(empty_server_list(&fixture.child)),
+            expected: ExpectedOutput::JsonSuccess(server_list(
+                &fixture.project,
+                &[ListedServer::Running(&scoped)],
+            )),
         },
         CommandCase {
-            label: "child exact-CWD stop".into(),
+            label: "child unknown stop".into(),
             cwd: TestCwd::Child,
-            args: strings(&["local", "--json", "server", "stop", "scoped"]),
+            args: strings(&["local", "--json", "server", "stop", "missing"]),
             expected: ExpectedOutput::JsonFailure(project_not_found(
-                &fixture.child,
-                "scoped",
+                &fixture.project,
+                "missing",
                 true,
             )),
         },
         CommandCase {
-            label: "child exact-CWD remove".into(),
+            label: "child unknown remove".into(),
             cwd: TestCwd::Child,
-            args: strings(&["local", "server", "remove", "scoped"]),
+            args: strings(&["local", "server", "remove", "missing"]),
             expected: ExpectedOutput::HumanFailure(human_project_not_found(
-                &fixture.child,
-                "scoped",
+                &fixture.project,
+                "missing",
                 "remove",
             )),
         },
@@ -1279,6 +1289,6 @@ fn state_machine_selection_matrix() {
 }
 
 #[test]
-fn state_machine_exact_cwd_and_explicit_project() {
-    run_scenario("exact-cwd", exact_cwd_and_explicit_project);
+fn state_machine_child_cwd_and_explicit_project() {
+    run_scenario("child-cwd", child_cwd_and_explicit_project);
 }
