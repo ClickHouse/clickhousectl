@@ -35,7 +35,7 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_SERVICE_STOP_POLL_INTERVAL_MS` | `cloud service delete --force` stop poll interval (5 s) |
 | `CHCTL_UDF_POLL_INTERVAL_MS` | `cloud udf` service poll interval (5 s) |
 | `CHCTL_QUERY_READINESS_TIMEOUT_MS` | Query API readiness window after a key bind (120 s) |
-| `CHCTL_KEY_PROPAGATION_TIMEOUT_MS` | Retry window for a key-binding upsert while a new key propagates (30 s) |
+| `CHCTL_KEY_PROPAGATION_TIMEOUT_MS` | Retry window for a first-use key-binding upsert while the key propagates (30 s) |
 | `CHCTL_UPDATE_CHECK_TIMEOUT_MS` | Background update check (400 ms) and the `--version` refresh (10 s); `0` skips both requests. `update` still makes its explicit check |
 | `CHCTL_FEEDBACK_SEND_TIMEOUT_MS` | `feedback` send (10 s) |
 | `CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS` | `feedback` Cloud organization lookup (5 s) |

@@ -438,8 +438,7 @@ CONTEXT FOR AGENTS:
   Only needed to share Query API access with other tools: `cloud service query` binds the
     authenticated API key itself.
   Hand edits can unbind the key `cloud service query` uses; the next query rebinds it unless
-    `--no-auto-enable` is passed.
-  A stored per-service key is repaired with `cloud service repair-query-key <id>`."
+    `--no-auto-enable` is passed."
     )]
     QueryEndpoint {
         #[command(subcommand)]
@@ -520,7 +519,8 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
-  Stored-key 401/403 never rotates keys automatically; deliberate repair: `cloud service repair-query-key <id>`."
+  First use binds the API key to the endpoint, a write. A read-only key must be bound by a write key:
+    `cloud service query-endpoint create <id> --role <role> --open-api-key <key-id>`."
     )]
     Query {
         /// Service ID to query
@@ -554,18 +554,6 @@ CONTEXT FOR AGENTS:
         /// Fail rather than bind the API key to the Query API endpoint
         #[arg(long)]
         no_auto_enable: bool,
-    },
-
-    /// Replace clickhousectl's stored Query API key
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Deliberately replaces this service's owned key/binding; preserves other bindings and credentials.
-  Records without exact ownership metadata are refused; legacy and external keys cannot be repaired.
-  Verification timeout exits 1 but repair stands: retry `cloud service query <id>`, not repair.")]
-    RepairQueryKey {
-        /// Service ID
-        #[command(flatten)]
-        service_id: NameSelector,
     },
 }
 
@@ -1066,7 +1054,6 @@ impl ServiceCommands {
             ServiceCommands::ScalingSchedule { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
-            ServiceCommands::RepairQueryKey { .. } => true,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -1211,26 +1198,6 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
-    }
-
-    #[test]
-    fn repair_query_key_has_a_positional_id_selector() {
-        use clap::CommandFactory;
-        let mut root = Cli::command();
-        root.build();
-        let command = root
-            .find_subcommand("cloud")
-            .unwrap()
-            .find_subcommand("service")
-            .unwrap()
-            .find_subcommand("repair-query-key")
-            .unwrap();
-        let id = command
-            .get_arguments()
-            .find(|arg| arg.get_id() == "resource_id")
-            .unwrap();
-        assert!(id.is_positional());
-        assert_eq!(id.get_value_names().unwrap(), &["ID"]);
     }
 
     #[test]
@@ -3184,16 +3151,6 @@ mod tests {
                 "unset",
                 "svc-1",
                 "compatibility",
-            ],
-            true,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "service",
-                "repair-query-key",
-                "svc-1",
             ],
             true,
         );

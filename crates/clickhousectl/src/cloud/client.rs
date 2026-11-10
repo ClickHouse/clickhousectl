@@ -74,9 +74,9 @@ impl CloudError {
     /// and hand it back unchanged — the shape `map_err` wants:
     ///
     /// ```ignore
-    /// client.create_api_key(org_id, &request)
+    /// client.get_whoami()
     ///     .await
-    ///     .map_err(|error| error.at_stage(FailureStage::KeyCreate))?;
+    ///     .map_err(|error| error.at_stage(FailureStage::Whoami))?;
     /// ```
     ///
     /// The stage comes from the call site (which owns it) and the kind from
@@ -627,7 +627,6 @@ pub fn name_not_found(kind: ResourceKind, scope: Scope<'_>, name: &str) -> Cloud
         port: None,
         command: Some(kind.list_command(scope)),
         api_key_id: None,
-        ip_access_list: None,
     })
 }
 
@@ -1146,7 +1145,6 @@ impl CloudClient {
             port: None,
             command: Some(lookup.kind.list_command(lookup.scope)),
             api_key_id: None,
-            ip_access_list: None,
         })
     }
 
@@ -1738,7 +1736,6 @@ mod tests {
             Some(format!("clickhousectl cloud postgres list --org-id {ORG_UUID}").as_str())
         );
         assert_eq!(details.api_key_id, None);
-        assert_eq!(details.ip_access_list, None);
 
         // An organization lookup has no scope flag to suggest.
         let err = client.convert_error_for_lookup(
