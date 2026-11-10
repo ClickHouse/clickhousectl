@@ -203,6 +203,9 @@ async fn use_version(
 }
 
 fn remove(version: &str, force: bool, json: bool) -> Result<()> {
+    // Clap already rejects these; repeat the check right before the path join
+    // that a `..` would turn into `rm -rf ~/.clickhouse` (#1291).
+    paths::validate_installed_version(version)?;
     let version_dir = paths::version_dir(version)?;
 
     if !version_dir.exists() {

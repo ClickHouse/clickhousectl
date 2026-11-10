@@ -965,9 +965,10 @@ async fn dispatched_events_record_names_and_slots_but_never_values() {
             &["SECRET"],
         ),
         // A server name is validated in clap, so the hostile value goes
-        // through an opaque positional that reaches its handler.
+        // through an opaque positional that reaches its handler. `local remove`
+        // rejects path separators in clap, so its value carries none.
         (
-            &["local", "remove", HOSTILE],
+            &["local", "remove", "user:pa55w0rd@db.internal"],
             "local remove",
             json(&[]),
             json(&["version"]),

@@ -17,6 +17,27 @@ pub fn versions_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("versions"))
 }
 
+/// Rejects a version that is not a single installed-version directory name, so
+/// joining it onto `versions_dir()` can never escape that directory (`..`, an
+/// absolute path, a separator) or name a hidden staging directory (`.`-prefixed).
+pub fn validate_installed_version(version: &str) -> Result<()> {
+    let reason = if version.is_empty() {
+        Some("is empty")
+    } else if version.starts_with('.') {
+        Some("starts with '.'")
+    } else if version.contains(['/', '\\', '\0']) || Path::new(version).is_absolute() {
+        Some("contains a path separator")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(Error::InvalidVersion(format!(
+            "'{version}' {reason}; pass an exact version from `clickhousectl local list`"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Returns the directory for a specific version (~/.clickhouse/versions/<version>/)
 pub fn version_dir(version: &str) -> Result<PathBuf> {
     Ok(versions_dir()?.join(version))
@@ -69,6 +90,27 @@ pub fn global_clickhouse_symlink() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_installed_version_accepts_only_a_single_visible_component() {
+        for version in ["25.12.9.61", "25.8.1.1-lts", "head"] {
+            validate_installed_version(version).unwrap();
+        }
+        for version in [
+            "",
+            ".",
+            "..",
+            ".staging-25.12",
+            "../x",
+            "a/b",
+            "a\\b",
+            "/abs",
+            "a\0b",
+        ] {
+            let error = validate_installed_version(version).unwrap_err();
+            assert!(matches!(error, Error::InvalidVersion(_)), "{version:?}");
+        }
+    }
 
     #[test]
     fn ensure_dir_includes_path_and_not_a_directory_cause() {
