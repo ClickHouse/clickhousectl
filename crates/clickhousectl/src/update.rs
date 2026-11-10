@@ -448,7 +448,7 @@ pub async fn refresh_update_cache() {
         BACKGROUND_TIMEOUT,
     );
     // No time allowed means no request: subprocess tests turn the background
-    // check off. The explicit checks (`--version`, `update`) are unaffected.
+    // check off. The `update` command's explicit check is unaffected.
     if timeout.is_zero() {
         return;
     }
@@ -456,10 +456,16 @@ pub async fn refresh_update_cache() {
 }
 
 /// Force a network check and refresh the cache + timer regardless of staleness.
-/// Used by explicit user actions (e.g. `--version`) that should always reflect
-/// the freshest state. Uses the longer explicit timeout. Never prints.
+/// Used by `--version`, which should always reflect the freshest state. Uses the
+/// longer explicit timeout, which the update-check override also bounds so
+/// subprocess tests can turn the request off with `0`. Never prints.
 pub async fn force_refresh_update_cache() {
-    do_refresh_update_cache(EXPLICIT_TIMEOUT).await;
+    let timeout =
+        crate::timing::duration_override(crate::timing::UPDATE_CHECK_TIMEOUT_ENV, EXPLICIT_TIMEOUT);
+    if timeout.is_zero() {
+        return;
+    }
+    do_refresh_update_cache(timeout).await;
 }
 
 #[cfg(test)]
