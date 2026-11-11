@@ -87,13 +87,14 @@ impl Platform {
         }
     }
 
-    /// GitHub releases arch/suffix for download URLs
+    /// GitHub releases asset segment: the Linux tarball arch, or the macOS binary name after
+    /// `clickhouse-` (Intel macOS is the bare `clickhouse-macos`)
     pub fn github_suffix(&self) -> &'static str {
         match (self.os, self.arch) {
             (Os::Linux, Arch::X86_64) => "amd64",
             (Os::Linux, Arch::Aarch64) => "arm64",
-            (Os::MacOS, Arch::X86_64) => "x86_64",
-            (Os::MacOS, Arch::Aarch64) => "aarch64",
+            (Os::MacOS, Arch::X86_64) => "macos",
+            (Os::MacOS, Arch::Aarch64) => "macos-aarch64",
         }
     }
 }
@@ -147,7 +148,7 @@ impl DownloadSource {
                         )
                     }
                     Os::MacOS => {
-                        format!("{}/clickhouse-macos-{}", base, platform.github_suffix())
+                        format!("{}/clickhouse-{}", base, platform.github_suffix())
                     }
                 }
             }
@@ -211,8 +212,8 @@ mod tests {
             (LINUX_AMD64, "amd64", Some("amd64"), "amd64"),
             (LINUX_ARM64, "aarch64", Some("arm64"), "arm64"),
             // macOS packages are not published.
-            (MACOS_X86, "macos", None, "x86_64"),
-            (MACOS_ARM64, "macos-aarch64", None, "aarch64"),
+            (MACOS_X86, "macos", None, "macos"),
+            (MACOS_ARM64, "macos-aarch64", None, "macos-aarch64"),
         ] {
             assert_eq!(platform.builds_path(), builds, "{platform:?}");
             assert_eq!(platform.packages_arch(), packages, "{platform:?}");
@@ -286,7 +287,7 @@ mod tests {
             (
                 github("24.8.6.70", Channel::Lts),
                 MACOS_X86,
-                "https://github.com/ClickHouse/ClickHouse/releases/download/v24.8.6.70-lts/clickhouse-macos-x86_64",
+                "https://github.com/ClickHouse/ClickHouse/releases/download/v24.8.6.70-lts/clickhouse-macos",
                 false,
             ),
         ] {
