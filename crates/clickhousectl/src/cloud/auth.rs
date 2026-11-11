@@ -837,7 +837,7 @@ where
 
 /// OAuth form bodies contain credentials; never forward them via redirects.
 fn oauth_client() -> CloudResult<reqwest::Client> {
-    crate::http::client_builder()
+    crate::http::clickhouse_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(oauth_http_error)
