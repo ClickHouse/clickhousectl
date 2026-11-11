@@ -5,7 +5,7 @@ use flate2::read::GzDecoder;
 use serde::Serialize;
 use std::fs;
 use std::io::{self, Cursor, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
 
@@ -18,6 +18,114 @@ const LATEST_MANIFEST_URL: &str = "https://builds.clickhouse.com/clickhousectl/l
 /// unauthenticated limit.
 const LATEST_RELEASE_PAGE_URL: &str = "https://github.com/ClickHouse/clickhousectl/releases/latest";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
+
+/// Set to `npm` by the npm package's launcher (`npm/bin/cli.js`) on the
+/// binary it spawns, so `update` knows npm owns this install (#1305).
+const INSTALL_CHANNEL_ENV: &str = "CLICKHOUSECTL_INSTALL_CHANNEL";
+
+/// How this binary was installed, which decides whether `update` may replace
+/// it. Only the tarball channels (install script, manual download,
+/// cargo-binstall, `cargo install`) are self-updatable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallChannel {
+    Standalone,
+    Npm,
+    /// The PyPI wheel, installed by pip, uv or pipx.
+    Pip(PipTool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipTool {
+    Pip,
+    Uv,
+    Pipx,
+}
+
+impl InstallChannel {
+    /// The channel of the running binary: wheels are built with the
+    /// `channel-pip` feature (`pypi/pyproject.toml`); npm marks the
+    /// environment of the binary it spawns.
+    fn current() -> Self {
+        let exe = std::env::current_exe()
+            .ok()
+            .map(|exe| fs::canonicalize(&exe).unwrap_or(exe));
+        Self::detect(
+            cfg!(feature = "channel-pip"),
+            std::env::var_os(INSTALL_CHANNEL_ENV).as_deref(),
+            exe.as_deref(),
+        )
+    }
+
+    fn detect(pip_build: bool, marker: Option<&std::ffi::OsStr>, exe: Option<&Path>) -> Self {
+        if pip_build {
+            return Self::Pip(PipTool::from_exe(exe));
+        }
+        match marker.and_then(|marker| marker.to_str()) {
+            Some("npm") => Self::Npm,
+            _ => Self::Standalone,
+        }
+    }
+
+    /// The package manager that owns the install, if any.
+    fn manager(self) -> Option<&'static str> {
+        match self {
+            Self::Standalone => None,
+            Self::Npm => Some("npm"),
+            Self::Pip(PipTool::Pip) => Some("pip"),
+            Self::Pip(PipTool::Uv) => Some("uv"),
+            Self::Pip(PipTool::Pipx) => Some("pipx"),
+        }
+    }
+
+    /// The command that upgrades this install.
+    fn upgrade_command(self) -> &'static str {
+        match self {
+            Self::Standalone => "clickhousectl update",
+            Self::Npm => "npm install -g clickhousectl@latest",
+            Self::Pip(PipTool::Pip) => "pip install --upgrade clickhousectl",
+            Self::Pip(PipTool::Uv) => "uv tool upgrade clickhousectl",
+            Self::Pip(PipTool::Pipx) => "pipx upgrade clickhousectl",
+        }
+    }
+
+    /// `Ok` when `update` may replace the binary, else the refusal that names
+    /// the package manager's upgrade command.
+    fn ensure_self_updatable(self) -> Result<()> {
+        match self.manager() {
+            None => Ok(()),
+            Some(manager) => Err(Error::PackageManagedInstall {
+                manager,
+                command: self.upgrade_command(),
+            }),
+        }
+    }
+}
+
+impl PipTool {
+    /// uv and pipx keep each tool in its own environment under a directory
+    /// that names them; anything else was installed by pip.
+    fn from_exe(exe: Option<&Path>) -> Self {
+        let Some(exe) = exe else {
+            return Self::Pip;
+        };
+        let components: Vec<_> = exe
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect();
+        let under = |parent: &str, child: &str| {
+            components
+                .windows(2)
+                .any(|pair| pair[0] == parent && pair[1] == child)
+        };
+        if under("uv", "tools") {
+            Self::Uv
+        } else if under("pipx", "venvs") {
+            Self::Pipx
+        } else {
+            Self::Pip
+        }
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +140,8 @@ pub struct UpdateResult {
     current_version: String,
     latest_version: String,
     action: UpdateAction,
+    #[serde(skip)]
+    upgrade_command: &'static str,
 }
 
 impl UpdateResult {
@@ -44,6 +154,7 @@ impl UpdateResult {
             } else {
                 UpdateAction::UpToDate
             },
+            upgrade_command: InstallChannel::Standalone.upgrade_command(),
         }
     }
 
@@ -61,7 +172,7 @@ impl UpdateResult {
                         "Update available: v{} → v{}",
                         self.current_version, self.latest_version
                     )?;
-                    writeln!(output, "Run `clickhousectl update` to upgrade.")?;
+                    writeln!(output, "Run `{}` to upgrade.", self.upgrade_command)?;
                 }
                 UpdateAction::Updated => {
                     writeln!(
@@ -312,11 +423,17 @@ pub async fn check_for_update() -> Result<UpdateResult> {
     // timer, so subsequent commands reflect what we just learned.
     let _ = save_update_check(display);
 
-    Ok(UpdateResult::checked(current, latest))
+    let mut result = UpdateResult::checked(current, latest);
+    result.upgrade_command = InstallChannel::current().upgrade_command();
+    Ok(result)
 }
 
-/// Download the latest release and replace the current binary.
+/// Download the latest release and replace the current binary. A binary a
+/// package manager installed is refused before any network access, since
+/// replacing it would leave the manager's records wrong (#1305).
 pub async fn perform_update(json: bool) -> Result<UpdateResult> {
+    InstallChannel::current().ensure_self_updatable()?;
+
     let current = env!("CARGO_PKG_VERSION");
     let latest = &fetch_latest_tag(EXPLICIT_TIMEOUT).await?;
     let mut result = UpdateResult::checked(current, latest);
@@ -338,18 +455,7 @@ pub async fn perform_update(json: bool) -> Result<UpdateResult> {
         println!("Downloading clickhousectl v{}...", display);
     }
 
-    let client = crate::http::client_builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
-
-    let response = client
-        .get(&download_url)
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("Download failed: {}", e)))?;
-
-    let archive_bytes = response.bytes().await?;
+    let archive_bytes = download_archive(&download_url).await?;
     let binary_bytes = extract_binary_from_archive(&archive_bytes)?;
 
     // Get the path to the currently running binary
@@ -362,41 +468,123 @@ pub async fn perform_update(json: bool) -> Result<UpdateResult> {
 
     // Resolve symlinks to get the actual binary path
     let actual_path = fs::canonicalize(&current_exe).unwrap_or(current_exe);
-
-    // Write to a temporary file next to the binary, then atomic-rename
-    let tmp_path = actual_path.with_extension("tmp-update");
-    fs::write(&tmp_path, &binary_bytes).map_err(|e| {
-        Error::Download(format!(
-            "Failed to write update to {}: {}. Check file permissions.",
-            tmp_path.display(),
-            e
-        ))
-    })?;
-
-    // Make it executable on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755)).map_err(|e| {
-            let _ = fs::remove_file(&tmp_path);
-            Error::Download(format!("Failed to set executable permissions: {}", e))
-        })?;
-    }
-
-    // Atomic rename
-    fs::rename(&tmp_path, &actual_path).map_err(|e| {
-        let _ = fs::remove_file(&tmp_path);
-        Error::Download(format!(
-            "Failed to replace binary at {}: {}. Check file permissions.",
-            actual_path.display(),
-            e
-        ))
-    })?;
+    replace_binary(&actual_path, &binary_bytes, PROBE_TIMEOUT).await?;
 
     // Clear the check cache so the update notice disappears immediately.
     let _ = clear_update_check();
     result.action = UpdateAction::Updated;
     Ok(result)
+}
+
+async fn download_archive(url: &str) -> Result<Vec<u8>> {
+    let client = crate::http::client_builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let response = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("Download failed: {}", e)))?;
+    Ok(response.bytes().await?.to_vec())
+}
+
+/// How long the downloaded binary has to answer `--version`.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Replace `target` with `binary`: write it to a uniquely named file in the
+/// same directory, check that it runs, then rename it over `target`. A failure
+/// at any step leaves `target` untouched and removes the new file.
+async fn replace_binary(
+    target: &Path,
+    binary: &[u8],
+    probe_timeout: std::time::Duration,
+) -> Result<()> {
+    let dir = target.parent().ok_or_else(|| {
+        Error::Download(format!(
+            "Cannot replace {}: it has no parent directory",
+            target.display()
+        ))
+    })?;
+    let write_error = |e: io::Error| {
+        Error::Download(format!(
+            "Failed to write update to {}: {}. Check file permissions.",
+            dir.display(),
+            e
+        ))
+    };
+    let mut file = tempfile::Builder::new()
+        .prefix(".clickhousectl-update-")
+        .tempfile_in(dir)
+        .map_err(write_error)?;
+    file.write_all(binary).map_err(write_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))
+            .map_err(|e| Error::Download(format!("Failed to set executable permissions: {}", e)))?;
+    }
+    // Close the file before running it: Linux refuses to execute a file that
+    // is open for writing. The path is still removed on drop.
+    let candidate = file.into_temp_path();
+
+    probe_binary(&candidate, probe_timeout).await?;
+
+    candidate.persist(target).map_err(|e| {
+        Error::Download(format!(
+            "Failed to replace binary at {}: {}. Check file permissions.",
+            target.display(),
+            e.error
+        ))
+    })?;
+    Ok(())
+}
+
+/// Run `<binary> --version` and require it to succeed, so a download that
+/// cannot run on this machine never replaces a working binary. The probe makes
+/// no network request and sends no telemetry.
+async fn probe_binary(binary: &Path, timeout: std::time::Duration) -> Result<()> {
+    let failed = |reason: String| {
+        Error::Download(format!(
+            "The downloaded clickhousectl did not run ({reason}); the installed binary was left unchanged"
+        ))
+    };
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .arg("--version")
+        .env(crate::timing::UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("DO_NOT_TRACK", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = spawn_retrying_busy(&mut command).map_err(|e| failed(e.to_string()))?;
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => Err(failed(format!("`--version` exited with {status}"))),
+        Ok(Err(e)) => Err(failed(e.to_string())),
+        Err(_) => Err(failed(format!(
+            "`--version` did not finish within {}s",
+            timeout.as_secs()
+        ))),
+    }
+}
+
+/// Spawn `command`, retrying briefly while the file is busy: another thread's
+/// fork can still hold the just-closed write handle open (`ETXTBSY`).
+fn spawn_retrying_busy(command: &mut tokio::process::Command) -> io::Result<tokio::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            #[cfg(unix)]
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempts < 20 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
 }
 
 // --- Background update check with caching ---
@@ -461,7 +649,8 @@ pub fn print_cached_update_notice() {
         let current = env!("CARGO_PKG_VERSION");
         if is_newer(current, &cached_version) {
             eprintln!(
-                "\nThere is a new version of clickhousectl. Update with `clickhousectl update`."
+                "\nThere is a new version of clickhousectl. Update with `{}`.",
+                InstallChannel::current().upgrade_command()
             );
         }
     }
@@ -551,6 +740,101 @@ mod tests {
         assert_eq!(value["action"], "updated");
         assert_eq!(value["current_version"], "0.4.2");
         assert_eq!(value["latest_version"], "0.5.0");
+    }
+
+    #[test]
+    fn install_channel_comes_from_the_wheel_feature_or_the_npm_marker() {
+        use std::ffi::OsStr;
+        let plain = Path::new("/home/u/.local/bin/clickhousectl");
+        let detect = InstallChannel::detect;
+        assert_eq!(detect(false, None, Some(plain)), InstallChannel::Standalone);
+        assert_eq!(
+            detect(false, Some(OsStr::new("npm")), Some(plain)),
+            InstallChannel::Npm
+        );
+        // Only the exact marker counts.
+        for marker in ["", "NPM", "pip", "tarball"] {
+            assert_eq!(
+                detect(false, Some(OsStr::new(marker)), Some(plain)),
+                InstallChannel::Standalone,
+                "{marker:?}"
+            );
+        }
+        // A wheel build is pip-owned whatever the environment says; the
+        // executable's location tells uv and pipx apart from pip.
+        for (exe, tool) in [
+            (
+                "/usr/lib/python3/site-packages/../bin/clickhousectl",
+                PipTool::Pip,
+            ),
+            (
+                "/home/u/.local/share/uv/tools/clickhousectl/bin/clickhousectl",
+                PipTool::Uv,
+            ),
+            (
+                "/home/u/.local/share/pipx/venvs/clickhousectl/bin/clickhousectl",
+                PipTool::Pipx,
+            ),
+        ] {
+            assert_eq!(
+                detect(true, Some(OsStr::new("npm")), Some(Path::new(exe))),
+                InstallChannel::Pip(tool),
+                "{exe}"
+            );
+        }
+        assert_eq!(detect(true, None, None), InstallChannel::Pip(PipTool::Pip));
+    }
+
+    #[test]
+    fn package_managed_channels_refuse_self_update_with_their_upgrade_command() {
+        assert!(InstallChannel::Standalone.ensure_self_updatable().is_ok());
+        for (channel, manager, command) in [
+            (
+                InstallChannel::Npm,
+                "npm",
+                "npm install -g clickhousectl@latest",
+            ),
+            (
+                InstallChannel::Pip(PipTool::Pip),
+                "pip",
+                "pip install --upgrade clickhousectl",
+            ),
+            (
+                InstallChannel::Pip(PipTool::Uv),
+                "uv",
+                "uv tool upgrade clickhousectl",
+            ),
+            (
+                InstallChannel::Pip(PipTool::Pipx),
+                "pipx",
+                "pipx upgrade clickhousectl",
+            ),
+        ] {
+            let err = channel.ensure_self_updatable().unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    Error::PackageManagedInstall { manager: m, command: c }
+                        if *m == manager && *c == command
+                ),
+                "got: {err:?}"
+            );
+            assert_eq!(err.exit_code(), 1);
+            assert_eq!(channel.upgrade_command(), command);
+        }
+    }
+
+    #[test]
+    fn update_available_names_the_channel_upgrade_command() {
+        let mut result = UpdateResult::checked("0.4.2", "v0.5.0");
+        result.upgrade_command = InstallChannel::Npm.upgrade_command();
+        let mut output = Vec::new();
+        result.write(&mut output, false).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(
+            text.contains("npm install -g clickhousectl@latest"),
+            "got: {text}"
+        );
     }
 
     #[test]
@@ -677,6 +961,76 @@ mod tests {
             tag_from_release_location("https://github.com/ClickHouse/clickhousectl/releases"),
             None
         );
+    }
+
+    #[cfg(unix)]
+    mod replace {
+        use super::super::*;
+
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        fn installed(dir: &Path) -> PathBuf {
+            let target = dir.join("clickhousectl");
+            fs::write(&target, b"old binary").unwrap();
+            target
+        }
+
+        /// Every file in `dir`, so a leftover temporary file shows up.
+        fn entries(dir: &Path) -> Vec<String> {
+            let mut names: Vec<_> = fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        }
+
+        #[tokio::test]
+        async fn a_binary_that_runs_replaces_the_target() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = installed(dir.path());
+            let new = b"#!/bin/sh\n[ \"$1\" = --version ] || exit 9\n";
+
+            replace_binary(&target, new, TIMEOUT).await.unwrap();
+
+            assert_eq!(fs::read(&target).unwrap(), new);
+            assert_eq!(entries(dir.path()), ["clickhousectl"]);
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+
+        #[tokio::test]
+        async fn a_binary_that_fails_its_probe_leaves_the_target_alone() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = installed(dir.path());
+
+            let err = replace_binary(&target, b"#!/bin/sh\nexit 3\n", TIMEOUT)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(&err, Error::Download(_)), "got: {err:?}");
+            assert_eq!(fs::read(&target).unwrap(), b"old binary");
+            assert_eq!(entries(dir.path()), ["clickhousectl"]);
+        }
+
+        #[tokio::test]
+        async fn a_binary_that_hangs_is_abandoned_at_the_timeout() {
+            let dir = tempfile::tempdir().unwrap();
+            let target = installed(dir.path());
+
+            let err = replace_binary(
+                &target,
+                b"#!/bin/sh\nexec sleep 30\n",
+                std::time::Duration::from_millis(200),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(matches!(&err, Error::Download(_)), "got: {err:?}");
+            assert_eq!(fs::read(&target).unwrap(), b"old binary");
+            assert_eq!(entries(dir.path()), ["clickhousectl"]);
+        }
     }
 
     mod resolve {

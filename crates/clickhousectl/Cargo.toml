@@ -30,6 +30,10 @@ feedback = ["dep:unicode-normalization"]
 # fields are present on the response structs and surfaced in CLI output. Off by
 # default so the CLI never shows a field the API has deprecated.
 deprecated-fields = ["clickhouse-cloud-api/deprecated-fields"]
+# Marks the PyPI wheel build (`pypi/pyproject.toml` enables it): pip, uv or
+# pipx owns that install, so `update` points at their upgrade command instead
+# of replacing the binary.
+channel-pip = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
