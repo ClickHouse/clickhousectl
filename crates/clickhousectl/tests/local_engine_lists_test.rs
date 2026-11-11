@@ -38,11 +38,15 @@ fn seeded_project() -> tempfile::TempDir {
 fn run(project: &Path, docker_host: &str, args: &[&str]) -> Output {
     // A home outside the project, so `~/.clickhouse` never lands in it.
     let home = tempfile::tempdir().unwrap();
+    run_in_home(project, home.path(), docker_host, args)
+}
+
+fn run_in_home(project: &Path, home: &Path, docker_host: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_clickhousectl"))
         .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
-        .env("HOME", home.path())
+        .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
         .env("DOCKER_HOST", docker_host)
         .current_dir(project)
@@ -135,6 +139,46 @@ fn clickhouse_list_and_stop_all_cover_only_clickhouse_without_docker() {
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(stdout.contains("default"), "{stdout}");
     assert!(!stdout.contains("app"), "{stdout}");
+
+    // Removing a version checks only ClickHouse servers for users of it.
+    let home = tempfile::tempdir().unwrap();
+    let version = "25.12.9.61";
+    let binary = home
+        .path()
+        .join(format!(".clickhouse/versions/{version}/clickhouse"));
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, b"").unwrap();
+    let body = json_ok(&run_in_home(
+        project.path(),
+        home.path(),
+        &docker,
+        &["local", "remove", version, "--json"],
+    ));
+    assert_eq!(body["version"], version, "{body}");
+    assert!(!binary.exists());
+
+    // A bare stop and remove pick the ClickHouse server without consulting
+    // the Postgres instance (#1300). Remove runs last: it deletes `default`.
+    let body = json_ok(&run(
+        project.path(),
+        &docker,
+        &["local", "clickhouse", "stop", "--json"],
+    ));
+    assert_eq!(body["name"], "default", "{body}");
+    assert_eq!(body["already_stopped"], true, "{body}");
+    assert_eq!(body["selection"], "implicit", "{body}");
+
+    let body = json_ok(&run(
+        project.path(),
+        &docker,
+        &["local", "clickhouse", "remove", "--json"],
+    ));
+    assert_eq!(body["name"], "default", "{body}");
+    assert_eq!(body["selection"], "implicit", "{body}");
+    let servers = project.path().join(".clickhouse/servers");
+    assert!(!servers.join("default").exists());
+    assert!(servers.join("app-pg18/data").is_dir());
+    assert!(servers.join("app-pg18.json").is_file());
 }
 
 #[tokio::test(flavor = "multi_thread")]

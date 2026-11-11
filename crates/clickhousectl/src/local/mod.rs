@@ -996,8 +996,8 @@ fn stop_server(
 
     // Recover orphaned servers so we can stop processes that lost their
     // metadata files. Without server state or an orphan there is nothing to
-    // stop.
-    let metadata_lock = server::lock_recovered_metadata()?;
+    // stop. Only ClickHouse is recovered, so Docker is never contacted.
+    let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
     let (name, selection, known) = match name_input {
         ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
             (name, output::ServerSelection::Explicit, false)
@@ -1104,8 +1104,9 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
 
     // Recover orphaned servers so we correctly detect a running process even
     // when its metadata file is missing. Without server state or an orphan
-    // there is nothing to remove.
-    let metadata_lock = server::lock_recovered_metadata()?;
+    // there is nothing to remove. Only ClickHouse is recovered, so Docker is
+    // never contacted.
+    let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
     let (name, selection) = match name_input {
         ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
             (name, output::ServerSelection::Explicit)
