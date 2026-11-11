@@ -19,6 +19,7 @@
   "files": [
     "bin/cli.js",
     "install.js",
+    "SHA256SUMS",
     "README.md"
   ],
   "os": [

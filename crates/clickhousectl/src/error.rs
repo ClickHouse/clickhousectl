@@ -509,6 +509,11 @@ pub enum Error {
         command: &'static str,
     },
 
+    /// `update` downloaded a release archive that its release's `SHA256SUMS`
+    /// does not vouch for, and replaced nothing (#1307).
+    #[error("Release archive verification failed: {0}")]
+    ArchiveVerification(String),
+
     #[error("{0}")]
     Network(#[from] NetworkFailure),
 

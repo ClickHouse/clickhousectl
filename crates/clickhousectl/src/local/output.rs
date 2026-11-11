@@ -787,6 +787,7 @@ impl LocalErrorOutput {
             | Error::Skills(_)
             | Error::UpdateCheck { .. }
             | Error::PackageManagedInstall { .. }
+            | Error::ArchiveVerification(_)
             | Error::ChildExit(_) => {
                 Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
             }

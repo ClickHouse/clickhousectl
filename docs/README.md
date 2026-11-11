@@ -19,6 +19,7 @@ Start with the [README](../README.md) for installation and product examples. The
 - [SQL and Query API behavior](reference/query-api.md): key binding, input formats, timeouts, keys from earlier versions, named endpoints.
 - [ClickPipe configuration](reference/clickpipe-configuration.md): partial updates, mappings, source authentication, private connectivity.
 - [Automation and output contracts](reference/automation.md): JSON shapes, stderr, exit codes, asynchronous operations.
+- [Release verification](reference/install-verification.md): what each install path checks, `SHA256SUMS`, attestations.
 - [Telemetry](reference/telemetry.md): recorded fields, notice, opt-out, local inspection.
 - [Feedback](reference/feedback.md): what `feedback` sends, the length limit, errors.
 
