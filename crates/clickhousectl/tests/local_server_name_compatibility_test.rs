@@ -1,5 +1,10 @@
 //! Subprocess coverage for ClickHouse server name compatibility (issues #474 and #889).
 
+#[path = "support/server_process.rs"]
+mod server_process;
+
+use server_process::ServerProcess;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -109,11 +114,15 @@ fn dotenv_positional_and_compatibility_names_select_the_same_running_server() {
     let home = tempfile::tempdir().unwrap();
     let servers = project.path().join(".clickhouse/servers");
     std::fs::create_dir_all(&servers).unwrap();
+    let mut processes = Vec::new();
     for (name, port) in [("default", 9000), ("dev", 19000)] {
+        let server = ServerProcess::spawn(project.path(), name);
+        let pid = server.pid();
+        processes.push(server);
         std::fs::write(
             servers.join(format!("{name}.json")),
             serde_json::json!({
-                "name": name, "pid": std::process::id(), "version": "26.8.1.1760",
+                "name": name, "pid": pid, "version": "26.8.1.1760",
                 "http_port": 8123, "tcp_port": port, "started_at": "test",
                 "cwd": project.path(), "engine": "clickhouse"
             })

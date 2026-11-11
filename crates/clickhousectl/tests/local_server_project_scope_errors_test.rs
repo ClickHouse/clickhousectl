@@ -1,5 +1,10 @@
 //! Project-scope diagnostics for local clickhouse list, stop, and remove.
 
+#[path = "support/server_process.rs"]
+mod server_process;
+
+use server_process::ServerProcess;
+
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -144,7 +149,8 @@ fn omitted_commands_explain_absent_project_state() {
 fn a_subdirectory_acts_on_the_enclosing_project() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
-    write_server(project.path(), "running", std::process::id());
+    let server = ServerProcess::spawn(project.path(), "running");
+    write_server(project.path(), "running", server.pid());
     write_server(project.path(), "stopped", 0);
     let child = project.path().join("child/deeper");
     std::fs::create_dir_all(&child).expect("create child directory");
