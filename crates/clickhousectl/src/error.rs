@@ -457,6 +457,12 @@ pub enum Error {
     )]
     VersionInUse { version: String, servers: String },
 
+    /// The process table could not be read, so which ClickHouse servers are
+    /// running is unknown. Kept apart from an empty result, which would be
+    /// mistaken for "nothing is running" (issue #1301).
+    #[error("Could not scan running processes for ClickHouse servers: {0}")]
+    ProcessScan(#[source] std::io::Error),
+
     /// `local remove` was asked to delete the version named by the
     /// `~/.clickhouse/default` marker. Removing it clears that marker and the
     /// global `~/.local/bin/clickhouse` symlink, and the deleted build is not

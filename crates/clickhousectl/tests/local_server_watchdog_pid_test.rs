@@ -3,20 +3,23 @@
 //! server it supervises with it (issue #664).
 //!
 //! ClickHouse spawns a watchdog that owns the lifetime of the server process,
-//! so the process `clickhouse start` records is the watchdog while
-//! `pgrep -x clickhouse` only ever matches the server it supervises. Both views
+//! so the process `clickhouse start` records is the watchdog while discovery
+//! finds the server it supervises by its own `argv[0]`. Both views
 //! must report the PID that stops the server for good, and `stop` must leave
 //! neither process behind: the watchdog forwards SIGTERM, but a SIGKILL it
 //! cannot catch would otherwise strand the server.
 //!
-//! Strategy: an isolated `HOME`, a fake ClickHouse that really forks a child so
-//! there is a genuine parent/child pair to resolve and to kill, and
-//! deterministic `pgrep`/`lsof`/`ps` stand-ins on `PATH` (the same technique as
-//! `local_server_state_machine_test.rs`) so process discovery only ever sees
-//! this fixture's processes and does not depend on platform process names.
+//! Strategy: an isolated `HOME` and a compiled fake ClickHouse (see
+//! `support/fake_clickhouse.rs`) that really forks a child under a watchdog
+//! whose `argv[0]` is rewritten, so there is a genuine parent/child pair for
+//! native process discovery to resolve and for `stop` to kill. Discovery also
+//! sees the other tests' fixtures running in parallel, so global listings are
+//! filtered by this fixture's project.
+
+#[path = "support/fake_clickhouse.rs"]
+mod fake_clickhouse;
 
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -69,29 +72,9 @@ impl Supervision {
     }
 }
 
-struct ProcessGuard {
-    pid_file: PathBuf,
-}
-
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        let Ok(contents) = std::fs::read_to_string(&self.pid_file) else {
-            return;
-        };
-        for pid in contents
-            .lines()
-            .filter_map(|line| line.split('|').nth(1)?.parse::<i32>().ok())
-        {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
 struct Fixture {
     // Drop the process guard before removing directories used as process CWDs.
-    _processes: ProcessGuard,
+    _processes: fake_clickhouse::ProcessGuard,
     _root: tempfile::TempDir,
     home: PathBuf,
     project: PathBuf,
@@ -112,133 +95,21 @@ impl Fixture {
         let home = root.path().join("home");
         let project = root.path().join("project");
         let pid_file = root.path().join("fake-clickhouse-pids");
-        let tools = root.path().join("fake-tools");
         let binary = home.join(format!(".clickhouse/versions/{VERSION}/clickhouse"));
 
         std::fs::create_dir_all(&home).expect("create isolated HOME");
         std::fs::create_dir_all(&project).expect("create project directory");
-        std::fs::create_dir_all(binary.parent().expect("fake binary parent"))
-            .expect("create fake version directory");
-        std::fs::create_dir_all(&tools).expect("create fake process tools directory");
-
-        // Records `<role>|<pid>|<ppid>|<cwd>` for the stand-in tools. With a
-        // watchdog the spawned process stays alive as the parent of the
-        // "server" child, exactly like ClickHouse's own watchdog.
-        write_executable(
-            &binary,
-            r#"#!/bin/sh
-if [ "$FAKE_CLICKHOUSE_WATCHDOG" = 1 ]; then
-  if [ "$FAKE_CLICKHOUSE_IGNORE_SIGTERM" = 1 ]; then
-    trap '' TERM
-  fi
-  # The watchdog records itself before forking, so the test's ProcessGuard can
-  # always reach it and an assertion that fails early cannot leak a process.
-  printf 'watchdog|%s|1|%s\n' "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
-  /bin/sleep 300 &
-  child=$!
-  printf 'server|%s|%s|%s\n' "$child" "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
-  if [ "$FAKE_CLICKHOUSE_IGNORE_SIGTERM" != 1 ]; then
-    # The real watchdog forwards SIGTERM to the server it supervises.
-    trap 'kill "$child" 2>/dev/null' TERM
-  fi
-  wait "$child"
-else
-  printf 'server|%s|1|%s\n' "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
-  exec /bin/sleep 300
-fi
-"#,
-        );
+        fake_clickhouse::install(&binary);
         std::fs::write(home.join(".clickhouse/default"), VERSION)
             .expect("select the fake version as latest");
 
-        // `pgrep -x clickhouse` matches the server, never the watchdog, which
-        // is the whole reason the two views disagreed. `pgrep -P <ppid>` is the
-        // child lookup in the SIGKILL escalation path: it goes to the real
-        // pgrep, so the escalation resolves the actual process tree, and falls
-        // back to the recorded parent/child pairs on a platform that keeps
-        // pgrep elsewhere.
-        write_executable(
-            &tools.join("pgrep"),
-            r#"#!/bin/sh
-parent=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -P) parent="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-if [ -n "$parent" ] && [ -x /usr/bin/pgrep ]; then
-  exec /usr/bin/pgrep -P "$parent"
-fi
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r role pid ppid cwd; do
-  if [ -n "$parent" ]; then
-    [ "$ppid" = "$parent" ] || continue
-  else
-    [ "$role" = server ] || continue
-  fi
-  kill -0 "$pid" 2>/dev/null || continue
-  printf '%s\n' "$pid"
-  found=0
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#,
-        );
-        write_executable(
-            &tools.join("lsof"),
-            r#"#!/bin/sh
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-while IFS='|' read -r role pid ppid cwd; do
-  if [ "$role" = server ] && kill -0 "$pid" 2>/dev/null; then
-    printf 'p%s\nfcwd\nn%s\n' "$pid" "$cwd"
-  fi
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-"#,
-        );
-        // Discovery reads `ps -o pid=,ppid=,args= -p <pid,...>` for both the
-        // parent resolution and the command lines. The watchdog row is the
-        // rewritten `argv[0]` alone, padded with the trailing spaces the real
-        // one shows for the rest of the zeroed `argv` region and carrying no
-        // arguments; the server's is its binary path and flags.
-        write_executable(
-            &tools.join("ps"),
-            &format!(
-                r#"#!/bin/sh
-targets=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -p) targets="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r role pid ppid cwd; do
-  case ",$targets," in
-    *",$pid,"*) ;;
-    *) continue ;;
-  esac
-  if [ "$role" = watchdog ]; then
-    args="clickhouse-watchdog     "
-  else
-    args="$HOME/.clickhouse/versions/{VERSION}/clickhouse server -- --path=./ --http_port={http_port} --tcp_port={tcp_port}"
-  fi
-  printf '%5s %5s %s\n' "$pid" "$ppid" "$args"
-  found=0
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#
-            ),
-        );
-        // The stand-ins come first, and the rest of `PATH` deliberately omits
-        // /usr/local/bin and /opt/homebrew/bin so a `docker` on the developer's
-        // machine is unreachable: orphan recovery must not take its Postgres
-        // leg during these tests.
-        let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
+        // `PATH` deliberately omits /usr/local/bin and /opt/homebrew/bin so a
+        // `docker` on the developer's machine is unreachable: orphan recovery
+        // must not take its Postgres leg during these tests.
+        let path = "/usr/bin:/bin:/usr/sbin:/sbin".to_string();
 
         Self {
-            _processes: ProcessGuard {
+            _processes: fake_clickhouse::ProcessGuard {
                 pid_file: pid_file.clone(),
             },
             _root: root,
@@ -313,8 +184,9 @@ exit "$found"
         );
         let body: Value = serde_json::from_slice(&output.stdout).expect("parse start JSON");
         let pid = body["pid"].as_u64().expect("start PID") as u32;
-        // Discovery reads the stand-ins' records, so wait until the fake
-        // binary has registered every process it owns.
+        // Wait until the fake has started, and recorded, every process it
+        // owns: the watchdog records its server once it would forward a
+        // SIGTERM to it.
         let expected_records = if self.supervision.forks_a_child() {
             2
         } else {
@@ -326,16 +198,16 @@ exit "$found"
 
     /// The PID recorded under `role`, from the fake binary's own records.
     fn recorded_pid(&self, role: &str) -> u32 {
-        let contents = std::fs::read_to_string(&self.pid_file).expect("read PID records");
-        contents
-            .lines()
-            .find_map(|line| {
-                let mut fields = line.split('|');
-                (fields.next()? == role).then(|| fields.next()?.parse::<u32>().ok())?
-            })
-            .unwrap_or_else(|| panic!("no {role} record in {contents}"))
+        let records = fake_clickhouse::records(&self.pid_file);
+        records
+            .iter()
+            .find(|record| record.role == role)
+            .map(|record| record.pid)
+            .unwrap_or_else(|| panic!("no {role} record in {records:?}"))
     }
 
+    /// The PID of this fixture's one server in a list. A global list also
+    /// carries the other tests' fixtures, so it is narrowed to this project.
     fn listed_pid(&self, args: &[&str]) -> u32 {
         let output = self.run(args);
         assert_eq!(
@@ -345,7 +217,22 @@ exit "$found"
             String::from_utf8_lossy(&output.stderr)
         );
         let body: Value = serde_json::from_slice(&output.stdout).expect("parse list JSON");
-        let servers = body["servers"].as_array().expect("servers array");
+        let project = self
+            .project
+            .canonicalize()
+            .expect("canonicalize project")
+            .display()
+            .to_string();
+        let servers: Vec<&Value> = body["servers"]
+            .as_array()
+            .expect("servers array")
+            .iter()
+            .filter(|server| {
+                server
+                    .get("project")
+                    .is_none_or(|listed| *listed == project)
+            })
+            .collect();
         assert_eq!(servers.len(), 1, "unexpected server list: {body}");
         servers[0]["pid"].as_u64().expect("listed PID") as u32
     }
@@ -357,19 +244,10 @@ exit "$found"
     }
 }
 
-fn write_executable(path: &Path, contents: &str) {
-    std::fs::write(path, contents).expect("write fake executable");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake executable executable");
-}
-
 fn wait_for_records(pid_file: &Path, expected: usize) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     while Instant::now() < deadline {
-        if std::fs::read_to_string(pid_file)
-            .map(|contents| contents.lines().count() >= expected)
-            .unwrap_or(false)
-        {
+        if fake_clickhouse::records(pid_file).len() >= expected {
             return;
         }
         std::thread::sleep(Duration::from_millis(25));

@@ -351,8 +351,12 @@ fn is_installed(binary_path: &Path) -> bool {
 /// this version. Recovers orphans first (like `local remove`) so a server that
 /// lost its metadata file is still counted.
 fn version_in_use_by_running_server(version: &str) -> Result<bool> {
-    crate::local::server::recover_current_project_servers()?;
-    Ok(crate::local::server::list_running_servers()?
+    // One recovery pass, then a listing under the same lock, so the process
+    // table is scanned once.
+    let Some(lock) = crate::local::server::lock_recovered_metadata()? else {
+        return Ok(false);
+    };
+    Ok(crate::local::server::list_running_servers_locked(&lock)?
         .iter()
         .any(|s| s.version == version))
 }
