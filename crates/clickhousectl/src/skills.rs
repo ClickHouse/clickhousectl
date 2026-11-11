@@ -1,13 +1,15 @@
 use crate::cli::SkillsArgs;
 use crate::error::{Error, Result};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, IsTerminal, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tar::Archive;
+use tempfile::{NamedTempFile, TempDir};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize)]
@@ -172,7 +174,7 @@ pub async fn install(args: SkillsArgs, json: bool) -> Result<()> {
     let scope = resolve_scope(&args, json)?;
     let root = scope_root(scope)?;
     let detected = detect_agents(&home);
-    let selected = resolve_selection(&root, &detected, &args, json)?;
+    let selected = resolve_selection(&detected, &args, json)?;
 
     if !json {
         println!(
@@ -181,8 +183,8 @@ pub async fn install(args: SkillsArgs, json: bool) -> Result<()> {
         );
     }
     let archive = download_agent_skills_archive().await?;
-    let extracted = extract_skills_from_tarball(&archive.path)?;
-    let skill_files = collect_skill_files(&extracted.path)?;
+    let extracted = extract_skills_from_tarball(archive.path())?;
+    let skill_files = collect_skill_files(extracted.path())?;
 
     if skill_files.is_empty() {
         return Err(Error::Skills(format!(
@@ -245,56 +247,23 @@ fn install_skill_files(
     Ok(())
 }
 
-struct TempArtifact {
-    path: PathBuf,
-    is_dir: bool,
-}
+/// Bounds the whole archive download, including the body. The archive is small,
+/// so this only cuts off a stalled connection.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// Bounds establishing the connection, within [`DOWNLOAD_TIMEOUT`].
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl Drop for TempArtifact {
-    fn drop(&mut self) {
-        let _ = if self.is_dir {
-            fs::remove_dir_all(&self.path)
-        } else {
-            fs::remove_file(&self.path)
-        };
-    }
-}
-
-fn create_temp_artifact(prefix: &str, suffix: &str, is_dir: bool) -> Result<TempArtifact> {
-    let base = std::env::temp_dir();
-    let pid = std::process::id();
-
-    for attempt in 0..100u32 {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| Error::Skills(format!("Failed to get system time: {err}")))?
-            .as_nanos();
-        let name = format!("{prefix}-{pid}-{timestamp}-{attempt}{suffix}");
-        let path = base.join(name);
-
-        if is_dir {
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(TempArtifact { path, is_dir }),
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(err.into()),
-            }
-        } else {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(_) => return Ok(TempArtifact { path, is_dir }),
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(err.into()),
-            }
-        }
-    }
-
-    Err(Error::Skills(format!(
-        "Failed to create a temporary {} after multiple attempts.",
-        if is_dir { "directory" } else { "file" }
-    )))
-}
-
-async fn download_agent_skills_archive() -> Result<TempArtifact> {
-    let response = reqwest::get(AGENT_SKILLS_ARCHIVE_URL).await?;
+async fn download_agent_skills_archive() -> Result<NamedTempFile> {
+    let timeout = crate::timing::duration_override(
+        crate::timing::SKILLS_DOWNLOAD_TIMEOUT_ENV,
+        DOWNLOAD_TIMEOUT,
+    );
+    // GitHub, not a ClickHouse host: no agent correlation headers.
+    let client = crate::http::client_builder()
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT.min(timeout))
+        .timeout(timeout)
+        .build()?;
+    let response = client.get(AGENT_SKILLS_ARCHIVE_URL).send().await?;
     if !response.status().is_success() {
         return Err(Error::Skills(format!(
             "Failed to download {}: HTTP {}",
@@ -303,8 +272,11 @@ async fn download_agent_skills_archive() -> Result<TempArtifact> {
         )));
     }
 
-    let temp_file = create_temp_artifact("clickhouse-agent-skills", ".tar.gz", false)?;
-    let mut file = tokio::fs::File::create(&temp_file.path).await?;
+    let temp_file = tempfile::Builder::new()
+        .prefix("clickhouse-agent-skills-")
+        .suffix(".tar.gz")
+        .tempfile()?;
+    let mut file = tokio::fs::File::from_std(temp_file.reopen()?);
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
@@ -315,11 +287,13 @@ async fn download_agent_skills_archive() -> Result<TempArtifact> {
     Ok(temp_file)
 }
 
-fn extract_skills_from_tarball(archive_path: &Path) -> Result<TempArtifact> {
+fn extract_skills_from_tarball(archive_path: &Path) -> Result<TempDir> {
     let archive_file = File::open(archive_path)?;
     let decoder = GzDecoder::new(archive_file);
     let mut archive = Archive::new(decoder);
-    let temp_dir = create_temp_artifact("clickhouse-agent-skills", "", true)?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix("clickhouse-agent-skills-")
+        .tempdir()?;
 
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -332,8 +306,8 @@ fn extract_skills_from_tarball(archive_path: &Path) -> Result<TempArtifact> {
             continue;
         };
 
-        let output_path = temp_dir.path.join(skill_slug).join(relative_path);
-        ensure_within(&temp_dir.path, &output_path)?;
+        let output_path = temp_dir.path().join(skill_slug).join(relative_path);
+        ensure_within(temp_dir.path(), &output_path)?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -452,7 +426,6 @@ fn collect_skill_files_recursive(
 }
 
 fn resolve_selection(
-    _install_root: &Path,
     detected: &[&'static AgentSpec],
     args: &SkillsArgs,
     json: bool,
@@ -777,6 +750,7 @@ fn interactive_scope_select(json: bool) -> Result<InstallScope> {
     }
 }
 
+#[derive(Debug, PartialEq)]
 enum Key {
     Up,
     Down,
@@ -786,35 +760,34 @@ enum Key {
 }
 
 fn read_key() -> Result<Key> {
-    let mut stdin = io::stdin();
-    let mut buf = [0; 1];
-
     loop {
-        stdin.read_exact(&mut buf)?;
-
-        match buf[0] {
-            b' ' => return Ok(Key::Toggle),
-            b'\r' | b'\n' => return Ok(Key::Confirm),
-            b'k' => return Ok(Key::Up),
-            b'j' => return Ok(Key::Down),
-            b'q' | 3 => return Ok(Key::Cancel),
-            27 => {
-                let mut seq = [0; 2];
-                stdin.read_exact(&mut seq)?;
-                match seq {
-                    [b'[', b'A'] => return Ok(Key::Up),
-                    [b'[', b'B'] => return Ok(Key::Down),
-                    _ => return Ok(Key::Cancel),
-                }
-            }
-            _ => continue,
+        if let Event::Key(event) = crossterm::event::read()?
+            && let Some(key) = key_from_event(event)
+        {
+            return Ok(key);
         }
     }
 }
 
+/// The picker action for a key press; `None` for releases, repeats of
+/// non-navigation keys, and keys the picker ignores.
+fn key_from_event(event: KeyEvent) -> Option<Key> {
+    if event.kind == KeyEventKind::Release {
+        return None;
+    }
+    match event.code {
+        KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => Some(Key::Cancel),
+        KeyCode::Up | KeyCode::Char('k') => Some(Key::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(Key::Down),
+        KeyCode::Char(' ') => Some(Key::Toggle),
+        KeyCode::Enter => Some(Key::Confirm),
+        KeyCode::Esc | KeyCode::Char('q') => Some(Key::Cancel),
+        _ => None,
+    }
+}
+
+/// Raw mode and the alternate screen for the duration of a picker.
 struct TerminalUi {
-    fd: i32,
-    original: libc::termios,
     json: bool,
 }
 
@@ -828,39 +801,18 @@ fn ui_output(json: bool) -> Box<dyn Write> {
 
 impl TerminalUi {
     fn new(stdout: &mut dyn Write, json: bool) -> Result<Self> {
-        let fd = libc::STDIN_FILENO;
-        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
-
-        let get_attr_result = unsafe { libc::tcgetattr(fd, &mut original) };
-        if get_attr_result != 0 {
-            return Err(io::Error::last_os_error().into());
-        }
-
-        let mut raw = original;
-        raw.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
-        raw.c_oflag &= !libc::OPOST;
-        raw.c_cflag |= libc::CS8;
-        raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-
-        let set_attr_result = unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &raw) };
-        if set_attr_result != 0 {
-            return Err(io::Error::last_os_error().into());
-        }
-
+        crossterm::terminal::enable_raw_mode()?;
+        // Restores the terminal if the escape write below fails.
+        let ui = Self { json };
         write!(stdout, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")?;
         stdout.flush()?;
-
-        Ok(Self { fd, original, json })
+        Ok(ui)
     }
 }
 
 impl Drop for TerminalUi {
     fn drop(&mut self) {
-        unsafe {
-            libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original);
-        }
+        let _ = crossterm::terminal::disable_raw_mode();
         let mut stdout = ui_output(self.json);
         let _ = write!(stdout, "\x1b[?25h\x1b[?1049l");
         let _ = stdout.flush();
@@ -874,6 +826,30 @@ mod tests {
     use flate2::write::GzEncoder;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
+
+    #[test]
+    fn picker_keys_map_to_actions_and_a_bare_escape_cancels() {
+        let press = |code, modifiers| KeyEvent::new(code, modifiers);
+        let none = KeyModifiers::NONE;
+        for (code, modifiers, expected) in [
+            (KeyCode::Up, none, Some(Key::Up)),
+            (KeyCode::Char('k'), none, Some(Key::Up)),
+            (KeyCode::Down, none, Some(Key::Down)),
+            (KeyCode::Char('j'), none, Some(Key::Down)),
+            (KeyCode::Char(' '), none, Some(Key::Toggle)),
+            (KeyCode::Enter, none, Some(Key::Confirm)),
+            (KeyCode::Esc, none, Some(Key::Cancel)),
+            (KeyCode::Char('q'), none, Some(Key::Cancel)),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL, Some(Key::Cancel)),
+            (KeyCode::Char('c'), none, None),
+            (KeyCode::Left, none, None),
+        ] {
+            assert_eq!(key_from_event(press(code, modifiers)), expected, "{code:?}");
+        }
+        let mut release = press(KeyCode::Enter, none);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(key_from_event(release), None);
+    }
 
     #[test]
     fn json_install_reports_real_file_changes_for_every_selected_agent() {
@@ -958,8 +934,8 @@ mod tests {
             ("agent-skills-main/README.md", b"ignore me".as_slice()),
         ]);
 
-        let extracted = extract_skills_from_tarball(&archive.path).unwrap();
-        let skill_files = collect_skill_files(&extracted.path).unwrap();
+        let extracted = extract_skills_from_tarball(archive.path()).unwrap();
+        let skill_files = collect_skill_files(extracted.path()).unwrap();
         let paths = skill_files
             .iter()
             .map(|file| {
@@ -1069,7 +1045,6 @@ mod tests {
 
     #[test]
     fn all_selects_every_supported_agent() {
-        let install_root = temp_test_dir("all-install");
         let home = temp_test_dir("all-home");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let detected = detect_agents(&home);
@@ -1081,16 +1056,14 @@ mod tests {
             global: false,
         };
 
-        let selected = resolve_selection(&install_root, &detected, &args, false).unwrap();
+        let selected = resolve_selection(&detected, &args, false).unwrap();
         assert_eq!(selected.len(), SUPPORTED_AGENTS.len());
 
-        std::fs::remove_dir_all(install_root).unwrap();
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
     fn detected_only_selects_universal_plus_detected_agents() {
-        let install_root = temp_test_dir("detected-install");
         let home = temp_test_dir("detected-home");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(home.join(".windsurf")).unwrap();
@@ -1103,12 +1076,11 @@ mod tests {
             global: false,
         };
 
-        let selected = resolve_selection(&install_root, &detected, &args, false).unwrap();
+        let selected = resolve_selection(&detected, &args, false).unwrap();
         let keys = selected.iter().map(|agent| agent.key).collect::<Vec<_>>();
 
         assert_eq!(keys, vec!["agents", "claude", "windsurf"]);
 
-        std::fs::remove_dir_all(install_root).unwrap();
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -1118,7 +1090,7 @@ mod tests {
         assert_eq!(scope_root(InstallScope::Project).unwrap(), cwd);
     }
 
-    fn build_test_archive(entries: &[(&str, &[u8])]) -> TempArtifact {
+    fn build_test_archive(entries: &[(&str, &[u8])]) -> NamedTempFile {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut builder = Builder::new(encoder);
 
@@ -1133,8 +1105,8 @@ mod tests {
 
         let encoder = builder.into_inner().unwrap();
         let archive_bytes = encoder.finish().unwrap();
-        let artifact = create_temp_artifact("clickhousectl-skills-test", ".tar.gz", false).unwrap();
-        std::fs::write(&artifact.path, archive_bytes).unwrap();
+        let artifact = NamedTempFile::new().unwrap();
+        std::fs::write(artifact.path(), archive_bytes).unwrap();
         artifact
     }
 
