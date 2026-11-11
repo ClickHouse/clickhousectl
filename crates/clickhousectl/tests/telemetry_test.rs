@@ -15,6 +15,11 @@
 
 #![cfg(feature = "telemetry")]
 
+#[path = "support/server_process.rs"]
+mod server_process;
+
+use server_process::ServerProcess;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -414,11 +419,12 @@ async fn managed_client_failure_details_never_reach_telemetry() {
     let version = "99.99.1-version-private-token";
     let servers = project.join(".clickhouse/servers");
     std::fs::create_dir_all(&servers).unwrap();
+    let server = ServerProcess::spawn(&project, server_name);
     std::fs::write(
         servers.join(format!("{server_name}.json")),
         serde_json::to_vec(&serde_json::json!({
             "name": server_name,
-            "pid": std::process::id(),
+            "pid": server.pid(),
             "version": version,
             "http_port": 8123,
             "tcp_port": 9000,

@@ -110,6 +110,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/local_structured_errors_test.rs",
         "crates/clickhousectl/tests/support/fake_clickhouse.rs",
         "crates/clickhousectl/tests/support/fake_clickhouse_program.rs",
+        "crates/clickhousectl/tests/support/server_process.rs",
         "crates/clickhousectl/tests/local_udf_init_test.rs",
         "crates/clickhousectl/tests/local_udf_deploy_test.rs",
         "crates/clickhousectl/tests/local_udf_reload_test.rs",

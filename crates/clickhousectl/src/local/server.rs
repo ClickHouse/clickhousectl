@@ -508,9 +508,17 @@ pub fn clickhouse_data_version(name: &str) -> Result<Option<String>> {
 }
 
 /// Engine-aware liveness check.
-fn is_alive(info: &ServerInfo) -> Result<bool> {
+///
+/// A ClickHouse PID is only this server's while the process it names still
+/// runs from the server's data directory, where `start` spawned it. A bare
+/// liveness probe would accept whatever process reused the PID after a reboot
+/// or crash, and `stop` would then signal it (issue #1299).
+fn is_alive(info: &ServerInfo, lock: &MetadataLock) -> Result<bool> {
     match info.engine {
-        Engine::Clickhouse => Ok(is_process_alive(info.pid)),
+        Engine::Clickhouse => Ok(is_server_process(
+            info.pid,
+            &lock.dir.join(&info.name).join("data"),
+        )),
         Engine::Postgres => match info.container_id.as_deref() {
             Some(id) => docker::is_container_running_blocking(id),
             None => Ok(false),
@@ -597,7 +605,7 @@ fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<Se
     let Some(info) = load_info_locked(name, lock)? else {
         return Ok(None);
     };
-    if is_alive(&info)? {
+    if is_alive(&info, lock)? {
         Ok(Some(info))
     } else {
         Ok(None)
@@ -748,7 +756,7 @@ fn server_entry_locked_with(
     let Some(mut info) = load_info_locked(name, lock)? else {
         return Ok(None);
     };
-    let mut running = is_alive(&info)?;
+    let mut running = is_alive(&info, lock)?;
 
     // Keep the lock across liveness, comparison, and replacement. A restart
     // either commits before this read or waits and commits after normalization.
@@ -757,7 +765,7 @@ fn server_entry_locked_with(
         mark_server_stopped_locked(name, info.pid, lock)?;
         info =
             load_info_locked(name, lock)?.ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
-        running = is_alive(&info)?;
+        running = is_alive(&info, lock)?;
     }
     if running {
         confirm_ready_if_answering_locked(&mut info, lock)?;
@@ -799,6 +807,24 @@ pub(crate) fn is_server_running_locked(name: &str, lock: &MetadataLock) -> Resul
     Ok(load_running_info_locked(name, lock)?.is_some())
 }
 
+/// Whether `pid` is a live process whose working directory is `data_dir`.
+///
+/// A process whose working directory cannot be read, such as one owned by
+/// another user, is not treated as ours: it is never signalled, and the server
+/// is reported as not running.
+fn is_server_process(pid: u32, data_dir: &Path) -> bool {
+    if !is_process_alive(pid) {
+        return false;
+    }
+    let (Ok(cwd), Ok(data_dir)) = (
+        super::procinfo::process_cwd(pid),
+        std::fs::canonicalize(data_dir),
+    ) else {
+        return false;
+    };
+    std::fs::canonicalize(cwd).is_ok_and(|cwd| cwd == data_dir)
+}
+
 fn is_process_alive(pid: u32) -> bool {
     pid != 0 && i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) == 0 })
 }
@@ -806,7 +832,15 @@ fn is_process_alive(pid: u32) -> bool {
 /// Send a signal to a process and return an error if the signal could not be delivered
 /// (e.g. EPERM from a process owned by another user).
 fn send_signal(pid: u32, signal: i32) -> Result<()> {
-    let ret = unsafe { libc::kill(pid as i32, signal) };
+    // A PID beyond `i32` would wrap to a negative value, which `kill` reads as
+    // a process group, or as every process for -1.
+    let target = i32::try_from(pid).map_err(|_| {
+        Error::Exec(format!(
+            "Failed to send signal to PID {pid}: not a valid PID"
+        ))
+    })?;
+    // SAFETY: `kill` takes plain integers and touches no memory of ours.
+    let ret = unsafe { libc::kill(target, signal) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
         Err(Error::Exec(format!(
@@ -2257,7 +2291,8 @@ mod tests {
     fn advisory_count_ignores_corrupt_unrelated_metadata() {
         let directory = tempfile::tempdir().unwrap();
         let lock = MetadataLock::acquire_at(directory.path()).unwrap();
-        let mut healthy = test_info(std::process::id(), "25.12.1.1");
+        let server = ServerProcess::spawn(directory.path(), "healthy");
+        let mut healthy = test_info(server.pid(), "25.12.1.1");
         healthy.name = "healthy".into();
         save_server_info_locked(&healthy, &lock).unwrap();
         std::fs::write(directory.path().join("corrupt.json"), b"not json").unwrap();
@@ -2376,6 +2411,76 @@ mod tests {
     fn stopped_and_out_of_range_pids_are_never_alive() {
         assert!(!is_process_alive(0));
         assert!(!is_process_alive(u32::MAX));
+    }
+
+    /// A `sleep` run from `<servers dir>/<name>/data`, as `start` runs a
+    /// server, killed on drop.
+    struct ServerProcess(std::process::Child);
+
+    impl ServerProcess {
+        fn spawn(servers_dir: &Path, name: &str) -> Self {
+            let data_dir = servers_dir.join(name).join("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .current_dir(&data_dir)
+                .spawn()
+                .unwrap();
+            Self(child)
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    impl Drop for ServerProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn a_live_pid_running_from_elsewhere_is_not_the_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        std::fs::create_dir_all(directory.path().join("default/data")).unwrap();
+        // A live process that does not run from the data dir: the shape of a
+        // PID reused after a reboot.
+        let unrelated = ServerProcess::spawn(directory.path(), "elsewhere");
+        save_server_info_locked(&test_info(unrelated.pid(), "25.12.1.1"), &lock).unwrap();
+
+        assert!(!is_server_running_locked("default", &lock).unwrap());
+        assert!(matches!(
+            kill_server_locked("default", &lock),
+            Err(Error::ServerNotRunning(_))
+        ));
+        assert!(is_process_alive(unrelated.pid()));
+        let entry = server_entry_locked("default", &lock).unwrap().unwrap();
+        assert!(!entry.running);
+        assert_eq!(load_info_locked("default", &lock).unwrap().unwrap().pid, 0);
+    }
+
+    #[test]
+    fn a_live_pid_running_from_the_data_dir_is_the_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let server = ServerProcess::spawn(directory.path(), "default");
+        save_server_info_locked(&test_info(server.pid(), "25.12.1.1"), &lock).unwrap();
+
+        assert!(is_server_running_locked("default", &lock).unwrap());
+        // Another server's data dir is not this one's.
+        let mut other = test_info(server.pid(), "25.12.1.1");
+        other.name = "other".into();
+        std::fs::create_dir_all(directory.path().join("other/data")).unwrap();
+        assert!(!is_alive(&other, &lock).unwrap());
+    }
+
+    #[test]
+    fn a_pid_beyond_i32_is_never_signalled() {
+        assert!(send_signal(u32::MAX, 0).is_err());
+        assert!(send_signal(i32::MAX as u32 + 1, 0).is_err());
     }
 
     #[tokio::test]
