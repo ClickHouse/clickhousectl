@@ -139,6 +139,10 @@ Successful JSON output from each management invocation is one object:
 
 Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission without a TTY exits 2. Scope defaults to the current project; `--global` uses the home directory. The common `.agents/skills/` path is always included. Telemetry's saved enabled preference can still be overridden by `DO_NOT_TRACK`.
 
+## Update check
+
+Every command except `update`, `--version` included, checks for a newer release when its cached result is stale, then prints a one-line notice to stderr after the command's output if one exists. The notice is suppressed in JSON mode (`--json` or a detected coding agent). The check reads `https://builds.clickhouse.com/clickhousectl/latest.txt`, falling back to the GitHub latest-release redirect, with a 400 ms budget, sending the same `User-Agent` and agent correlation headers as other requests. A completed check holds for 24 hours and a failed one is retried after an hour; the result is cached in `~/.clickhouse/last_update_check`. Set `CLICKHOUSECTL_NO_UPDATE_CHECK=1` (any value other than empty, `0`, or `false`) to turn off both the check and the notice. `update` and `update --check` always contact the release server.
+
 ## Local error codes
 
 | Code | Meaning |
