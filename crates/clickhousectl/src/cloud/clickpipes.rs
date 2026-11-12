@@ -147,8 +147,6 @@ const PUBSUB_SEEK_TYPES: &[&str] = &["latest", "earliest", "timestamp"];
 /// `maxLength` of the Pub/Sub subscription filter in the spec, so an over-long
 /// CEL expression is a usage error instead of a rejected request.
 const PUBSUB_FILTER_MAX_LENGTH: usize = 256;
-/// `maxLength` of the base64-encoded Kafka `protobufSchema` field.
-const PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH: usize = 1_048_576;
 
 fn parse_cdc_cpu_millicores(value: &str) -> Result<u32, String> {
     let value = value
@@ -573,12 +571,14 @@ impl ClickPipeCommands {
         let (source, error) = match command {
             ClickPipeCreateCommands::ObjectStorage(args) => (
                 "object-storage",
-                build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage).err(),
+                build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)
+                    .and_then(|_| validate_object_storage_source_args(&args.source))
+                    .err(),
             ),
             ClickPipeCreateCommands::Kafka(args) => (
                 "kafka",
                 build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)
-                    .and_then(|_| validate_kafka_schema_registry_args(&args.source))
+                    .and_then(|_| validate_kafka_source_args(&args.source))
                     .err(),
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
@@ -601,7 +601,9 @@ impl ClickPipeCommands {
             }
             ClickPipeCreateCommands::PubSub(args) => (
                 "pubsub",
-                build_create_request_args(&args.request, ClickPipeSourceKind::PubSub).err(),
+                build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)
+                    .and_then(|_| validate_pubsub_source_args(&args.source))
+                    .err(),
             ),
         };
 
@@ -614,19 +616,24 @@ impl ClickPipeCommands {
         let Self::SchemaDiscover { command } = self else {
             return None;
         };
-        match command {
+        // Exhaustive so every source runs its no-I/O checks before credentials,
+        // file reads, or HTTP.
+        let (source, error) = match command {
             ClickPipeSchemaDiscoverCommands::Kinesis(args) => {
-                validate_kinesis_source_args(&args.source)
-                    .err()
-                    .map(|error| ("kinesis", error.message))
+                ("kinesis", validate_kinesis_source_args(&args.source).err())
             }
             ClickPipeSchemaDiscoverCommands::Kafka(args) => {
-                validate_kafka_schema_registry_args(&args.source)
-                    .err()
-                    .map(|error| ("kafka", error.message))
+                ("kafka", validate_kafka_source_args(&args.source).err())
             }
-            _ => None,
-        }
+            ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => (
+                "object-storage",
+                validate_object_storage_source_args(&args.source).err(),
+            ),
+            ClickPipeSchemaDiscoverCommands::PubSub(args) => {
+                ("pubsub", validate_pubsub_source_args(&args.source).err())
+            }
+        };
+        error.map(|error| (source, error.message))
     }
 
     pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
@@ -2490,17 +2497,17 @@ async fn clickpipe_list(client: &CloudClient, service_id: &str, json: bool) -> C
     Ok(())
 }
 
-/// Build a `ClickPipePostObjectStorageSource` from the CLI args, inferring the
-/// authentication mechanism from the credential flags and reading any GCP
-/// service-account file up front so bad invocations fail fast before any
-/// network call. Shared by the `clickpipe create object-storage` and
-/// `clickpipe schema-discover object-storage <SERVICE_ID>` handlers.
-fn build_object_storage_source(
+/// Check the object-storage storage-type, authentication and credential-flag
+/// rules clap cannot express. No I/O, so it runs before credentials or network
+/// access, and again in the builder.
+fn validate_object_storage_source_args(
     args: &ObjectStorageSourceFields,
-) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
+) -> CloudResult<(
+    clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceType,
+    Option<clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceAuthentication>,
+)> {
     use clickhouse_cloud_api::models::{
-        ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
-        ClickPipePostObjectStorageSourceType, MskIamUser,
+        ClickPipePostObjectStorageSourceAuthentication, ClickPipePostObjectStorageSourceType,
     };
 
     let source_type: ClickPipePostObjectStorageSourceType = parse_enum(&args.storage_type)?;
@@ -2520,7 +2527,7 @@ fn build_object_storage_source(
     .filter(|present| *present)
     .count();
     if credential_groups > 1 {
-        return Err(CloudError::new(
+        return Err(CloudError::usage(
             "object-storage credential flags select more than one authentication method",
         ));
     }
@@ -2638,6 +2645,24 @@ fn build_object_storage_source(
         None => {}
     }
 
+    Ok((source_type, authentication))
+}
+
+/// Build a `ClickPipePostObjectStorageSource` from the CLI args, inferring the
+/// authentication mechanism from the credential flags and reading any GCP
+/// service-account file up front so bad invocations fail fast before any
+/// network call. Shared by the `clickpipe create object-storage` and
+/// `clickpipe schema-discover object-storage <SERVICE_ID>` handlers.
+fn build_object_storage_source(
+    args: &ObjectStorageSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
+        MskIamUser,
+    };
+
+    let (source_type, authentication) = validate_object_storage_source_args(args)?;
+    let has_access_key = args.access_key_id.is_some() && args.secret_key.is_some();
     let access_key = if has_access_key {
         Some(MskIamUser {
             access_key_id: args.access_key_id.clone().unwrap_or_default(),
@@ -2945,7 +2970,7 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
             )));
         }
         None if credential_groups > 1 => {
-            return Err(CloudError::new(
+            return Err(CloudError::usage(
                 "Kafka broker credential flags select more than one authentication method",
             ));
         }
@@ -3078,12 +3103,9 @@ fn build_kafka_schema_registry(
     ))
 }
 
-// Keep I/O failures typed; the source chooses how invalid schema content is
-// reported independently of failures to open or read its input.
-fn read_protobuf_schema_file(
-    path: &str,
-    invalid_input: fn(String) -> CloudError,
-) -> CloudResult<String> {
+// Keep I/O failures typed; an empty schema is a usage error. The API enforces
+// the encoded size limit.
+fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
     let contents = if path == "-" {
         use std::io::Read as _;
         let mut contents = Vec::new();
@@ -3093,20 +3115,17 @@ fn read_protobuf_schema_file(
         read_flag_file_bytes("--protobuf-schema-file", path)?
     };
     if contents.is_empty() {
-        return Err(invalid_input(if path == "-" {
+        return Err(CloudError::usage(if path == "-" {
             "no Protobuf schema received on stdin".to_string()
         } else {
             format!("Protobuf schema file '{path}' was empty")
         }));
     }
 
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents);
-    if encoded.len() > PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH {
-        return Err(invalid_input(format!(
-            "Protobuf schema exceeds the encoded size limit of {PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH} bytes"
-        )));
-    }
-    Ok(encoded)
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        contents,
+    ))
 }
 
 /// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
@@ -3159,7 +3178,7 @@ fn build_kafka_source_with_exactly_once(
     let protobuf_schema = args
         .protobuf_schema_file
         .as_deref()
-        .map(|path| read_protobuf_schema_file(path, CloudError::new))
+        .map(read_protobuf_schema_file)
         .transpose()?;
 
     Ok(ClickPipePostKafkaSource {
@@ -3268,7 +3287,7 @@ fn build_kinesis_source(
         protobuf_schema: args
             .protobuf_schema_file
             .as_deref()
-            .map(|path| read_protobuf_schema_file(path, CloudError::usage))
+            .map(read_protobuf_schema_file)
             .transpose()?,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
@@ -3426,19 +3445,17 @@ fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chro
         })
 }
 
-/// Build a `ClickPipePostPubSubSource` from the CLI args, reading the GCP
-/// service-account key up front so a bad path or an unreadable key fails
-/// before any network call. Shared by the `clickpipe create pubsub` and
-/// `clickpipe schema-discover pubsub <SERVICE_ID>` handlers, so discovery and
-/// creation send an identical `pubsub` source.
-fn build_pubsub_source(
+/// Check the Pub/Sub seek and authentication rules clap cannot express. No
+/// I/O, so it runs before credentials or network access, and again in the
+/// builder. Returns the seek type and, for `SERVICE_ACCOUNT`, the key file
+/// path; `None` means workload identity.
+fn validate_pubsub_source_args(
     args: &PubSubSourceFields,
-) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
-    use clickhouse_cloud_api::models::{
-        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceAuthentication,
-        ClickPipePostPubSubSourceSeektype, ClickPipePostPubSubWorkloadIdentitySource,
-        ClickPipePostPubSubWorkloadIdentitySourceAuthentication, ServiceAccount,
-    };
+) -> CloudResult<(
+    clickhouse_cloud_api::models::ClickPipePostPubSubSourceSeektype,
+    Option<&str>,
+)> {
+    use clickhouse_cloud_api::models::ClickPipePostPubSubSourceSeektype;
 
     let seek_type: ClickPipePostPubSubSourceSeektype = parse_enum(&args.seek_type)?;
     // The API rejects a seekTimestamp that does not match the seek type. clap
@@ -3451,15 +3468,43 @@ fn build_pubsub_source(
         )));
     }
 
-    let authentication = parse_pubsub_authentication(&args.auth)?;
-    match (authentication, args.service_account_file.as_deref()) {
-        (GcpAuthentication::ServiceAccount, None) => Err(CloudError::usage(
-            "--auth SERVICE_ACCOUNT requires --service-account-file",
-        )),
-        (GcpAuthentication::WorkloadIdentity, Some(_)) => Err(CloudError::usage(
-            "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
-        )),
-        (GcpAuthentication::ServiceAccount, Some(path)) => {
+    let service_account_file = match (
+        parse_pubsub_authentication(&args.auth)?,
+        args.service_account_file.as_deref(),
+    ) {
+        (GcpAuthentication::ServiceAccount, None) => {
+            return Err(CloudError::usage(
+                "--auth SERVICE_ACCOUNT requires --service-account-file",
+            ));
+        }
+        (GcpAuthentication::WorkloadIdentity, Some(_)) => {
+            return Err(CloudError::usage(
+                "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ));
+        }
+        (GcpAuthentication::ServiceAccount, Some(path)) => Some(path),
+        (GcpAuthentication::WorkloadIdentity, None) => None,
+    };
+    Ok((seek_type, service_account_file))
+}
+
+/// Build a `ClickPipePostPubSubSource` from the CLI args, reading the GCP
+/// service-account key up front so a bad path or an unreadable key fails
+/// before any network call. Shared by the `clickpipe create pubsub` and
+/// `clickpipe schema-discover pubsub <SERVICE_ID>` handlers, so discovery and
+/// creation send an identical `pubsub` source.
+fn build_pubsub_source(
+    args: &PubSubSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceAuthentication,
+        ClickPipePostPubSubWorkloadIdentitySource,
+        ClickPipePostPubSubWorkloadIdentitySourceAuthentication, ServiceAccount,
+    };
+
+    let (seek_type, service_account_file) = validate_pubsub_source_args(args)?;
+    match service_account_file {
+        Some(path) => {
             Ok(ClickPipePostPubSubServiceAccountSource {
                 topic: args.topic.clone(),
                 project_id: args.project_id.clone(),
@@ -3480,7 +3525,7 @@ fn build_pubsub_source(
             }
             .into())
         }
-        (GcpAuthentication::WorkloadIdentity, None) => {
+        None => {
             Ok(ClickPipePostPubSubWorkloadIdentitySource {
                 topic: args.topic.clone(),
                 project_id: args.project_id.clone(),
@@ -5047,7 +5092,7 @@ fn read_gcp_service_account_file(path: &str) -> CloudResult<String> {
         read_flag_file("--service-account-file", path)?
     };
     if contents.trim().is_empty() {
-        return Err(CloudError::new(if path == "-" {
+        return Err(CloudError::usage(if path == "-" {
             "no service account key received on stdin".to_string()
         } else {
             format!("service account key file '{path}' was empty")
@@ -12113,6 +12158,7 @@ mod tests {
         flags = pubsub_source_flags(&empty_path);
         let args = parse_pubsub_create(&flags);
         let error = build_pubsub_source(&args.source).expect_err("empty key file fails");
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
         assert_names(&error.to_string(), &[&format!("'{empty_path}'")]);
 
         // The happy path still reads the same file the other tests use.
@@ -14737,25 +14783,6 @@ mod tests {
     }
 
     #[test]
-    fn build_kafka_source_rejects_oversized_protobuf_schema() {
-        let directory = tempfile::tempdir().unwrap();
-        let schema = directory.path().join("events.desc");
-        std::fs::write(&schema, vec![0_u8; 786_433]).unwrap();
-        let mut args = kafka_source_with_plain_auth();
-        args.format = "Protobuf".into();
-        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
-
-        let error = build_kafka_source(&args).unwrap_err();
-        assert!(
-            names_word(
-                &error.message,
-                &PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH.to_string()
-            ),
-            "{error:?}"
-        );
-    }
-
-    #[test]
     fn build_kafka_source_rejects_an_empty_protobuf_schema() {
         let directory = tempfile::tempdir().unwrap();
         let schema = directory.path().join("events.proto");
@@ -14765,6 +14792,7 @@ mod tests {
         args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
 
         let error = build_kafka_source(&args).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
         assert_names(&error.message, &[&format!("'{}'", schema.display())]);
     }
 
@@ -15185,10 +15213,131 @@ mod tests {
             .expect("Glue without a role is rejected before schema discovery");
         assert!(message.contains("--glue-role-arn"), "{message}");
 
-        create.extend(["--iam-role", "arn:role"]);
+        // A source authenticating with --iam-role supplies the Glue role.
+        let mut iam_role = kafka_create_cli_args_without_auth();
+        iam_role.extend(&create[create.len() - 6..]);
+        iam_role.extend(["--iam-role", "arn:role"]);
         assert_eq!(
-            clickpipe_validation_message(&parse_clickpipe(&create)),
+            clickpipe_validation_message(&parse_clickpipe(&iam_role)),
             None
+        );
+    }
+
+    /// The source rules each operation checks after parsing, as
+    /// `(operation, source, error)` for the parsed invocation.
+    fn source_validation_error(args: &[&str]) -> Option<(&'static str, &'static str, String)> {
+        let command = parse_clickpipe(args);
+        command
+            .clickpipe_create_validation_error()
+            .map(|(source, message)| ("create", source, message))
+            .or_else(|| {
+                command
+                    .clickpipe_schema_discover_validation_error()
+                    .map(|(source, message)| ("schema-discover", source, message))
+            })
+    }
+
+    #[test]
+    fn kafka_broker_auth_rules_run_before_execution() {
+        let mut create = kafka_create_cli_args();
+        create.extend(["--iam-role", "arn:role"]);
+        let mut discover = kafka_discover_cli_args();
+        discover.extend(["--iam-role", "arn:role"]);
+        for (args, operation) in [(create, "create"), (discover, "schema-discover")] {
+            let (actual, source, message) =
+                source_validation_error(&args).expect("PLAIN with an IAM role is rejected");
+            assert_eq!((actual, source), (operation, "kafka"));
+            assert_names(&message, &["--auth PLAIN"]);
+        }
+    }
+
+    #[test]
+    fn object_storage_auth_rules_run_before_execution() {
+        let flags = ["--storage-type", "gcs", "--iam-role", "arn:role"];
+        let mut create = object_storage_create_cli_args();
+        create.extend(["--column", "id:UInt64"]);
+        create.extend(flags);
+        let mut discover = vec![
+            "schema-discover",
+            "object-storage",
+            "svc-1",
+            "--source-url",
+            "gs://bucket/events/*.json",
+            "--format",
+            "JSONEachRow",
+        ];
+        discover.extend(flags);
+        for (args, operation) in [(create, "create"), (discover, "schema-discover")] {
+            let (actual, source, message) =
+                source_validation_error(&args).expect("IAM_ROLE on GCS is rejected");
+            assert_eq!((actual, source), (operation, "object-storage"));
+            assert_names(&message, &["--storage-type s3"]);
+        }
+    }
+
+    #[test]
+    fn pubsub_seek_and_auth_rules_run_before_execution() {
+        // The key file does not exist: the rules reject the invocation before
+        // anything reads it.
+        let mut flags = pubsub_source_flags("/missing/sa-key.json");
+        flags.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
+        let mut create = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+        ];
+        create.extend(flags.iter().copied());
+        let mut discover = vec!["schema-discover", "pubsub", "svc-1"];
+        discover.extend(flags.iter().copied());
+        for (args, operation) in [(create, "create"), (discover, "schema-discover")] {
+            let (actual, source, message) =
+                source_validation_error(&args).expect("a timestamp without timestamp seek");
+            assert_eq!((actual, source), (operation, "pubsub"));
+            assert_names(&message, &["--seek-timestamp", "--seek-type earliest"]);
+        }
+    }
+
+    #[test]
+    fn source_rules_found_without_io_are_usage_errors() {
+        let mut kafka = kafka_source_with_plain_auth();
+        kafka.auth = None;
+        kafka.iam_role = Some("arn:role".into());
+        assert_eq!(
+            validate_kafka_source_args(&kafka).unwrap_err().kind,
+            crate::cloud::client::CloudErrorKind::Usage
+        );
+
+        let mut object_storage = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.s3.amazonaws.com/events.json",
+            "--format",
+            "JSONEachRow",
+            "--iam-role",
+            "arn:role",
+        ]);
+        object_storage.connection_string = Some("DefaultEndpointsProtocol=https".into());
+        assert_eq!(
+            validate_object_storage_source_args(&object_storage)
+                .unwrap_err()
+                .kind,
+            crate::cloud::client::CloudErrorKind::Usage
+        );
+
+        let mut flags = pubsub_source_flags("/missing/sa-key.json");
+        flags.extend(["--auth", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"]);
+        assert_eq!(
+            validate_pubsub_source_args(&parse_pubsub_discovery(&flags))
+                .unwrap_err()
+                .kind,
+            crate::cloud::client::CloudErrorKind::Usage
         );
     }
 
@@ -15303,20 +15452,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let schema = dir.path().join("schema.proto");
         args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
-        for contents in [vec![], vec![0; PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH]] {
-            std::fs::write(&schema, contents).unwrap();
-            assert_eq!(
-                build_kinesis_source(&args).unwrap_err().kind,
-                CloudErrorKind::Usage
-            );
-            // The shared reader preserves Kafka's existing error classification.
-            assert_eq!(
-                read_protobuf_schema_file(schema.to_str().unwrap(), CloudError::new)
-                    .unwrap_err()
-                    .kind,
-                CloudErrorKind::Generic
-            );
-        }
+        std::fs::write(&schema, []).unwrap();
+        assert_eq!(
+            build_kinesis_source(&args).unwrap_err().kind,
+            CloudErrorKind::Usage
+        );
     }
 
     fn parsed_kinesis_source(operation: &str, flags: &[&str]) -> KinesisSourceFields {
