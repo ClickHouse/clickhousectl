@@ -5,7 +5,7 @@ use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_validation_args, print_created,
 };
 use crate::cloud::clickpipes::destination::{build_destination, build_destination_roles};
-use crate::cloud::clickpipes::sources::DB_AUTHS;
+use crate::cloud::clickpipes::sources::{DB_AUTHS, basic_auth_credentials, validate_db_auth_args};
 use crate::cloud::clickpipes::table_mapping::{
     parse_mysql_table_mapping_json, parse_postgres_table_mapping,
     parse_postgres_table_mapping_parts,
@@ -141,23 +141,23 @@ pub struct MySqlCreateArgs {
     pub server_id: Option<u64>,
 
     /// Interval in seconds to sync data during CDC replication
-    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "SECONDS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub sync_interval_seconds: Option<i64>,
 
     /// Number of rows to pull in each CDC batch
-    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub pull_batch_size: Option<i64>,
 
     /// Parallel workers per table in the initial snapshot phase
-    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "WORKERS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub initial_load_parallelism: Option<i64>,
 
     /// Number of rows per partition during the snapshot phase
-    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1000..))]
     pub snapshot_rows_per_partition: Option<i64>,
 
     /// Tables to snapshot in parallel during the initial load phase
-    #[arg(long, value_name = "TABLES", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "TABLES", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub snapshot_parallel_tables: Option<i64>,
 
     /// Preserve MySQL nullability in destination columns
@@ -185,34 +185,12 @@ pub(in crate::cloud::clickpipes) fn validate_mysql_create_args(
     args: &MySqlCreateArgs,
 ) -> CloudResult<()> {
     resolve_mysql_table_mappings(args)?;
-    // Clap enforces this for parsed input via `required_if_eq`; hand-built
-    // args reach it here.
-    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
-        return Err(CloudError::usage(
-            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
-        ));
-    }
-    if args.auth == "basic" && args.iam_role.is_some() {
-        return Err(CloudError::usage(
-            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
-        ));
-    }
-    // IAM_ROLE authentication has no username or password: the role ARN is the
-    // whole credential. Reject the pair rather than silently dropping it, the
-    // same way basic auth rejects --iam-role.
-    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
-        return Err(CloudError::usage(
-            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
-        ));
-    }
-    // clap joins --username and --password with `requires`, so half a pair is
-    // already a usage error; this owns the "basic auth needs the pair at all"
-    // rule, which clap cannot express because it depends on --auth's value.
-    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
-        return Err(CloudError::usage(
-            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
-        ));
-    }
+    validate_db_auth_args(
+        &args.auth,
+        args.iam_role.as_deref(),
+        args.username.as_deref(),
+        args.password.as_deref(),
+    )?;
     if args.disable_tls
         && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
     {
@@ -288,7 +266,7 @@ fn build_mysql_request(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutateMySQLSource, ClickPipeMutateMySQLSourceAuthentication,
-        ClickPipeMySQLPipeSettings, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipeMySQLPipeSettings, ClickPipePostRequest, ClickPipePostSource,
     };
 
     let request_args = build_create_validation_args(&args.validation);
@@ -322,16 +300,9 @@ fn build_mysql_request(
     // new mode added to the library enum is a compile error here rather than a
     // silent credential-less create.
     let credentials = match &authentication {
-        // `validate_mysql_create_args` has already required the pair for basic
-        // auth, so `zip` yields `Some` for every invocation that reaches here.
-        ClickPipeMutateMySQLSourceAuthentication::Basic => args
-            .username
-            .as_deref()
-            .zip(args.password.as_deref())
-            .map(|(username, password)| PLAIN {
-                username: username.to_string(),
-                password: password.to_string(),
-            }),
+        ClickPipeMutateMySQLSourceAuthentication::Basic => {
+            basic_auth_credentials(args.username.as_deref(), args.password.as_deref())
+        }
         // The role ARN is the whole credential: the `credentials` object must
         // stay off the wire entirely.
         ClickPipeMutateMySQLSourceAuthentication::IAM_ROLE => None,
@@ -592,6 +563,23 @@ mod tests {
             let mut args = mysql_create_cli_args();
             args.extend([flag, invalid]);
             assert_rejected(&args);
+        }
+    }
+
+    #[test]
+    fn mysql_cdc_tuning_reports_negative_values_as_out_of_range() {
+        for flag in [
+            "--sync-interval-seconds",
+            "--pull-batch-size",
+            "--initial-load-parallelism",
+            "--snapshot-rows-per-partition",
+            "--snapshot-parallel-tables",
+        ] {
+            let mut args = mysql_create_cli_args();
+            args.extend([flag, "-1"]);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_names(&error.to_string(), &[flag]);
         }
     }
 

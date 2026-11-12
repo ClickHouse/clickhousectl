@@ -1,12 +1,8 @@
-use crate::cloud::clickpipes::cli::{
-    ClickPipeCreateRequestArgs, DestinationRoleArgs, StreamingDestinationTableArgs,
-};
+use crate::cloud::clickpipes::cli::{ClickPipeCreateRequestArgs, StreamingDestinationArgs};
 use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_request_args, print_created,
 };
-use crate::cloud::clickpipes::destination::{
-    build_destination_roles, build_streaming_destination, parse_columns, parse_destination_column,
-};
+use crate::cloud::clickpipes::destination::parse_columns;
 use crate::cloud::clickpipes::sources::{AuthenticationValueParser, read_gcp_service_account_file};
 use crate::cloud::clickpipes::{ClickPipeSourceKind, parse_enum};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
@@ -184,28 +180,8 @@ pub struct ObjectStorageCreateArgs {
     #[command(flatten)]
     pub source: ObjectStorageSourceFields,
 
-    /// Destination database
-    #[arg(long)]
-    pub database: String,
-
-    /// Destination table
-    #[arg(long)]
-    pub table: String,
-
-    /// Destination column as name:type (required, repeatable)
-    #[arg(
-        long = "column",
-        required = true,
-        value_name = "NAME:TYPE",
-        value_parser = parse_destination_column
-    )]
-    pub columns: Vec<String>,
-
     #[command(flatten)]
-    pub destination_table: StreamingDestinationTableArgs,
-
-    #[command(flatten)]
-    pub destination_roles: DestinationRoleArgs,
+    pub destination: StreamingDestinationArgs,
 }
 
 /// Check the object-storage storage-type, authentication and credential-flag
@@ -428,15 +404,9 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_object_storage(
     // invocations fail fast.
     let request_args =
         build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)?;
-    let parsed_columns = parse_columns(&args.columns)?;
+    let parsed_columns = parse_columns(&args.destination.columns)?;
     let source = build_object_storage_source(&args.source)?;
-    let destination = build_streaming_destination(
-        &args.database,
-        &args.table,
-        parsed_columns,
-        build_destination_roles(&args.destination_roles.roles),
-        &args.destination_table,
-    )?;
+    let destination = args.destination.build(parsed_columns)?;
     let org_id = resolve_org_id(client).await?;
 
     let mut request = ClickPipePostRequest {
@@ -557,9 +527,9 @@ mod tests {
         assert_eq!(args.name, "pipe-1");
         assert_eq!(args.source.source_url, "https://bucket.example/data/*.csv");
         assert_eq!(args.source.format, "CSV");
-        assert_eq!(args.database, "db");
-        assert_eq!(args.table, "events");
-        assert_eq!(args.columns, ["id:UInt64", "name:String"]);
+        assert_eq!(args.destination.database, "db");
+        assert_eq!(args.destination.table, "events");
+        assert_eq!(args.destination.columns, ["id:UInt64", "name:String"]);
         assert_eq!(args.source.storage_type, "gcs");
         assert_eq!(args.source.compression, "gzip");
         assert_eq!(args.source.auth, None);
@@ -608,7 +578,7 @@ mod tests {
         else {
             panic!("expected object-storage create");
         };
-        assert_eq!(args.columns, ["id:Int64"]);
+        assert_eq!(args.destination.columns, ["id:Int64"]);
         assert_eq!(args.source.storage_type, "s3");
         assert_eq!(args.source.compression, "auto");
         assert_eq!(args.source.auth, None);

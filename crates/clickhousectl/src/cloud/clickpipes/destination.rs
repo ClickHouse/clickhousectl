@@ -1,4 +1,4 @@
-use super::cli::StreamingDestinationTableArgs;
+use super::cli::{StreamingDestinationArgs, StreamingDestinationTableArgs};
 use super::non_empty;
 use crate::cloud::client::{CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_flag_config_value};
@@ -152,6 +152,23 @@ pub(super) fn build_streaming_destination(
     })
 }
 
+impl StreamingDestinationArgs {
+    /// Build this create's destination from columns the caller already parsed,
+    /// so each handler keeps its own validation order.
+    pub(super) fn build(
+        &self,
+        columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+    ) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMutateDestination> {
+        build_streaming_destination(
+            &self.database,
+            &self.table,
+            columns,
+            build_destination_roles(&self.destination_roles.roles),
+            &self.destination_table,
+        )
+    }
+}
+
 /// Build a managed-table destination with the default MergeTree engine.
 pub(super) fn build_destination(
     database: &str,
@@ -265,7 +282,7 @@ mod tests {
             panic!("expected object-storage create");
         };
         assert_eq!(
-            args.columns,
+            args.destination.columns,
             [
                 "_path:LowCardinality(String)",
                 "payload:Nullable(Tuple(id UInt64, label String))"
@@ -662,7 +679,10 @@ mod tests {
         else {
             panic!("expected clickpipe create kafka");
         };
-        assert_eq!(parsed.destination_roles.roles, vec!["reader", "writer"]);
+        assert_eq!(
+            parsed.destination.destination_roles.roles,
+            vec!["reader", "writer"]
+        );
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::Kafka(parsed),
@@ -670,7 +690,7 @@ mod tests {
         else {
             panic!("expected clickpipe create kafka");
         };
-        assert!(parsed.destination_roles.roles.is_empty());
+        assert!(parsed.destination.destination_roles.roles.is_empty());
     }
 
     #[test]
@@ -735,16 +755,16 @@ mod tests {
             let options = match parse_clickpipe(&args) {
                 ClickPipeCommands::Create {
                     command: ClickPipeCreateCommands::ObjectStorage(args),
-                } => args.destination_table,
+                } => args.destination.destination_table,
                 ClickPipeCommands::Create {
                     command: ClickPipeCreateCommands::Kafka(args),
-                } => args.destination_table,
+                } => args.destination.destination_table,
                 ClickPipeCommands::Create {
                     command: ClickPipeCreateCommands::Kinesis(args),
-                } => args.destination_table,
+                } => args.destination.destination_table,
                 ClickPipeCommands::Create {
                     command: ClickPipeCreateCommands::PubSub(args),
-                } => args.destination_table,
+                } => args.destination.destination_table,
                 _ => panic!("expected streaming create"),
             };
             assert!(!options.managed_table);
@@ -760,8 +780,11 @@ mod tests {
         else {
             panic!("expected Kafka create");
         };
-        assert!(args.destination_table.managed_table);
-        assert_eq!(args.destination_table.table_definition_file, None);
+        assert!(args.destination.destination_table.managed_table);
+        assert_eq!(
+            args.destination.destination_table.table_definition_file,
+            None
+        );
     }
 
     #[test]

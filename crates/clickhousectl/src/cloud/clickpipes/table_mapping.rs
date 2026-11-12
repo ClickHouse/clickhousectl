@@ -6,98 +6,97 @@ use clickhouse_cloud_api::models::{
     ClickPipePostgresPipeTableMappingTableengine,
 };
 
+/// The source names a `--table-mapping` value carries before `:target_table`,
+/// so each source's errors spell its own format (`schema.table`,
+/// `database.collection`, `dataset.table`).
+struct TableMappingNouns {
+    container: &'static str,
+    item: &'static str,
+}
+
+const POSTGRES_TABLE_MAPPING: TableMappingNouns = TableMappingNouns {
+    container: "schema",
+    item: "table",
+};
+const MONGODB_TABLE_MAPPING: TableMappingNouns = TableMappingNouns {
+    container: "database",
+    item: "collection",
+};
+const BIGQUERY_TABLE_MAPPING: TableMappingNouns = TableMappingNouns {
+    container: "dataset",
+    item: "table",
+};
+
+/// Split `container.item:target_table` into its trimmed, non-empty parts.
+fn parse_table_mapping_parts(
+    mapping: &str,
+    nouns: &TableMappingNouns,
+) -> CloudResult<(String, String, String)> {
+    let TableMappingNouns { container, item } = nouns;
+    let invalid_format = || {
+        CloudError::usage(format!(
+            "invalid table mapping '{mapping}': expected {container}.{item}:target_table"
+        ))
+    };
+    let (source, target) = mapping.split_once(':').ok_or_else(invalid_format)?;
+    let (source_container, source_item) = source.split_once('.').ok_or_else(invalid_format)?;
+    for (part, value) in [
+        (format!("source {container}"), source_container),
+        (format!("source {item}"), source_item),
+        ("target table".to_string(), target),
+    ] {
+        if value.trim().is_empty() {
+            return Err(CloudError::usage(format!(
+                "invalid table mapping '{mapping}': {part} must not be empty"
+            )));
+        }
+    }
+
+    Ok((
+        source_container.trim().to_string(),
+        source_item.trim().to_string(),
+        target.trim().to_string(),
+    ))
+}
+
+/// Run a parts parser as a clap value parser, keeping the raw value.
+fn table_mapping_value(mapping: &str, nouns: &TableMappingNouns) -> Result<String, String> {
+    parse_table_mapping_parts(mapping, nouns)
+        .map(|_| mapping.to_string())
+        .map_err(|error| error.message)
+}
+
+/// `schema.table:target_table`, for Postgres and MySQL.
 pub(super) fn parse_postgres_table_mapping_parts(
     mapping: &str,
 ) -> CloudResult<(String, String, String)> {
-    let (source, target) = mapping.split_once(':').ok_or_else(|| {
-        CloudError::usage(format!(
-            "invalid table mapping '{}': expected schema.table:target_table",
-            mapping
-        ))
-    })?;
-    let (schema, table) = source.split_once('.').ok_or_else(|| {
-        CloudError::usage(format!(
-            "invalid table mapping '{}': expected schema.table:target_table",
-            mapping
-        ))
-    })?;
-    if schema.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': source schema must not be empty",
-            mapping
-        )));
-    }
-    if table.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': source table must not be empty",
-            mapping
-        )));
-    }
-    if target.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': target table must not be empty",
-            mapping
-        )));
-    }
-
-    Ok((
-        schema.trim().to_string(),
-        table.trim().to_string(),
-        target.trim().to_string(),
-    ))
+    parse_table_mapping_parts(mapping, &POSTGRES_TABLE_MAPPING)
 }
 
 pub(super) fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
-    parse_postgres_table_mapping_parts(mapping)
-        .map(|_| mapping.to_string())
-        .map_err(|error| error.message)
+    table_mapping_value(mapping, &POSTGRES_TABLE_MAPPING)
 }
 
+/// `database.collection:target_table`, for MongoDB.
 pub(super) fn parse_mongodb_table_mapping_parts(
     mapping: &str,
 ) -> CloudResult<(String, String, String)> {
-    let (source, target) = mapping.split_once(':').ok_or_else(|| {
-        CloudError::usage(format!(
-            "invalid table mapping '{}': expected database.collection:target_table",
-            mapping
-        ))
-    })?;
-    let (database, collection) = source.split_once('.').ok_or_else(|| {
-        CloudError::usage(format!(
-            "invalid table mapping '{}': expected database.collection:target_table",
-            mapping
-        ))
-    })?;
-    if database.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': source database must not be empty",
-            mapping
-        )));
-    }
-    if collection.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': source collection must not be empty",
-            mapping
-        )));
-    }
-    if target.trim().is_empty() {
-        return Err(CloudError::usage(format!(
-            "invalid table mapping '{}': target table must not be empty",
-            mapping
-        )));
-    }
-
-    Ok((
-        database.trim().to_string(),
-        collection.trim().to_string(),
-        target.trim().to_string(),
-    ))
+    parse_table_mapping_parts(mapping, &MONGODB_TABLE_MAPPING)
 }
 
 pub(super) fn parse_mongodb_table_mapping(mapping: &str) -> Result<String, String> {
-    parse_mongodb_table_mapping_parts(mapping)
-        .map(|_| mapping.to_string())
-        .map_err(|error| error.message)
+    table_mapping_value(mapping, &MONGODB_TABLE_MAPPING)
+}
+
+/// `dataset.table:target_table`, for BigQuery.
+pub(super) fn parse_bigquery_table_mapping_parts(
+    mapping: &str,
+) -> CloudResult<(String, String, String)> {
+    parse_table_mapping_parts(mapping, &BIGQUERY_TABLE_MAPPING)
+}
+
+pub(super) fn parse_bigquery_table_mapping(mapping: &str) -> Result<String, String> {
+    table_mapping_value(mapping, &BIGQUERY_TABLE_MAPPING)
 }
 
 fn parse_strict_table_mapping_json<T>(position: usize, raw: &str, fields: &[&str]) -> CloudResult<T>

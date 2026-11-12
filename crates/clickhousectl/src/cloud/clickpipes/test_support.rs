@@ -1,6 +1,7 @@
 use super::cli::{
     ClickPipeCommands, ClickPipeCreateCommands, ClickPipeCreateRequestArgs,
-    ClickPipeSchemaDiscoverCommands, DestinationRoleArgs, StreamingDestinationTableArgs,
+    ClickPipeSchemaDiscoverCommands, DestinationRoleArgs, StreamingDestinationArgs,
+    StreamingDestinationTableArgs,
 };
 use super::sources::kafka::{KafkaCreateArgs, KafkaSourceFields};
 use super::sources::object_storage::ObjectStorageSourceFields;
@@ -620,11 +621,13 @@ pub(super) fn kafka_args() -> KafkaCreateArgs {
             reverse_private_endpoint_ids: vec![],
         },
         exactly_once: None,
-        database: "d".into(),
-        table: "t".into(),
-        columns: vec![],
-        destination_table: StreamingDestinationTableArgs::default(),
-        destination_roles: DestinationRoleArgs::default(),
+        destination: StreamingDestinationArgs {
+            database: "d".into(),
+            table: "t".into(),
+            columns: vec![],
+            destination_table: StreamingDestinationTableArgs::default(),
+            destination_roles: DestinationRoleArgs::default(),
+        },
     }
 }
 
