@@ -215,24 +215,14 @@ impl CloudErrorDetail {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct CloudErrorOutput<'a> {
-    error: &'a CloudErrorDetail,
-}
+#[cfg(test)]
+type CloudErrorOutput<'a> = crate::stdout::ErrorEnvelope<'a, CloudErrorDetail>;
 
-/// Write exactly one cloud error object to stderr, for `--json` mode.
-///
-/// Serialization failure is swallowed for the same reason the crate's
-/// `eprintln!` swallows a write failure (see `crate::stdout`): the exit code
-/// reports the outcome, so a closed stderr must not become a panic.
+/// Write exactly one cloud error object to stderr, for `--json` mode, in the
+/// envelope local failures share (`crate::stdout::eprint_error_envelope`).
 pub fn print_error(error: &crate::error::Error) {
-    use std::io::Write;
     let detail = CloudErrorDetail::from_error(error);
-    let stderr = std::io::stderr();
-    let mut stderr = stderr.lock();
-    if serde_json::to_writer_pretty(&mut stderr, &CloudErrorOutput { error: &detail }).is_ok() {
-        let _ = writeln!(stderr);
-    }
+    crate::stdout::eprint_error_envelope(detail.as_ref());
 }
 
 // ── next-step polling hints (issue #1162) ───────────────────────────────────
