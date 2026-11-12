@@ -33,6 +33,9 @@ Set the same `X.Y.Z` in all of:
 - `crates/clickhouse-cloud-api/Cargo.toml` — `version`
 - `npm/package.json` — `version`
 
+In `crates/clickhouse-cloud-api/CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z` and start a new empty
+`## Unreleased` above it.
+
 `pypi/pyproject.toml` takes its version from `crates/clickhousectl/Cargo.toml` (`dynamic = ["version"]`).
 Land the bump on `main` through a PR like any other change.
 

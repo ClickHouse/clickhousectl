@@ -83,6 +83,11 @@ pub mod meta;
 pub mod models;
 pub mod serde_helpers;
 
+/// The HTTP client crate this one is built on, re-exported so a caller passing a
+/// prebuilt client to [`Client::with_http_client`] or reading the
+/// [`reqwest::Response`] a query method returns uses the same version.
+pub use reqwest;
+
 pub use client::Client;
 pub use convert::MissingRequiredFields;
 pub use error::Error;
