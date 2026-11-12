@@ -4,6 +4,40 @@ use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
+    /// Discover the complete, unpaginated caller-assignable role array.
+    ///
+    /// Requires Bearer authentication; the server verifies the token's CLI user
+    /// identity and current organization authority. This is a read-time snapshot,
+    /// not an approval guarantee. Never falls back to the administrative catalog.
+    ///
+    /// Transport fields tolerate missing/null values. Callers must validate the
+    /// required discovery fields before human or JSON success output: absent
+    /// result/policies/permissions/resources are not empty permission guarantees.
+    pub async fn organization_assignable_roles_get_list(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<Vec<AssignableRole>>, Error> {
+        if !matches!(&self.auth, super::Auth::Bearer { .. }) {
+            return Err(Error::AuthMismatch(
+                "organization_assignable_roles_get_list requires a CLI user Bearer token".into(),
+            ));
+        }
+        let req = self.request(&operations::ORGANIZATION_ROLES_GET_LIST, &[organization_id])?;
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get one page of an organization's roles, system and custom.
     ///
     /// Roles are ordered by role ID. The server defaults `limit` to 250, which is
