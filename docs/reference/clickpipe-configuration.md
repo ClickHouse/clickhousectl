@@ -149,7 +149,7 @@ A rename leaves unrelated fields alone:
 {"name":"events-v2"}
 ```
 
-For object storage, root `fieldMappings` requires `destination.columns` in the same patch. Send complete arrays with a mapping for every column; the patch changes pipe configuration, not the destination table schema. Omission preserves mappings. An empty mapping array is not a supported way to clear mappings while keeping configured columns. Do not send `database`, `table`, `managedTable`, or `tableDefinition` inside a destination patch.
+Root `fieldMappings` applies to Kafka, Kinesis, Pub/Sub, object storage, and OneLake pipes, and requires `destination.columns` in the same patch. Every mapping must target a column and every column must be mapped. It is not accepted for CDC or Iceberg pipes. `GET` returns `fieldMappings: []` for CDC pipes; remove it before reusing the output as an update file. Send complete arrays; the patch changes pipe configuration, not the destination table schema. Omission preserves mappings. An empty mapping array is not a supported way to clear mappings while keeping configured columns. Do not send `database`, `table`, `managedTable`, or `tableDefinition` inside a destination patch.
 
 Kafka credentials must match the authentication mode. IAM role carries `iamRole` without a credentials object; workload identity carries neither. Unrelated credential/CA/endpoint fields may be omitted. For CDC table changes use `tableMappingsToAdd`/`tableMappingsToRemove`; these are distinct from root field mappings. Omitting a Postgres source port preserves it.
 
