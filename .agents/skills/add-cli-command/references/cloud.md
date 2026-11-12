@@ -42,15 +42,22 @@ other endpoints.
    - Tests reject missing, duplicate and stale declarations. They don't compare the table with what the handler
      actually calls, so check that by reading the handler.
 5. **Wrapper.** Add a method to the domain's `impl CloudClient` block. It calls `self.api().<method>()`,
-   converts errors with `self.convert_error(e)` and unwraps the response with `Self::unwrap_response`. For
-   errors that need the org ID or lookup context, use `convert_error_for_organization(e, org_id)` or
-   `convert_error_for_lookup(e, lookup)` instead. Use the library's types. These conversions also record the
-   failure kind for telemetry, so don't build a `CloudError` by hand.
-   - `convert_error_for_lookup` reports any 400 or 404 over well-formed IDs as a missing resource. Use it only
-     when the path names the resource itself and the request has no other input, such as a get or delete.
-   - For a subresource, or a request with a body, a 404 can mean the subresource is absent and a 400 can be a
-     validation error. Confirm the parent with its own GET first, as `convert_postgres_by_id_result` in
-     `postgres/client.rs` does, and declare that GET as a `Conditional` permission.
+   converts errors through one of the `CloudClient` conversions below and unwraps the response with
+   `Self::unwrap_response`. Use the library's types. These conversions also record the failure kind for
+   telemetry, so don't build a `CloudError` by hand. Pick by what the path names:
+   - Anything under a service is the default case. Use `request_in_service(lookup, request)` when the path
+     names a resource inside the service (`ResourceLookup::in_service`), and `request_on_service(org_id,
+     service_id, request)` when it names only the service: a list, create or update under it, or a singleton
+     such as the upgrade window or backup configuration. On a 404 they read the service to tell whether it or
+     the resource is missing, and report the original error when the service exists.
+   - A Postgres subresource, or a Postgres request with a body, uses `convert_postgres_by_id_result` in
+     `postgres/client.rs`, which confirms the service the same way.
+   - `convert_error_for_resource(e, lookup)` reports a 404 as `lookup` missing. Use it where a 404 can only
+     mean that: an organization-scoped resource or list (`ResourceLookup::organization`).
+   - `convert_error_for_lookup(e, lookup)` reports any 400 or 404 over well-formed IDs as missing. Use it only
+     for a by-ID GET or DELETE of the resource itself, whose request has no other input.
+   - Otherwise use `convert_error_for_organization(e, org_id)`, or `convert_error(e)` without an org.
+   - Declare the confirming GET of the parent as a `Conditional` permission.
 6. **Request builder.** If the command sends a body, write `build_<name>_request(...)` returning the library's
    request struct. Unit-test it with minimal and maximal input, asserting on the struct's fields.
 7. **Handler.** Call the builder, then the wrapper, then print:

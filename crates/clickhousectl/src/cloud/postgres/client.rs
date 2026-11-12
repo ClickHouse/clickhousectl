@@ -66,10 +66,14 @@ impl CloudClient {
         limit: Option<i64>,
     ) -> CloudResult<PostgresBackupPage> {
         let mut response = self
-            .api()
-            .postgres_service_backup_get_list(org_id, postgres_id, cursor, limit)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_service_backup_get_list(org_id, postgres_id, cursor, limit)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
         let limit = response.limit;
         let total_count = response.total_count;
         let next_cursor = response.next_cursor.take();
@@ -87,10 +91,14 @@ impl CloudClient {
         org_id: &str,
         postgres_id: &str,
     ) -> CloudResult<String> {
-        self.api()
-            .postgres_instance_prometheus_get(org_id, postgres_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))
+        self.convert_postgres_by_id_result(
+            self.api()
+                .postgres_instance_prometheus_get(org_id, postgres_id)
+                .await,
+            org_id,
+            postgres_id,
+        )
+        .await
     }
 
     /// Fetch raw Prometheus exposition text for all Postgres services in an organization.
@@ -111,16 +119,20 @@ impl CloudClient {
         bucket_size_seconds: Option<i64>,
     ) -> CloudResult<PostgresMetrics> {
         let response = self
-            .api()
-            .postgres_instance_metrics_get(
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_instance_metrics_get(
+                        org_id,
+                        postgres_id,
+                        from_date,
+                        to_date,
+                        bucket_size_seconds,
+                    )
+                    .await,
                 org_id,
                 postgres_id,
-                from_date,
-                to_date,
-                bucket_size_seconds,
             )
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -132,23 +144,27 @@ impl CloudClient {
         query: &SlowQueryListQuery<'_>,
     ) -> CloudResult<Vec<PostgresSlowQueryPattern>> {
         let response = self
-            .api()
-            .slow_query_patterns_get_list(
+            .convert_postgres_by_id_result(
+                self.api()
+                    .slow_query_patterns_get_list(
+                        org_id,
+                        postgres_id,
+                        query.from_date,
+                        query.to_date,
+                        query.db_name,
+                        query.db_user,
+                        query.db_operation,
+                        query.app,
+                        query.sort_by.as_ref(),
+                        query.sort_order.as_ref(),
+                        query.limit,
+                        query.offset,
+                    )
+                    .await,
                 org_id,
                 postgres_id,
-                query.from_date,
-                query.to_date,
-                query.db_name,
-                query.db_user,
-                query.db_operation,
-                query.app,
-                query.sort_by.as_ref(),
-                query.sort_order.as_ref(),
-                query.limit,
-                query.offset,
             )
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -161,19 +177,23 @@ impl CloudClient {
         query: &SlowQueryDetailQuery<'_>,
     ) -> CloudResult<PostgresSlowQueryPatternDetail> {
         let response = self
-            .api()
-            .slow_query_pattern_get(
+            .convert_postgres_by_id_result(
+                self.api()
+                    .slow_query_pattern_get(
+                        org_id,
+                        postgres_id,
+                        query_id,
+                        query.db_name,
+                        query.db_user,
+                        query.db_operation,
+                        query.app,
+                        query.timestamp,
+                    )
+                    .await,
                 org_id,
                 postgres_id,
-                query_id,
-                query.db_name,
-                query.db_user,
-                query.db_operation,
-                query.app,
-                query.timestamp,
             )
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -423,20 +443,24 @@ impl CloudClient {
         query: &PostgresLogsQuery,
     ) -> CloudResult<Vec<PostgresLogEntry>> {
         let response = self
-            .api()
-            .postgres_logs_get_list(
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_logs_get_list(
+                        org_id,
+                        postgres_id,
+                        &query.from_date,
+                        &query.to_date,
+                        query.body_contains.as_deref(),
+                        query.severity.as_ref(),
+                        query.sort_order.as_ref(),
+                        query.limit,
+                        query.offset,
+                    )
+                    .await,
                 org_id,
                 postgres_id,
-                &query.from_date,
-                &query.to_date,
-                query.body_contains.as_deref(),
-                query.severity.as_ref(),
-                query.sort_order.as_ref(),
-                query.limit,
-                query.offset,
             )
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .await?;
         Self::unwrap_response(response)
     }
 
