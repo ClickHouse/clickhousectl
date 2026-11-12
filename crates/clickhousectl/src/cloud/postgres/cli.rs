@@ -475,8 +475,8 @@ CONTEXT FOR AGENTS:
   Restore targets a point in time, not a backup key: `cloud postgres restore --restore-target`.")]
     List {
         /// Postgres service ID (from `cloud postgres list`)
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Cursor from nextCursor
         #[arg(long, allow_hyphen_values = true)]
         cursor: Option<String>,
@@ -503,8 +503,8 @@ pub enum SlowQueryCommands {
     /// List slow query patterns
     List {
         /// Postgres service ID (from `cloud postgres list`)
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Inclusive start time (RFC 3339, at most millisecond precision)
         #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
@@ -662,6 +662,52 @@ mod tests {
     }
 
     #[test]
+    fn backup_and_slow_query_lists_select_the_service_by_id_or_name_but_not_both() {
+        let window = [
+            "--from-date",
+            "2026-04-16T11:00:00Z",
+            "--to-date",
+            "2026-04-16T12:00:00Z",
+        ];
+        for (prefix, rest) in [
+            (
+                ["clickhousectl", "cloud", "postgres", "backup", "list"],
+                &[][..],
+            ),
+            (
+                ["clickhousectl", "cloud", "postgres", "slow-queries", "list"],
+                &window[..],
+            ),
+        ] {
+            let parse = |selector: &[&'static str]| {
+                let args = [&prefix[..], selector, rest].concat();
+                match parse_postgres(&args) {
+                    PostgresCommands::Backup(PostgresBackupCommands::List {
+                        postgres_id, ..
+                    })
+                    | PostgresCommands::SlowQueries(SlowQueryCommands::List {
+                        postgres_id, ..
+                    }) => postgres_id,
+                    _ => panic!("expected a list command"),
+                }
+            };
+            let by_id = parse(&["pg-1"]);
+            assert_eq!(by_id.id.as_deref(), Some("pg-1"));
+            assert!(by_id.name.is_none());
+            let by_name = parse(&["--name", "analytics"]);
+            assert_eq!(by_name.name.as_deref(), Some("analytics"));
+            assert!(by_name.id.is_none());
+            for selector in [&[][..], &["pg-1", "--name", "analytics"][..]] {
+                let args = [&prefix[..], selector, rest].concat();
+                assert!(
+                    Cli::try_parse_from(args).is_err(),
+                    "{prefix:?} {selector:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parses_backup_list_pagination_as_read() {
         let cmd = parse_postgres(&[
             "clickhousectl",
@@ -680,7 +726,8 @@ mod tests {
         else {
             panic!("expected backup list");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert!(postgres_id.name.is_none());
         assert!(cursor.is_none());
         assert!(limit.is_none());
 
@@ -1846,7 +1893,8 @@ mod tests {
         else {
             panic!("expected slow-query list");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert!(postgres_id.name.is_none());
         assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
         assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(db_name.as_deref(), Some("app db"));

@@ -121,7 +121,7 @@ clickhousectl cloud service create --name restored-analytics \
   --backup-id <backup-id>
 ```
 
-Restoration creates a new service. Save any returned credentials and wait for `running` before querying it. Service snapshots (`service snapshot`) are a separate beta feature from backups.
+`backup list` also takes `--name <service-name>` in place of the service ID. Restoration creates a new service. Save any returned credentials and wait for `running` before querying it. Service snapshots (`service snapshot`) are a separate beta feature from backups.
 
 Use `service backup-config` to inspect or update retention and scheduling. Retention is in whole days, expressed as 24–1080 hours. A start time requires a 24- or 48-hour backup period, either already stored or set in the same update. `--clear-backup-start-time` removes that restriction and can be combined with a new period.
 
