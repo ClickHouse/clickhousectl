@@ -253,8 +253,8 @@ Structured commands support `--json` and select it automatically for detected co
 | [Telemetry](docs/reference/telemetry.md) | Recorded fields, opt-out, and local inspection |
 | [Feedback](docs/reference/feedback.md) | What `feedback` sends, the length limit, and errors |
 | [Contributing](CONTRIBUTING.md) | Build, checks, and documentation placement |
-| [CLI development](docs/development.md) | Code layout, tests, live integration suites, and debugging |
-| [Rust API library](crates/clickhouse-cloud-api/README.md) | Typed Cloud API client, usage examples, and API coverage |
+| [Development](docs/development.md) | Code layout, tests, live integration suites, and debugging |
+| [Rust API library](crates/clickhouse-cloud-api/README.md) | Typed Cloud API client, usage examples, and [changelog](crates/clickhouse-cloud-api/CHANGELOG.md) |
 
 ## Telemetry
 
@@ -271,4 +271,4 @@ Tell the team what the CLI could not do with `clickhousectl feedback "<message>"
 
 ## Contribute
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and documentation placement, and [CLI development](docs/development.md) for the code layout and test workflows.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and documentation placement, and the [development guide](docs/development.md) for the code layout and test workflows.

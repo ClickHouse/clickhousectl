@@ -1,4 +1,4 @@
-//! Serde helpers used by generated models.
+//! Serde helpers used by the model types.
 
 use serde::Deserialize;
 

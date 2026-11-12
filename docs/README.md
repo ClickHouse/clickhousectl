@@ -26,5 +26,5 @@ Start with the [README](../README.md) for installation and product examples. The
 ## Development
 
 - [Contributing](../CONTRIBUTING.md): build, checks, and where documentation belongs.
-- [CLI development](development.md): code layout, test selection, live suites, debugging.
+- [Development](development.md): CLI and API library code layout, test selection, live suites, debugging.
 - [API library](../crates/clickhouse-cloud-api/README.md): Rust client and API-specific documentation.

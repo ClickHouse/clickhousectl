@@ -65,7 +65,9 @@ async fn with_http_client_basic_auth() {
         .mount(&mock_server)
         .await;
 
-    let http = reqwest::Client::new();
+    // Built through the crate's re-export, so the caller's `reqwest` always
+    // matches the version `Client` takes.
+    let http = clickhouse_cloud_api::reqwest::Client::new();
     let client = Client::with_http_client(http, mock_server.uri(), "custom-key", "custom-secret");
     let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);

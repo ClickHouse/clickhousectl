@@ -9,6 +9,9 @@ repository = "https://github.com/ClickHouse/clickhousectl"
 homepage = "https://github.com/ClickHouse/clickhousectl"
 keywords = ["clickhouse", "cloud", "api", "client"]
 categories = ["api-bindings", "database"]
+# Ship the library and its documentation only: the spec snapshot, tests and
+# contributor instructions stay in the repository.
+include = ["src/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [features]
 # When enabled, deprecated fields are present on the request and response

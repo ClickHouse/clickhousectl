@@ -140,6 +140,7 @@ Use the `release` skill (`.agents/skills/release/SKILL.md`); a release needs a m
   `CONTRIBUTING.md`, `docs/development.md`, or the relevant repository skill. Update the existing document;
   do not add every new flag or command to the README. Keep safety constraints at the point of use and link
   new guides from `docs/README.md`. See `CONTRIBUTING.md` for documentation checks and writing conventions.
-- API-library-only changes, Rust caller migrations, and analyzer work belong in
-  `crates/clickhouse-cloud-api/README.md`; they do not require a root README or CLI user-guide change.
+- API-library changes and Rust caller migrations go under `## Unreleased` in `crates/clickhouse-cloud-api/CHANGELOG.md`
+  (capabilities and usage in its `README.md`, analyzer work in `docs/development.md`); they do not require a root
+  README or CLI user-guide change.
 - Keep `AGENTS.md` up to date when development practice changes materially.

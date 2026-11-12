@@ -52,6 +52,9 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhousectl/src/cloud/services.rs": False,
             "crates/clickhousectl/src/cloud/permissions.rs": False,
             "README.md": False,
+            "crates/clickhousectl/LICENSE": False,
+            "crates/clickhouse-cloud-api/CHANGELOG.md": False,
+            "crates/clickhouse-cloud-api/LICENSE": False,
         }
         for path, expected in cases.items():
             with self.subTest(path=path):

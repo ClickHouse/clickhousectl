@@ -1,4 +1,4 @@
-# CLI development
+# Development
 
 [Contributing](../CONTRIBUTING.md) · [All documentation](README.md)
 
@@ -94,3 +94,208 @@ Keep tests isolated from real credentials and telemetry. Use the existing tempor
 The [user telemetry reference](reference/telemetry.md) describes what is recorded and how to disable it. `src/telemetry.rs` builds events from argument definitions, not raw values; `src/failure.rs` defines the bounded failure vocabulary. Paths here are relative to `crates/clickhousectl/`.
 
 Classify library errors through `CloudClient::convert_error*`. Local failures need no extra call: `main` records `local::output::error_code`, the same classification as the `--json` error object, so a new local error variant is classified for telemetry when it is mapped in `LocalErrorOutput::from_error`. Add a stage only at the boundary that owns it; the first stage wins. Preserve the failure object when rewriting diagnostics. Never derive classification from free text or introduce arbitrary values into telemetry fields. Validate both default and telemetry-compiled-out configurations when changing this code.
+
+## API library development
+
+This section covers `clickhouse-cloud-api` and the private `clickhouse-openapi-analyzer`. The rules for model, client and analyzer changes are in the [crate instructions](../crates/clickhouse-cloud-api/AGENTS.md); caller-facing changes go in the [library changelog](../crates/clickhouse-cloud-api/CHANGELOG.md). Paths are relative to `crates/clickhouse-cloud-api/` and commands run from the repository root.
+
+### Structure
+
+| Path | Purpose |
+|------|---------|
+| `src/client.rs`, `src/client/*.rs` | `Client`, shared HTTP machinery, and per-domain endpoint methods |
+| `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models (`src/models/clickpipes/` is split by source kind, `src/models/clickstack/` by resource) |
+| `src/convert.rs`, `src/convert/*.rs` | Conversion error and per-domain response-to-request conversions |
+| `src/error.rs` | `Error` and its variants (listed in the crate README) |
+| `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
+| `tests/spec_coverage_test.rs` | Thin snapshot/live-spec consumer of the shared drift analyzer |
+| `../clickhouse-openapi-analyzer` | Canonical Rust/OpenAPI parsing, comparison, report, and exemptions |
+
+### Field optionality
+
+The OpenAPI spec uses two conventions for marking fields required vs optional:
+
+- **Schemas with a `required` array** (newer/beta endpoints) use standard OpenAPI semantics.
+- **Schemas without `required`** (GA/legacy endpoints) treat fields whose description starts with `"Optional"` as optional. Everything else is implicitly required.
+- **Known partial `required` arrays** use the union of that array and the description heuristic, as configured by the analyzer.
+
+Additional rules:
+
+- **PATCH request schemas** (name contains `Patch` and ends with `Request`) are always all-optional.
+- **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) are always `Option<T>`, even if required.
+
+In `src/models/<domain>.rs`, request fields follow those rules: required non-nullable fields use `T`, while optional or nullable fields use `Option<T>`. Every response field uses `Option<T>` plus `skip_serializing_if`, so missing keys and explicit `null` deserialize natively to `None` and absent fields are omitted when serialized. `#[serde(default)]` is banned because it can fabricate required request values and is redundant for `Option` response fields. For the same reason, a struct with a required field does not implement `Default`.
+
+API key PATCH expiry uses `Option<Option<DateTime<Utc>>>`: `None` leaves the current expiry unchanged, `Some(Some(time))` sets it, and `Some(None)` removes it. These three states survive serialization and deserialization. API key creation still uses `Option<DateTime<Utc>>`, where omission creates a key without an expiry.
+
+### Scripts
+
+```bash
+# Show a JSON manifest of required/optional fields per schema
+python3 scripts/resolve-field-requirements.py
+
+# Regenerate the DEPRECATED_FIELDS constant from the snapshot
+python3 scripts/regenerate-deprecated-fields.py
+
+# Regenerate the BETA_OPERATIONS constant from the snapshot
+python3 scripts/regenerate-beta-lists.py
+
+# Check for drift between the live spec and the library (dry run)
+python3 scripts/check-openapi-drift.py --dry-run
+```
+
+Field optionality is maintained by hand. Edit the owning model domain file when the drift check flags a mismatch, and add new domain types to the private module and facade re-exports in `models.rs`.
+
+### Testing
+
+```bash
+cargo test -p clickhouse-cloud-api          # all tests
+cargo test -p clickhouse-openapi-analyzer   # analyzer fixtures + executable parity
+cargo test -p clickhouse-cloud-api --test spec_coverage_test # shared snapshot report
+cargo test -p clickhouse-cloud-api --test client_test        # wiremock client tests
+cargo test -p clickhouse-cloud-api --test models_test        # serde round trips
+```
+
+Live-API lifecycle suites are `#[ignore]`d by default (they provision real resources):
+
+```bash
+cargo test --test integration_test -- --ignored --nocapture           # ClickHouse service CRUD
+cargo test --test integration_postgres_test -- --ignored --nocapture  # Postgres service CRUD
+```
+
+ClickPipes E2E binaries live under `tests/clickpipes/` and are declared as named `[[test]]` entries in `Cargo.toml`. Each per-source binary provisions its own ClickHouse Cloud service and exercises one source; `clickpipe_e2e_test` runs every stage in parallel against a single shared service:
+
+```bash
+cargo test --test clickpipe_e2e_test -- --ignored --nocapture            # all sources, one CHC service
+cargo test --test clickpipe_s3_test -- --ignored --nocapture             # per-source: S3
+cargo test --test clickpipe_kafka_test -- --ignored --nocapture          # per-source: Kafka (Redpanda)
+cargo test --test clickpipe_kinesis_test -- --ignored --nocapture        # per-source: Kinesis
+cargo test --test clickpipe_mongo_test -- --ignored --nocapture          # per-source: MongoDB
+cargo test --test clickpipe_mysql_test -- --ignored --nocapture          # per-source: MySQL
+cargo test --test clickpipe_postgres_ec2_test -- --ignored --nocapture   # per-source: Postgres-on-EC2
+cargo test --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture # CHC-managed Postgres CDC via CLI
+cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
+```
+
+The suites load AWS credentials through the default provider chain: environment variables, shared profiles, SSO, or `credential_process`. `aws login` sessions are not read directly. To use one, export its credentials first with `eval "$(aws configure export-credentials --format env)"`.
+
+All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
+
+The managed-Postgres target uses the CLI's default table mapping and compares exact source and destination IDs and values after snapshot, INSERT, UPDATE, and DELETE. Destination reads use `FINAL WHERE _peerdb_is_deleted = 0`. It requires `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN` to point to a built `clickhousectl` binary. From the workspace root, build and run it with:
+
+```bash
+cargo build -p clickhousectl
+CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN=target/debug/clickhousectl \
+  cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture
+```
+
+The trusted planner runs automatically on every same-repository PR push and selects suites from that PR's merge-base-to-head diff; it is read-only and never receives Cloud secrets. When it selects no live suites, the `Cloud integration decision` check turns green with no action needed. When live suites are selected, the decision check names them and stays `action_required` until `run-cloud-integration` is applied — the labeled event is the one-shot, exact-SHA authorization that admits the environment-bearing job, so re-apply the label after any push. Unknown API source or test paths select all suites, and changes to the classifier, its tests, or the workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
+
+`spec_coverage_test` sends the checked-in sources and snapshot through the
+private `clickhouse-openapi-analyzer` crate. The analyzer recursively traverses
+the module trees rooted at `client.rs`, `models.rs`, and `meta.rs`, including
+private per-domain files. That same analyzer powers the scheduled live-spec
+issue, so operation, model, field, optionality, beta, deprecation, enum,
+snapshot, and stale-exemption findings share one implementation. The single
+ignored test runs the same report against the live spec. The analyzer also checks
+inline union payload fields and request requiredness. Report schema version 10 also
+compares effective operation parameters against the snapshot (additions, removals,
+requiredness, and schema constraints), resolving local references and ignoring
+prose/example changes. Missing Rust arguments and incompatible optionality or
+scalar/array shapes remain actionable even after a snapshot refresh. Array
+arguments may use a pluralized name and represent omission with an empty slice.
+
+Successful JSON envelopes are checked against the method's actual returned
+struct, including generic `ApiResponse<T>`, aliases, and flattened structs. Missing
+envelope fields retain exact definition pointers through response/schema refs
+and `allOf`; unmappable envelopes and unsupported inline unions are actionable.
+These checks cover envelope field presence, not generic payload type substitution
+or HTTP serialization behavior. Parameter defaults, bounds, and other constraints
+are snapshot comparisons; scalar/array shape checks compare Rust argument types.
+External or unresolved contract references fail analysis rather than report clean.
+
+`integration_udf_test` creates two disposable UDFs, multiple versions, and a disposable
+service. It checks empty/nonempty lists, real continuation pages at `limit=1`, and
+attachment/deletion visibility, then cleans up on both success and failure. UDF client,
+model, and CLI paths select the service integration suite, which runs this test.
+
+### Optionality exemptions
+
+Occasionally the spec cannot be followed literally because verified API
+behavior differs. All such policy lives in
+`crates/clickhouse-openapi-analyzer/src/config.rs`, including optionality,
+extra-field, deprecated-field, extra-enum-value, non-OpenAPI-method, partial
+required-schema, and unsupported-enum configuration.
+
+Add an exemption only for a deliberate runtime behavior and document why the
+spec cannot be followed. New unsupported-enum acknowledgements also require a
+tracking issue. The analyzer reports stale field/enum exemptions and vanished
+unsupported locations so obsolete entries are removed during normal drift
+remediation. Acknowledged locations also report changed enum values against
+the snapshot, including numeric and mixed values; unchanged sets remain
+acknowledged. See the repository `AGENTS.md` for exact key formats and the full
+remediation and verification procedure.
+
+### Postgres Query API smoke test
+
+The ignored smoke test checks a read and an empty result against an existing
+service without creating resources. Supply
+`CLICKHOUSE_CLOUD_TEST_BEARER_TOKEN` (a `clickhousectl` audience OAuth token),
+`CLICKHOUSE_CLOUD_TEST_ORG_ID`, and `CLICKHOUSE_CLOUD_TEST_POSTGRES_SERVICE_ID`.
+Optionally set `CLICKHOUSE_CLOUD_TEST_POSTGRES_DATABASE`,
+`CLICKHOUSE_CLOUD_API_BASE_URL`, or `CLICKHOUSE_CLOUD_QUERY_HOST` for another database
+or environment. Run:
+
+```bash
+cargo test -p clickhouse-cloud-api --test run_query_test live_postgres_query_bearer_smoke -- --ignored --nocapture
+```
+
+For additional live coverage, verify that the route rejects write statements,
+invalid tokens, and tokens without access to the requested organization or service,
+and repeat the smoke test with an explicit non-default database.
+
+### OpenAPI response coverage
+
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 11.
+
+
+Success response checking follows each operation's actual Rust return type. Generic
+applications and aliases retain their type arguments, which are substituted through
+response fields, flattened wrappers, arrays, and typed maps. An incompatible payload
+kind or referenced element model produces `response_shape_mismatch` with an operation,
+Rust field, and exact specification pointer. These checks use the target specification
+independently of the snapshot; removing a component and refreshing the snapshot cannot
+hide an obsolete return type. Response `Option` fields remain legitimate regardless of
+specification requiredness. Nullable 3.0 and 3.1 forms are supported.
+
+Resolved JSON success contracts are also compared between specifications, including
+referenced schemas. Added, removed, and changed contracts have separate snapshot
+findings with the previous/current contracts and locations. Prose, examples, and
+ordering of property/required sets do not cause contract drift. These findings describe
+specification changes, not necessarily a Rust incompatibility or a backend rollout.
+
+A typed `additionalProperties` map whose value is an inline `oneOf`/`anyOf` must use an
+untagged union whose tuple arms pair one-to-one with the branches; an inline object branch
+pairs with a struct carrying exactly its properties, strict where required in request
+position. A response map value may instead be `serde_json::Value`, the lossless form for an
+undiscriminated composition.
+
+This is structural coverage, not a proof of every possible live value: arbitrary JSON
+payloads remain lossless catch-alls, existing union checks own named/inline variant
+coverage, and numeric ranges, string patterns, custom deserializers, non-JSON responses,
+and undocumented backend behavior are not validated by the shape checker. Unsupported
+compositions, unresolved generic bindings, alias cycles, and analysis depth limits are
+reported explicitly rather than counted as successful analysis.
+
+### Operation metadata generation
+
+The committed catalog is generated by the shared analyzer, without runtime parsing or network access:
+
+```sh
+cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- \
+  --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json \
+  --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs
+cargo fmt --all
+```
+
+The analyzer's `clickhouse_cloud_config()` enables `check_operation_permissions`; generic `AnalyzerConfig::default()` leaves this Cloud-specific convention disabled. Enabled analysis resolves operation security overrides and root inheritance, normalizes permission sets, and reports unknown, malformed, anonymous, alternative, or multiple-scheme requirements as actionable findings. Generation refuses these unsupported forms. Permission changes are compared both against the snapshot and against the Rust descriptors, so refreshing the snapshot alone cannot hide stale permissions. Descriptor identity, matching client methods, coverage, and the complete sorted catalog are checked too.

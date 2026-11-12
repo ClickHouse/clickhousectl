@@ -1,6 +1,6 @@
 # Contributing
 
-Read [AGENTS.md](AGENTS.md) for repository invariants and [CLI development](docs/development.md) for code layout and detailed test workflows. Work on a branch associated with an issue and open a pull request for review.
+Read [AGENTS.md](AGENTS.md) for repository invariants and the [development guide](docs/development.md) for code layout and detailed test workflows. Work on a branch associated with an issue and open a pull request for review.
 
 ## Build and test
 
@@ -38,7 +38,9 @@ For API/analyzer changes, read the [crate guidance](crates/clickhouse-cloud-api/
 | Complex behavior, safety constraints, machine-readable contracts | [References](docs/README.md#reference) |
 | Flags, defaults, allowed values, immediate command warnings | CLI `--help` |
 | Build/test workflows, architecture, contributor procedures | This guide, [development docs](docs/development.md), and repository skills |
-| Rust API capabilities, caller migrations, drift/analyzer changes | [API library README](crates/clickhouse-cloud-api/README.md) |
+| Rust API capabilities and usage | [API library README](crates/clickhouse-cloud-api/README.md) |
+| Rust API changes and caller migrations | [API library changelog](crates/clickhouse-cloud-api/CHANGELOG.md) |
+| API library and drift/analyzer development | [Development docs](docs/development.md#api-library-development) |
 
 Update the existing guide/reference when behavior changes; a README edit is needed only if its overview or examples change. Do not add an exhaustive flag catalog or duplicate every new command in the README. Delete redundant explanations instead of moving them into another long document.
 
