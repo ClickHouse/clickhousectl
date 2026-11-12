@@ -3,7 +3,7 @@ use crate::cloud::client::{
     read_flag_file,
 };
 use crate::cloud::output::{
-    ABSENT, CloudErrorCode, NextStep, json_with_next, or_absent, print_human, print_line,
+    ABSENT, CloudErrorCode, NextStep, json_with_next, or_absent, print_human,
 };
 use crate::cloud::shared::PollProgress;
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
@@ -733,6 +733,7 @@ pub(super) fn build_service_state_patch_request(
 enum ServiceOperation {
     Create,
     Start,
+    Wake,
     Stop,
     Delete,
 }
@@ -744,7 +745,7 @@ fn service_next(org_id: &str, service_id: &str, operation: ServiceOperation) -> 
     use ServiceState::*;
     let poll = NextStep::poll(&["service", "get", service_id], org_id, "state").every(5);
     match operation {
-        ServiceOperation::Create | ServiceOperation::Start => {
+        ServiceOperation::Create | ServiceOperation::Start | ServiceOperation::Wake => {
             poll.until(&[Running]).fail_on(&[Failed])
         }
         ServiceOperation::Stop => poll.until(&[Stopped, Idle]).fail_on(&[Failed, Terminated]),
@@ -1114,13 +1115,11 @@ pub(super) async fn service_delete(
     // A Query API key an earlier version stored for the service outlives it in
     // the organization; drop the record and name the key (#1325).
     crate::cloud::services::query_key::retire_legacy_query_key_record(service_id, &org_id);
-    // The service is already gone by here, so a closed stdout must not turn a
-    // completed deletion into a panic — see `print_line` and #598.
     if json {
         let next = service_next(&org_id, service_id, ServiceOperation::Delete);
-        print_line(json_with_next(&response, Some(next))?);
+        println!("{}", json_with_next(&response, Some(next))?);
     } else {
-        print_line(format!("Service {} deletion initiated", service_id));
+        println!("Service {} deletion initiated", service_id);
     }
     Ok(())
 }
@@ -1182,7 +1181,8 @@ pub(super) async fn service_wake(
         .await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&service)?);
+        let next = service_next(&org_id, service_id, ServiceOperation::Wake);
+        println!("{}", json_with_next(&service, Some(next))?);
     } else {
         println!(
             "Service {} waking (state: {})",
@@ -1383,7 +1383,7 @@ mod tests {
     use crate::failure::{ApiFailure, FailureKind};
 
     /// The start/stop hints and their wiring are the subprocess tests; this
-    /// covers the create and delete states, and that `state` is the field
+    /// covers the create, wake and delete states, and that `state` is the field
     /// `service get --json` prints.
     #[test]
     fn service_next_names_the_states_that_end_each_operation() {
@@ -1391,6 +1391,12 @@ mod tests {
         assert_eq!(create.until, [serde_json::json!("running")]);
         assert_eq!(create.fail_on, [serde_json::json!("failed")]);
         assert_eq!(create.until_error_code, None);
+
+        // A wake ends where a start does.
+        assert_eq!(
+            service_next("org-1", "svc-1", ServiceOperation::Wake),
+            service_next("org-1", "svc-1", ServiceOperation::Start)
+        );
 
         let delete = service_next("org-1", "svc-1", ServiceOperation::Delete);
         assert_eq!(
