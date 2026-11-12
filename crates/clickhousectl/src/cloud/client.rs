@@ -800,8 +800,7 @@ impl CloudClient {
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let resolved = resolve_auth(api_key, api_secret, url_override)?;
-        Self::from_resolved(resolved, None)
+        Self::from_resolved_auth(resolve_auth(api_key, api_secret, url_override)?, None)
     }
 
     /// Like [`CloudClient::new`], but every request gives up after `timeout`,
@@ -812,8 +811,10 @@ impl CloudClient {
         url_override: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Self> {
-        let resolved = resolve_auth(api_key, api_secret, url_override)?;
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(
+            resolve_auth(api_key, api_secret, url_override)?,
+            Some(timeout),
+        )
     }
 
     /// A client for exactly this API key pair, bypassing the precedence
@@ -834,7 +835,7 @@ impl CloudClient {
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
         };
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(resolved, Some(timeout))
     }
 
     /// A client for exactly these OAuth tokens, bypassing the precedence
@@ -849,12 +850,15 @@ impl CloudClient {
                 token: tokens.access_token.clone(),
             },
             source: AuthSource::OAuthTokens,
-            base_url: tokens.api_url.clone(),
+            base_url: crate::cloud::auth::normalize_api_url(&tokens.api_url),
         };
-        Self::from_resolved(resolved, Some(timeout))
+        Self::from_resolved_auth(resolved, Some(timeout))
     }
 
-    fn from_resolved(resolved: ResolvedAuth, timeout: Option<std::time::Duration>) -> Result<Self> {
+    fn from_resolved_auth(
+        resolved: ResolvedAuth,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Self> {
         let mut builder = crate::http::clickhouse_client_builder();
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
