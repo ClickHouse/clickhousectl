@@ -165,6 +165,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/src/telemetry.rs",
                     "crates/clickhousectl/src/udf.rs",
                     "crates/clickhousectl/src/update.rs",
+                    "crates/clickhousectl/tests/cloud/access.rs",
                     "crates/clickhousectl/tests/cloud/activity.rs",
                     "crates/clickhousectl/tests/cloud/api_keys.rs",
                     "crates/clickhousectl/tests/cloud/auth.rs",
