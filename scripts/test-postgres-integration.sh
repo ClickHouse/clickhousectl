@@ -180,12 +180,15 @@ EOF
 
 # ── 10. Each engine's stop-all stops only that engine ──
 case_stop_all_engine_scopes() (
-    sleep 300 &
+    # A recorded ClickHouse PID only counts as the server while that process
+    # runs from the server's data directory, as `start` runs it (#1299), so the
+    # stand-in runs from there. `exec` keeps `$!` as the sleep's own PID.
+    mkdir -p .clickhouse/servers/c/data
+    (cd .clickhouse/servers/c/data && exec sleep 300) &
     local ch_pid; ch_pid=$!
     disown "$ch_pid"
     trap 'kill "$ch_pid" 2>/dev/null || true; wait "$ch_pid" 2>/dev/null || true' EXIT
 
-    mkdir -p .clickhouse/servers/c/data
     cat > .clickhouse/servers/c.json <<EOF
 {"name":"c","pid":$ch_pid,"version":"25.12.5.44","http_port":8123,"tcp_port":9000,"started_at":"0","cwd":"$PWD","engine":"clickhouse"}
 EOF
