@@ -478,7 +478,7 @@ CONTEXT FOR AGENTS:
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         postgres_id: String,
         /// Cursor from nextCursor
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         cursor: Option<String>,
         /// Maximum records per page (1–100)
         #[arg(long, allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..=100))]
@@ -693,7 +693,7 @@ mod tests {
                 "list",
                 "pg-1",
                 "--cursor",
-                "next+/=",
+                "-next+/=",
                 "--limit",
                 limit_value,
                 "--org-id",
@@ -704,7 +704,7 @@ mod tests {
             else {
                 panic!("expected backup list");
             };
-            assert_eq!(cursor.as_deref(), Some("next+/="));
+            assert_eq!(cursor.as_deref(), Some("-next+/="));
             assert_eq!(limit, Some(limit_value.parse().unwrap()));
         }
     }
