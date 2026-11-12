@@ -48,7 +48,7 @@ use crate::cloud::client::{
     CloudClient, CloudError, CloudErrorKind, ResourceKind, ResourceLookup, Result as CloudResult,
 };
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, or_absent, print_human, print_line};
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, or_absent, print_human};
 use crate::cloud::shared::{PollProgress, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
@@ -404,7 +404,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     if json {
                         output(&data, true)
                     } else {
-                        print_line(format!("UDF {} deleted", name.function_name));
+                        println!("UDF {} deleted", name.function_name);
                         Ok(())
                     }
                 }
@@ -485,10 +485,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         if json {
                             output(&data, true)
                         } else {
-                            print_line(format!(
-                                "UDF {} version {} deleted",
-                                name.function_name, version
-                            ));
+                            println!("UDF {} version {} deleted", name.function_name, version);
                             Ok(())
                         }
                     }
@@ -1273,7 +1270,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     if json {
         output(&result, true)
     } else {
-        print_line(deploy_summary(action, &name, version, service));
+        println!("{}", deploy_summary(action, &name, version, service));
         Ok(())
     }
 }

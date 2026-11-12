@@ -17,7 +17,7 @@ use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
     read_flag_file_bytes,
 };
-use crate::cloud::output::{or_absent, print_human, print_line};
+use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
@@ -196,7 +196,7 @@ pub async fn run(client: &CloudClient, args: SavedQueryArgs, json: bool) -> Clou
             if json {
                 output(&data, true)
             } else {
-                print_line(format!("Deleted saved query {query_id}"));
+                println!("Deleted saved query {query_id}");
                 Ok(())
             }
         }

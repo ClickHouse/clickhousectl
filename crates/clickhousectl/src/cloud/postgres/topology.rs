@@ -7,7 +7,7 @@ use super::lifecycle::{
     render_postgres_service,
 };
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{json_with_next, print_line};
+use crate::cloud::output::json_with_next;
 use crate::cloud::shared::{parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PgBouncerConfig, PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse,
@@ -338,17 +338,15 @@ pub async fn postgres_role_change(
         eprintln!("{note}");
     }
 
-    // `print_line`, not `println!`: a closed pipe must not turn an accepted
-    // role change into a panic (#598).
     if json {
         // Switchover gets no `next`: nothing `postgres get` returns confirms
         // it (see `role_change_notes`).
         let next = (cmd == PostgresRoleCommand::Promote)
             .then(|| postgres_promote_next(&org_id, postgres_id));
-        print_line(json_with_next(&svc, next)?);
+        println!("{}", json_with_next(&svc, next)?);
     } else {
-        print_line(format!("{} accepted", cmd.label()));
-        print_line("");
+        println!("{} accepted", cmd.label());
+        println!();
         render_postgres_service(&svc);
     }
     Ok(())

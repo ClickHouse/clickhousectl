@@ -1,5 +1,5 @@
 use crate::cloud::client::{CloudClient, Result as CloudResult};
-use crate::cloud::output::{or_absent, print_human, print_line};
+use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{JwtProvider, JwtProviderPostRequest, JwtProviderPutRequest};
 use tabled::{Table, Tabled, settings::Style};
@@ -145,9 +145,7 @@ pub(super) async fn jwt_provider_delete(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        print_line(format!(
-            "JWT provider {provider_name} deleted from service {service_id}"
-        ));
+        println!("JWT provider {provider_name} deleted from service {service_id}");
     }
     Ok(())
 }

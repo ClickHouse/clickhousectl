@@ -30,15 +30,6 @@ pub(crate) fn or_absent<T: std::fmt::Display>(value: Option<T>) -> String {
         .unwrap_or_else(|| ABSENT.to_string())
 }
 
-/// Write one line through the shared stdout policy.
-///
-/// For a result line printed after the operation it describes already
-/// succeeded: a closed stdout must not convert a completed deletion into a
-/// panic.
-pub(crate) fn print_line(line: impl std::fmt::Display) {
-    println!("{line}");
-}
-
 // ── structured errors (issues #644, #825) ───────────────────────────────────
 
 /// Stable machine-readable code for a cloud failure. Literal wire values only,
@@ -247,9 +238,12 @@ pub fn print_error(error: &crate::error::Error) {
 // ── next-step polling hints (issue #1162) ───────────────────────────────────
 
 /// How to confirm that an accepted asynchronous operation finished, added to
-/// the operation's JSON output as `next`. The CLI never waits: exit 0 means
-/// the API accepted the request, and this names the read that shows when it
-/// is done. `docs/reference/automation.md` documents the shape.
+/// the operation's JSON output as `next`. A command that carries `next` does
+/// not wait: exit 0 means the API accepted the request, and this names the
+/// read that shows when it is done. Most Cloud commands do not wait; the
+/// exceptions are `service delete --force` (it waits for the stop before
+/// deleting), `udf deploy` and `udf attach --wake`.
+/// `docs/reference/automation.md` documents the shape.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct NextStep {
     /// The read command to repeat, with resolved IDs, `--org-id` and `--json`.
