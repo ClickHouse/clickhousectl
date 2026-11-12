@@ -508,7 +508,7 @@ pub enum SlowQueryCommands {
         /// Inclusive start time (RFC 3339, at most millisecond precision)
         #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
-        /// Exclusive end time (RFC 3339, at most millisecond precision)
+        /// Inclusive end time (RFC 3339, at most millisecond precision; minute granularity)
         #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
         /// Filter by database name
@@ -570,7 +570,7 @@ pub enum SlowQueryCommands {
         /// Application name from the list result
         #[arg(long)]
         app: Option<String>,
-        /// Timestamp of a specific execution (ISO 8601 / RFC 3339)
+        /// Execution timestamp (ISO 8601 / RFC 3339); the API currently ignores it and covers the last 24 hours
         #[arg(long, value_parser = parse_datetime)]
         timestamp: Option<String>,
     },
