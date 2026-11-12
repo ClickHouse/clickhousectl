@@ -15,7 +15,7 @@ Start with the [README](../README.md) for installation and product examples. The
 
 ## Reference
 
-- [Cloud authentication and access](reference/authentication.md): scopes, credential precedence, selectors, keys, roles, logout.
+- [Cloud authentication and access](reference/authentication.md): scopes, credential precedence, selectors, keys, roles, experimental access negotiation, logout.
 - [SQL and Query API behavior](reference/query-api.md): key binding, input formats, timeouts, repair, named endpoints.
 - [ClickPipe configuration](reference/clickpipe-configuration.md): partial updates, mappings, source authentication, private connectivity.
 - [Automation and output contracts](reference/automation.md): JSON shapes, stderr, exit codes, asynchronous operations.

@@ -435,25 +435,26 @@ mod tests {
         assert_eq!(visible_subcommands(&root), top);
 
         let cloud = root.find_subcommand("cloud").unwrap();
-        assert_eq!(
-            visible_subcommands(cloud),
-            [
-                "auth",
-                "org",
-                "service",
-                "postgres",
-                "query-api-endpoint",
-                "saved-query",
-                "backup",
-                "clickpipe",
-                "clickstack",
-                "udf",
-                "key",
-                "member",
-                "invitation",
-                "activity",
-            ]
-        );
+        let mut cloud_top = vec![
+            "auth",
+            "org",
+            "service",
+            "postgres",
+            "query-api-endpoint",
+            "saved-query",
+            "backup",
+            "clickpipe",
+            "clickstack",
+            "udf",
+            "key",
+            "member",
+            "invitation",
+            "activity",
+        ];
+        if cfg!(feature = "experimental-access-negotiation") {
+            cloud_top.insert(1, "access");
+        }
+        assert_eq!(visible_subcommands(cloud), cloud_top);
 
         let local = root.find_subcommand("local").unwrap();
         assert_eq!(

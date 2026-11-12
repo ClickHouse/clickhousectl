@@ -39,6 +39,8 @@ Supplying only one credential flag blocks fallback. Cloud commands skip OAuth to
 
 A saved API key works only against the API it was saved for. When `auth login --api-key` verifies a key against a non-production API (`--url`), that API is saved with the key as `api_url`; a key with no `api_url` is for production. Later commands without `--url` use the saved API, print a note naming it to stderr, and derive the Query API host for `cloud service query` from it unless `CLICKHOUSE_CLOUD_QUERY_HOST` is set. A `--url` naming any other API exits 4 without sending the key or falling back to environment or OAuth credentials: pass the saved URL, or save a key for that API. `auth status` shows the API each saved source uses. Flag and environment keys carry no URL; they use `--url` or production.
 
+`cloud access roles --debug` and `cloud access request --debug` report their OAuth credential source and resolved API URL on stderr, including with `--json`. These experimental commands use OAuth even when higher-priority API keys are configured; the diagnostics describe the identity actually used for access negotiation.
+
 `cloud postgres query` accepts **OAuth only**, unlike `cloud service query`. Remove higher-priority API key sources before using that route. Clearing a saved key file alone is insufficient if exported variables or `.env` still supply a key.
 
 ## Select an organization and resource
@@ -80,6 +82,65 @@ clickhousectl cloud key create --org-id <org-id> --name ci-key \
 Replace the example IP. **Omitting `--ip-allow` on key creation denies all network access**, unlike service creation's allow-all default. Use `0.0.0.0/0` only for deliberately unrestricted access.
 
 Save the generated authentication key ID and secret securely; the secret is returned only at creation. The management resource `id` used by `get`, `update`, `delete`, and endpoint bindings differs from the authentication `keyId`/`keySecret`. Pre-hashed key creation does not return a secret.
+
+## Experimental: negotiate a scoped API key
+
+> **Experimental.** `cloud access` is compiled only into builds with the `experimental-access-negotiation` feature. Published binaries (install script, npm, `cargo install clickhousectl`) do not include it and report `unrecognized subcommand 'access'`. Build it from a checkout:
+>
+> ```bash
+> cargo install --path crates/clickhousectl --features experimental-access-negotiation
+> ```
+>
+> The command surface and behavior may change without notice.
+
+### Discover assignable roles
+
+```bash
+clickhousectl cloud access roles
+clickhousectl cloud access roles --org <organization-id> --json
+```
+
+Discovery uses your refreshed OAuth user identity even when an API key is saved, with the same organization selectors and endpoint precedence as `cloud access request`. Human output identifies the selected organization and lists role IDs/names with policy effects and resource scopes. `--json` returns exactly the complete role array, including all ALLOW/DENY policies and optional SQL tags; an eligible empty menu is `[]`. SQL grant/revoke strings and unknown values remain opaque. Incomplete required discovery data fails before any menu is printed, rather than implying empty permissions or falling back to the administrative catalog. Discovery describes current authority, not a guarantee of later approval or a role recommendation.
+
+### Request a scoped API key
+
+`cloud access request` obtains a scoped API key through the control plane's PKCE approval handshake, so an agent can get a narrowly-scoped key that a human approves in a browser rather than reusing a long-lived one.
+
+```bash
+clickhousectl cloud access request
+clickhousectl cloud access request --key-name agent-key --purpose "CI deploy"
+clickhousectl cloud access request --org <organization-id> --perms role:<role-uuid>,role:<another-role-uuid>
+clickhousectl cloud access request --json
+```
+
+Use IDs from `cloud access roles` to propose roles with `--perms role:<UUID>` (repeat the flag or separate tokens with commas). UUIDs are normalized to lowercase and deduplicated by identity in first-seen order; at most 100 distinct roles are allowed. Empty tokens, whitespace, wrong prefixes and malformed UUIDs fail before authentication or network access. Role names, raw permissions and resource overrides are not supported. Omit `--perms` for manual browser selection; an explicitly empty value is invalid. A proposal is not a grant: the server validates the whole proposal atomically, and the human's eventual selection may differ. The CLI neither filters rejected proposals nor retries a subset.
+
+The command requires your OAuth user identity from `cloud auth login` and refreshes it when needed; API keys from flags, saved credentials, or environment variables are never used for negotiation. Missing or expired identity that cannot be refreshed fails with authentication exit code 4 and login guidance. It runs the authorization code flow with PKCE: it starts a loopback redirect server on `127.0.0.1` (or `[::1]` when IPv4 loopback is unavailable), generates a PKCE verifier/challenge and a CSRF `state`, files the request, and opens the approval URL (always printed in case the browser does not open). After you approve, the browser redirects to the CLI with a one-time authorization code. The CLI exchanges that code, the PKCE verifier and the same redirect URI for the issued key, and stores the key id and secret in `.clickhouse/credentials.json`. The secret is never printed or placed in a URL. A redirect with a missing or wrong `state` is refused and the wait continues. If no loopback listener can be started, the command fails.
+
+The code arrives only on the browser redirect, so the browser must run on this machine. The CLI does not read the request status while waiting: only the redirect or the deadline ends the wait. A denial in the approval page redirects back with `error=access_denied` and ends the wait at once; a denial or cancellation that never reaches this browser waits until the deadline. Pending approval waits until the server pending deadline (ten minutes after filing) or two minutes by default, whichever comes first; the error says which one ended the wait. See [approval timeout configuration](#approval-timeout).
+
+The approval URL and progress always go to stderr, including with `--json`; JSON stdout contains only the final success object. Denial, expiry and authentication failures never replace saved credentials. A rejected authorization code or PKCE verifier (HTTP 400 or 401 from the exchange) exits 1 with the server's message; it does not ask you to log in again. Each access HTTP operation is bounded to 30 seconds. Filing and the exchange are not retried: a timeout may leave a filed request or a completed server exchange without local credentials.
+
+Successful requests report the organization and request IDs, the server-saved proposal, the actual roles returned by the exchange, and when the key expires (issued keys are short-lived). JSON retains `status`, `keyId`, `key`, and `credentialsPath`, and adds `requestId`, `organizationId`, `requestedRoleIds`, `grantedRoleIds`, and `keyExpiresAt` (epoch milliseconds, or `null` when the server sends none). With no proposal, `requestedRoleIds` is `[]` (manual selection); the human may trim or add roles, so actual grants need not match the proposal. Missing or invalid server role arrays fail before local credential installation; older servers without this reporting contract are unsupported.
+
+The API URL comes from `--url` when provided, otherwise the API URL saved with your OAuth login. Token records without a saved API URL are rejected; run `cloud auth login` again. Local development requires an explicit local URL at login or through `--url`; there is no implicit localhost default. Other Cloud commands retain their normal credential precedence, so a saved negotiated key remains available for subsequent operations. Optional `--purpose` (1–200 characters, shown to the approver) and `--key-name` (1–100 characters) are sent with the request; the calling agent is identified by the CLI User-Agent and agent-session headers.
+
+Access organization selection uses your OAuth user's complete, paginated membership list, not the saved API key's organization. A single membership is selected automatically; zero or multiple memberships require action (no remembered default or prompt). Find IDs with `cloud org list --json` and select `cloud access request --org <ID>` (`--org-id` remains supported), or use exact `--org-name`. Conflicting selectors, including across command depths, are usage errors.
+
+### Approval timeout
+
+`cloud access request` waits up to **two minutes** for human approval. Override it with `--timeout-seconds` or `CLICKHOUSE_CLOUD_ACCESS_TIMEOUT_SECONDS` (positive whole seconds, at most 4294967295):
+
+```bash
+clickhousectl cloud access request --org-id <org-id> --timeout-seconds 600
+
+export CLICKHOUSE_CLOUD_ACCESS_TIMEOUT_SECONDS=600
+clickhousectl cloud access request --org-id <org-id>
+```
+
+Precedence is flag, environment, then the 120-second default. This setting is not read from `.env` (the CLI uses that file only for credential configuration). Invalid values fail with usage exit code 2 before authentication or filing a request. The CLI reports the configured wait on stderr.
+
+An earlier server pending deadline still wins; increasing this setting cannot extend server expiry. The error names the deadline that ended the wait: "access request expired" for the server deadline, "approval wait timed out after N seconds" for this setting. The authorization code arrives only on the browser redirect, and the CLI never reads the request status. The 30-second bound per HTTP operation is unchanged. This setting does not extend OAuth token validity or the issued key lifetime.
 
 ## Inspect all keys and change access
 
