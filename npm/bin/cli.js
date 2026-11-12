@@ -12,8 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const binaryName = process.platform === 'win32' ? 'clickhousectl.exe' : 'clickhousectl';
-const binaryPath = path.join(__dirname, '..', 'vendor', binaryName);
+const binaryPath = path.join(__dirname, '..', 'vendor', 'clickhousectl');
 
 if (!fs.existsSync(binaryPath)) {
   console.error(

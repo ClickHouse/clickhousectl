@@ -920,12 +920,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             name_flag,
             global,
             project,
-        } => stop_server(
-            ServerNameInput::from_args(name, name_flag),
-            global,
-            project,
-            json,
-        ),
+        } => stop_server(name.or(name_flag), global, project, json),
         ServerCommands::StopAll { global } => {
             if global {
                 stop_all_servers_global(json)
@@ -948,45 +943,21 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             database,
             json,
         ),
-        ServerCommands::Remove { name, name_flag } => {
-            remove_server(ServerNameInput::from_args(name, name_flag), json)
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ServerNameInput {
-    Omitted,
-    Positional(String),
-    NameFlag(String),
-}
-
-impl ServerNameInput {
-    fn from_args(positional: Option<String>, name_flag: Option<String>) -> Self {
-        match (positional, name_flag) {
-            (Some(name), None) => Self::Positional(name),
-            (None, Some(name)) => Self::NameFlag(name),
-            (None, None) => Self::Omitted,
-            (Some(_), Some(_)) => unreachable!("clap rejects conflicting server name forms"),
-        }
+        ServerCommands::Remove { name, name_flag } => remove_server(name.or(name_flag), json),
     }
 }
 
 fn stop_server(
-    name_input: ServerNameInput,
+    explicit_name: Option<String>,
     global: bool,
     project: Option<String>,
     json: bool,
 ) -> Result<()> {
     if global {
-        return stop_server_global(name_input, project.as_deref(), json);
+        return stop_server_global(explicit_name, project.as_deref(), json);
     }
 
-    let explicit_name = match &name_input {
-        ServerNameInput::Omitted => None,
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
-    };
-    if let Some(name) = explicit_name {
+    if let Some(name) = &explicit_name {
         server::validate_server_name(name)?;
     }
     let project = init::project_root()?;
@@ -996,11 +967,9 @@ fn stop_server(
     // metadata files. Without server state or an orphan there is nothing to
     // stop. Only ClickHouse is recovered, so Docker is never contacted.
     let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
-    let (name, selection, known) = match name_input {
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
-            (name, output::ServerSelection::Explicit, false)
-        }
-        ServerNameInput::Omitted => {
+    let (name, selection, known) = match explicit_name {
+        Some(name) => (name, output::ServerSelection::Explicit, false),
+        None => {
             let names = match &metadata_lock {
                 Some(lock) => server::list_clickhouse_server_names_locked(lock)?,
                 None => Vec::new(),
@@ -1089,12 +1058,8 @@ fn stop_server(
     }
 }
 
-fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
-    let explicit_name = match &name_input {
-        ServerNameInput::Omitted => None,
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
-    };
-    if let Some(name) = explicit_name {
+fn remove_server(explicit_name: Option<String>, json: bool) -> Result<()> {
+    if let Some(name) = &explicit_name {
         server::validate_server_name(name)?;
     }
     let project = init::project_root()?;
@@ -1105,11 +1070,9 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     // there is nothing to remove. Only ClickHouse is recovered, so Docker is
     // never contacted.
     let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
-    let (name, selection) = match name_input {
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
-            (name, output::ServerSelection::Explicit)
-        }
-        ServerNameInput::Omitted => {
+    let (name, selection) = match explicit_name {
+        Some(name) => (name, output::ServerSelection::Explicit),
+        None => {
             let names = match &metadata_lock {
                 Some(lock) => server::list_clickhouse_server_names_locked(lock)?,
                 None => Vec::new(),
@@ -1315,12 +1278,12 @@ fn list_servers_global(json: bool) -> Result<()> {
 }
 
 fn stop_server_global(
-    name_input: ServerNameInput,
+    explicit_name: Option<String>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let all = server::list_all_servers_global()?;
-    let (name, selection) = global_stop_target(name_input)?;
+    let (name, selection) = global_stop_target(explicit_name)?;
     let matches: Vec<_> = all
         .iter()
         .filter(|entry| entry.name == name)
@@ -1353,13 +1316,13 @@ fn stop_server_global(
     Ok(())
 }
 
-fn global_stop_target(name_input: ServerNameInput) -> Result<(String, output::ServerSelection)> {
-    match name_input {
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+fn global_stop_target(explicit_name: Option<String>) -> Result<(String, output::ServerSelection)> {
+    match explicit_name {
+        Some(name) => {
             server::validate_server_name(&name)?;
             Ok((name, output::ServerSelection::Explicit))
         }
-        ServerNameInput::Omitted => Ok(("default".to_string(), output::ServerSelection::Implicit)),
+        None => Ok(("default".to_string(), output::ServerSelection::Implicit)),
     }
 }
 
@@ -1732,25 +1695,9 @@ mod tests {
     }
 
     #[test]
-    fn server_name_input_preserves_cli_source() {
-        assert_eq!(
-            ServerNameInput::from_args(None, None),
-            ServerNameInput::Omitted
-        );
-        assert_eq!(
-            ServerNameInput::from_args(Some("positional".into()), None),
-            ServerNameInput::Positional("positional".into())
-        );
-        assert_eq!(
-            ServerNameInput::from_args(None, Some("flagged".into())),
-            ServerNameInput::NameFlag("flagged".into())
-        );
-    }
-
-    #[test]
     fn omitted_global_stop_keeps_the_literal_default_target() {
         assert_eq!(
-            global_stop_target(ServerNameInput::Omitted).unwrap(),
+            global_stop_target(None).unwrap(),
             ("default".to_string(), output::ServerSelection::Implicit)
         );
     }

@@ -2205,7 +2205,7 @@ mod tests {
         let crate::cloud::cli::ServiceCommands::QueryEndpoint { command } = query_endpoint else {
             panic!("expected query-endpoint command");
         };
-        let crate::cloud::cli::QueryEndpointCommands::Create {
+        let crate::cloud::services::QueryEndpointCommands::Create {
             role,
             open_api_key,
             allowed_origins,
@@ -2234,7 +2234,8 @@ mod tests {
         else {
             panic!("expected private-endpoint command");
         };
-        let crate::cloud::cli::PrivateEndpointCommands::Create { description, .. } = command else {
+        let crate::cloud::services::PrivateEndpointCommands::Create { description, .. } = command
+        else {
             panic!("expected private-endpoint create");
         };
         assert!(description.is_none());
@@ -2734,7 +2735,7 @@ mod tests {
         let crate::cloud::cli::ServiceCommands::QueryEndpoint { command } = command else {
             panic!("expected query-endpoint command");
         };
-        let crate::cloud::cli::QueryEndpointCommands::Create {
+        let crate::cloud::services::QueryEndpointCommands::Create {
             service_id,
             role,
             open_api_key,
@@ -2765,11 +2766,11 @@ mod tests {
                 panic!("expected query-endpoint command");
             };
             match command {
-                crate::cloud::cli::QueryEndpointCommands::Get { service_id }
-                | crate::cloud::cli::QueryEndpointCommands::Delete { service_id } => {
+                crate::cloud::services::QueryEndpointCommands::Get { service_id }
+                | crate::cloud::services::QueryEndpointCommands::Delete { service_id } => {
                     assert_eq!(service_id.id.as_deref(), Some("svc-1"));
                 }
-                crate::cloud::cli::QueryEndpointCommands::Create { .. } => {
+                crate::cloud::services::QueryEndpointCommands::Create { .. } => {
                     panic!("expected query-endpoint {action}")
                 }
             }
@@ -2847,7 +2848,7 @@ mod tests {
         let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = command else {
             panic!("expected private-endpoint command");
         };
-        let crate::cloud::cli::PrivateEndpointCommands::Create {
+        let crate::cloud::services::PrivateEndpointCommands::Create {
             service_id,
             endpoint_id,
             description,
@@ -2888,7 +2889,8 @@ mod tests {
             let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = command else {
                 panic!("expected private-endpoint command");
             };
-            let crate::cloud::cli::PrivateEndpointCommands::Create { endpoint_id, .. } = command
+            let crate::cloud::services::PrivateEndpointCommands::Create { endpoint_id, .. } =
+                command
             else {
                 panic!("expected private-endpoint create");
             };
