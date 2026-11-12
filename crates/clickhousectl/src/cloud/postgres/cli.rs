@@ -250,7 +250,8 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   The response contains no endpoint; use `cloud postgres get <id>` for host and username.
-  Prefer a psql password prompt; if a URI embeds the password, percent-encode it first."
+  Prefer a psql password prompt; if a URI embeds the password, percent-encode it first.
+  Run it on the primary: read replicas reject it (400) and receive the primary's new password."
     )]
     ResetPassword {
         /// Postgres service ID (from `cloud postgres list`)
@@ -308,8 +309,8 @@ CONTEXT FOR AGENTS:
   Creates a NEW service from the source's backups; the source is untouched.
   --restore-target must fall inside the source's backup retention window.
   Copies the source's current IPv4 access rules unless --ip-allow or --block-public-access is given.
-  The response has no password; use its ID with `get`, then reset it if no valid password is known.
-  Do not assume the source's current password matches the historical restore.")]
+  The response has no password; the restored service starts with the source's password
+  as it was when the restore was requested.")]
     Restore {
         /// Source Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
@@ -445,7 +446,7 @@ pub enum ReadReplicaCommands {
 CONTEXT FOR AGENTS:
   The replica inherits the source's provider, region, size and version.
   The response has no password; use its ID with `get` for the replica endpoint.
-  Do not assume the source's password works on the replica.
+  The replica uses the source's password and follows later resets made on the source.
   Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
         /// Source Postgres service ID (from `cloud postgres list`)
