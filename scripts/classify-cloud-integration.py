@@ -23,6 +23,9 @@ SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/saved_queries.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/services/jwt_provider.rs": NO_SUITES,
+    # `live_service_query_bind_test` drives `cloud service query` live.
+    "crates/clickhousectl/src/cloud/services/query.rs": frozenset({"service"}),
+    "crates/clickhousectl/src/cloud/services/query_key.rs": frozenset({"service"}),
     "crates/clickhousectl/src/cloud/udfs.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/client/activity.rs": frozenset({"organization"}),
@@ -177,6 +180,13 @@ TEST_PATH_SUITES = {
     "crates/clickhousectl/tests/local_client_output_contract_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_postgres_client_input_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_readonly_no_project_state_test.rs": NO_SUITES,
+    # Live CLI-driven tests, moved here from the API library's tests (#1347).
+    "crates/clickhousectl/tests/live_clickpipe_postgres_cdc_test.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhousectl/tests/live_service_query_bind_test.rs": frozenset(
+        {"service"}
+    ),
     "crates/clickhouse-cloud-api/tests/clickpipes/driver.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/e2e_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/kafka_test.rs": NO_SUITES,

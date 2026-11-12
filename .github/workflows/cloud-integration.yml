@@ -248,13 +248,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
 
-      - name: Build clickhousectl for CLI-driven live tests
-        if: >-
-          ${{ !cancelled() &&
-              (needs.plan.outputs.service == 'true' ||
-               needs.plan.outputs.clickpipes == 'true') }}
-        run: cargo build -p clickhousectl
-
       - name: Run cloud integration suite
         if: >-
           ${{ !cancelled() &&
@@ -265,9 +258,7 @@ jobs:
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.service == 'true' }}
-        env:
-          CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN: ${{ github.workspace }}/target/debug/clickhousectl
-        run: cargo test -p clickhouse-cloud-api --test service_query_key_cli_test -- --ignored --nocapture
+        run: cargo test -p clickhousectl --test live_service_query_bind_test -- --ignored --nocapture
 
       - name: Run cloud Postgres integration suite
         if: >-
@@ -285,9 +276,7 @@ jobs:
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.clickpipes == 'true' }}
-        env:
-          CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN: ${{ github.workspace }}/target/debug/clickhousectl
-        run: cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture
+        run: cargo test -p clickhousectl --test live_clickpipe_postgres_cdc_test -- --ignored --nocapture
 
       # ClickPipe create smoke tests run against a long-lived ClickHouse Cloud
       # service to avoid the multi-minute service-create cost. Provision a

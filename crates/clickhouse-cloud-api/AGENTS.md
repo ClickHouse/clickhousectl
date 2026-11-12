@@ -161,21 +161,20 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 from Rust.
 
 - `tests/common/support.rs` — generic infra (polling, logging, env helpers, ClickHouse provisioning & cleanup,
-  HTTP query helper). Used by every integration binary.
+  HTTP query helper). Used by every integration binary, and by the CLI crate's live tests through `#[path]`.
 - `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs` —
   cloud-service, Postgres-service, and organization lifecycle.
-- `tests/client/`, `tests/models/`, `tests/model_facade_test.rs`, `tests/run_query_test.rs`,
-  `tests/service_query_key_cli_test.rs` — offline client, model, facade and query-path coverage.
+- `tests/client/`, `tests/models/`, `tests/model_facade_test.rs`, `tests/run_query_test.rs` — offline client,
+  model, facade and query-path coverage.
   `tests/client/` is the single `client_test` binary: `main.rs` holds the shared wiremock helpers and declares one
   module per `src/client/` domain that has tests, plus `client.rs` for construction, auth and error handling; add a
   client test to the module of the method it calls.
   `tests/models/` is the single `models_test` binary: `main.rs` declares one module per `src/models/` domain
   (small domains folded into their parent) plus `cross_domain.rs`; add a model test to its domain's module.
-- `tests/clickpipes/` — ClickPipes E2E, including external cloud services. Only Postgres CDC (ClickHouse and
-  Postgres inside ClickHouse Cloud) runs in CI; its `clickpipe_postgres_cli_cdc_test` target exercises the built
-  `clickhousectl` supplied through `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN`, which
-  `.github/workflows/cloud-integration.yml` builds first. Third-party-service tests must be run manually. CI also
-  optionally runs `clickpipe_smoke_test` against a long-lived service when the repo variable
+- `tests/clickpipes/` — ClickPipes E2E, including external cloud services. Third-party-service tests must be run
+  manually. CI optionally runs `clickpipe_smoke_test` against a long-lived service when the repo variable
   `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` is set; the step is skipped when it is unset.
+- Live tests that drive the `clickhousectl` binary (`cloud service query` first-use bind, managed-Postgres
+  ClickPipe CDC) belong to the CLI crate, under `crates/clickhousectl/tests/live_*_test.rs`, not here.
 - `tests/spec_coverage_test.rs` — runs the shared analyzer against the vendored snapshot and requires an
   actionable-drift-free report.
