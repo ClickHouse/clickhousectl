@@ -6,7 +6,8 @@
 //! position (reachable from a request body or operation parameter) and/or
 //! response position (reachable from an operation response). Requiredness and
 //! optionality rules (`required[]`, PATCH-all-optional, the description
-//! heuristic, `partial_required_schemas`) apply only in request position. In
+//! heuristic, `partial_required_schemas`, `optional_request_schemas`) apply
+//! only in request position. In
 //! response position every field is `Option<T>` by policy — a server-dropped
 //! or `null` field must never fail deserialization — so response-side
 //! optionality drift is invisible by design; field *presence* (missing/extra

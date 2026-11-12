@@ -22,6 +22,12 @@ Rust type names but spec/wire field and enum values:
 - `partial_required_schemas` — upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name.
   This changes requiredness resolution (request position only) and is not a shortcut for one optionality mismatch.
   Entries are stale when the schema is gone, response-only, or the override no longer changes requiredness.
+- `optional_request_schemas` — request schemas without `required[]` whose every field is optional on the wire
+  (partial updates, settings maps, one-arm-per-kind source wrappers), keyed by spec schema name. Requiredness
+  resolution treats them as all-optional, so a Rust field typed `T` there is reported. Use it instead of one
+  `optionality_exemptions` pair per field when the whole schema is optional; keep pairs for individual fields.
+  Entries are stale when the schema is gone, response-only, gains `required[]`, or the override no longer changes
+  requiredness. A schema cannot also be in `partial_required_schemas`; both entries then report stale.
 - `acknowledged_unsupported_enum_pointers` — exact RFC 6901 pointers the analyzer inventories but cannot map to a
   concrete Rust value enum. The acknowledgement covers the snapshot's value set; additions or removals in the
   target spec are actionable, including numeric and mixed values. Reordering does not change the set.
