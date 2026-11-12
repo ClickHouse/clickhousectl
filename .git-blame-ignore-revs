@@ -6,28 +6,28 @@
 d78a6d2aa40a70d9e1093f09ae987ca1b26e3e41
 
 # Split cloud/services into per-command-family files (#1157)
-30bd640d06f010ddbcbcf59c0a403329748e72d2
+0c02e5b4b90d599943552f976e3f6c3b939d7c84
 
 # Split cloud/postgres into per-command-family files (#1157)
-e7fcdb1a8f1e48c564717f1ccd0fa654d182aa73
+d2e6b22744ada3623b6d1a52e30f4332119e2dbf
 
 # Split cloud/organizations into per-command-family files (#1157)
-00efe9734194de9fbe59a2f5a2153ba83f18ec7c
+154373272e75b6ba5459f57eb0646757d9768556
 
 # Move the Query API out of client.rs into client/query.rs (#1173)
-8db8f19a0b69ff505c33188414efb85dc50dfd0e
+ca3e817ab789a7bf4574c340a6081e1175f16670
 
 # Split client/organizations.rs into byoc, invitations, members and rbac (#1173)
-9e20dd888a937f5f0b610b22a71aef4ff70b9357
+f9ba2b32c0aed856e90718c1f88aa3cdc9684fe9
 
 # Split tests/models_test.rs into per-domain tests/models/ modules (#1173)
-bb5834b93b5c9d6640c7720991aaef9f750a61ef
+6f5937a9eff54717edba9dc944e1bf86b20c8776
 
 # Split tests/client_test.rs into per-domain tests/client/ modules (#1173)
-00b469bdbc23f95f27d97f953e6911d3e523db63
+cec76bd7ff239b0cc97d0fb34613d682c79ad8eb
 
 # Split models/clickpipes.rs into per-source-kind models/clickpipes/ modules (#1173)
-dcbccb5b72433469ecd7e5cfdfdf47ce8cc18a6b
+36da663b270a9ddaab563e3c029dc1ce2abaf223
 
 # Split models/clickstack.rs into per-resource models/clickstack/ modules (#1173)
-fa7012959ed81fed0f8520bbc3613c89ed57f691
+5d9dba37fc5236ef75e51d416d1924d48ee6048a

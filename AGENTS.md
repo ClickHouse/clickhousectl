@@ -9,7 +9,7 @@ Do not duplicate user-facing documentation here.
 
 ## Commands
 
-- `cargo fmt --all` before every commit (`fmt.yml` runs `cargo fmt --all --check`; bulk formatting commits are in `.git-blame-ignore-revs`).
+- `cargo fmt --all` before every commit (`fmt.yml` runs `cargo fmt --all --check`; bulk formatting commits are in `.git-blame-ignore-revs`; add the squash SHA on main in a follow-up, as branch SHAs don't survive squash).
 - `cargo clippy -p clickhousectl -- -D warnings` && `cargo test -p clickhousectl`.
 - Keep telemetry-compiled-out building and linting, as CI does: `cargo check -p clickhousectl --no-default-features`
   && `cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings`.
