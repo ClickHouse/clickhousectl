@@ -14,7 +14,7 @@ clickhousectl cloud service get <service-id> --org-id <org-id>
 
 Save the initial password from creation; it is shown once. Omitting `--provider` selects AWS, omitting `--region` selects `us-east-1`, and **omitting `--ip-allow` allows all IPs (`0.0.0.0/0`)**. Set these deliberately. Entries accept `IP_OR_CIDR=DESCRIPTION`; quote descriptions containing spaces.
 
-`--region` accepts only the regions the Cloud API lists. For an internal or private region that isn't listed, such as `sa-east-1`, pass `--custom-region sa-east-1` instead. The CLI sends it unchecked and Cloud validates it.
+`--region` accepts any region ID and Cloud validates it, so a private region that isn't publicly listed, such as `sa-east-1`, works the same way as a public one. If Cloud rejects a region the CLI doesn't know and a known region is a close match, such as `us-east-1` for `us-esat-1`, the error names it. `--custom-region` is a deprecated alias of `--region`, can't be combined with it, and will be removed in 1.0.0.
 
 Creation acknowledges the request before provisioning finishes. Repeat `get` until the service is `running`, then query it:
 
