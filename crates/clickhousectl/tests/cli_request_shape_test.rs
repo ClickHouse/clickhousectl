@@ -6317,6 +6317,57 @@ async fn kinesis_destination_table_definition_can_be_read_from_stdin() {
     );
 }
 
+#[tokio::test]
+async fn object_storage_create_reads_columns_from_schema_discovery_on_stdin() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = [
+        "clickpipe",
+        "create",
+        "object-storage",
+        "svc-id",
+        "--name",
+        "s3-pipe",
+        "--source-url",
+        "https://bucket.example/events/*.json",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "analytics",
+        "--table",
+        "events",
+        "--columns-from",
+        "-",
+        "--column",
+        "ingested_at:DateTime",
+        "--org-id",
+        "org",
+    ];
+    // The shape `clickpipe schema-discover object-storage --json` prints.
+    let discovery = serde_json::json!({
+        "fields": [
+            {"name": "id", "type": "Int64", "optional": false,
+             "isVirtual": false, "isVirtualDisabledDefault": false},
+            {"name": "_path", "type": "LowCardinality(String)", "optional": false,
+             "isVirtual": true, "isVirtualDisabledDefault": false},
+            {"name": "_raw", "type": "String", "optional": false,
+             "isVirtual": true, "isVirtualDisabledDefault": true}
+        ],
+        "meta": {}
+    });
+
+    let body =
+        invoke_cli_capture_body_with_stdin(&mock, &args, discovery.to_string().as_bytes()).await;
+
+    assert_eq!(
+        body["destination"]["columns"],
+        serde_json::json!([
+            {"name": "id", "type": "Int64"},
+            {"name": "_path", "type": "LowCardinality(String)"},
+            {"name": "ingested_at", "type": "DateTime"}
+        ])
+    );
+}
+
 /// The minimal `clickpipe create mysql` argument set for basic auth.
 fn mysql_args_minimal() -> Vec<String> {
     [

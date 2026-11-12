@@ -23,10 +23,10 @@ This example uses a private S3 bucket with an IAM role. Replace the URL and role
 ```bash
 clickhousectl cloud clickpipe schema-discover object-storage <service-id> \
   --storage-type s3 --source-url 'https://example-bucket.s3.amazonaws.com/events/**' \
-  --format JSONEachRow --iam-role "$S3_IAM_ROLE_ARN"
+  --format JSONEachRow --iam-role "$S3_IAM_ROLE_ARN" --json > discovery.json
 ```
 
-Discovery returns inferred fields without creating a pipe. Fields marked `Virtual` (`isVirtual` in JSON) are metadata that ClickPipes adds, such as `_topic` or `_path`, rather than source data; `Disabled By Default` (`isVirtualDisabledDefault`) marks metadata left unselected by default when destination columns are built. Review them, then choose destination columns. Object storage, Kafka, Kinesis and Pub/Sub creates require at least one `--column name:type`; this example assumes the source has `event_id` and `event_type` fields:
+Discovery returns inferred fields without creating a pipe. Fields marked `Virtual` (`isVirtual` in JSON) are metadata that ClickPipes adds, such as `_topic` or `_path`, rather than source data; `Disabled By Default` (`isVirtualDisabledDefault`) marks metadata left unselected by default. Review the fields, then pass the saved output to create with `--columns-from`. It becomes the destination columns: every source field and every metadata field not disabled by default, with each `type` used as discovered. Edit `discovery.json` first to drop fields you don't want. `--columns-from -` reads stdin instead; only one flag per command can read stdin. Object storage, Kafka, Kinesis and Pub/Sub creates need `--columns-from`, at least one `--column name:type`, or both; `--column` adds columns, and a name already in the file is an error:
 
 ```bash
 clickhousectl cloud clickpipe create object-storage <service-id> \
@@ -34,7 +34,7 @@ clickhousectl cloud clickpipe create object-storage <service-id> \
   --source-url 'https://example-bucket.s3.amazonaws.com/events/**' \
   --format JSONEachRow --iam-role "$S3_IAM_ROLE_ARN" \
   --database default --table events \
-  --column 'event_id:Int64' --column 'event_type:String' --start-paused
+  --columns-from discovery.json --start-paused
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
 ```

@@ -2,7 +2,6 @@ use crate::cloud::clickpipes::cli::{ClickPipeCreateRequestArgs, StreamingDestina
 use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_request_args, print_created,
 };
-use crate::cloud::clickpipes::destination::parse_columns;
 use crate::cloud::clickpipes::sources::{
     AuthenticationValueParser, GcpAuthentication, read_gcp_service_account_file,
 };
@@ -304,7 +303,7 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_pubsub(
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
     let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)?;
-    let parsed_columns = parse_columns(&args.destination.columns)?;
+    let parsed_columns = args.destination.parsed_columns()?;
     let source = build_pubsub_source(&args.source)?;
 
     let mut request = ClickPipePostRequest {
