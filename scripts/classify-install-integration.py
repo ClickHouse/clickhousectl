@@ -82,6 +82,8 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/src/update.rs",
         "crates/clickhousectl/tests/cli_request_shape_test.rs",
         "crates/clickhousectl/tests/feedback_test.rs",
+        "crates/clickhousectl/tests/live_clickpipe_postgres_cdc_test.rs",
+        "crates/clickhousectl/tests/live_service_query_bind_test.rs",
         "crates/clickhousectl/tests/local_clickhouse_rejects_postgres_test.rs",
         "crates/clickhousectl/tests/local_client_project_scope_errors_test.rs",
         "crates/clickhousectl/tests/local_client_selectors_test.rs",

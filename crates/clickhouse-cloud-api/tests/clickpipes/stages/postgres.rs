@@ -6,8 +6,8 @@
 //! PostgreSQL 16 configured for logical replication, then creates a pipe
 //! directly through the API with `replicationMode=cdc` but without
 //! `publicationName` / `replicationSlotName`. Distinct from
-//! `clickpipes/postgres_cli_cdc_test.rs`, which exercises the required real
-//! CLI path against CHC-managed Postgres.
+//! `crates/clickhousectl/tests/live_clickpipe_postgres_cdc_test.rs`, which
+//! exercises the required real CLI path against CHC-managed Postgres.
 
 use std::time::Duration;
 
