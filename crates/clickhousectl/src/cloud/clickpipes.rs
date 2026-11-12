@@ -349,7 +349,7 @@ CONTEXT FOR AGENTS:
   For Postgres, MySQL, and MongoDB: stop -> get until Paused -> update --file.
   Update does not stop or restart the pipe; run start after a successful update.
   For object-storage, fieldMappings (including []) requires destination.columns.
-  Use `-` to read the JSON body from stdin.")]
+  Root settings are rejected; change them with `clickpipe settings update`.")]
     Update {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -4025,11 +4025,23 @@ fn build_clickpipe_update_request(
         validate_clickpipe_patch_source(source, config_source)?;
     }
 
+    // The service accepts root `settings` on this PATCH but does not apply
+    // them: a settings-only body fails and a mixed body silently drops them
+    // (#824). Refuse them until ClickHouse/control-plane#44988 lands, then
+    // remove this check and restore `settings` to the no-op check below.
+    // Source-level `settings` (Postgres, MySQL, MongoDB) are applied and stay
+    // accepted.
+    if request.settings.is_some() {
+        return Err(CloudError::usage(format!(
+            "invalid request body in config {config_source}: root `settings` cannot be \
+             changed by `clickpipe update`; use `clickpipe settings update` instead"
+        )));
+    }
+
     if request.name.is_none()
         && request.source.is_none()
         && request.destination.is_none()
         && request.field_mappings.is_none()
-        && request.settings.is_none()
     {
         return Err(CloudError::usage(format!(
             "invalid request body in config {config_source}: at least one PATCH field is required"
@@ -10958,11 +10970,6 @@ mod tests {
             "fieldMappings": [
                 {"sourceField": "event_id", "destinationField": "id"}
             ],
-            "settings": {
-                "streaming_max_insert_wait_ms": 0,
-                "clickhouse_parallel_view_processing": false,
-                "kafka_read_committed": false
-            },
             "source": {
                 "mysql": {
                     "authentication": "basic",
@@ -11033,7 +11040,6 @@ mod tests {
     fn clickpipe_update_builder_round_trips_every_source_variant() {
         for patch in [
             serde_json::json!({
-                "settings": {"kafka_read_committed": false, "streaming_max_insert_wait_ms": 0},
                 "source": {
                     "kafka": {
                         "authentication": "MUTUAL_TLS",
@@ -11275,6 +11281,47 @@ mod tests {
             // Every rejection is attributed to the config source it came from.
             assert!(error.message.contains("patch.json"), "{invalid}: {error}");
         }
+    }
+
+    /// Root `settings` are refused (#824) whether alone or mixed with another
+    /// field, and the error points to the command that applies them. Null root
+    /// settings and source-level settings are unaffected.
+    #[test]
+    fn clickpipe_update_builder_rejects_root_settings() {
+        for patch in [
+            serde_json::json!({"settings": {"streaming_max_insert_wait_ms": 0}}),
+            serde_json::json!({
+                "name": "renamed",
+                "settings": {"object_storage_max_insert_bytes": 10_737_418_240_i64}
+            }),
+            serde_json::json!({"settings": {}}),
+        ] {
+            let error = build_clickpipe_update_request(patch.clone(), "patch.json")
+                .expect_err(&format!("accepted root settings: {patch}"));
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{patch}"
+            );
+            assert_names(
+                &error.message,
+                &["patch.json", "`settings`", "clickpipe settings update"],
+            );
+        }
+
+        let request = build_clickpipe_update_request(
+            serde_json::json!({"name": "renamed", "settings": null}),
+            "test",
+        )
+        .unwrap();
+        assert!(request.settings.is_none());
+
+        let source_settings = serde_json::json!({"source": {"postgres": {
+            "host": "postgres.example.com",
+            "settings": {"syncIntervalSeconds": 30}
+        }}});
+        let request = build_clickpipe_update_request(source_settings.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), source_settings);
     }
 
     /// Parse `schema-discover object-storage` args and return the source
