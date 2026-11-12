@@ -2,7 +2,6 @@ use crate::cloud::clickpipes::cli::{ClickPipeCreateRequestArgs, StreamingDestina
 use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_request_args, print_created,
 };
-use crate::cloud::clickpipes::destination::parse_columns;
 use crate::cloud::clickpipes::sources::{AuthenticationValueParser, read_gcp_service_account_file};
 use crate::cloud::clickpipes::{ClickPipeSourceKind, parse_enum};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
@@ -404,7 +403,7 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_object_storage(
     // invocations fail fast.
     let request_args =
         build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)?;
-    let parsed_columns = parse_columns(&args.destination.columns)?;
+    let parsed_columns = args.destination.parsed_columns()?;
     let source = build_object_storage_source(&args.source)?;
     let destination = args.destination.build(parsed_columns)?;
     let org_id = resolve_org_id(client).await?;

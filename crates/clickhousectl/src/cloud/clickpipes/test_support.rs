@@ -625,6 +625,7 @@ pub(super) fn kafka_args() -> KafkaCreateArgs {
             database: "d".into(),
             table: "t".into(),
             columns: vec![],
+            columns_from: None,
             destination_table: StreamingDestinationTableArgs::default(),
             destination_roles: DestinationRoleArgs::default(),
         },

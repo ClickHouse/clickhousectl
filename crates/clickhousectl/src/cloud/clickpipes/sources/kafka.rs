@@ -3,7 +3,6 @@ use crate::cloud::clickpipes::cli::{ClickPipeCreateRequestArgs, StreamingDestina
 use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_request_args, print_created,
 };
-use crate::cloud::clickpipes::destination::parse_columns;
 use crate::cloud::clickpipes::sources::{AuthenticationValueParser, read_protobuf_schema_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
@@ -722,7 +721,7 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_kafka(
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
     let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)?;
-    let parsed_columns = parse_columns(&args.destination.columns)?;
+    let parsed_columns = args.destination.parsed_columns()?;
     let source = build_kafka_source_with_exactly_once(&args.source, args.exactly_once)?;
 
     let mut request = ClickPipePostRequest {
