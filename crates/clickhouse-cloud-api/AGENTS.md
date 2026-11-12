@@ -138,7 +138,8 @@ workflow, from reproducing the findings and splitting API and CLI pull requests 
 - Requiredness semantics in `openapi.rs`: PATCH request schemas are all-optional; nullable fields are always
   `Option<T>`; schemas with `required[]` use it; schemas without it use the `"Optional"` description convention.
   A schema whose `required[]` is known to be partial uses the union of both and must be listed in
-  `partial_required_schemas`.
+  `partial_required_schemas`. A schema without `required[]` whose every request field is optional is listed in
+  `optional_request_schemas`.
 - `response_tree()` exposes response-tree membership for the policy enforcement tests.
 
 ### Analyzer policy

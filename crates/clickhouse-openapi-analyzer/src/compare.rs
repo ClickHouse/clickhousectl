@@ -39,6 +39,12 @@ pub(crate) fn compare(
         &spec.partial_required_hits,
         &mut report,
     );
+    stale_strings(
+        "optional_request_schema",
+        &config.optional_request_schemas,
+        &spec.optional_request_hits,
+        &mut report,
+    );
     compare_snapshot(spec, snapshot, &mut report);
     report.finish();
     report
@@ -1816,6 +1822,158 @@ mod tests {
         let report = analyze_fixture(models, completed, config);
         assert_eq!(report.findings.len(), 1, "{}", report.render_text());
         assert_eq!(report.findings[0].kind, FindingKind::StaleExemption);
+    }
+
+    fn optional_request_findings(
+        config: &AnalyzerConfig,
+        name: &str,
+        schema: Option<serde_json::Value>,
+    ) -> Vec<(FindingKind, String)> {
+        let schemas = match schema {
+            Some(schema) => serde_json::json!({name: schema}),
+            None => serde_json::json!({}),
+        };
+        let spec = OpenApiInventory::build(
+            &serde_json::json!({"paths": {}, "components": {"schemas": schemas}}),
+            config,
+        )
+        .unwrap();
+        let rust = RustInventory::parse(
+            "",
+            &format!(
+                "pub struct {} {{ pub name: Option<String>, pub note: Option<String> }}",
+                pascalize(name)
+            ),
+            "",
+        )
+        .unwrap();
+        let mut findings = compare(&rust, &spec, &spec, config)
+            .findings
+            .into_iter()
+            .map(|finding| {
+                let key = finding
+                    .details
+                    .get("key")
+                    .or_else(|| finding.details.get("field"))
+                    .cloned()
+                    .unwrap_or_default();
+                (finding.kind, key)
+            })
+            .collect::<Vec<_>>();
+        findings.sort();
+        findings
+    }
+
+    #[test]
+    fn optional_request_schemas_make_every_field_optional_until_stale() {
+        let schema = serde_json::json!({
+            "properties": {"name": {"type": "string"}, "note": {"type": "string"}}
+        });
+        let listed = |name: &str| AnalyzerConfig {
+            optional_request_schemas: BTreeSet::from([name.into()]),
+            ..AnalyzerConfig::default()
+        };
+        let mismatch = |field: &str| (FindingKind::FieldOptionalityMismatch, field.to_string());
+        let stale = |key: &str| (FindingKind::StaleExemption, key.to_string());
+
+        // Keyed by spec schema name, which may differ from the Rust type name.
+        assert_eq!(
+            optional_request_findings(&listed("widget"), "widget", Some(schema.clone())),
+            []
+        );
+        assert_eq!(
+            optional_request_findings(&AnalyzerConfig::default(), "widget", Some(schema.clone())),
+            [mismatch("name"), mismatch("note")]
+        );
+
+        let mut gained_required = schema.clone();
+        gained_required["required"] = serde_json::json!(["name"]);
+        let mut all_described_optional = schema.clone();
+        for field in ["name", "note"] {
+            all_described_optional["properties"][field]["description"] =
+                serde_json::json!("Optional value");
+        }
+        for (case, name, schema, expected) in [
+            (
+                "gained required[]",
+                "Widget",
+                Some(gained_required),
+                vec![mismatch("name"), stale("Widget")],
+            ),
+            (
+                "override no longer changes requiredness",
+                "Widget",
+                Some(all_described_optional),
+                vec![stale("Widget")],
+            ),
+            (
+                "PATCH policy",
+                "WidgetPatchRequest",
+                Some(schema),
+                vec![stale("WidgetPatchRequest")],
+            ),
+            ("deleted schema", "Widget", None, vec![stale("Widget")]),
+        ] {
+            assert_eq!(
+                optional_request_findings(&listed(name), name, schema),
+                expected,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_request_schemas_follow_request_position_including_orphans() {
+        let config = AnalyzerConfig {
+            optional_request_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn use_widget(&self) {} }",
+            "pub struct Widget { pub name: Option<String> } pub struct WidgetResponse { pub name: Option<String> }",
+            "",
+        ).unwrap();
+        for (request, response) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut operation = serde_json::json!({"operationId": "useWidget"});
+            let content = serde_json::json!({"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Widget"}}}});
+            if request {
+                operation["requestBody"] = content.clone();
+            }
+            if response {
+                operation["responses"] = serde_json::json!({"200": content});
+            }
+            let spec = OpenApiInventory::build(&serde_json::json!({
+                "paths": {"/widgets": {"post": operation}},
+                "components": {"schemas": {"Widget": {"properties": {"name": {"type": "string"}}}}}
+            }), &config).unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                response && !request,
+                "request={request}, response={response}: {}",
+                report.render_text(),
+            );
+        }
+    }
+
+    #[test]
+    fn a_schema_cannot_be_both_optional_and_partial_required() {
+        let config = AnalyzerConfig {
+            optional_request_schemas: BTreeSet::from(["Widget".into()]),
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let schema = serde_json::json!({
+            "properties": {"name": {"type": "string"}, "note": {"type": "string"}}
+        });
+        let report_kinds: Vec<_> = optional_request_findings(&config, "Widget", Some(schema))
+            .into_iter()
+            .filter(|(kind, _)| *kind == FindingKind::StaleExemption)
+            .collect();
+        assert_eq!(report_kinds.len(), 2, "{report_kinds:?}");
     }
 
     #[test]
