@@ -725,6 +725,14 @@ pub(crate) fn is_not_found(err: &clickhouse_cloud_api::Error) -> bool {
     matches!(err, clickhouse_cloud_api::Error::Api { status: 404, .. })
 }
 
+/// One page read by [`CloudClient::collect_lookup_pages`]: its records and the
+/// envelope's `totalCount` and `nextCursor`.
+pub struct LookupPage<T> {
+    pub items: Vec<T>,
+    pub total_count: Option<i64>,
+    pub next_cursor: Option<String>,
+}
+
 pub struct CloudClient {
     organization_id: Option<String>,
     organization_name: Option<String>,
@@ -968,6 +976,67 @@ impl CloudClient {
             items.extend(Self::unwrap_response(response)?);
             match next {
                 None => return Ok(items),
+                Some(next) if !seen_cursors.insert(next.clone()) => {
+                    return Err(CloudError::new(format!(
+                        "{noun} list returned a repeated cursor"
+                    )));
+                }
+                Some(next) => cursor = Some(next),
+            }
+        }
+    }
+
+    /// Read every page of a cursor list for an exhaustive name lookup.
+    ///
+    /// Cursors follow [`Self::collect_cursor_pages`]: pages are read until `nextCursor` is
+    /// absent, an empty cursor is still a token, and a repeated cursor fails. Because a name
+    /// lookup claims the drained list is complete, it also fails on a record whose `id_of` is
+    /// `None`, on a repeated ID, and on a `totalCount` that is negative, changes between
+    /// pages, or differs from the number of records read. `noun` names the list in errors.
+    pub async fn collect_lookup_pages<T, Id, F, Fut>(
+        noun: &str,
+        mut fetch: F,
+        id_of: impl Fn(&T) -> Option<Id>,
+    ) -> Result<Vec<T>>
+    where
+        Id: Eq + std::hash::Hash,
+        F: FnMut(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<LookupPage<T>>>,
+    {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = std::collections::HashSet::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut total_count = None;
+        loop {
+            let page = fetch(cursor.take()).await?;
+            for item in &page.items {
+                let id = id_of(item)
+                    .ok_or_else(|| CloudError::new(format!("{noun} list contains a missing ID")))?;
+                if !seen_ids.insert(id) {
+                    return Err(CloudError::new(format!(
+                        "{noun} list repeated a resource ID"
+                    )));
+                }
+            }
+            items.extend(page.items);
+            if let Some(total) = page.total_count {
+                if total < 0 || total_count.is_some_and(|previous| previous != total) {
+                    return Err(CloudError::new(format!(
+                        "{noun} list returned an inconsistent totalCount"
+                    )));
+                }
+                total_count = Some(total);
+            }
+            match page.next_cursor {
+                None => {
+                    if total_count.is_some_and(|total| total as usize != items.len()) {
+                        return Err(CloudError::new(format!(
+                            "{noun} list ended before all records were received"
+                        )));
+                    }
+                    return Ok(items);
+                }
                 Some(next) if !seen_cursors.insert(next.clone()) => {
                     return Err(CloudError::new(format!(
                         "{noun} list returned a repeated cursor"
@@ -1412,6 +1481,109 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.message, unwrap_error.message);
         assert_eq!(error.kind, CloudErrorKind::Generic);
+    }
+
+    fn lookup_page(
+        ids: &[Option<u8>],
+        total_count: Option<i64>,
+        next: Option<&str>,
+    ) -> Result<LookupPage<Option<u8>>> {
+        Ok(LookupPage {
+            items: ids.to_vec(),
+            total_count,
+            next_cursor: next.map(str::to_owned),
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_lookup_pages_follows_an_empty_cursor_as_a_token() {
+        let mut requested = Vec::new();
+        let items = CloudClient::collect_lookup_pages(
+            "thing",
+            |cursor| {
+                requested.push(cursor.clone());
+                let page = match cursor.as_deref() {
+                    None => lookup_page(&[Some(1)], Some(3), Some("")),
+                    Some("") => lookup_page(&[], Some(3), Some("-last")),
+                    Some("-last") => lookup_page(&[Some(2), Some(3)], Some(3), None),
+                    Some(other) => panic!("unexpected cursor {other}"),
+                };
+                async move { page }
+            },
+            |id| *id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(items, vec![Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            requested,
+            vec![None, Some(String::new()), Some("-last".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_lookup_pages_rejects_incomplete_or_inconsistent_lists() {
+        type Pages = Vec<Result<LookupPage<Option<u8>>>>;
+        let cases: Vec<(&str, Pages)> = vec![
+            (
+                "repeated cursor",
+                vec![
+                    lookup_page(&[Some(1)], None, Some("same")),
+                    lookup_page(&[Some(2)], None, Some("same")),
+                ],
+            ),
+            (
+                "repeated empty cursor",
+                vec![
+                    lookup_page(&[Some(1)], None, Some("")),
+                    lookup_page(&[Some(2)], None, Some("")),
+                ],
+            ),
+            ("missing ID", vec![lookup_page(&[None], None, None)]),
+            (
+                "repeated ID",
+                vec![
+                    lookup_page(&[Some(1)], None, Some("next")),
+                    lookup_page(&[Some(1)], None, None),
+                ],
+            ),
+            ("negative total", vec![lookup_page(&[], Some(-1), None)]),
+            (
+                "changed total",
+                vec![
+                    lookup_page(&[Some(1)], Some(2), Some("next")),
+                    lookup_page(&[Some(2)], Some(3), None),
+                ],
+            ),
+            ("short list", vec![lookup_page(&[Some(1)], Some(2), None)]),
+            (
+                "later page error",
+                vec![
+                    lookup_page(&[Some(1)], None, Some("next")),
+                    Err(CloudError::new("page two failed")),
+                ],
+            ),
+        ];
+        for (case, pages) in cases {
+            let page_count = pages.len();
+            let mut pages = pages.into_iter();
+            let mut calls = 0;
+            let error = CloudClient::collect_lookup_pages(
+                "thing",
+                |_| {
+                    calls += 1;
+                    let page = pages
+                        .next()
+                        .unwrap_or_else(|| panic!("{case}: paged past the end"));
+                    async move { page }
+                },
+                |id| *id,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(calls, page_count, "{case}");
+            assert_eq!(error.kind, CloudErrorKind::Generic, "{case}");
+        }
     }
 
     #[test]
