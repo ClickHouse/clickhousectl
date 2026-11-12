@@ -3,7 +3,8 @@ use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
-    Permission::api("backup list", &[&op::BACKUP_GET_LIST]),
+    Permission::api("backup list", &[&op::BACKUP_GET_LIST])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("backup get", &[&op::BACKUP_GET]),
     Permission::api("backup bucket get", &[&op::BACKUP_BUCKET_GET]),
     Permission::api("backup bucket create", &[&op::BACKUP_BUCKET_CREATE]),
@@ -229,9 +230,8 @@ pub async fn run_snapshot(
 pub enum BackupCommands {
     /// List backups for a service
     List {
-        /// Service ID (from `cloud service list`)
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Get backup details
@@ -390,7 +390,10 @@ impl BackupConfigCommands {
 
 pub async fn run(client: &CloudClient, command: BackupCommands, json: bool) -> CloudResult<()> {
     match command {
-        BackupCommands::List { service_id } => backup_list(client, &service_id, json).await,
+        BackupCommands::List { service_id } => {
+            let id = service_id.resolve(client, NamedResource::Service).await?;
+            backup_list(client, &id, json).await
+        }
         BackupCommands::Get {
             service_id,
             backup_id,
@@ -1110,6 +1113,28 @@ mod tests {
             panic!("expected backup command");
         };
         command
+    }
+
+    #[test]
+    fn backup_list_selects_the_service_by_id_or_name_but_not_both() {
+        let prefix = ["clickhousectl", "cloud", "backup", "list"];
+        let BackupCommands::List { service_id } =
+            parse_backup(&[prefix.as_slice(), &["svc-1"]].concat())
+        else {
+            panic!("expected backup list");
+        };
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
+        assert!(service_id.name.is_none());
+        let BackupCommands::List { service_id } =
+            parse_backup(&[prefix.as_slice(), &["--name", "analytics"]].concat())
+        else {
+            panic!("expected backup list");
+        };
+        assert_eq!(service_id.name.as_deref(), Some("analytics"));
+        assert!(service_id.id.is_none());
+        for suffix in [vec![], vec!["svc-1", "--name", "analytics"]] {
+            assert!(Cli::try_parse_from(prefix.into_iter().chain(suffix)).is_err());
+        }
     }
 
     fn parse_backup_config(args: &[&str]) -> BackupConfigCommands {
