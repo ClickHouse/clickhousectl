@@ -279,9 +279,7 @@ async fn start(
     let password_from_env = preflight.password_from_env;
 
     let docker = docker::connect().await?;
-    let project_cwd = crate::init::project_root()
-        .map(|root| root.dir.display().to_string())
-        .unwrap_or_default();
+    let project_cwd = crate::init::project_root()?.dir.display().to_string();
 
     loop {
         // Resolve an optimistic target, then release the project-wide lock
@@ -359,10 +357,10 @@ async fn start(
             None => resolve_port(None)?,
         };
 
-        let instance_dir = server::servers_dir_join(&key);
+        let instance_dir = server::servers_dir_join(&key)?;
         let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
         server::ensure_pg_data_dir(&user_name, &major)?;
-        let data_dir = server::pg_data_dir(&user_name, &major);
+        let data_dir = server::pg_data_dir(&user_name, &major)?;
 
         let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
         let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
@@ -481,8 +479,10 @@ async fn rollback_failed_fresh_start(
     primary: Error,
     metadata_lock: &server::MetadataLock,
 ) -> Error {
-    let instance_dir = server::servers_dir_join(&info.name);
-    let metadata_path = server::servers_dir_join(&format!("{}.json", info.name));
+    let instance_dir = metadata_lock.servers_dir().join(&info.name);
+    let metadata_path = metadata_lock
+        .servers_dir()
+        .join(format!("{}.json", info.name));
     let mut diagnostics = Vec::new();
 
     let container_removed = match docker::remove_container(docker, container_id).await {
@@ -1134,7 +1134,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     // On Linux the bind-mounted PGDATA contains files owned by uid 999, so
     // a plain rm fails — `remove_host_dir_blocking` falls back to a
     // privileged container in that case.
-    let pg_dir = server::servers_dir_join(&key);
+    let pg_dir = server::servers_dir_join(&key)?;
     docker::remove_host_dir_blocking(&pg_dir)?;
     server::try_remove_server_info_locked(&key, &metadata_lock)?;
     let out = output::ServerRemoveOutput {
