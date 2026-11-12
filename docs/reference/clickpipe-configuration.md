@@ -131,7 +131,7 @@ Omitted and null top-level fields are not sent. Explicit `false`, `0`, empty str
 
 | Object | Writable fields |
 | --- | --- |
-| Root | `name`, `source`, `destination`, `fieldMappings`, `settings` |
+| Root | `name`, `source`, `destination`, `fieldMappings` |
 | `destination` | `columns` |
 | `source.kafka` | `authentication`, `iamRole`, `caCertificate`, `reversePrivateEndpointIds`, `credentials` |
 | `source.kinesis` | `authentication`, `iamRole`, `accessKey` |
@@ -153,7 +153,7 @@ For object storage, root `fieldMappings` requires `destination.columns` in the s
 
 Kafka credentials must match the authentication mode. IAM role carries `iamRole` without a credentials object; workload identity carries neither. Unrelated credential/CA/endpoint fields may be omitted. For CDC table changes use `tableMappingsToAdd`/`tableMappingsToRemove`; these are distinct from root field mappings. Omitting a Postgres source port preserves it.
 
-`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. To change `object_storage_max_insert_bytes`, use `settings update`: the whole-pipe PATCH currently validates but does not apply that value. `--object-storage-max-file-size` is a private preview and can only lower the default maximum file size.
+`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. `clickpipe update` rejects a root `settings` object, because the whole-pipe PATCH does not currently apply it; change an existing pipe's ingestion settings with `settings update`. `--object-storage-max-file-size` is a private preview and can only lower the default maximum file size.
 
 ## Connect a private source
 
