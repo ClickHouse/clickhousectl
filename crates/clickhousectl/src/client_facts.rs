@@ -24,8 +24,9 @@ const CI_ENV: &str = "CI";
 pub(crate) struct ClientFacts {
     pub is_agent: bool,
     /// Canonical id of the detected coding agent (e.g. "claude-code");
-    /// `null` for human invocations.
-    pub agent: Option<String>,
+    /// `null` for human invocations. A `&'static str` from
+    /// `AgentId::as_str`, so only the detector's closed vocabulary can reach it.
+    pub agent: Option<&'static str>,
     pub ci: bool,
     pub version: &'static str,
     pub os: &'static str,
@@ -39,7 +40,7 @@ impl ClientFacts {
         let detected = is_ai_agent::detect();
         Self {
             is_agent: detected.is_some(),
-            agent: detected.map(|a| a.id.as_str().to_string()),
+            agent: detected.map(|a| a.id.as_str()),
             ci: env_truthy(env(CI_ENV)),
             version: env!("CARGO_PKG_VERSION"),
             os: std::env::consts::OS,
