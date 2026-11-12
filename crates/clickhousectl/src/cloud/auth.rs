@@ -1023,14 +1023,11 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: i64,
-    #[allow(dead_code)]
-    token_type: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct TokenErrorResponse {
     error: String,
-    #[allow(dead_code)]
     error_description: Option<String>,
 }
 

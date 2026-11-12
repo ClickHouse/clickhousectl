@@ -71,7 +71,6 @@ enum DockerFailureKind {
 enum HostPlatform {
     MacOs,
     Linux,
-    Windows,
     Other,
 }
 
@@ -81,8 +80,6 @@ impl HostPlatform {
             Self::MacOs
         } else if cfg!(target_os = "linux") {
             Self::Linux
-        } else if cfg!(target_os = "windows") {
-            Self::Windows
         } else {
             Self::Other
         }
@@ -98,7 +95,7 @@ fn docker_unavailable(stage: DockerConnectStage, error: &BollardError) -> Error 
     };
     Error::DockerNotAvailable(format!(
         "{prefix}: {}.\n{}",
-        docker_failure_cause(stage, kind, platform),
+        docker_failure_cause(stage, kind),
         docker_guidance(platform)
     ))
 }
@@ -156,19 +153,11 @@ fn classify_docker_failure(error: &BollardError) -> DockerFailureKind {
     }
 }
 
-fn docker_failure_cause(
-    stage: DockerConnectStage,
-    kind: DockerFailureKind,
-    platform: HostPlatform,
-) -> String {
-    let endpoint = match platform {
-        HostPlatform::Windows => "Docker named pipe",
-        _ => "Docker socket",
-    };
+fn docker_failure_cause(stage: DockerConnectStage, kind: DockerFailureKind) -> String {
     match kind {
-        DockerFailureKind::MissingSocket => format!("{endpoint} was not found"),
+        DockerFailureKind::MissingSocket => "Docker socket was not found".into(),
         DockerFailureKind::PermissionDenied => {
-            format!("permission denied while opening the {endpoint}")
+            "permission denied while opening the Docker socket".into()
         }
         DockerFailureKind::ConnectionRefused => "the Docker daemon refused the connection".into(),
         DockerFailureKind::TimedOut => "the Docker daemon connection timed out".into(),
@@ -192,9 +181,6 @@ fn docker_guidance(platform: HostPlatform) -> &'static str {
         }
         HostPlatform::Linux => {
             "On Linux, start Docker Engine or Docker Desktop and check that your user can access the Docker socket. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its Unix socket (rootless Engine commonly uses `unix://$XDG_RUNTIME_DIR/docker.sock`)."
-        }
-        HostPlatform::Windows => {
-            "On Windows, start Docker Desktop or Docker Engine and check named-pipe permissions. Verify `docker context show`; for a non-default context, set `DOCKER_HOST` to its endpoint."
         }
         HostPlatform::Other => {
             "Start Docker Engine and check socket permissions. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its endpoint."
@@ -1079,7 +1065,6 @@ pub fn stop_blocking(id: &str) -> Result<()> {
     })
 }
 
-/// Best-effort stop, then remove the container.
 /// Remove a host directory and its contents, even when files inside are
 /// owned by container UIDs (postgres' uid 999) the host user can't `rm`.
 ///
@@ -1477,21 +1462,21 @@ mod tests {
         }
     }
 
-    /// A rendered failure is the cause for its stage and kind on this platform, then
-    /// this platform's guidance as the second and last line.
+    /// A rendered failure is the cause for its stage and kind, then this platform's
+    /// guidance as the second and last line.
     fn assert_rendered(message: &str, stage: DockerConnectStage, kind: DockerFailureKind) {
         let platform = HostPlatform::current();
         let lines: Vec<_> = message.lines().collect();
         assert_eq!(lines.len(), 2, "{message}");
         assert!(
-            lines[0].contains(&docker_failure_cause(stage, kind, platform)),
+            lines[0].contains(&docker_failure_cause(stage, kind)),
             "{message}"
         );
         assert_eq!(lines[1], docker_guidance(platform));
     }
 
     #[test]
-    fn docker_failure_stage_and_endpoint_change_the_rendered_cause() {
+    fn docker_failure_stage_changes_the_rendered_cause() {
         let missing = BollardError::SocketNotFoundError("/tmp/docker.sock".into());
         let Error::DockerNotAvailable(constructor) =
             docker_unavailable(DockerConnectStage::Constructor, &missing)
@@ -1505,35 +1490,10 @@ mod tests {
         };
         assert_ne!(constructor.lines().next(), ping.lines().next());
 
-        // Windows names its named pipe where the other platforms name a socket; causes
-        // that do not mention the endpoint read the same everywhere.
-        for (kind, endpoint_specific) in [
-            (DockerFailureKind::MissingSocket, true),
-            (DockerFailureKind::PermissionDenied, true),
-            (DockerFailureKind::ConnectionRefused, false),
-            (DockerFailureKind::TimedOut, false),
-        ] {
-            let cause = |platform| docker_failure_cause(DockerConnectStage::Ping, kind, platform);
-            assert_eq!(cause(HostPlatform::Linux), cause(HostPlatform::MacOs));
-            assert_eq!(
-                cause(HostPlatform::Windows) != cause(HostPlatform::Linux),
-                endpoint_specific,
-                "{kind:?}"
-            );
-        }
-
         // Unclassified failures name the stage that failed.
         assert_ne!(
-            docker_failure_cause(
-                DockerConnectStage::Constructor,
-                DockerFailureKind::Other,
-                HostPlatform::Linux,
-            ),
-            docker_failure_cause(
-                DockerConnectStage::Ping,
-                DockerFailureKind::Other,
-                HostPlatform::Linux,
-            ),
+            docker_failure_cause(DockerConnectStage::Constructor, DockerFailureKind::Other),
+            docker_failure_cause(DockerConnectStage::Ping, DockerFailureKind::Other),
         );
     }
 
@@ -1572,7 +1532,6 @@ mod tests {
         let platforms = [
             HostPlatform::MacOs,
             HostPlatform::Linux,
-            HostPlatform::Windows,
             HostPlatform::Other,
         ];
         let guidance: Vec<_> = platforms.into_iter().map(docker_guidance).collect();
@@ -1585,7 +1544,7 @@ mod tests {
         // Only Linux names the rootless Engine socket path.
         let rootless = "`unix://$XDG_RUNTIME_DIR/docker.sock`";
         assert!(guidance[1].contains(rootless));
-        for text in [guidance[0], guidance[2], guidance[3]] {
+        for text in [guidance[0], guidance[2]] {
             assert!(!text.contains(rootless), "{text}");
         }
     }
