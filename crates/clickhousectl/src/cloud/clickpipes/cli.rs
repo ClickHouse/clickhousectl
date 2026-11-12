@@ -1,6 +1,6 @@
 use super::ClickPipeSourceKind;
 use super::create::build_create_request_args;
-use super::destination::parse_destination_role;
+use super::destination::{parse_destination_column, parse_destination_role};
 use super::sources::bigquery::{BigQueryCreateArgs, validate_bigquery_create_args};
 use super::sources::kafka::{KafkaCreateArgs, KafkaSchemaDiscoverArgs, validate_kafka_source_args};
 use super::sources::kinesis::{
@@ -727,6 +727,36 @@ pub struct ClickPipeCreateRequestArgs {
 
     #[command(flatten)]
     pub(super) settings: ClickPipeSettingsValues,
+}
+
+/// Destination flags shared by the streaming and object-storage creates
+/// (Kafka, Kinesis, object storage, Pub/Sub), flattened so the four
+/// subcommands cannot drift apart (#1243 was one copy marking `--column`
+/// differently).
+#[derive(Args, Debug)]
+pub struct StreamingDestinationArgs {
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
 }
 
 /// Destination-table controls shared by streaming ClickPipe creates.

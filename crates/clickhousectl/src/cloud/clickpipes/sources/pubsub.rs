@@ -1,12 +1,8 @@
-use crate::cloud::clickpipes::cli::{
-    ClickPipeCreateRequestArgs, DestinationRoleArgs, StreamingDestinationTableArgs,
-};
+use crate::cloud::clickpipes::cli::{ClickPipeCreateRequestArgs, StreamingDestinationArgs};
 use crate::cloud::clickpipes::create::{
     apply_create_request_args, build_create_request_args, print_created,
 };
-use crate::cloud::clickpipes::destination::{
-    build_destination_roles, build_streaming_destination, parse_columns, parse_destination_column,
-};
+use crate::cloud::clickpipes::destination::parse_columns;
 use crate::cloud::clickpipes::sources::{
     AuthenticationValueParser, GcpAuthentication, read_gcp_service_account_file,
 };
@@ -146,28 +142,8 @@ pub struct PubSubCreateArgs {
     #[command(flatten)]
     pub source: PubSubSourceFields,
 
-    /// Destination database
-    #[arg(long)]
-    pub database: String,
-
-    /// Destination table
-    #[arg(long)]
-    pub table: String,
-
-    /// Destination column as name:type (required, repeatable)
-    #[arg(
-        long = "column",
-        required = true,
-        value_name = "NAME:TYPE",
-        value_parser = parse_destination_column
-    )]
-    pub columns: Vec<String>,
-
     #[command(flatten)]
-    pub destination_table: StreamingDestinationTableArgs,
-
-    #[command(flatten)]
-    pub destination_roles: DestinationRoleArgs,
+    pub destination: StreamingDestinationArgs,
 }
 
 /// Validate a Pub/Sub subscription filter against the spec's 256-character
@@ -328,7 +304,7 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_pubsub(
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
     let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)?;
-    let parsed_columns = parse_columns(&args.columns)?;
+    let parsed_columns = parse_columns(&args.destination.columns)?;
     let source = build_pubsub_source(&args.source)?;
 
     let mut request = ClickPipePostRequest {
@@ -344,13 +320,7 @@ pub(in crate::cloud::clickpipes) async fn clickpipe_create_pubsub(
             postgres: None,
             validate_samples: None,
         },
-        destination: build_streaming_destination(
-            &args.database,
-            &args.table,
-            parsed_columns,
-            build_destination_roles(&args.destination_roles.roles),
-            &args.destination_table,
-        )?,
+        destination: args.destination.build(parsed_columns)?,
         field_mappings: None,
         scaling: None,
         settings: None,
@@ -429,10 +399,16 @@ mod tests {
         );
         assert!(args.source.enable_ordering);
         assert_eq!(args.source.ack_deadline, Some(120));
-        assert_eq!(args.database, "db");
-        assert_eq!(args.table, "events");
-        assert_eq!(args.columns, vec!["event_id:Int64", "name:String"]);
-        assert_eq!(args.destination_roles.roles, vec!["analytics_reader"]);
+        assert_eq!(args.destination.database, "db");
+        assert_eq!(args.destination.table, "events");
+        assert_eq!(
+            args.destination.columns,
+            vec!["event_id:Int64", "name:String"]
+        );
+        assert_eq!(
+            args.destination.destination_roles.roles,
+            vec!["analytics_reader"]
+        );
 
         // Defaults: only --auth has one, and the optional fields stay unset.
         let args = parse_pubsub_create(&pubsub_source_flags("./sa-key.json"));
@@ -441,7 +417,7 @@ mod tests {
         assert_eq!(args.source.filter, None);
         assert!(!args.source.enable_ordering);
         assert_eq!(args.source.ack_deadline, None);
-        assert!(args.destination_roles.roles.is_empty());
+        assert!(args.destination.destination_roles.roles.is_empty());
     }
 
     #[test]

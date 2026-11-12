@@ -6,7 +6,9 @@ use crate::cloud::clickpipes::create::{
 };
 use crate::cloud::clickpipes::destination::{build_destination, build_destination_roles};
 use crate::cloud::clickpipes::parse_enum;
-use crate::cloud::clickpipes::sources::{DB_AUTHS, REPLICATION_MODES};
+use crate::cloud::clickpipes::sources::{
+    DB_AUTHS, REPLICATION_MODES, basic_auth_credentials, validate_db_auth_args,
+};
 use crate::cloud::clickpipes::table_mapping::{
     parse_postgres_table_mapping, parse_postgres_table_mapping_json,
     parse_postgres_table_mapping_parts,
@@ -206,32 +208,12 @@ pub(in crate::cloud::clickpipes) fn validate_postgres_create_args(
              --table-mapping-json <JSON> is required",
         ));
     }
-    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
-        return Err(CloudError::usage(
-            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
-        ));
-    }
-    if args.auth == "basic" && args.iam_role.is_some() {
-        return Err(CloudError::usage(
-            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
-        ));
-    }
-    // IAM_ROLE authentication has no username or password: the role ARN is the
-    // whole credential. Reject the pair rather than silently dropping it, the
-    // same way basic auth rejects --iam-role.
-    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
-        return Err(CloudError::usage(
-            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
-        ));
-    }
-    // clap joins --username and --password with `requires`, so half a pair is
-    // already a usage error; this owns the "basic auth needs the pair at all"
-    // rule, which clap cannot express because it depends on --auth's value.
-    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
-        return Err(CloudError::usage(
-            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
-        ));
-    }
+    validate_db_auth_args(
+        &args.auth,
+        args.iam_role.as_deref(),
+        args.username.as_deref(),
+        args.password.as_deref(),
+    )?;
     if args.replication_slot_name.is_some() && args.replication_mode != "cdc_only" {
         return Err(CloudError::usage(
             "--replication-slot-name can only be used with --replication-mode cdc_only",
@@ -317,7 +299,7 @@ fn build_postgres_request(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutatePostgresSource, ClickPipeMutatePostgresSourceAuthentication,
-        ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipePostRequest, ClickPipePostSource,
     };
 
     let request_args = build_create_validation_args(&args.validation);
@@ -332,17 +314,9 @@ fn build_postgres_request(
     // silent credential-less create.
     let authentication: ClickPipeMutatePostgresSourceAuthentication = parse_enum(&args.auth)?;
     let credentials = match &authentication {
-        // `validate_postgres_create_args` has already required the pair for
-        // basic auth, so `zip` yields `Some` for every invocation that reaches
-        // here.
-        ClickPipeMutatePostgresSourceAuthentication::Basic => args
-            .username
-            .as_deref()
-            .zip(args.password.as_deref())
-            .map(|(username, password)| PLAIN {
-                username: username.to_string(),
-                password: password.to_string(),
-            }),
+        ClickPipeMutatePostgresSourceAuthentication::Basic => {
+            basic_auth_credentials(args.username.as_deref(), args.password.as_deref())
+        }
         // The role ARN is the whole credential: the `credentials` object must
         // stay off the wire entirely.
         ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE => None,
