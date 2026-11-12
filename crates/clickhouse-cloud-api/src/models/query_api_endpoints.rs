@@ -100,7 +100,7 @@ pub struct PublicQueryApiEndpointListItem {
 }
 
 /// `PublicQueryApiEndpointRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublicQueryApiEndpointRequest {
     #[serde(rename = "name")]
     pub name: String,

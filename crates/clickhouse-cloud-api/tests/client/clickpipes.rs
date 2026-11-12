@@ -192,7 +192,19 @@ async fn create_click_pipe() {
 
     let body = ClickPipePostRequest {
         name: "new-pipe".to_string(),
-        ..Default::default()
+        destination: ClickPipeMutateDestination {
+            columns: None,
+            database: String::new(),
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
+        },
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        source: ClickPipePostSource::default(),
+        start_paused: None,
     };
     let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
@@ -223,11 +235,31 @@ async fn create_kinesis_click_pipe_sends_glue_registry() {
                     glue_registry_name: "events".into(),
                     glue_role_arn: None,
                 }),
-                ..Default::default()
+                access_key: None,
+                authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
+                format: ClickPipePostKinesisSourceFormat::JSONEachRow,
+                iam_role: None,
+                iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+                region: String::new(),
+                stream_name: String::new(),
+                timestamp: None,
+                use_enhanced_fan_out: None,
+                protobuf_schema: None,
             }),
             ..Default::default()
         },
-        ..Default::default()
+        destination: ClickPipeMutateDestination {
+            columns: None,
+            database: String::new(),
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
+        },
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     let response = client
         .click_pipe_create("org-1", "svc-1", &request)
@@ -294,11 +326,26 @@ async fn create_click_pipe_sends_start_paused_and_table_ttl() {
         destination: ClickPipeMutateDestination {
             table_definition: Some(ClickPipeDestinationTableDefinition {
                 ttl: "event_time + INTERVAL 30 DAY".to_string(),
-                ..Default::default()
+                engine: ClickPipeDestinationTableEngine {
+                    column_ids: Vec::new(),
+                    r#type: ClickPipeDestinationTableEngineType::default(),
+                    version_column_id: None,
+                },
+                partition_by: String::new(),
+                primary_key: String::new(),
+                sorting_key: Vec::new(),
             }),
-            ..Default::default()
+            columns: None,
+            database: String::new(),
+            managed_table: None,
+            roles: None,
+            table: None,
         },
-        ..Default::default()
+        field_mappings: None,
+        name: String::new(),
+        scaling: None,
+        settings: None,
+        source: ClickPipePostSource::default(),
     };
     let response = client
         .click_pipe_create("org-1", "svc-1", &request)
@@ -514,7 +561,20 @@ async fn click_pipe_schema_discovery_kafka() {
         source: ClickPipeSchemaDiscoverySource {
             kafka: Some(ClickPipePostKafkaSource {
                 brokers: "broker1:9092".to_string(),
-                ..Default::default()
+                protobuf_schema: None,
+                authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+                ca_certificate: None,
+                consumer_group: None,
+                credentials: None,
+                exactly_once: None,
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                iam_role: None,
+                offset: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                topics: String::new(),
+                tombstone_mode: None,
+                r#type: ClickPipePostKafkaSourceType::Kafka,
             }),
             kinesis: None,
             object_storage: None,
@@ -643,7 +703,14 @@ async fn create_reverse_private_endpoint() {
 
     let body = CreateReversePrivateEndpoint {
         description: "New RPE".to_string(),
-        ..Default::default()
+        custom_private_dns_mappings: None,
+        gcp_service_attachment: None,
+        msk_authentication: None,
+        msk_cluster_arn: None,
+        r#type: CreateReversePrivateEndpointType::VPC_ENDPOINT_SERVICE,
+        vpc_endpoint_service_name: None,
+        vpc_resource_configuration_id: None,
+        vpc_resource_share_arn: None,
     };
     let resp = c
         .click_pipe_reverse_private_endpoint_create("org-1", "svc-1", &body)

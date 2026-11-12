@@ -23,7 +23,7 @@ pub struct ClickPipeSchemaDiscoveryField {
 }
 
 /// `ClickPipeSchemaDiscoveryRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeSchemaDiscoveryRequest {
     pub source: ClickPipeSchemaDiscoverySource,
 }

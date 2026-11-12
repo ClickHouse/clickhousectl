@@ -114,7 +114,7 @@ pub enum ClickStackMongoDBCASLPermissionConditionValue {
 }
 
 /// `ClickStackClickHouseCASLPermission` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackClickHouseCASLPermission {
     pub action: ClickStackCASLPermissionAction,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,7 +149,7 @@ pub struct ClickStackClickHouseCASLPermissionResponse {
 }
 
 /// `ClickStackClickHouseCASLPermissionConditions` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackClickHouseCASLPermissionConditions {
     pub connection: String,
     pub from: ClickStackClickHouseCASLPermissionConditionsFrom,
@@ -177,7 +177,7 @@ pub struct ClickStackClickHouseCASLPermissionConditionsResponse {
 }
 
 /// `ClickStackClickHouseCASLPermissionConditionsFrom` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackClickHouseCASLPermissionConditionsFrom {
     #[serde(rename = "databaseName")]
     pub database_name: String,
@@ -199,7 +199,7 @@ pub struct ClickStackClickHouseCASLPermissionConditionsFromResponse {
 }
 
 /// `ClickStackCreateRoleRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCreateRoleRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -208,7 +208,7 @@ pub struct ClickStackCreateRoleRequest {
 }
 
 /// `ClickStackMongoDBCASLPermission` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMongoDBCASLPermission {
     pub action: ClickStackCASLPermissionAction,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -243,7 +243,7 @@ pub struct ClickStackMongoDBCASLPermissionResponse {
 }
 
 /// The `$regex` object branch of a [`ClickStackMongoDBCASLPermissionConditionValue`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMongoDBCASLPermissionRegexCondition {
     #[serde(rename = "$regex")]
     pub regex: String,
@@ -274,7 +274,7 @@ pub struct ClickStackRole {
 }
 
 /// `ClickStackUpdateRoleRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackUpdateRoleRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

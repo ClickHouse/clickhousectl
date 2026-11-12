@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 /// Inline enum for `ScimPatchOperation.op`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScimPatchOperationOp {
     #[serde(rename = "add")]
-    #[default]
     Add,
     #[serde(rename = "replace")]
     Replace,
@@ -36,7 +35,7 @@ impl std::fmt::Display for ScimPatchOperationOp {
 // added to `client.rs`, the envelopes they return must be split first.
 
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimEnterpriseManager {
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -44,7 +43,7 @@ pub struct ScimEnterpriseManager {
 }
 
 /// `ScimEnterpriseUser` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimEnterpriseUser {
     #[serde(rename = "costCenter")]
     pub cost_center: String,
@@ -57,7 +56,7 @@ pub struct ScimEnterpriseUser {
 }
 
 /// `ScimGroup` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroup {
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -71,7 +70,7 @@ pub struct ScimGroup {
 }
 
 /// `ScimGroupListResponse` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupListResponse {
     #[serde(rename = "Resources")]
     pub resources: Vec<ScimGroup>,
@@ -85,7 +84,7 @@ pub struct ScimGroupListResponse {
 }
 
 /// `ScimGroupMember` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupMember {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
@@ -95,7 +94,7 @@ pub struct ScimGroupMember {
 }
 
 /// `ScimGroupMeta` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
@@ -107,7 +106,7 @@ pub struct ScimGroupMeta {
 }
 
 /// `ScimGroupPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupPostRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -125,7 +124,7 @@ pub struct ScimGroupPostRequest {
 }
 
 /// `ScimGroupPutRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupPutRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
@@ -141,7 +140,7 @@ pub struct ScimGroupPutRequest {
 }
 
 /// `ScimListResponse` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimListResponse {
     #[serde(rename = "Resources")]
     pub resources: Vec<ScimUser>,
@@ -155,7 +154,7 @@ pub struct ScimListResponse {
 }
 
 /// `ScimPatchOp` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimPatchOp {
     #[serde(rename = "Operations")]
     pub operations: Vec<ScimPatchOperation>,
@@ -203,7 +202,7 @@ impl std::fmt::Display for ScimPatchOpMeta {
 }
 
 /// `ScimPatchOperation` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimPatchOperation {
     pub op: ScimPatchOperationOp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,7 +212,7 @@ pub struct ScimPatchOperation {
 }
 
 /// `ScimUser` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUser {
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -265,7 +264,7 @@ pub struct ScimUser {
 }
 
 /// `ScimUserAddress` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserAddress {
     pub country: String,
     pub formatted: String,
@@ -280,7 +279,7 @@ pub struct ScimUserAddress {
 }
 
 /// `ScimUserEmail` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserEmail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
@@ -290,7 +289,7 @@ pub struct ScimUserEmail {
 }
 
 /// `ScimUserEntitlement` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserEntitlement {
     pub display: String,
     pub primary: bool,
@@ -299,7 +298,7 @@ pub struct ScimUserEntitlement {
 }
 
 /// `ScimUserGroup` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserGroup {
     pub display: String,
     pub r#type: String,
@@ -307,7 +306,7 @@ pub struct ScimUserGroup {
 }
 
 /// `ScimUserIm` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserIm {
     pub primary: bool,
     pub r#type: String,
@@ -315,7 +314,7 @@ pub struct ScimUserIm {
 }
 
 /// `ScimUserMeta` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
@@ -327,7 +326,7 @@ pub struct ScimUserMeta {
 }
 
 /// `ScimUserName` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserName {
     #[serde(rename = "familyName")]
     pub family_name: String,
@@ -343,7 +342,7 @@ pub struct ScimUserName {
 }
 
 /// `ScimUserPhoneNumber` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserPhoneNumber {
     pub primary: bool,
     pub r#type: String,
@@ -351,7 +350,7 @@ pub struct ScimUserPhoneNumber {
 }
 
 /// `ScimUserPhoto` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserPhoto {
     pub primary: bool,
     pub r#type: String,
@@ -359,7 +358,7 @@ pub struct ScimUserPhoto {
 }
 
 /// `ScimUserPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserPostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
@@ -419,7 +418,7 @@ pub struct ScimUserPostRequest {
 }
 
 /// `ScimUserPutRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserPutRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
@@ -477,7 +476,7 @@ pub struct ScimUserPutRequest {
 }
 
 /// `ScimUserRole` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserRole {
     pub display: String,
     pub primary: bool,
@@ -486,13 +485,13 @@ pub struct ScimUserRole {
 }
 
 /// `ScimX509Certificate` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimX509Certificate {
     pub value: String,
 }
 
 /// `ScimAuthenticationScheme` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimAuthenticationScheme {
     pub description: String,
     pub name: String,
@@ -505,13 +504,13 @@ pub struct ScimAuthenticationScheme {
 }
 
 /// `ScimBooleanFeature` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimBooleanFeature {
     pub supported: bool,
 }
 
 /// `ScimResourceType` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimResourceType {
     pub description: String,
     pub endpoint: String,
@@ -525,7 +524,7 @@ pub struct ScimResourceType {
 }
 
 /// `ScimResourceTypeListResponse` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimResourceTypeListResponse {
     #[serde(rename = "Resources")]
     pub resources: Vec<ScimResourceType>,
@@ -539,7 +538,7 @@ pub struct ScimResourceTypeListResponse {
 }
 
 /// `ScimResourceTypeMeta` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimResourceTypeMeta {
     pub location: String,
     #[serde(rename = "resourceType")]
@@ -547,7 +546,7 @@ pub struct ScimResourceTypeMeta {
 }
 
 /// `ScimSchema` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimSchema {
     pub attributes: Vec<ScimSchemaAttribute>,
     pub description: String,
@@ -558,7 +557,7 @@ pub struct ScimSchema {
 }
 
 /// `ScimSchemaAttribute` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimSchemaAttribute {
     #[serde(rename = "canonicalValues", skip_serializing_if = "Option::is_none")]
     pub canonical_values: Option<Vec<String>>,
@@ -582,14 +581,14 @@ pub struct ScimSchemaAttribute {
 }
 
 /// `ScimSchemaExtension` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimSchemaExtension {
     pub required: bool,
     pub schema: String,
 }
 
 /// `ScimSchemaListResponse` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimSchemaListResponse {
     #[serde(rename = "Resources")]
     pub resources: Vec<ScimSchema>,
@@ -603,7 +602,7 @@ pub struct ScimSchemaListResponse {
 }
 
 /// `ScimSchemaMeta` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimSchemaMeta {
     pub location: String,
     #[serde(rename = "resourceType")]
@@ -611,7 +610,7 @@ pub struct ScimSchemaMeta {
 }
 
 /// `ScimServiceProviderConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimServiceProviderConfig {
     #[serde(rename = "authenticationSchemes")]
     pub authentication_schemes: Vec<ScimAuthenticationScheme>,
@@ -629,7 +628,7 @@ pub struct ScimServiceProviderConfig {
 }
 
 /// `ScimServiceProviderConfigBulk` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimServiceProviderConfigBulk {
     #[serde(rename = "maxOperations")]
     pub max_operations: i64,
@@ -639,7 +638,7 @@ pub struct ScimServiceProviderConfigBulk {
 }
 
 /// `ScimServiceProviderConfigFilter` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimServiceProviderConfigFilter {
     #[serde(rename = "maxResults")]
     pub max_results: i64,
@@ -647,7 +646,7 @@ pub struct ScimServiceProviderConfigFilter {
 }
 
 /// `ScimServiceProviderConfigMeta` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimServiceProviderConfigMeta {
     pub location: String,
     #[serde(rename = "resourceType")]
@@ -655,7 +654,7 @@ pub struct ScimServiceProviderConfigMeta {
 }
 
 /// `ScimServiceProviderConfigPatch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimServiceProviderConfigPatch {
     pub supported: bool,
 }

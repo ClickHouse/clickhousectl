@@ -99,7 +99,7 @@ pub struct NotificationSetting {
 /// `effect` is `enabled`, `disabled` or `inherit`; `inherit` removes the setting
 /// so the role default applies again. Every resource must be named: there are no
 /// wildcards. Omitting `channels` applies the rule to every channel.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NotificationSettingRule {
     #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
     pub channels: Option<Vec<String>>,

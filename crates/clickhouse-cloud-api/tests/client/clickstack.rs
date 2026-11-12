@@ -51,7 +51,25 @@ async fn create_alert() {
 
     let body = ClickStackCreateAlertRequest {
         name: Some("New Alert".to_string()),
-        ..Default::default()
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackCreateAlertRequestInterval::_1m,
+        message: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
     };
     let resp = c
         .click_stack_create_alert("org-1", "svc-1", &body)
@@ -93,7 +111,14 @@ async fn create_inline_alert_sends_chart_config_and_reads_it_back() {
                         connection_id: "conn-1".into(),
                         sql_template: "SELECT count() FROM otel_logs".into(),
                         name: Some("Error count".into()),
-                        ..Default::default()
+                        color: None,
+                        color_rules: None,
+                        config_type: ClickStackNumberRawSqlChartConfigConfigtype::default(),
+                        display_type: ClickStackNumberRawSqlChartConfigDisplaytype::default(),
+                        number_format: None,
+                        source_id: None,
+                        r#where: None,
+                        where_language: None,
                     },
                 ),
             ),
@@ -102,7 +127,20 @@ async fn create_inline_alert_sends_chart_config_and_reads_it_back() {
         interval: ClickStackCreateAlertRequestInterval::_5m,
         display_name: Some("Errors".into()),
         tags: Some(vec!["p1".into()]),
-        ..Default::default()
+        channels: None,
+        channel: None,
+        dashboard_id: None,
+        group_by: None,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
     };
     let alert = c
         .click_stack_create_alert("org-1", "svc-1", &body)
@@ -164,7 +202,25 @@ async fn update_alert() {
 
     let body = ClickStackUpdateAlertRequest {
         name: Some("Updated Alert".to_string()),
-        ..Default::default()
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackUpdateAlertRequestInterval::_1m,
+        message: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackUpdateAlertRequestThresholdtype::Above,
+        tile_id: None,
     };
     let resp = c
         .click_stack_update_alert("org-1", "svc-1", "alert-1", &body)
@@ -246,7 +302,12 @@ async fn create_saved_search() {
     let body = ClickStackSavedSearchInput {
         name: "Production Errors".to_string(),
         source_id: "source-1".to_string(),
-        ..Default::default()
+        filters: None,
+        order_by: None,
+        select: None,
+        tags: None,
+        r#where: None,
+        where_language: None,
     };
     let resp = c
         .click_stack_create_saved_search("org-1", "svc-1", &body)
@@ -301,7 +362,12 @@ async fn update_saved_search() {
     let body = ClickStackSavedSearchInput {
         name: "Updated Search".to_string(),
         source_id: "source-1".to_string(),
-        ..Default::default()
+        filters: None,
+        order_by: None,
+        select: None,
+        tags: None,
+        r#where: None,
+        where_language: None,
     };
     let resp = c
         .click_stack_update_saved_search("org-1", "svc-1", "search-1", &body)
@@ -379,7 +445,12 @@ async fn create_dashboard() {
     let body = ClickStackCreateDashboardRequest {
         name: "New Dashboard".to_string(),
         tiles: vec![],
-        ..Default::default()
+        containers: None,
+        filters: None,
+        saved_filter_values: None,
+        saved_query: None,
+        saved_query_language: None,
+        tags: None,
     };
     let resp = c
         .click_stack_create_dashboard("org-1", "svc-1", &body)
@@ -431,7 +502,12 @@ async fn update_dashboard() {
     let body = ClickStackUpdateDashboardRequest {
         name: "Updated Dashboard".to_string(),
         tiles: vec![],
-        ..Default::default()
+        containers: None,
+        filters: None,
+        saved_filter_values: None,
+        saved_query: None,
+        saved_query_language: None,
+        tags: None,
     };
     let resp = c
         .click_stack_update_dashboard("org-1", "svc-1", "dash-1", &body)
@@ -511,7 +587,10 @@ async fn create_source() {
             table_name: "metrics".to_string(),
         },
         timestamp_value_expression: "timestamp".to_string(),
-        ..Default::default()
+        disabled: None,
+        id: None,
+        query_settings: None,
+        section: None,
     });
     let resp = c
         .click_stack_create_source("org-1", "svc-1", &body)
@@ -577,7 +656,10 @@ async fn update_source() {
             table_name: "metrics".to_string(),
         },
         timestamp_value_expression: "timestamp".to_string(),
-        ..Default::default()
+        disabled: None,
+        id: None,
+        query_settings: None,
+        section: None,
     });
     let resp = c
         .click_stack_update_source("org-1", "svc-1", "source-1", &body)
@@ -690,10 +772,12 @@ async fn create_role() {
                     )]
                     .into(),
                 ),
-                ..Default::default()
+                fields: None,
+                integration: ClickStackMongoDBCASLPermissionIntegration::default(),
+                inverted: None,
             },
         )],
-        ..Default::default()
+        description: None,
     };
     let resp = c
         .click_stack_create_role("org-1", "svc-1", &body)
@@ -761,11 +845,15 @@ async fn update_role() {
                 ClickStackClickHouseCASLPermission {
                     action: ClickStackCASLPermissionAction::Manage,
                     subject: ClickStackCASLPermissionSubject::All,
-                    ..Default::default()
+                    conditions: None,
+                    fields: None,
+                    integration: ClickStackClickHouseCASLPermissionIntegration::default(),
+                    inverted: None,
                 },
             ),
         ],
-        ..Default::default()
+        description: None,
+        name: None,
     };
     let resp = c
         .click_stack_update_role("org-1", "svc-1", "role-1", &body)
@@ -836,7 +924,10 @@ async fn create_webhook() {
         name: "Production Alerts".to_string(),
         service: ClickStackWebhookInputService::Slack,
         url: "https://hooks.slack.com/services/T/B/X".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_create_webhook("org-1", "svc-1", &body)
@@ -871,7 +962,10 @@ async fn update_webhook() {
         name: "Updated Alerts".to_string(),
         service: ClickStackWebhookInputService::Slack,
         url: "https://hooks.slack.com/services/T/B/X".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_update_webhook("org-1", "svc-1", "webhook-1", &body)
@@ -910,7 +1004,10 @@ async fn create_webhook_incidentio_response() {
         name: "Incident Alerts".to_string(),
         service: ClickStackWebhookInputService::Incidentio,
         url: "https://api.incident.io/v2/alert_events/http/abc".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_create_webhook("org-1", "svc-1", &body)
@@ -951,7 +1048,10 @@ async fn update_webhook_generic_response() {
         name: "Generic Alerts".to_string(),
         service: ClickStackWebhookInputService::Generic,
         url: "https://example.com/hook".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_update_webhook("org-1", "svc-1", "webhook-3", &body)
@@ -1010,7 +1110,13 @@ async fn validate_dashboard() {
 
     let body = ClickStackCreateDashboardRequest {
         name: "My Dashboard".to_string(),
-        ..Default::default()
+        containers: None,
+        filters: None,
+        saved_filter_values: None,
+        saved_query: None,
+        saved_query_language: None,
+        tags: None,
+        tiles: Vec::new(),
     };
     let resp = c
         .click_stack_validate_dashboard("org-1", "svc-1", &body)
@@ -1055,7 +1161,9 @@ async fn validate_webhook() {
         service: ClickStackWebhookInputService::Generic,
         url: "ftp://example.com/hook".to_string(),
         body: Some("{{title}}".to_string()),
-        ..Default::default()
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_validate_webhook("org-1", "svc-1", &body)
@@ -1094,7 +1202,10 @@ async fn validate_webhook_returns_the_normalized_webhook() {
         name: "Production Alerts".to_string(),
         service: ClickStackWebhookInputService::Slack,
         url: "https://hooks.slack.com/services/T/B/X".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let resp = c
         .click_stack_validate_webhook("org-1", "svc-1", &body)
@@ -1123,7 +1234,19 @@ async fn validate_webhook_surfaces_a_bad_request() {
         .await;
 
     let err = c
-        .click_stack_validate_webhook("org-1", "svc-1", &ClickStackWebhookInput::default())
+        .click_stack_validate_webhook(
+            "org-1",
+            "svc-1",
+            &ClickStackWebhookInput {
+                body: None,
+                description: None,
+                headers: None,
+                name: String::new(),
+                query_params: None,
+                service: ClickStackWebhookInputService::Slack,
+                url: String::new(),
+            },
+        )
         .await
         .expect_err("a 400 must fail the call");
     match err {

@@ -142,7 +142,38 @@ async fn api_error_403_forbidden() {
 
     let body = ServicePostRequest {
         name: "test".to_string(),
-        ..Default::default()
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Ap_northeast_1,
+        release_channel: None,
+        tags: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
     };
     let err = c.instance_create("org-1", &body).await.unwrap_err();
     match err {
@@ -350,7 +381,41 @@ async fn api_error_422_validation() {
         .mount(&s)
         .await;
 
-    let body = ServicePostRequest::default();
+    let body = ServicePostRequest {
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        name: String::new(),
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Ap_northeast_1,
+        release_channel: None,
+        tags: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
+    };
     let err = c.instance_create("org-1", &body).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {

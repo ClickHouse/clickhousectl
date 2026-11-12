@@ -36,6 +36,7 @@ use config::AnalyzerConfig;
 use openapi::OpenApiInventory;
 use report::DriftReport;
 use rust_inventory::RustInventory;
+pub use rust_inventory::StrictModelDefaults;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +169,24 @@ pub fn model_fields_with_serde_default(
     rust_source_root: &Path,
 ) -> Result<Vec<String>, AnalyzeError> {
     Ok(load_rust_inventory(rust_source_root)?.model_fields_with_serde_default())
+}
+
+/// Lists the public model structs with at least one non-`Option` field, and the
+/// subset of them that implements `Default` (derived or hand-written).
+///
+/// A required request field is the compiler's guard that a caller supplies a
+/// value. `Default` undoes it: `..Default::default()` fills a newly added
+/// required field with `""`, `0`, `false` or the first enum variant and still
+/// compiles — the fabrication the `#[serde(default)]` ban exists to prevent,
+/// moved to the constructor. This backs the policy test in
+/// `clickhouse-cloud-api`'s `spec_coverage_test.rs`; like
+/// [`model_fields_with_serde_default`], it is a repository-policy check rather
+/// than a drift `FindingKind`, and it keeps `syn` out of the published crate's
+/// dependency graph.
+pub fn model_structs_with_default_and_required_fields(
+    rust_source_root: &Path,
+) -> Result<StrictModelDefaults, AnalyzeError> {
+    Ok(load_rust_inventory(rust_source_root)?.strict_model_defaults())
 }
 
 /// Lists every public struct, enum, and type alias in the model module tree.

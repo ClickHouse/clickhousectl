@@ -2707,10 +2707,20 @@ async fn clickpipe_create_object_storage(
         name: args.name.clone(),
         source: ClickPipePostSource {
             object_storage: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            kinesis: None,
+            mongodb: None,
+            mysql: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination,
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -3005,6 +3015,7 @@ fn build_kafka_schema_registry(
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaGlueSchemaRegistry, ClickPipeKafkaGlueSchemaRegistryType,
         ClickPipeKafkaSchemaRegistryCredentials, ClickPipeMutateKafkaConfluentSchemaRegistry,
+        ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication,
         ClickPipeMutateKafkaConfluentSchemaRegistryType,
     };
 
@@ -3038,7 +3049,12 @@ fn build_kafka_schema_registry(
             username: username.to_string(),
             password: password.to_string(),
         },
-        _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
+        // The API requires the credentials object; empty strings are what an
+        // unauthenticated registry has always been sent.
+        _ => ClickPipeKafkaSchemaRegistryCredentials {
+            username: String::new(),
+            password: String::new(),
+        },
     };
     let ca_certificate = args
         .schema_registry_ca_certificate
@@ -3053,7 +3069,8 @@ fn build_kafka_schema_registry(
                 .as_ref()
                 .map(|_| ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent),
             url: url.clone(),
-            authentication: Default::default(),
+            // PLAIN is the only registry authentication the API defines.
+            authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
             credentials,
             ca_certificate,
         }
@@ -3294,7 +3311,14 @@ async fn clickpipe_create_kafka(
         name: args.name.clone(),
         source: ClickPipePostSource {
             kafka: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kinesis: None,
+            mongodb: None,
+            mysql: None,
+            object_storage: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_streaming_destination(
             &args.database,
@@ -3303,7 +3327,10 @@ async fn clickpipe_create_kafka(
             build_destination_roles(&args.destination_roles.roles),
             &args.destination_table,
         )?,
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -3330,7 +3357,14 @@ async fn clickpipe_create_kinesis(
         name: args.name.clone(),
         source: ClickPipePostSource {
             kinesis: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            mongodb: None,
+            mysql: None,
+            object_storage: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_streaming_destination(
             &args.database,
@@ -3339,7 +3373,10 @@ async fn clickpipe_create_kinesis(
             build_destination_roles(&args.destination_roles.roles),
             &args.destination_table,
         )?,
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -3501,7 +3538,14 @@ async fn clickpipe_create_pubsub(
         name: args.name.clone(),
         source: ClickPipePostSource {
             pubsub: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            kinesis: None,
+            mongodb: None,
+            mysql: None,
+            object_storage: None,
+            postgres: None,
+            validate_samples: None,
         },
         destination: build_streaming_destination(
             &args.database,
@@ -3510,7 +3554,10 @@ async fn clickpipe_create_pubsub(
             build_destination_roles(&args.destination_roles.roles),
             &args.destination_table,
         )?,
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -4892,6 +4939,29 @@ fn read_destination_table_definition(
     Ok(definition)
 }
 
+/// The table definition sent for a managed destination table when no
+/// `--table-definition-file` is given: a MergeTree engine with no keys. The
+/// empty `ttl` is omitted when serialized.
+fn managed_merge_tree_table_definition()
+-> clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition {
+    use clickhouse_cloud_api::models::{
+        ClickPipeDestinationTableDefinition, ClickPipeDestinationTableEngine,
+        ClickPipeDestinationTableEngineType,
+    };
+
+    ClickPipeDestinationTableDefinition {
+        engine: ClickPipeDestinationTableEngine {
+            column_ids: Vec::new(),
+            r#type: ClickPipeDestinationTableEngineType::MergeTree,
+            version_column_id: None,
+        },
+        partition_by: String::new(),
+        primary_key: String::new(),
+        sorting_key: Vec::new(),
+        ttl: String::new(),
+    }
+}
+
 /// Build the destination shared by Kafka, Kinesis, object-storage, and Pub/Sub.
 /// Omitting both new flags retains the historical managed MergeTree request.
 fn build_streaming_destination(
@@ -4906,7 +4976,7 @@ fn build_streaming_destination(
         .as_deref()
         .map(read_destination_table_definition)
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_else(managed_merge_tree_table_definition);
 
     Ok(clickhouse_cloud_api::models::ClickPipeMutateDestination {
         database: database.to_string(),
@@ -4941,7 +5011,10 @@ fn build_destination(
             // `roles` is not one of the four fields database pipes reject, so
             // it is wired here too.
             roles,
-            ..Default::default()
+            columns: None,
+            managed_table: None,
+            table: None,
+            table_definition: None,
         };
     }
     clickhouse_cloud_api::models::ClickPipeMutateDestination {
@@ -4950,9 +5023,7 @@ fn build_destination(
         columns: non_empty(columns),
         managed_table: Some(true),
         roles,
-        table_definition: Some(
-            clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
-        ),
+        table_definition: Some(managed_merge_tree_table_definition()),
     }
 }
 
@@ -5608,7 +5679,11 @@ fn validate_postgres_create_args(
             source_table,
             target_table,
             table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
-            ..Default::default()
+            excluded_columns: Vec::new(),
+            partition_by_expr: String::new(),
+            partition_key: String::new(),
+            sorting_keys: Vec::new(),
+            use_custom_sorting_key: false,
         });
     }
     for (position, mapping) in args.table_mappings_json.iter().enumerate() {
@@ -5709,7 +5784,14 @@ fn build_postgres_request(
         name: args.name.clone(),
         source: ClickPipePostSource {
             postgres: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            kinesis: None,
+            mongodb: None,
+            mysql: None,
+            object_storage: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_destination(
             &args.destination.destination_database,
@@ -5717,7 +5799,10 @@ fn build_postgres_request(
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
     Ok(request)
@@ -5859,7 +5944,12 @@ fn resolve_mysql_table_mappings(
             source_schema_name,
             source_table,
             target_table,
-            ..Default::default()
+            partition_by_expr: None,
+            excluded_columns: None,
+            partition_key: None,
+            sorting_keys: None,
+            table_engine: None,
+            use_custom_sorting_key: None,
         });
     }
     for (position, mapping) in args.table_mappings_json.iter().enumerate() {
@@ -5961,7 +6051,14 @@ fn build_mysql_request(
         name: args.name.clone(),
         source: ClickPipePostSource {
             mysql: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            kinesis: None,
+            mongodb: None,
+            object_storage: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_destination(
             &args.destination.destination_database,
@@ -5969,7 +6066,10 @@ fn build_mysql_request(
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
     Ok(request)
@@ -6047,7 +6147,9 @@ fn resolve_mongodb_table_mappings(
             source_database_name,
             source_collection,
             target_table,
-            ..Default::default()
+            mongo_config: None,
+            structured_ingestion: None,
+            table_engine: None,
         });
     }
     for (position, mapping) in args.table_mappings_json.iter().enumerate() {
@@ -6117,7 +6219,14 @@ fn build_mongodb_request(
         name: args.name.clone(),
         source: ClickPipePostSource {
             mongodb: Some(source),
-            ..Default::default()
+            bigquery: None,
+            kafka: None,
+            kinesis: None,
+            mysql: None,
+            object_storage: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_destination(
             &args.destination.destination_database,
@@ -6125,7 +6234,10 @@ fn build_mongodb_request(
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -6263,7 +6375,12 @@ fn resolve_bigquery_table_mappings(
             source_dataset_name,
             source_table,
             target_table,
-            ..Default::default()
+            excluded_columns: None,
+            sorting_keys: None,
+            table_engine: None,
+            use_custom_sorting_key: None,
+            events_function: None,
+            query_cdc_watermark_column: None,
         });
     }
     for (position, mapping) in args.table_mappings_json.iter().enumerate() {
@@ -6351,7 +6468,14 @@ fn build_bigquery_request(
         name: args.name.clone(),
         source: ClickPipePostSource {
             bigquery: Some(source),
-            ..Default::default()
+            kafka: None,
+            kinesis: None,
+            mongodb: None,
+            mysql: None,
+            object_storage: None,
+            postgres: None,
+            pubsub: None,
+            validate_samples: None,
         },
         destination: build_destination(
             &args.destination.destination_database,
@@ -6359,7 +6483,10 @@ fn build_bigquery_request(
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     apply_create_request_args(&mut request, request_args);
 
@@ -7745,7 +7872,15 @@ mod tests {
                     ..Default::default()
                 };
                 let built = build_create_request_args(&args, kind).unwrap();
-                let mut request = clickhouse_cloud_api::models::ClickPipePostRequest::default();
+                let mut request = clickhouse_cloud_api::models::ClickPipePostRequest {
+                    name: String::new(),
+                    source: Default::default(),
+                    destination: build_destination("db", "", Vec::new(), None),
+                    field_mappings: None,
+                    scaling: None,
+                    settings: None,
+                    start_paused: None,
+                };
                 apply_create_request_args(&mut request, built);
                 assert_eq!(request.start_paused, paused.then_some(true));
                 let json = serde_json::to_value(&request).unwrap();
@@ -12717,7 +12852,11 @@ mod tests {
             minimal.structured_ingestion,
             Some(ClickPipeMongoDBStructuredIngestion {
                 enabled: true,
-                ..Default::default()
+                columns: None,
+                drop_unexpected_values: None,
+                excluded_columns: None,
+                partition_by_expr: None,
+                sorting_keys: None,
             })
         );
 
@@ -12936,7 +13075,11 @@ mod tests {
                 source_table: "events".into(),
                 target_table: "events".into(),
                 table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
-                ..Default::default()
+                excluded_columns: Vec::new(),
+                partition_by_expr: String::new(),
+                partition_key: String::new(),
+                sorting_keys: Vec::new(),
+                use_custom_sorting_key: false,
             }
         );
         assert_eq!(
@@ -14822,6 +14965,25 @@ mod tests {
         args.schema_registry_type = None;
         args.schema_registry_url = None;
         assert_eq!(build_kafka_source(&args).unwrap().schema_registry, None);
+    }
+
+    #[test]
+    fn build_kafka_source_sends_plain_registry_auth_and_empty_credentials_without_flags() {
+        // The API requires `authentication` and `credentials` on a Confluent
+        // registry; without credential flags the CLI sends PLAIN and empty
+        // strings, the body it has always sent for an unauthenticated registry.
+        let mut args = kafka_source_with_plain_auth();
+        args.schema_registry_url = Some("https://registry.example".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(
+            serde_json::to_value(source.schema_registry).unwrap(),
+            serde_json::json!({
+                "url": "https://registry.example",
+                "authentication": "PLAIN",
+                "credentials": { "username": "", "password": "" },
+            })
+        );
     }
 
     #[test]

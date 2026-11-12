@@ -34,7 +34,7 @@ pub struct AssignedRole {
 }
 
 /// `IpAccessListEntry` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpAccessListEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -55,14 +55,14 @@ pub struct IpAccessListEntryResponse {
 }
 
 /// `IpAccessListPatch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpAccessListPatch {
     pub add: Vec<IpAccessListEntry>,
     pub remove: Vec<IpAccessListEntry>,
 }
 
 /// `License` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct License {
     #[serde(rename = "environmentFingerprint")]
     pub environment_fingerprint: String,
@@ -73,7 +73,7 @@ pub struct License {
 }
 
 /// `ResourceTagsV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceTagsV1 {
     pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]

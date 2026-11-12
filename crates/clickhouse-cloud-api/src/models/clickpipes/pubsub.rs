@@ -25,10 +25,9 @@ impl std::fmt::Display for ClickPipePatchPubSubSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostPubSubSource.authentication`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostPubSubSourceAuthentication {
     #[serde(rename = "SERVICE_ACCOUNT")]
-    #[default]
     ServiceAccount,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -45,9 +44,8 @@ impl std::fmt::Display for ClickPipePostPubSubSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostPubSubSource.format`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostPubSubSourceFormat {
-    #[default]
     JSONEachRow,
     Avro,
     Protobuf,
@@ -68,10 +66,9 @@ impl std::fmt::Display for ClickPipePostPubSubSourceFormat {
 }
 
 /// Inline enum for `ClickPipePostPubSubSource.seekType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostPubSubSourceSeektype {
     #[serde(rename = "latest")]
-    #[default]
     Latest,
     #[serde(rename = "earliest")]
     Earliest,
@@ -190,13 +187,6 @@ discriminated_union! {
         "SERVICE_ACCOUNT_WORKLOAD_IDENTITY" => ClickPipePostPubSubWorkloadIdentitySource,
     }
 }
-impl Default for ClickPipePostPubSubSource {
-    fn default() -> Self {
-        Self::ClickPipePostPubSubServiceAccountSource(
-            ClickPipePostPubSubServiceAccountSource::default(),
-        )
-    }
-}
 impl std::fmt::Display for ClickPipePostPubSubSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -235,7 +225,7 @@ pub struct ClickPipePubSubSource {
 }
 
 /// `ClickPipePostPubSubServiceAccountSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostPubSubServiceAccountSource {
     #[serde(rename = "format")]
     pub format: ClickPipePostPubSubSourceFormat,
@@ -260,10 +250,9 @@ pub struct ClickPipePostPubSubServiceAccountSource {
 }
 
 /// Values of `ClickPipePostPubSubWorkloadIdentitySourceAuthentication` in the Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostPubSubWorkloadIdentitySourceAuthentication {
     #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
-    #[default]
     ServiceAccountWorkloadIdentity,
     #[serde(untagged)]
     Unknown(String),
@@ -278,7 +267,7 @@ impl std::fmt::Display for ClickPipePostPubSubWorkloadIdentitySourceAuthenticati
 }
 
 /// `ClickPipePostPubSubWorkloadIdentitySource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostPubSubWorkloadIdentitySource {
     #[serde(rename = "format")]
     pub format: ClickPipePostPubSubSourceFormat,

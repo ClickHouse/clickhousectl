@@ -61,7 +61,7 @@ impl std::fmt::Display for ClickPipeBigQueryPipeTableMappingTableengine {
 }
 
 /// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeSettings {
     #[serde(
         rename = "allowNullableColumns",
@@ -172,7 +172,7 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
 }
 
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeTableMapping {
     #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
     pub excluded_columns: Option<Vec<String>>,
@@ -283,13 +283,6 @@ discriminated_union! {
         none unless "authentication" => ClickPipePostBigQueryServiceAccountSource,
     }
 }
-impl Default for ClickPipeMutateBigQuerySource {
-    fn default() -> Self {
-        Self::ClickPipePostBigQueryServiceAccountSource(
-            ClickPipePostBigQueryServiceAccountSource::default(),
-        )
-    }
-}
 impl std::fmt::Display for ClickPipeMutateBigQuerySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -395,7 +388,7 @@ impl std::fmt::Display for ClickPipePostBigQueryServiceAccountSourceAuthenticati
 }
 
 /// `ClickPipePostBigQueryServiceAccountSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostBigQueryServiceAccountSource {
     #[serde(rename = "snapshotStagingPath")]
     pub snapshot_staging_path: String,
@@ -412,10 +405,9 @@ pub struct ClickPipePostBigQueryServiceAccountSource {
 }
 
 /// Values of `ClickPipePostBigQueryWorkloadIdentitySourceAuthentication` in the Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostBigQueryWorkloadIdentitySourceAuthentication {
     #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
-    #[default]
     ServiceAccountWorkloadIdentity,
     #[serde(untagged)]
     Unknown(String),
@@ -430,7 +422,7 @@ impl std::fmt::Display for ClickPipePostBigQueryWorkloadIdentitySourceAuthentica
 }
 
 /// `ClickPipePostBigQueryWorkloadIdentitySource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostBigQueryWorkloadIdentitySource {
     #[serde(rename = "snapshotStagingPath")]
     pub snapshot_staging_path: String,

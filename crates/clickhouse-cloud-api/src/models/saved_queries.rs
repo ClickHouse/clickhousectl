@@ -37,7 +37,7 @@ pub struct PublicSavedQueryListItem {
 ///
 /// Body of both `saved_query_create` and `saved_query_update`; an update
 /// replaces the whole saved query.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PublicSavedQueryRequest {
     /// Name of the saved query; must be non-empty and unique within the service.
     #[serde(rename = "name")]
