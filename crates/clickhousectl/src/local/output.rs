@@ -39,7 +39,6 @@ pub(crate) enum LocalErrorCode {
     ServerNotRunning,
     ServerRunning,
     InvalidServerName,
-    UnsupportedArgument,
     ConfigNotFound,
     InvalidConfigName,
     UdfDefinitionInvalid,
@@ -119,7 +118,6 @@ impl LocalErrorCode {
             Self::ServerNotRunning => "server_not_running",
             Self::ServerRunning => "server_running",
             Self::InvalidServerName => "invalid_server_name",
-            Self::UnsupportedArgument => "unsupported_argument",
             Self::ConfigNotFound => "config_not_found",
             Self::InvalidConfigName => "invalid_config_name",
             Self::UdfDefinitionInvalid => "udf_definition_invalid",
@@ -483,8 +481,6 @@ impl LocalErrorOutput {
             }
             Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
                 .command("clickhousectl local status"),
-            Error::UnsupportedArgument(_) => Mapping::parity(LocalErrorCode::UnsupportedArgument)
-                .command("clickhousectl local clickhouse start --help"),
 
             // ── server configs ──────────────────────────────────────────────
             Error::ConfigNotFound(_) => Mapping::parity(LocalErrorCode::ConfigNotFound)
@@ -2167,16 +2163,6 @@ mod tests {
                 "invalid_server_name",
             ),
             (
-                Error::UnsupportedArgument("--config cannot be passed through".into()),
-                "unsupported_argument",
-            ),
-            (
-                Error::UnsupportedArgument(
-                    "--http-port 0 is not allowed; pick a specific port or omit the flag".into(),
-                ),
-                "unsupported_argument",
-            ),
-            (
                 Error::DockerNotAvailable("Docker socket was not found.\nStart Docker.".into()),
                 "docker_unavailable",
             ),
@@ -3001,10 +2987,6 @@ mod tests {
                 projects: "/projects/a, /projects/b".into(),
             },
             Error::InvalidServerName("../escape".into()),
-            Error::UnsupportedArgument("--config cannot be passed through".into()),
-            Error::UnsupportedArgument(
-                "--tcp-port 0 is not allowed; pick a specific port or omit the flag".into(),
-            ),
             Error::ConfigNotFound("config 'x' not found in /configs (available: y.xml)".into()),
             Error::InvalidConfigName("../etc/passwd".into()),
             Error::VersionNotFound("25.12.9.61".into()),
