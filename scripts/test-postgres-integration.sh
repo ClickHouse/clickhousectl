@@ -222,8 +222,10 @@ EOF
 
 # ── 11. --port 0 rejected ──
 case_port_zero_rejected() {
-    local out; out=$("$CTL" local postgres start --name z --port 0 2>&1) || true
-    echo "$out" | grep -Fq -- "invalid value '0' for '--port <PORT>': --port 0 is not allowed; pick a specific port or omit the flag" || { die "no rejection: $out"; return 1; }
+    # Assert the usage exit code and the offending flag, not the sentence.
+    local out rc=0; out=$("$CTL" local postgres start --name z --port 0 2>&1) || rc=$?
+    [[ $rc -eq 2 ]] || { die "expected exit 2, got $rc: $out"; return 1; }
+    echo "$out" | grep -Fq -- "--port" || { die "rejection does not name --port: $out"; return 1; }
 }
 
 # ── 12. Non-TTY query path returns query result ──
