@@ -56,6 +56,11 @@ jobs:
       - name: Clippy without default features
         run: cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings
 
+      # Clippy only compiles all features; these tests only run with the
+      # experimental access-negotiation feature enabled.
+      - name: Clippy with experimental access negotiation
+        run: cargo clippy -p clickhousectl --all-targets --features experimental-access-negotiation -- -D warnings
+
       - name: Test
         run: cargo test -p clickhousectl
 
@@ -65,6 +70,9 @@ jobs:
 
       - name: Test debug-log
         run: cargo test -p clickhousectl --features debug-log debug_log
+
+      - name: Test with experimental access negotiation
+        run: cargo test -p clickhousectl --features experimental-access-negotiation
 
       # The live tests include the API library's harness by a path outside
       # this crate, so the published crate must ship its sources only.
