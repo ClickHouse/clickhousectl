@@ -11466,8 +11466,9 @@ async fn agent_session_and_trace_headers_are_forwarded() {
     let url = mock.uri();
     let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
     let output = Command::new(clickhousectl_binary())
+        // The parent may itself run under an agent whose session id would win detection.
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
