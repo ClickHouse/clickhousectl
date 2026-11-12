@@ -16,6 +16,10 @@ pub struct AnalyzerConfig {
     /// Response-only integer properties whose verified runtime values require f64.
     /// Entries become stale when the spec, Rust type, or response reachability changes.
     pub fractional_response_exemptions: BTreeSet<(String, String)>,
+    /// Request-position fields, as (Rust type, wire name), whose Rust type
+    /// deliberately differs from the property schema's shape. Entries become
+    /// stale when the field's shape check no longer reports a finding.
+    pub request_shape_exemptions: BTreeSet<(String, String)>,
     pub extra_field_exemptions: BTreeSet<(String, String)>,
     pub deprecated_field_exemptions: BTreeSet<(String, String)>,
     pub extra_enum_value_exemptions: BTreeSet<(String, String)>,
@@ -61,6 +65,7 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
         ]),
         optionality_exemptions: pairs(OPTIONALITY_EXEMPTIONS),
         fractional_response_exemptions: pairs(FRACTIONAL_RESPONSE_EXEMPTIONS),
+        request_shape_exemptions: pairs(REQUEST_SHAPE_EXEMPTIONS),
         extra_field_exemptions: BTreeSet::new(),
         deprecated_field_exemptions: BTreeSet::new(),
         extra_enum_value_exemptions: BTreeSet::new(),
@@ -69,6 +74,18 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
         acknowledged_unsupported_enum_pointers: strings(ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS),
     }
 }
+
+// Request fields whose Rust shape deliberately differs from the spec.
+const REQUEST_SHAPE_EXEMPTIONS: &[(&str, &str)] = &[
+    // The spec types `level` as a number and lists 0.5/0.9/0.95/0.99 only in
+    // prose; the inline enum serializes those as strings. Changing it changes
+    // what is sent, so it needs the live API to settle which side is right.
+    ("ClickStackSelectItem", "level"),
+    // `settings` defaults to a JSON-value map for existing callers; the typed
+    // spec contract is opt-in as `ServiceClickhouseSettingsPatchRequest<
+    // ServiceClickhouseSettingsMap>`, so the default type argument is wider.
+    ("ServiceClickhouseSettingsPatchRequest", "settings"),
+];
 
 // Live slow-query list/detail responses contain fractional microsecond durations,
 // including avgDurationUs = 1190.8419405320817. The spec now declares the
