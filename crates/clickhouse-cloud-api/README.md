@@ -6,6 +6,19 @@ Requires Rust 1.94.1 or later.
 
 ## Updated Cloud API surface
 
+Structs with a required field no longer implement `Default`: request bodies
+such as `ServicePostRequest`, `ClickPipePostRequest` and
+`ClickStackCreateAlertRequest`, their nested required types, the request
+unions that defaulted to one of them (for example `ClickStackAlertChannel` and
+`BackupBucketPostRequest`), and the string enums used only as required request
+fields (for example `ServicePostRequestProvider`). `..Default::default()` used
+to fill a field the API had just made required with `""`, `0`, `false` or the
+first enum variant, and the request still compiled. Callers of these types
+write every field: `None` for the optional ones and a real value for each
+required one. All-`Option` structs, such as PATCH bodies, and every response
+type keep `Default`. Older entries below that offer `..Default::default()`
+apply only to types that still implement it.
+
 ClickStack chart configs gain a PromQL variant that queries a `promql` source.
 Each of the line, stacked-bar, stacked-line, categorical-bar, table, number,
 pie and heatmap chart config unions (and their `*Response` unions) adds a
@@ -441,7 +454,7 @@ Additional rules:
 - **PATCH request schemas** (name contains `Patch` and ends with `Request`) are always all-optional.
 - **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) are always `Option<T>`, even if required.
 
-In `src/models/<domain>.rs`, request fields follow those rules: required non-nullable fields use `T`, while optional or nullable fields use `Option<T>`. Every response field uses `Option<T>` plus `skip_serializing_if`, so missing keys and explicit `null` deserialize natively to `None` and absent fields are omitted when serialized. `#[serde(default)]` is banned because it can fabricate required request values and is redundant for `Option` response fields.
+In `src/models/<domain>.rs`, request fields follow those rules: required non-nullable fields use `T`, while optional or nullable fields use `Option<T>`. Every response field uses `Option<T>` plus `skip_serializing_if`, so missing keys and explicit `null` deserialize natively to `None` and absent fields are omitted when serialized. `#[serde(default)]` is banned because it can fabricate required request values and is redundant for `Option` response fields. For the same reason, a struct with a required field does not implement `Default`.
 
 API key PATCH expiry uses `Option<Option<DateTime<Utc>>>`: `None` leaves the current expiry unchanged, `Some(Some(time))` sets it, and `Some(None)` removes it. These three states survive serialization and deserialization. API key creation still uses `Option<DateTime<Utc>>`, where omission creates a key without an expiry.
 

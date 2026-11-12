@@ -55,7 +55,7 @@ async fn create_invitation() {
         email: "newuser@example.com".to_string(),
         #[cfg(feature = "deprecated-fields")]
         role: Some(InvitationPostRequestRole::Developer),
-        ..Default::default()
+        assigned_role_ids: None,
     };
     let resp = client.invitation_create("org-1", &body).await.unwrap();
     let inv = resp.result.unwrap();

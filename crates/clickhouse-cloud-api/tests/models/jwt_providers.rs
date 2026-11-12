@@ -38,7 +38,10 @@ fn jwt_provider_requests_are_strict_and_omit_absent_roles_claim() {
 fn jwt_provider_requests_send_roles_claim_when_set() {
     let post = JwtProviderPostRequest {
         roles_claim: Some("clickhouse:roles".into()),
-        ..Default::default()
+        name: String::new(),
+        issuer: String::new(),
+        audience: String::new(),
+        jwks_url: String::new(),
     };
     assert_eq!(
         serde_json::to_value(post).unwrap()["rolesClaim"],
@@ -46,7 +49,9 @@ fn jwt_provider_requests_send_roles_claim_when_set() {
     );
     let put = JwtProviderPutRequest {
         roles_claim: Some("clickhouse:roles".into()),
-        ..Default::default()
+        issuer: String::new(),
+        audience: String::new(),
+        jwks_url: String::new(),
     };
     assert_eq!(
         serde_json::to_value(put).unwrap()["rolesClaim"],

@@ -151,9 +151,8 @@ impl std::fmt::Display for ClickPipeKafkaSourceType {
 }
 
 /// Inline enum for `ClickPipeMutateKafkaConfluentSchemaRegistry.authentication`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication {
-    #[default]
     PLAIN,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -204,9 +203,8 @@ impl std::fmt::Display for ClickPipePatchKafkaSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.authentication`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKafkaSourceAuthentication {
-    #[default]
     PLAIN,
     #[serde(rename = "SCRAM-SHA-256")]
     SCRAM_SHA_256,
@@ -250,9 +248,8 @@ impl std::fmt::Display for ClickPipePostKafkaSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.format`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKafkaSourceFormat {
-    #[default]
     JSONEachRow,
     Avro,
     AvroConfluent,
@@ -280,10 +277,9 @@ impl std::fmt::Display for ClickPipePostKafkaSourceFormat {
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKafkaSourceType {
     #[serde(rename = "kafka")]
-    #[default]
     Kafka,
     #[serde(rename = "redpanda")]
     Redpanda,
@@ -334,14 +330,14 @@ impl std::fmt::Display for ClickPipePostKafkaSourceType {
 }
 
 /// `AzureEventHub` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AzureEventHub {
     #[serde(rename = "connectionString")]
     pub connection_string: String,
 }
 
 /// `ClickPipeKafkaOffset` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeKafkaOffset {
     pub strategy: ClickPipeKafkaOffsetStrategy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -418,7 +414,7 @@ impl std::fmt::Display for ClickPipeKafkaGlueSchemaRegistryType {
 }
 
 /// `ClickPipeKafkaGlueSchemaRegistry` for Kafka create requests.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeKafkaGlueSchemaRegistry {
     #[serde(rename = "type")]
     pub r#type: ClickPipeKafkaGlueSchemaRegistryType,
@@ -490,7 +486,7 @@ impl std::fmt::Display for ClickPipeKafkaSchemaRegistry {
 }
 
 /// `ClickPipeKafkaSchemaRegistryCredentials` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeKafkaSchemaRegistryCredentials {
     pub password: String,
     pub username: String,
@@ -551,7 +547,7 @@ impl std::fmt::Display for ClickPipeMutateKafkaConfluentSchemaRegistryType {
 }
 
 /// `ClickPipeMutateKafkaConfluentSchemaRegistry` for Kafka create requests.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMutateKafkaConfluentSchemaRegistry {
     /// Omit for the API default, a Confluent-compatible registry.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -583,13 +579,6 @@ discriminated_union! {
         "confluent" => ClickPipeMutateKafkaConfluentSchemaRegistry,
         "glue" => ClickPipeKafkaGlueSchemaRegistry,
         none unless "glueRegion" | "glueRegistryName" | "glueRoleArn" => ClickPipeMutateKafkaConfluentSchemaRegistry,
-    }
-}
-impl Default for ClickPipeMutateKafkaSchemaRegistry {
-    fn default() -> Self {
-        Self::ClickPipeMutateKafkaConfluentSchemaRegistry(
-            ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
-        )
     }
 }
 impl std::fmt::Display for ClickPipeMutateKafkaSchemaRegistry {
@@ -625,7 +614,7 @@ pub struct ClickPipePatchKafkaSource {
 }
 
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostKafkaSource {
     #[serde(rename = "protobufSchema", skip_serializing_if = "Option::is_none")]
     pub protobuf_schema: Option<String>,
@@ -704,7 +693,7 @@ impl std::fmt::Display for ClickPipeKafkaSourceTombstonemode {
 }
 
 /// `MutualTLS` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MutualTLS {
     pub certificate: String,
     #[serde(rename = "privateKey")]

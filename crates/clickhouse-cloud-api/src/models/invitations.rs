@@ -65,7 +65,7 @@ pub struct Invitation {
 }
 
 /// `InvitationPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvitationPostRequest {
     #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,

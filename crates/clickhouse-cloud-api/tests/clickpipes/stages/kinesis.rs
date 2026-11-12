@@ -179,12 +179,19 @@ async fn run_inner(
                 region: aws_region.to_string(),
                 stream_name: stream_name.clone(),
                 iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
-                ..Default::default()
+                access_key: None,
+                schema_registry: None,
+                timestamp: None,
+                use_enhanced_fan_out: None,
+                protobuf_schema: None,
             }),
             ..Default::default()
         },
         destination: managed_destination_users(KINESIS_TARGET_TABLE),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
 
     let _ = create_pipe_and_wait_running(

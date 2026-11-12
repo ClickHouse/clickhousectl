@@ -931,7 +931,30 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(5.0),
             tags: Some(ctx.run_tags()),
-            ..Default::default()
+            autoscaling_mode: None,
+            backup_id: None,
+            backup_encryption_config: None,
+            byoc_id: None,
+            compliance_type: None,
+            data_warehouse_id: None,
+            enable_core_dumps: None,
+            endpoints: None,
+            has_transparent_data_encryption: None,
+            ip_access_list: Vec::new(),
+            is_readonly: None,
+            max_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            max_total_memory_gb: None,
+            min_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            min_total_memory_gb: None,
+            #[cfg(feature = "deprecated-fields")]
+            private_endpoint_ids: None,
+            private_preview_terms_checked: None,
+            profile: None,
+            release_channel: None,
+            #[cfg(feature = "deprecated-fields")]
+            tier: None,
         };
 
         let created = failures
@@ -2951,7 +2974,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 // Vertical entry expressed as equal min/max; the fixed-count
                 // and horizontal-autoscaling forms need org-level enablement.
                 num_replicas: None,
-                ..Default::default()
+                autoscaling_mode: None,
             };
 
             let upserted = failures

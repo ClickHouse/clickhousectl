@@ -187,12 +187,20 @@ async fn run_scram_tls_inner(
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
                 }),
-                ..Default::default()
+                protobuf_schema: None,
+                exactly_once: None,
+                iam_role: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                tombstone_mode: None,
             }),
             ..Default::default()
         },
         destination: managed_destination_users(KAFKA_SCRAM_TLS_TARGET_TABLE),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
 
     let _ = create_pipe_and_wait_running(
@@ -312,12 +320,20 @@ async fn run_mtls_inner(
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
                 }),
-                ..Default::default()
+                protobuf_schema: None,
+                exactly_once: None,
+                iam_role: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                tombstone_mode: None,
             }),
             ..Default::default()
         },
         destination: managed_destination_users(KAFKA_MTLS_TARGET_TABLE),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
 
     let _ = create_pipe_and_wait_running(

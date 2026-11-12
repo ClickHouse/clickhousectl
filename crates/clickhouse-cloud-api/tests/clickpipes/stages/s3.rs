@@ -151,17 +151,31 @@ async fn run_inner(
         name: pipe_name,
         source: ClickPipePostSource {
             object_storage: Some(ClickPipePostObjectStorageSource {
-                r#type: ClickPipePostObjectStorageSourceType::default(),
+                r#type: ClickPipePostObjectStorageSourceType::S3,
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
                 url: object_url,
                 authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
                 iam_role: Some(role_arn),
-                ..Default::default()
+                access_key: None,
+                azure_container_name: None,
+                compression: None,
+                connection_string: None,
+                delimiter: None,
+                is_continuous: None,
+                path: None,
+                queue_url: None,
+                service_account_key: None,
+                skip_first_lines: None,
+                skip_initial_load: None,
+                start_after: None,
             }),
             ..Default::default()
         },
         destination: managed_destination_users(S3_TARGET_TABLE),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
 
     let _ = create_pipe_and_wait_running(

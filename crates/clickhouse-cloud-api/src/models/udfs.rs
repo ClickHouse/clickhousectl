@@ -123,7 +123,7 @@ pub struct UdfAttachmentListResponse {
 }
 
 /// A UDF argument sent in a create or version-create request.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UdfArgument {
     pub name: String,
     pub r#type: String,
@@ -352,7 +352,7 @@ impl std::fmt::Display for UdfCreateRequest {
 }
 
 /// The `executable` variant of [`UdfCreateRequest`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UdfCreateRequestV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deterministic: Option<bool>,
@@ -393,10 +393,9 @@ pub struct UdfCreateRequestV1 {
 }
 
 /// Inline enum for `UdfCreateRequestV1.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UdfCreateRequestV1Type {
     #[serde(rename = "executable")]
-    #[default]
     Executable,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -413,7 +412,7 @@ impl std::fmt::Display for UdfCreateRequestV1Type {
 }
 
 /// The `executable_pool` variant of [`UdfCreateRequest`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UdfCreateRequestV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deterministic: Option<bool>,
@@ -454,10 +453,9 @@ pub struct UdfCreateRequestV2 {
 }
 
 /// Inline enum for `UdfCreateRequestV2.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UdfCreateRequestV2Type {
     #[serde(rename = "executable_pool")]
-    #[default]
     ExecutablePool,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -530,7 +528,7 @@ impl std::fmt::Display for UdfVersionCreateRequest {
 }
 
 /// The `executable` variant of [`UdfVersionCreateRequest`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UdfVersionCreateRequestV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deterministic: Option<bool>,
@@ -569,10 +567,9 @@ pub struct UdfVersionCreateRequestV1 {
 }
 
 /// Inline enum for `UdfVersionCreateRequestV1.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UdfVersionCreateRequestV1Type {
     #[serde(rename = "executable")]
-    #[default]
     Executable,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -589,7 +586,7 @@ impl std::fmt::Display for UdfVersionCreateRequestV1Type {
 }
 
 /// The `executable_pool` variant of [`UdfVersionCreateRequest`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UdfVersionCreateRequestV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deterministic: Option<bool>,
@@ -628,10 +625,9 @@ pub struct UdfVersionCreateRequestV2 {
 }
 
 /// Inline enum for `UdfVersionCreateRequestV2.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UdfVersionCreateRequestV2Type {
     #[serde(rename = "executable_pool")]
-    #[default]
     ExecutablePool,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]

@@ -603,7 +603,7 @@ impl std::fmt::Display for ClickStackAlertStackedLineChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackBarBuilderChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertBarBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -682,7 +682,7 @@ pub struct ClickStackAlertBarBuilderChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackBarPromqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertBarPromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -757,7 +757,7 @@ pub struct ClickStackAlertBarPromqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackBarRawSqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertBarRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -840,7 +840,7 @@ pub struct ClickStackAlertChartConfigOverlay {
 /// The spec defines it as `allOf` [`ClickStackLineBuilderChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertLineBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -937,7 +937,7 @@ pub struct ClickStackAlertLineBuilderChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackLinePromqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertLinePromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1026,7 +1026,7 @@ pub struct ClickStackAlertLinePromqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackLineRawSqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertLineRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1112,7 +1112,7 @@ pub struct ClickStackAlertLineRawSqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackNumberBuilderChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertNumberBuilderChartConfig {
     #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
     pub background_chart: Option<ClickStackBackgroundChart>,
@@ -1173,7 +1173,7 @@ pub struct ClickStackAlertNumberBuilderChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackNumberPromqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertNumberPromqlChartConfig {
     #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
     pub background_chart: Option<ClickStackBackgroundChart>,
@@ -1238,7 +1238,7 @@ pub struct ClickStackAlertNumberPromqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackNumberRawSqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertNumberRawSqlChartConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
@@ -1300,7 +1300,7 @@ pub struct ClickStackAlertNumberRawSqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackStackedLineBuilderChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertStackedLineBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1383,7 +1383,7 @@ pub struct ClickStackAlertStackedLineBuilderChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackStackedLinePromqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertStackedLinePromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1462,7 +1462,7 @@ pub struct ClickStackAlertStackedLinePromqlChartConfigResponse {
 /// The spec defines it as `allOf` [`ClickStackStackedLineRawSqlChartConfig`] and
 /// [`ClickStackAlertChartConfigOverlay`], so it carries every field of the
 /// chart config plus the overlay's `name`, `where` and `whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertStackedLineRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1530,7 +1530,7 @@ pub struct ClickStackAlertStackedLineRawSqlChartConfigResponse {
 }
 
 /// `ClickStackAlertChannelEmail` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertChannelEmail {
     #[serde(rename = "emailRecipients")]
     pub email_recipients: Vec<String>,
@@ -1551,7 +1551,7 @@ pub struct ClickStackAlertChannelEmailResponse {
 }
 
 /// `ClickStackAlertChannelWebhook` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAlertChannelWebhook {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub severity: Option<ClickStackAlertChannelWebhookSeverity>,
@@ -1680,7 +1680,7 @@ pub struct ClickStackAlertSilenced {
 }
 
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCreateAlertRequest {
     #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
     pub channels: Option<ClickStackAlertChannels>,
@@ -1729,7 +1729,7 @@ pub struct ClickStackCreateAlertRequest {
 }
 
 /// `ClickStackUpdateAlertRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackUpdateAlertRequest {
     #[serde(rename = "channels", skip_serializing_if = "Option::is_none")]
     pub channels: Option<ClickStackAlertChannels>,
@@ -1775,46 +1775,6 @@ pub struct ClickStackUpdateAlertRequest {
     pub threshold_type: ClickStackUpdateAlertRequestThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
-}
-
-impl Default for ClickStackAlertChannel {
-    fn default() -> Self {
-        Self::ClickStackAlertChannelEmail(ClickStackAlertChannelEmail::default())
-    }
-}
-
-impl Default for ClickStackAlertBarChartConfig {
-    fn default() -> Self {
-        Self::ClickStackAlertBarBuilderChartConfig(ClickStackAlertBarBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackAlertChartConfig {
-    fn default() -> Self {
-        Self::ClickStackAlertLineChartConfig(ClickStackAlertLineChartConfig::default())
-    }
-}
-
-impl Default for ClickStackAlertLineChartConfig {
-    fn default() -> Self {
-        Self::ClickStackAlertLineBuilderChartConfig(ClickStackAlertLineBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackAlertNumberChartConfig {
-    fn default() -> Self {
-        Self::ClickStackAlertNumberBuilderChartConfig(
-            ClickStackAlertNumberBuilderChartConfig::default(),
-        )
-    }
-}
-
-impl Default for ClickStackAlertStackedLineChartConfig {
-    fn default() -> Self {
-        Self::ClickStackAlertStackedLineBuilderChartConfig(
-            ClickStackAlertStackedLineBuilderChartConfig::default(),
-        )
-    }
 }
 
 /// Notification channels for an alert.

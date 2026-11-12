@@ -281,7 +281,14 @@ async fn create_udf_encodes_request_body() {
         runtime: UdfRuntime::Python3_11,
         r#type: UdfCreateRequestV1Type::Executable,
         upload_id: "upload-1".to_string(),
-        ..Default::default()
+        command_read_timeout: None,
+        command_write_timeout: None,
+        format: None,
+        max_command_execution_time: None,
+        pool_size: None,
+        return_name: None,
+        sandbox_type: None,
+        send_chunk_header: None,
     });
     assert_eq!(
         c.udf_create("org-1", &body)
@@ -319,7 +326,14 @@ async fn create_udf_version_encodes_request_body() {
         runtime: UdfRuntime::Python3_11,
         r#type: UdfVersionCreateRequestV1Type::Executable,
         upload_id: "upload-1".to_string(),
-        ..Default::default()
+        command_read_timeout: None,
+        command_write_timeout: None,
+        format: None,
+        max_command_execution_time: None,
+        pool_size: None,
+        return_name: None,
+        sandbox_type: None,
+        send_chunk_header: None,
     });
     assert_eq!(
         c.udf_version_create("org-1", "my_udf", &body)

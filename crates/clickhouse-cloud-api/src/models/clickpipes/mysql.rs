@@ -269,7 +269,7 @@ impl std::fmt::Display for ClickPipePatchMySQLSourceAuthentication {
 }
 
 /// `ClickPipeMutateMySQLSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMutateMySQLSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipeMutateMySQLSourceAuthentication>,
@@ -300,7 +300,7 @@ pub struct ClickPipeMutateMySQLSource {
 }
 
 /// `ClickPipeMySQLPipeSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMySQLPipeSettings {
     #[serde(
         rename = "allowNullableColumns",
@@ -391,7 +391,7 @@ pub struct ClickPipeMySQLPipeSettingsResponse {
 }
 
 /// `ClickPipeMySQLPipeTableMapping` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMySQLPipeTableMapping {
     #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
     pub partition_by_expr: Option<String>,

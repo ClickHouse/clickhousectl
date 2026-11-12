@@ -1479,7 +1479,29 @@ pub async fn provision_clickhouse(
             description: Some("clickpipe integration test".to_string()),
         }],
         tags: Some(tags),
-        ..Default::default()
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        is_readonly: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        release_channel: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
     };
 
     let created = client

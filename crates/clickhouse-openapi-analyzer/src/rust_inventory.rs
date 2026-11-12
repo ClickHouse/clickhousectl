@@ -477,6 +477,10 @@ pub(crate) struct FieldInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructInfo {
     pub(crate) fields: BTreeMap<String, FieldInfo>,
+    /// Whether the struct carries `#[derive(Default)]` (any path ending in
+    /// `Default`). A hand-written `impl Default` is tracked separately in
+    /// [`RustInventory::manual_default_impls`].
+    pub(crate) derives_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -666,7 +670,14 @@ impl RustInventory {
                     }
                     self.generic_parameters
                         .insert(name.clone(), type_parameters(&item_struct.generics));
-                    self.structs.insert(name, StructInfo { fields });
+                    let derives_default = derives_default(&item_struct.attrs)?;
+                    self.structs.insert(
+                        name,
+                        StructInfo {
+                            fields,
+                            derives_default,
+                        },
+                    );
                 }
                 Item::Enum(item_enum) if matches!(item_enum.vis, Visibility::Public(_)) => {
                     let name = item_enum.ident.unraw().to_string();
@@ -965,6 +976,40 @@ impl RustInventory {
             })
             .collect()
     }
+
+    /// Model structs with at least one non-`Option` field, split by whether they
+    /// also implement `Default` (derived or hand-written).
+    ///
+    /// A required field is the compiler's guard that a caller supplies a value;
+    /// `Default` undoes it, because `..Default::default()` fills a newly added
+    /// required field with `""`, `0`, `false` or the first enum variant and still
+    /// compiles. `cfg`-gated deprecated-marker fields count like any other field.
+    pub(crate) fn strict_model_defaults(&self) -> StrictModelDefaults {
+        let mut defaults = StrictModelDefaults::default();
+        for (name, info) in &self.structs {
+            if info
+                .fields
+                .values()
+                .all(|field| field.rust_type.is_option())
+            {
+                continue;
+            }
+            defaults.strict.insert(name.clone());
+            if info.derives_default || self.manual_default_impls.contains(name) {
+                defaults.with_default.insert(name.clone());
+            }
+        }
+        defaults
+    }
+}
+
+/// See [`RustInventory::strict_model_defaults`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StrictModelDefaults {
+    /// Model structs with at least one non-`Option` field.
+    pub strict: BTreeSet<String>,
+    /// The subset of [`Self::strict`] that implements `Default`.
+    pub with_default: BTreeSet<String>,
 }
 
 fn type_parameters(generics: &syn::Generics) -> Vec<(String, Option<TypeNode>)> {
@@ -1100,6 +1145,27 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
         })?;
     }
     Ok(options)
+}
+
+fn derives_default(attributes: &[Attribute]) -> syn::Result<bool> {
+    let mut found = false;
+    for attribute in attributes
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+    {
+        attribute.parse_nested_meta(|meta| {
+            if meta
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Default")
+            {
+                found = true;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(found)
 }
 
 fn has_deprecated_cfg(attributes: &[Attribute]) -> syn::Result<bool> {
@@ -1542,6 +1608,58 @@ mod tests {
                 "Widget.legacy_name".to_string(),
                 "Widget.name".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn strict_model_defaults_flags_required_fields_behind_default() {
+        let models = r#"
+            #[derive(Debug, Clone, Default, Serialize)]
+            pub struct DerivedRequest { pub name: String, pub note: Option<String> }
+            #[derive(std::default::Default)]
+            pub struct PathDerivedRequest { pub ids: Vec<String> }
+            pub struct ManualRequest { pub count: i64 }
+            impl Default for ManualRequest {
+                fn default() -> Self { Self { count: 0 } }
+            }
+            #[derive(Debug, Clone, Serialize)]
+            pub struct StrictRequest { pub name: String }
+            #[derive(Default)]
+            pub struct AllOption { pub name: Option<String> }
+            #[derive(Default)]
+            pub struct GatedRequest {
+                #[cfg(feature = "deprecated-fields")]
+                pub legacy: String,
+            }
+        "#;
+
+        let defaults = RustInventory::parse("", models, "")
+            .unwrap()
+            .strict_model_defaults();
+        assert_eq!(
+            defaults.strict,
+            BTreeSet::from(
+                [
+                    "DerivedRequest",
+                    "GatedRequest",
+                    "ManualRequest",
+                    "PathDerivedRequest",
+                    "StrictRequest",
+                ]
+                .map(String::from)
+            )
+        );
+        assert_eq!(
+            defaults.with_default,
+            BTreeSet::from(
+                [
+                    "DerivedRequest",
+                    "GatedRequest",
+                    "ManualRequest",
+                    "PathDerivedRequest",
+                ]
+                .map(String::from)
+            )
         );
     }
 

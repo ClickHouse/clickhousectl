@@ -37,6 +37,9 @@ outage. Tolerance lives in the **type system**, not in serde attributes:
 
 - **Request types are strict.** A spec-required field is `T`; optional or nullable fields are `Option<T>` plus
   `#[serde(skip_serializing_if = "Option::is_none")]`. The compiler enforces "strict in what we send".
+- **A struct with a required field does not implement `Default`.** `..Default::default()` would fill a newly
+  required field with `""`, `0`, `false` or the first enum variant and still compile. All-`Option` structs and
+  response types keep `Default`; a string enum used only as a required request field does not derive it either.
 - **Response types are all-`Option`.** Every field of every type reachable from a `Client` return type is `Option<T>`
   plus `skip_serializing_if`; a missing key *and* an explicit `null` both land as `None` natively. Nothing is
   fabricated, so "the server sent `0`" and "the server dropped the field" stay distinguishable.
@@ -91,6 +94,8 @@ reachability from return types across the client module tree, so a newly wired o
   needs the same bar as an analyzer exemption. A vacuity guard fails the test if the tree collapses.
 - `every_response_tree_option_field_omits_none_when_serialized` — `skip_serializing_if` on every response `Option` field.
 - `models_carry_no_serde_default` — via the analyzer's `model_fields_with_serde_default()`.
+- `strict_models_do_not_implement_default` — via `model_structs_with_default_and_required_fields()`: no struct
+  outside the response tree with a non-`Option` field implements `Default`. Empty exception list, vacuity guard.
 - `scim_models_are_outside_the_response_tree` — the 40 `Scim*` schemas have no spec path and no `Client` method,
   so they are legitimately strict; the test fails if one becomes response-reachable.
 - `integer_schema_fields_are_not_typed_as_float` — integer schemas do not use floating-point Rust fields, except

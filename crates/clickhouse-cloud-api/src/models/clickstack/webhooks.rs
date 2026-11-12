@@ -191,7 +191,7 @@ pub struct ClickStackValidateWebhookResponseErrorsItem {
 }
 
 /// `ClickStackWebhookInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackWebhookInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,

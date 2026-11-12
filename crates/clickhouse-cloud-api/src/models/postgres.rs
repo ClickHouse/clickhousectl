@@ -907,10 +907,9 @@ impl PgVersion {
 }
 
 /// Inline enum for `PostgresServiceSetState.command`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PostgresServiceSetStateCommand {
     #[serde(rename = "restart")]
-    #[default]
     Restart,
     #[serde(rename = "promote")]
     Promote,
@@ -1182,7 +1181,7 @@ pub type PgTags = Vec<ResourceTagsV1>;
 pub type PgTagsResponse = Vec<ResourceTagsV1Response>;
 
 /// `BasePostgresService` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BasePostgresService {
     #[serde(rename = "haType")]
     pub ha_type: PgHaType,
@@ -1252,7 +1251,7 @@ pub struct PostgresService {
 
 /// `PostgresIpAccessListEntry` from the ClickHouse Cloud API: one IPv4 TCP
 /// access rule of a Postgres service.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresIpAccessListEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1297,7 +1296,7 @@ pub struct PostgresIpAccessListEntryResponse {
 /// read the current list before retrying. Both lists are sent, like
 /// [`crate::models::IpAccessListPatch`]; leave the side you do not need
 /// empty.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresIpAccessListPatch {
     /// Rules to create (no `id`) or edit (the returned `id`).
     pub add: Vec<PostgresIpAccessListEntry>,
@@ -1307,7 +1306,7 @@ pub struct PostgresIpAccessListPatch {
 
 /// `PostgresIpAccessListRuleReference` from the ClickHouse Cloud API: an
 /// existing access rule, by the ID the service returned for it.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresIpAccessListRuleReference {
     pub id: String,
 }
@@ -1373,7 +1372,7 @@ pub struct PostgresServicePatchRequest {
 }
 
 /// `PostgresServicePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresServicePostRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
@@ -1398,7 +1397,7 @@ pub struct PostgresServicePostRequest {
 }
 
 /// `PostgresServiceReadReplicaRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresServiceReadReplicaRequest {
     pub name: PgNameProperty,
     #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
@@ -1410,7 +1409,7 @@ pub struct PostgresServiceReadReplicaRequest {
 }
 
 /// `PostgresServiceRestoreRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresServiceRestoreRequest {
     pub name: PgNameProperty,
     #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
@@ -1424,13 +1423,13 @@ pub struct PostgresServiceRestoreRequest {
 }
 
 /// `PostgresServiceSetPassword` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresServiceSetPassword {
     pub password: PgPassword,
 }
 
 /// `PostgresServiceSetState` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresServiceSetState {
     pub command: PostgresServiceSetStateCommand,
 }
@@ -1915,7 +1914,7 @@ pub struct PgConfigResponse {
 }
 
 /// `postgresInstanceConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PostgresInstanceConfig {
     #[serde(rename = "pgBouncerConfig")]
     pub pg_bouncer_config: PgBouncerConfig,

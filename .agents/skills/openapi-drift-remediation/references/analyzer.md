@@ -59,3 +59,7 @@ Add a typed `FindingKind` and pure comparison in the analyzer, focused inventory
 deterministic JSON/text coverage, and Python issue rendering. Keep `spec_coverage_test.rs` a thin consumer.
 New report fields or semantics require a report `schema_version` change; never make Python infer drift by
 reparsing Rust or OpenAPI.
+
+Repository-policy checks that compare Rust source with a rule rather than with the spec are narrow public
+functions, not `FindingKind`s: `model_fields_with_serde_default`, `model_structs_with_default_and_required_fields`
+and `model_types_with_manual_default_impl`. Each backs one library test and keeps `syn` out of the published crate.

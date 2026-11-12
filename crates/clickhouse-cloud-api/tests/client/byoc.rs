@@ -34,7 +34,17 @@ async fn create_byoc_infrastructure() {
             ByocAvailabilityZoneSuffix::B,
         ]),
         display_name: Some("My BYOC".to_string()),
-        ..Default::default()
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        region_id: ByocInfrastructurePostRequestRegionid::Ap_northeast_1,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
+        vpc_id: None,
     };
     let resp = c
         .organization_byoc_infrastructure_create("org-1", &body)
@@ -75,7 +85,13 @@ async fn create_byoc_infrastructure_sends_byo_vpc_fields_and_tags() {
             ("team".to_string(), "data".to_string()),
             ("cost-center".to_string(), "42".to_string()),
         ])),
-        ..Default::default()
+        availability_zone_suffixes: None,
+        display_name: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        service_principal_client_id: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
     };
     let resp = c
         .organization_byoc_infrastructure_create("org-1", &body)
@@ -132,7 +148,14 @@ async fn validate_byoc_infrastructure() {
         ]),
         vpc_cidr_range: Some("10.0.0.0/16".to_string()),
         external_id: Some("ch-ext".to_string()),
-        ..Default::default()
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_id: None,
     };
     let resp = c
         .organization_byoc_infrastructure_validate("org-1", &body)

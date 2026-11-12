@@ -240,9 +240,8 @@ impl std::fmt::Display for ClickPipePostObjectStorageSourceCompression {
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.format`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostObjectStorageSourceFormat {
-    #[default]
     JSONEachRow,
     JSONAsObject,
     CSV,
@@ -273,10 +272,9 @@ impl std::fmt::Display for ClickPipePostObjectStorageSourceFormat {
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostObjectStorageSourceType {
     #[serde(rename = "s3")]
-    #[default]
     S3,
     #[serde(rename = "gcs")]
     Gcs,
@@ -366,7 +364,7 @@ pub struct ClickPipePatchObjectStorageSource {
 }
 
 /// `ClickPipePostObjectStorageSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostObjectStorageSource {
     #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
