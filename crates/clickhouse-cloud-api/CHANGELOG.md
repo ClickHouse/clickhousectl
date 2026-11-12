@@ -16,6 +16,26 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+`organization_assignable_roles_get_list(organization_id)` uses a CLI user Bearer
+token to read the complete, unpaginated `ApiResponse<Vec<AssignableRole>>` array
+from `/v1/organizations/{organizationId}/roles`. Basic clients fail locally with
+`Error::AuthMismatch`; the server verifies the actual CLI user and organization
+authority. `organization_roles_get_list` retains its administrative catalog API.
+There is no catalog fallback or heuristic choice between the auth-dependent DTOs.
+The analyzer allowlists the distinct typed helper for this existing route.
+
+Assignable roles retain identity strings (including non-v4 system UUIDs), role
+type, all ALLOW/DENY policies, permission/resource strings and optional tags.
+`grants` strings, including REVOKE statements, are opaque; no SQL parsing or
+filtering occurs. This menu describes read-time authority, not an approval promise.
+
+Transport DTOs follow the library's all-`Option` compatibility policy: missing or
+null required fields remain `None`, distinct from explicit empty arrays. Consumers
+**must validate** result, role id/name/type/policies, and each policy's
+allowDeny/permissions/resources before human **or JSON** success output. Never
+convert absent fields into an empty/safe permission claim. Optional tags and their
+fields retain absence; unknown enum strings round-trip losslessly.
+
 Structs with a required field no longer implement `Default`: request bodies
 such as `ServicePostRequest`, `ClickPipePostRequest` and
 `ClickStackCreateAlertRequest`, their nested required types, the request
