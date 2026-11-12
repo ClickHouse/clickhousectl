@@ -435,6 +435,8 @@ mod tests {
     /// its project, name and version.
     #[test]
     fn the_native_scan_discovers_a_live_process_named_clickhouse() {
+        use std::os::unix::process::CommandExt;
+
         let root = tempfile::tempdir().unwrap();
         let version_dir = root.path().join(".clickhouse/versions/26.9.1.531");
         let data_dir = root.path().join("project/.clickhouse/servers/dev/data");
@@ -447,11 +449,19 @@ mod tests {
             .expect("a sleep binary");
         std::fs::copy(sleep, &binary).unwrap();
 
+        // The kernel name comes from the executed file, so the copy runs as
+        // `clickhouse`. `argv[0]` still has to say `sleep`: a multicall
+        // coreutils (uutils on Ubuntu 26.04) picks the program from it and
+        // exits at once for `clickhouse`. It keeps the versions directory, so
+        // the version is still parsed from the command line.
+        let argv0 = version_dir.join("sleep");
+
         // Another test thread forking while the copy was open can hold the
         // file open for writing until its child execs (ETXTBSY), so retry.
         let mut attempts = 0;
         let mut child = loop {
             match std::process::Command::new(&binary)
+                .arg0(&argv0)
                 .arg("30")
                 .current_dir(&data_dir)
                 .spawn()
