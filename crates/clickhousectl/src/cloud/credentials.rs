@@ -46,12 +46,12 @@ impl Credentials {
 
 /// Saved API keys live with the project, so commands run anywhere beneath its
 /// root find them; outside any project they are in the current directory.
-pub fn credentials_path() -> PathBuf {
-    init::local_dir().join("credentials.json")
+pub fn credentials_path() -> std::io::Result<PathBuf> {
+    Ok(init::local_dir()?.join("credentials.json"))
 }
 
 fn ensure_local_dir() -> CloudResult<PathBuf> {
-    let dir = init::local_dir();
+    let dir = init::local_dir()?;
     std::fs::create_dir_all(&dir)?;
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
@@ -116,7 +116,7 @@ pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLo
 /// cannot be read (tagged `io`) or parsed is an error naming its path, never
 /// "no credentials": resolution must not fall through to a lower tier (#1327).
 pub(crate) fn try_load_credentials() -> CloudResult<Option<Credentials>> {
-    let path = credentials_path();
+    let path = credentials_path()?;
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -139,7 +139,7 @@ pub(crate) fn try_load_credentials() -> CloudResult<Option<Credentials>> {
 
 pub fn clear_credentials() -> CloudResult<()> {
     let _lock = lock_credentials_mutation()?;
-    let path = credentials_path();
+    let path = credentials_path()?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -150,7 +150,7 @@ pub fn clear_credentials() -> CloudResult<()> {
 fn save_credentials(creds: &Credentials) -> CloudResult<()> {
     ensure_local_dir()?;
     let json = serde_json::to_string_pretty(creds)?;
-    crate::paths::atomic_write(&credentials_path(), json.as_bytes(), 0o600)?;
+    crate::paths::atomic_write(&credentials_path()?, json.as_bytes(), 0o600)?;
     Ok(())
 }
 

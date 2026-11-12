@@ -693,7 +693,7 @@ async fn start_server(
     cmd.arg("server");
 
     server::ensure_server_data_dir(&server_name)?;
-    let data_dir = server::server_data_dir(&server_name);
+    let data_dir = server::server_data_dir(&server_name)?;
 
     // Stage the named config as a config.d overlay inside the data dir. With no
     // --config-file, ClickHouse uses its built-in defaults and merges any
@@ -721,12 +721,10 @@ async fn start_server(
 
     // The project root, not the directory the command ran from, so global
     // listings name the project that owns the server.
-    let cwd = init::project_root()
-        .map(|root| root.dir.display().to_string())
-        .unwrap_or_default();
+    let cwd = init::project_root()?.dir.display().to_string();
 
     if !foreground {
-        let log_path = server::server_log_path(&server_name);
+        let log_path = server::server_log_path(&server_name)?;
         let log = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -1055,7 +1053,7 @@ fn stop_server(
     };
     match classify_stop(
         server::is_server_running_locked(&name, &metadata_lock)?,
-        known || server::server_data_dir(&name).exists(),
+        known || server::server_data_dir(&name)?.exists(),
     ) {
         StopOutcome::Stop => {
             if !json {
@@ -1153,7 +1151,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
             name,
         });
     }
-    let data_dir = server::server_data_dir(&name);
+    let data_dir = server::server_data_dir(&name)?;
     if !data_dir.exists() {
         return Err(server_not_found(name));
     }
