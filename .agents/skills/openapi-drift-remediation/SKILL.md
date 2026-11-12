@@ -58,9 +58,11 @@ the workflow; those files are the rules.
    - Optionality: follow the crate `AGENTS.md` model policy and "Field optionality and the spec".
    - Enum values: update the variant, its wire name, its `Display`, and any `VALUES` const. Keep data-carrying
      catch-alls.
-   - Beta/deprecation: rerun `python3 scripts/regenerate-beta-lists.py` and
-     `python3 scripts/regenerate-deprecated-fields.py` in every API PR that adds operations or deprecated fields.
-     A deprecated field on a split schema needs its `{Name}Response` entry and `cfg` marker added by hand.
+   - Beta/deprecation: in every API PR that changes Beta operations or deprecated fields, add any split
+     `{Name}Response` type first, then print both `meta.rs` lists with
+     `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --source-root crates/clickhouse-cloud-api/src --generate-stability-lists`
+     and replace the `BETA_OPERATIONS` and `DEPRECATED_FIELDS` declarations with the output. The output lists a
+     deprecated field once per Rust type; add the `cfg` marker on each type by hand.
    - Operation permissions: regenerate `src/meta/operations.rs` with
      `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs`,
      then `cargo fmt --all`. Model unsupported security deliberately; never flatten it into an empty permission list.

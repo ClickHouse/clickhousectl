@@ -128,21 +128,24 @@ In `src/models/<domain>.rs`, request fields follow those rules: required non-nul
 
 API key PATCH expiry uses `Option<Option<DateTime<Utc>>>`: `None` leaves the current expiry unchanged, `Some(Some(time))` sets it, and `Some(None)` removes it. These three states survive serialization and deserialization. API key creation still uses `Option<DateTime<Utc>>`, where omission creates a key without an expiry.
 
-### Scripts
+### Generators and drift check
 
 ```bash
-# Show a JSON manifest of required/optional fields per schema
-python3 scripts/resolve-field-requirements.py
+# Print the BETA_OPERATIONS and DEPRECATED_FIELDS declarations for src/meta.rs
+cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- \
+  --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json \
+  --source-root crates/clickhouse-cloud-api/src --generate-stability-lists
 
-# Regenerate the DEPRECATED_FIELDS constant from the snapshot
-python3 scripts/regenerate-deprecated-fields.py
-
-# Regenerate the BETA_OPERATIONS constant from the snapshot
-python3 scripts/regenerate-beta-lists.py
+# Regenerate the operation catalog in src/meta/operations.rs (then cargo fmt --all)
+cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- \
+  --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json \
+  --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs
 
 # Check for drift between the live spec and the library (dry run)
 python3 scripts/check-openapi-drift.py --dry-run
 ```
+
+Replace both `meta.rs` declarations with the printed output. Add a split `{Name}Response` type before generating, so its deprecated fields are listed too.
 
 Field optionality is maintained by hand. Edit the owning model domain file when the drift check flags a mismatch, and add new domain types to the private module and facade re-exports in `models.rs`.
 
