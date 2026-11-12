@@ -259,7 +259,7 @@ and repeat the smoke test with an explicit non-default database.
 
 ### OpenAPI response coverage
 
-The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 11.
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 12.
 
 
 Success response checking follows each operation's actual Rust return type. Generic
@@ -270,6 +270,15 @@ Rust field, and exact specification pointer. These checks use the target specifi
 independently of the snapshot; removing a component and refreshing the snapshot cannot
 hide an obsolete return type. Response `Option` fields remain legitimate regardless of
 specification requiredness. Nullable 3.0 and 3.1 forms are supported.
+
+The same shape checker runs in request position. Every request-position model field is
+checked against its property schema (`request_shape_mismatch`; generic models use their
+default type arguments), and every operation with a JSON `requestBody` must take exactly
+one argument that no parameter accounts for, typed as the body schema's request model
+(`request_body_mismatch` when the argument is missing, ambiguous or has no request body;
+an untyped `serde_json::Value` body is `unsupported_request_schema`). An inline object
+body may instead be passed as one argument per property. Deliberate request-field
+divergences are listed in `request_shape_exemptions`.
 
 Resolved JSON success contracts are also compared between specifications, including
 referenced schemas. Added, removed, and changed contracts have separate snapshot
