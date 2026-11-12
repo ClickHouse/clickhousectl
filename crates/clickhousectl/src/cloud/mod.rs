@@ -124,8 +124,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     }
 
     if args.debug {
-        eprintln!("[debug] auth source: {}", client.auth_source().describe());
-        eprintln!("[debug] api url: {}", client.base_url());
+        print_client_diagnostics(&client);
     }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
@@ -158,6 +157,11 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     dispatch(&client, command, json)
         .await
         .map_err(cloud_error_to_top_level)
+}
+
+fn print_client_diagnostics(client: &CloudClient) {
+    eprintln!("[debug] auth source: {}", client.auth_source().describe());
+    eprintln!("[debug] api url: {}", client.base_url());
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
