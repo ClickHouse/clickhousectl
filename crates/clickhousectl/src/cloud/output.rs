@@ -100,6 +100,11 @@ pub enum CloudErrorCode {
     /// (#1228). Wait a few seconds and rerun `command`, the same start.
     #[serde(rename = "clickpipe_start_not_applied")]
     ClickPipeStartNotApplied,
+    /// `cloud clickpipe start` was answered with `Completed`: the API accepts a
+    /// start on a completed pipe but does not re-run it (#926). Nothing to
+    /// retry, so there is no `command`.
+    #[serde(rename = "clickpipe_start_no_effect")]
+    ClickPipeStartNoEffect,
     /// `update` found an npm or pip/uv/pipx install and replaced nothing:
     /// `command` is the package manager's upgrade command (#1305).
     PackageManaged,
@@ -148,6 +153,7 @@ impl CloudErrorCode {
         Self::ServiceNotRunning,
         Self::ClickPipeStillPausing,
         Self::ClickPipeStartNotApplied,
+        Self::ClickPipeStartNoEffect,
         Self::PackageManaged,
         Self::VerificationFailed,
     ];
@@ -828,6 +834,7 @@ mod tests {
                 "service_not_running",
                 "clickpipe_still_pausing",
                 "clickpipe_start_not_applied",
+                "clickpipe_start_no_effect",
                 "package_managed",
                 "verification_failed",
             ]
