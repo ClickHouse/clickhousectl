@@ -58,3 +58,16 @@ jobs:
 
       - name: Test
         run: cargo test -p clickhousectl
+
+      # The live tests include the API library's harness by a path outside
+      # this crate, so the published crate must ship its sources only.
+      - name: Check packaged files
+        run: |
+          files=$(cargo package -p clickhousectl --list --locked)
+          for required in Cargo.toml LICENSE README.md src/main.rs; do
+            grep -qx "$required" <<<"$files" || { echo "missing from package: $required"; exit 1; }
+          done
+          if grep -v -e '^src/' -e '^Cargo\.' -e '^\.cargo_vcs_info\.json$' -e '^LICENSE$' -e '^README\.md$' <<<"$files"; then
+            echo "unexpected files in package (listed above)"
+            exit 1
+          fi
