@@ -1,8 +1,10 @@
 [package]
 name = "clickhouse-openapi-analyzer"
 version = "0.0.0"
-edition = "2024"
-rust-version = "1.94.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 [lib]
