@@ -279,7 +279,7 @@ CONTEXT FOR AGENTS:
   Data persists across stop/start; only `remove` deletes it.
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
-  Custom configs inherit built-in defaults; find available names with `clickhouse configs`.
+  Configs inherit built-in defaults; `clickhouse configs` lists the always-applied and named ones.
   Typical flow: `local init` -> `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
     )]
     Clickhouse {
@@ -458,7 +458,7 @@ CONTEXT FOR AGENTS:
   (shown by `list`); pass --version to move its data to another version.
   A new server with no --version and no default set installs \"latest\" first (~150 MB)
   without making it the default.
-  After editing a custom config, stop the server and start again with the same --config.
+  Config edits apply on the next start: stop, then start again with the same --config.
   Omitting --config on a later start removes the previously selected override.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
@@ -506,6 +506,7 @@ CONTEXT FOR AGENTS:
         /// Overlay defaults with a named partial config (see `clickhouse configs`)
         ///
         /// Select one file from ~/.clickhouse/configs/; paths are not accepted.
+        /// It merges after both config.d directories, so its settings win.
         #[arg(
             long = "config",
             alias = "config-file",
@@ -526,10 +527,11 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// List custom config files available to `clickhouse start --config`
+    /// List the config files `clickhouse start` applies or can select
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Run this command to find the config directory, then add an XML or YAML file.
+  Every start merges the global config.d, then the project's config.d, then --config; later wins.
+  Add XML or YAML files to the listed directories; hidden files and subdirectories are skipped.
   Include only the server, user, profile or quota settings you want to change.
   Select one file with `clickhouse start --config <name>`; its extension is optional.
   If names share a stem, specify the extension.")]

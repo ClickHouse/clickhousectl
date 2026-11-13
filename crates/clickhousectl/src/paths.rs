@@ -58,10 +58,29 @@ pub fn configs_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("configs"))
 }
 
-/// Ensures all necessary directories exist
+/// Returns the global always-applied server config directory
+/// (~/.clickhouse/config.d/)
+pub fn global_config_d_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join(GLOBAL_CONFIG_D))
+}
+
+/// The directories every `~/.clickhouse/` holds, relative to it.
+const BASE_LAYOUT: [&str; 3] = ["versions", "configs", GLOBAL_CONFIG_D];
+
+const GLOBAL_CONFIG_D: &str = "config.d";
+
+/// Creates the base layout of `~/.clickhouse/`: `versions/`, `configs/` and
+/// `config.d/`. The one place that owns that layout, so every caller that
+/// creates the directory leaves it complete.
 pub fn ensure_dirs() -> Result<()> {
-    let versions = versions_dir()?;
-    ensure_dir(&versions)
+    ensure_base_layout_in(&base_dir()?)
+}
+
+fn ensure_base_layout_in(base: &Path) -> Result<()> {
+    for dir in BASE_LAYOUT {
+        ensure_dir(&base.join(dir))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
@@ -177,6 +196,24 @@ mod tests {
         ] {
             let error = validate_installed_version(version).unwrap_err();
             assert!(matches!(error, Error::InvalidVersion(_)), "{version:?}");
+        }
+    }
+
+    #[test]
+    fn base_layout_creates_every_global_directory_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join(".clickhouse");
+        ensure_base_layout_in(&base).unwrap();
+        ensure_base_layout_in(&base).unwrap();
+        for dir in BASE_LAYOUT {
+            assert!(base.join(dir).is_dir(), "{dir}");
+        }
+        // The accessors name directories in that layout.
+        let home_base = base_dir().unwrap();
+        for accessor in [versions_dir(), configs_dir(), global_config_d_dir()] {
+            let dir = accessor.unwrap();
+            let relative = dir.strip_prefix(&home_base).unwrap().to_str().unwrap();
+            assert!(BASE_LAYOUT.contains(&relative), "{relative}");
         }
     }
 
