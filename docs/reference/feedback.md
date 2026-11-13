@@ -56,7 +56,7 @@ A message must contain at most 500 characters (Unicode scalar values) after trim
 | Invalid message | `2` | A usage error on stderr; nothing is sent |
 | Not delivered | `1` | An error on stderr naming the reason: the service rejected the message, the request was too large, too many messages were sent recently, the service was unavailable, or it could not be reached within 10 seconds |
 
-Errors in JSON mode keep the same text diagnostics as the other [management commands](automation.md#management-commands). A failed send is not retried automatically.
+Errors in JSON mode keep text diagnostics, like [telemetry](telemetry.md), unlike `update` and `skills`, which use the JSON error envelope described in [automation](automation.md#check-status-and-stderr). A failed send is not retried automatically.
 
 ## Telemetry settings
 

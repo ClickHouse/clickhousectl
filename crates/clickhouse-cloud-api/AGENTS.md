@@ -162,8 +162,8 @@ from Rust.
 
 - `tests/common/support.rs` — generic infra (polling, logging, env helpers, ClickHouse provisioning & cleanup,
   HTTP query helper). Used by every integration binary, and by the CLI crate's live tests through `#[path]`.
-- `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs` —
-  cloud-service, Postgres-service, and organization lifecycle.
+- `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs`,
+  `tests/integration_udf_test.rs` — cloud-service, Postgres-service, organization, and UDF lifecycle.
 - `tests/client/`, `tests/models/`, `tests/model_facade_test.rs`, `tests/run_query_test.rs` — offline client,
   model, facade and query-path coverage.
   `tests/client/` is the single `client_test` binary: `main.rs` holds the shared wiremock helpers and declares one
