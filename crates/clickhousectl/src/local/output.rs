@@ -73,6 +73,9 @@ pub(crate) enum LocalErrorCode {
     BinaryNotLaunchable,
     VersionSelectionRequired,
     VersionAlreadyInstalled,
+    /// `local install --binary` was given a file that does not run as
+    /// ClickHouse or report a ClickHouse version.
+    NotAClickHouseBinary,
     VersionUnavailable,
     VersionIsDefault,
     UnsupportedClientVersion,
@@ -134,6 +137,7 @@ impl LocalErrorCode {
             Self::BinaryNotLaunchable => "binary_not_launchable",
             Self::VersionSelectionRequired => "version_selection_required",
             Self::VersionAlreadyInstalled => "version_already_installed",
+            Self::NotAClickHouseBinary => "not_a_clickhouse_binary",
             Self::VersionUnavailable => "version_unavailable",
             Self::VersionIsDefault => "version_is_default",
             Self::UnsupportedClientVersion => "unsupported_client_version",
@@ -612,6 +616,13 @@ impl LocalErrorBody {
                 Mapping::parity(LocalErrorCode::VersionAlreadyInstalled)
                     .command("clickhousectl local list")
             }
+            // The reason can quote the file's own output, so it goes in
+            // `details` beside a fixed summary.
+            Error::NotAClickHouseBinary { reason, .. } => Mapping::redacted(
+                LocalErrorCode::NotAClickHouseBinary,
+                "The --binary file is not a usable ClickHouse binary; nothing was installed",
+            )
+            .details(reason.clone()),
             Error::RepeatedClientQueryUnsupported { .. } => {
                 Mapping::parity(LocalErrorCode::UnsupportedClientVersion)
             }
@@ -2108,6 +2119,13 @@ mod tests {
                 "version_already_installed",
             ),
             (
+                Error::NotAClickHouseBinary {
+                    path: "./clickhouse".into(),
+                    reason: "no version".into(),
+                },
+                "not_a_clickhouse_binary",
+            ),
+            (
                 Error::RepeatedClientQueryUnsupported {
                     version: "24.1.1.1".into(),
                     minimum: "24.2",
@@ -3307,6 +3325,14 @@ mod tests {
                 foreign.into(),
                 &["'default'", "30"],
             ),
+            (
+                Error::NotAClickHouseBinary {
+                    path: path.into(),
+                    reason: foreign.into(),
+                },
+                foreign.into(),
+                &["--binary"],
+            ),
         ];
 
         for (error, expected_details, identifiers) in cases {
@@ -3780,9 +3806,10 @@ mod tests {
             matches!(
                 local.command,
                 LocalCommands::Install {
-                    version: InstallVersionArg::ClickHouse(
+                    version: Some(InstallVersionArg::ClickHouse(
                         crate::version_manager::VersionSpec::Latest
-                    ),
+                    )),
+                    binary: None,
                     force: false,
                 }
             ),

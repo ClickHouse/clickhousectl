@@ -24,7 +24,15 @@ use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
     match cmd {
-        LocalCommands::Install { version, force } => install(version, force, json).await,
+        LocalCommands::Install {
+            version,
+            binary,
+            force,
+        } => match (version, binary) {
+            (None, Some(binary)) => install_binary(&binary, force, json).await,
+            (Some(version), None) => install(version, force, json).await,
+            _ => unreachable!("clap requires exactly one of a version or --binary"),
+        },
         LocalCommands::List { remote } => {
             if remote {
                 list_available(json).await
@@ -105,7 +113,15 @@ async fn install(version: InstallVersionArg, force: bool, json: bool) -> Result<
 
     let version =
         version_manager::install::install_local_first(&spec, &platform, force, json).await?;
+    finish_clickhouse_install(version, json)
+}
 
+async fn install_binary(binary: &Path, force: bool, json: bool) -> Result<()> {
+    let version = version_manager::install::install_from_binary(binary, force, json).await?;
+    finish_clickhouse_install(version, json)
+}
+
+fn finish_clickhouse_install(version: String, json: bool) -> Result<()> {
     // If this is the first installed version, set it as default
     let set_as_default = version_manager::get_default_version().is_err();
     if set_as_default {

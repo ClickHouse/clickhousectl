@@ -174,6 +174,7 @@ Every command except `update`, `--version` included, checks for a newer release 
 | `binary_not_launchable` | The version is installed but its binary cannot be launched (missing, not a regular file, or not executable) |
 | `version_selection_required` | A version must be chosen because no default is set or the choice is ambiguous |
 | `version_already_installed` | The requested version is already installed |
+| `not_a_clickhouse_binary` | The `local install --binary` file could not be run or did not report a ClickHouse version; nothing was installed, and `details` holds the reason |
 | `version_unavailable` | The requested version could not be resolved or downloaded |
 | `version_is_default` | The version is the current default and `--force` was not passed |
 | `unsupported_client_version` | The installed client does not support the requested operation |
