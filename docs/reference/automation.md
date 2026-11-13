@@ -135,10 +135,13 @@ Successful JSON output from each management invocation is one object:
 | Command | Fields |
 | --- | --- |
 | `skills` | `scope`, skill names, and per-agent paths plus created/updated/unchanged file counts |
+| `search` | `results`, best match first: each has `command` (the path after `clickhousectl`), `about`, and up to three matching `flags` of `flag` and `help` |
 | `telemetry status/enable/disable` | `action`, saved `preference`, effective `enabled`, `reason`, and available `config_path` |
 | `update --check` | `current_version`, `latest_version`, `action` (`up_to_date` or `update_available`) |
 | `update` | Version fields and `action` (`up_to_date` or `updated`); current version is the pre-replacement version |
 | `feedback` | `sent` (always `true`) and `length`, the sent message's length in characters |
+
+`search <words>` looks for the words in command names, descriptions, flags and agent context, and returns at most `--limit` executable commands (default 5). A search that matches nothing exits 0 with an empty `results` array.
 
 Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission without a TTY exits 2. Scope defaults to the current project; `--global` uses the home directory. The common `.agents/skills/` path is always included. Telemetry's saved enabled preference can still be overridden by `DO_NOT_TRACK`.
 
