@@ -34,7 +34,8 @@ work on a branch, with an associated issue and a PR.
 - Project-local data lives in `.clickhouse/`; globally installed ClickHouse binaries in `~/.clickhouse/`. OAuth
   tokens (`~/.clickhouse/tokens.json`) are the exception — global user identity, not project-scoped.
   The project root is found git-style, once per run (`init::project_root`): the nearest ancestor with a `.clickhouse/`
-  directory owned by the user, stopping at home, whose `.clickhouse/` is global; `local init` always uses the cwd.
+  directory owned by the user, stopping at home, whose `.clickhouse/` is global; `local init` uses the cwd.
+  `CLICKHOUSECTL_PROJECT_DIR` replaces discovery (and `local init`'s cwd) with a named root.
 
 ## CLI invariants
 

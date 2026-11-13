@@ -21,16 +21,29 @@ fn canonical(path: &Path) -> String {
 }
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(clickhousectl_binary())
+    run_with_project_dir(project, home, None, args)
+}
+
+/// [`run`], with `CLICKHOUSECTL_PROJECT_DIR` set to `project_dir` when given.
+fn run_with_project_dir(
+    cwd: &Path,
+    home: &Path,
+    project_dir: Option<&Path>,
+    args: &[&str],
+) -> Output {
+    let mut command = Command::new(clickhousectl_binary());
+    command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
-        .current_dir(project)
-        .args(args)
-        .output()
-        .expect("run clickhousectl")
+        .current_dir(cwd)
+        .args(args);
+    if let Some(dir) = project_dir {
+        command.env("CLICKHOUSECTL_PROJECT_DIR", dir);
+    }
+    command.output().expect("run clickhousectl")
 }
 
 fn write_server(project: &Path, name: &str, pid: u32) {
@@ -424,4 +437,55 @@ fn global_list_omits_project_local_scope_and_recovery() {
     ));
     assert!(global.get("project_scope").is_none());
     assert!(global.get("guidance").is_none());
+}
+
+/// `CLICKHOUSECTL_PROJECT_DIR` replaces discovery (#250): from an unrelated
+/// directory, and from inside another project, commands act on the named root,
+/// `local init` initializes it, and a refused value fails with its own code.
+#[test]
+fn the_project_dir_variable_names_the_project_root() {
+    let root = tempfile::tempdir().expect("create root");
+    let home = tempfile::tempdir().expect("create home");
+    let named = root.path().join("named");
+    let elsewhere = root.path().join("elsewhere");
+    let other_project = root.path().join("other");
+    for dir in [&named, &elsewhere, &other_project] {
+        std::fs::create_dir(dir).expect("create directory");
+    }
+    write_server(&other_project, "other", 0);
+
+    let init = json_stdout(&run_with_project_dir(
+        &elsewhere,
+        home.path(),
+        Some(&named),
+        &["local", "--json", "init"],
+    ));
+    assert_eq!(init["project_dir"], canonical(&named));
+    assert!(named.join(".clickhouse").is_dir());
+    assert!(named.join("clickhouse").is_dir());
+    assert!(!elsewhere.join(".clickhouse").exists());
+
+    write_server(&named, "named", 0);
+    for cwd in [&elsewhere, &other_project] {
+        let list = json_stdout(&run_with_project_dir(
+            cwd,
+            home.path(),
+            Some(&named),
+            &["local", "--json", "server", "list"],
+        ));
+        assert_eq!(list["project_scope"]["kind"], "env_override");
+        assert_eq!(list["project_scope"]["path"], canonical(&named));
+        assert_eq!(list["servers"][0]["name"], "named");
+        assert_eq!(list["total_servers"], 1);
+    }
+
+    for refused in [root.path().join("missing"), home.path().to_path_buf()] {
+        let error = json_error(&run_with_project_dir(
+            &elsewhere,
+            home.path(),
+            Some(&refused),
+            &["local", "--json", "server", "list"],
+        ));
+        assert_eq!(error["error"]["code"], "invalid_project_dir");
+    }
 }
