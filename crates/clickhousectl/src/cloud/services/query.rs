@@ -508,11 +508,11 @@ pub(super) async fn service_query(
                             )
                             .await
                         }
-                        // Nothing was written. A concurrent run may have bound
-                        // the key while this one waited for the lock, so wait
-                        // for the endpoint as the binder does; only a key
-                        // still rejected for the whole window means rebinding
-                        // cannot help.
+                        // Nothing was written. A concurrent run may have just
+                        // bound the key and its change may not have reached
+                        // the Query API yet, so wait for the endpoint as the
+                        // binder does; only a key still rejected for the whole
+                        // window means rebinding cannot help.
                         CallerKeyBinding::AlreadyBound { caller_uuid } => {
                             failure::set_provisioning_state(ProvisioningState::ManagementKey);
                             run_just_provisioned_service_query_or(
