@@ -632,6 +632,10 @@ impl LocalErrorBody {
             Error::RepeatedClientQueryUnsupported { .. } => {
                 Mapping::parity(LocalErrorCode::UnsupportedClientVersion)
             }
+            Error::ClientLoginUnsupported { .. } => {
+                Mapping::parity(LocalErrorCode::UnsupportedClientVersion)
+                    .command("clickhousectl local install latest")
+            }
             // The blocking servers are named — including their project root —
             // because they may live outside the current project, where neither
             // `clickhouse list` nor the caller's own state can find them.
@@ -2151,6 +2155,13 @@ mod tests {
                 "unsupported_client_version",
             ),
             (
+                Error::ClientLoginUnsupported {
+                    version: "25.11.2.24".into(),
+                    minimum: "25.12",
+                },
+                "unsupported_client_version",
+            ),
+            (
                 Error::NoMatchingVersion("99.99".into()),
                 "version_unavailable",
             ),
@@ -3155,6 +3166,10 @@ mod tests {
             Error::RepeatedClientQueryUnsupported {
                 version: "24.1.1.1".into(),
                 minimum: "24.2",
+            },
+            Error::ClientLoginUnsupported {
+                version: "25.11.2.24".into(),
+                minimum: "25.12",
             },
             Error::VersionAlreadyInstalled("25.12.9.61".into()),
             Error::VersionInUse {

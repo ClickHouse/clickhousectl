@@ -25,6 +25,18 @@ clickhousectl cloud service query <service-id> --org-id <org-id> \
 
 The HTTP Query API needs no local ClickHouse binary or service password. OAuth gives read-only SQL. API-key queries may automatically bind the caller's key to a Query API endpoint; new endpoints use `sql_console_admin`. Pass `--no-auto-enable` to require an existing binding. See [SQL and Query API behavior](../reference/query-api.md) before automating writes, using bulk input, or retrying a timed-out query.
 
+### Open an interactive client
+
+`service client` opens `clickhouse client` on the service over the native TLS protocol. The client signs you in through a browser as your Cloud user, so no service password is needed. It needs a person at the browser, so use `service query` in CI and agents.
+
+```bash
+clickhousectl local install latest
+clickhousectl cloud service client <service-id> --org-id <org-id>
+clickhousectl cloud service client --name analytics -q "SELECT version()" -- --format CSV
+```
+
+The CLI's Cloud credentials (OAuth or API key) only look up the service's host and port. The session runs as your Cloud user rather than as the `default` user. The client is an installed ClickHouse 25.12 or newer: `--version`, or else the default version, or else the only installed one. Arguments after `--` go to `clickhouse client` unchanged. Direct connections must satisfy the service's IP allowlist.
+
 ### Write connection settings to `.env`
 
 The password is returned only once, so write it to your application's `.env` at creation with `--dotenv`. The password then goes only to the file, not to the terminal or JSON output. Without a file name it writes `.env` in the current directory.

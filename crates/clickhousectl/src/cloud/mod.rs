@@ -30,7 +30,7 @@ pub use client::{
 };
 
 use crate::error::{Error, Result};
-use cli::{CloudArgs, CloudCommands};
+use cli::{CloudArgs, CloudCommands, ServiceCommands};
 use output::{CloudErrorCode, CloudErrorDetail};
 
 /// Explain when a configured environment credential cannot participate in
@@ -134,6 +134,16 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
              https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl"
                 .into(),
         ));
+    }
+
+    // `service client` ends in an `exec()` of the local client, and its
+    // failures before that are local ones (no installed build, too old), so it
+    // returns the top-level error itself.
+    if let CloudCommands::Service {
+        command: ServiceCommands::Client(args),
+    } = command
+    {
+        return services::service_client(&client, args).await;
     }
 
     dispatch(&client, command, json)
