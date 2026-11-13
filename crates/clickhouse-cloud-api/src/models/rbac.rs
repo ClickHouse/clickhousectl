@@ -162,6 +162,46 @@ pub struct RBACRole {
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A caller-assignable role from verified CLI user discovery, not the administrative catalog.
+///
+/// Fields remain optional for transport compatibility. Before presenting a successful
+/// discovery result, callers must require `id`, `name`, `type`, `policies`, and each
+/// policy's effect, permissions and resources. Absence is not an empty permission set.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssignableRole {
+    /// Opaque identity string, including system identifiers that are not UUID v4.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<RBACRoleType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<AssignableRolePolicy>>,
+}
+
+/// A complete policy in an assignable role; no effects or resource scopes are filtered.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssignableRolePolicy {
+    #[serde(rename = "allowDeny", skip_serializing_if = "Option::is_none")]
+    pub allow_deny: Option<RBACPolicyAllowdeny>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<AssignableRolePolicyTags>,
+}
+
+/// Meaningful policy tags. SQL statements are opaque, including GRANT and REVOKE text.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssignableRolePolicyTags {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<String>>,
+    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none")]
+    pub role_v2: Option<RBACPolicyTagsRolev2>,
+}
+
 /// `RoleCreateRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RoleCreateRequest {
