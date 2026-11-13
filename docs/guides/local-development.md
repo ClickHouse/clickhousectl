@@ -52,7 +52,7 @@ A bare start installs `latest` if no version or default is available, without se
 
 ## Run SQL with `local client`
 
-Connect to a running server by name. `local client` finds its TCP port and uses the same ClickHouse binary as the server. With no name, it connects to the server named `default`.
+Connect to a running server by name. `local client` finds its TCP port and uses the same ClickHouse binary as the server. With no name, it picks a server by the [selection rule](#choose-a-server-by-name).
 
 ```bash
 # Open an interactive SQL session
@@ -162,6 +162,10 @@ An instance is identified by name and major version. The name becomes part of th
 
 The generated `.env.local` includes the password. Keep it out of version control. Both engines' `dotenv` commands write a file and print an informational preview: use your application's dotenv loader, never `eval` their stdout.
 
+## Choose a server by name
+
+Commands that act on an existing server take its name: `local client`, `local udf` (as `--server`), and each engine's `stop`, `client` and `dotenv`. Without one, they select the server named `default`, else the project's only server of that engine (for Postgres, the only instance name; `--version` then picks its major). With several and none named `default`, they fail with `server_selection_required` and list the names. With none, `stop` succeeds as a no-op and the others report `default` as not found. `remove` deletes data, so it never guesses: without a name it removes only `default`. Scripts should pass names explicitly.
+
 ## Stop or remove data
 
 ```bash
@@ -180,6 +184,5 @@ Both require stopped servers. `local clickhouse stop-all` and `local postgres st
 
 `local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project, and refuses when the running processes cannot be read, since then other projects' servers are unknown. Its `--force` stops those servers across projects and removes the version even if it is the default; after a failed process scan it stops only this project's servers.
 
-Without a name, ClickHouse `stop` selects `default`, then the sole server, and is a no-op if none exists. Bare `remove` only selects `default`; use explicit names for cleanup.
 
 If metadata is corrupt, follow the reported recovery guidance. Confirm the running process with `clickhouse list --global`, or the Postgres container with Docker, before moving metadata aside. Do not delete state or force-remove an unverified server. A Docker inspection failure is an error, not evidence that Postgres is stopped.
