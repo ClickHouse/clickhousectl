@@ -835,10 +835,26 @@ where
     validated_auth_url(&value).map_err(serde::de::Error::custom)
 }
 
+/// Bounds each OAuth request, body included. A token refresh holds the token
+/// lock across its request, so a stalled issuer must not block every other
+/// process waiting on that lock (#1444).
+const OAUTH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Bounds establishing the connection, within [`OAUTH_REQUEST_TIMEOUT`].
+const OAUTH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// OAuth form bodies contain credentials; never forward them via redirects.
 fn oauth_client() -> CloudResult<reqwest::Client> {
+    oauth_client_with_timeout(crate::timing::duration_override(
+        crate::timing::OAUTH_TIMEOUT_ENV,
+        OAUTH_REQUEST_TIMEOUT,
+    ))
+}
+
+fn oauth_client_with_timeout(timeout: std::time::Duration) -> CloudResult<reqwest::Client> {
     crate::http::clickhouse_client_builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(OAUTH_CONNECT_TIMEOUT.min(timeout))
+        .timeout(timeout)
         .build()
         .map_err(oauth_http_error)
 }
@@ -1247,9 +1263,14 @@ pub async fn device_auth_login(api_url: &str, json: bool) -> CloudResult<TokenSt
 }
 
 pub async fn refresh_access_token(tokens: &TokenStore) -> CloudResult<TokenStore> {
-    let config = &tokens.auth_config;
+    refresh_access_token_with(&oauth_client()?, tokens).await
+}
 
-    let client = oauth_client()?;
+async fn refresh_access_token_with(
+    client: &reqwest::Client,
+    tokens: &TokenStore,
+) -> CloudResult<TokenStore> {
+    let config = &tokens.auth_config;
 
     let form_body = format!(
         "grant_type={}&client_id={}&refresh_token={}",
@@ -1597,6 +1618,39 @@ mod tests {
             let failure = error.failure.expect("classified");
             assert_eq!((failure.kind, failure.http_status), (kind, status));
         }
+    }
+
+    /// A stalled issuer fails the request within the bound, as a timeout: a
+    /// refresh holds the token lock across it (#1444).
+    #[tokio::test]
+    async fn a_stalled_oauth_request_times_out_as_a_timeout() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+            .mount(&issuer)
+            .await;
+        let tokens = TokenStore {
+            auth_config: AuthConfig {
+                auth_url: issuer.uri(),
+                client_id: "client".into(),
+            },
+            ..sample_tokens()
+        };
+        let client = oauth_client_with_timeout(std::time::Duration::from_millis(50)).unwrap();
+        let started = std::time::Instant::now();
+        let error = refresh_access_token_with(&client, &tokens)
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure.expect("classified").kind,
+            FailureKind::Timeout
+        );
     }
 
     #[tokio::test]
