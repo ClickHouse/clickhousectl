@@ -144,6 +144,27 @@ fn explicit_json_and_agent_mode_emit_the_same_exact_server_error() {
     assert_structured_failure(&agent, &expected);
 }
 
+/// `CLICKHOUSECTL_AUTO_JSON=0` turns agent-detected JSON off (#915). The
+/// precedence rule itself is unit-tested beside `resolve_json` in `main.rs`.
+#[test]
+fn auto_json_off_keeps_agent_mode_human() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let opted_out = command(project.path(), home.path())
+        .env("AGENT", "opencode")
+        .env("CLICKHOUSECTL_AUTO_JSON", "0")
+        .args(["local", "server", "stop", "missing"])
+        .output()
+        .expect("run clickhousectl in agent mode with auto-JSON off");
+    assert_eq!(opted_out.status.code(), Some(1), "{opted_out:?}");
+    assert!(opted_out.stdout.is_empty(), "{opted_out:?}");
+    assert!(
+        serde_json::from_slice::<Value>(&opted_out.stderr).is_err(),
+        "{opted_out:?}"
+    );
+    assert!(String::from_utf8_lossy(&opted_out.stderr).contains("missing"));
+}
+
 #[cfg(feature = "telemetry")]
 #[test]
 fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
