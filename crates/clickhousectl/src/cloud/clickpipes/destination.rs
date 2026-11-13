@@ -6,10 +6,23 @@ use crate::cloud::config::{
 };
 
 /// Parse `name:type` column specifications into library destination columns.
+/// A name given twice is a usage error.
 pub(super) fn parse_columns(
     columns: &[String],
 ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
-    columns.iter().map(|column| parse_column(column)).collect()
+    let mut parsed: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn> =
+        Vec::with_capacity(columns.len());
+    for column in columns {
+        let column = parse_column(column)?;
+        if parsed.iter().any(|existing| existing.name == column.name) {
+            return Err(CloudError::usage(format!(
+                "--column {} is given more than once",
+                column.name
+            )));
+        }
+        parsed.push(column);
+    }
+    Ok(parsed)
 }
 
 fn parse_column(
@@ -35,7 +48,7 @@ fn parse_column(
 pub(super) fn columns_from_discovery(
     response: clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse,
 ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
-    let mut columns = Vec::new();
+    let mut columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn> = Vec::new();
     for (index, field) in response.fields.unwrap_or_default().into_iter().enumerate() {
         if field.is_virtual == Some(true) && field.is_virtual_disabled_default == Some(true) {
             continue;
@@ -49,6 +62,11 @@ pub(super) fn columns_from_discovery(
             .ok_or_else(|| {
                 CloudError::usage(format!("--columns-from: field `{name}` has no type"))
             })?;
+        if columns.iter().any(|existing| existing.name == name) {
+            return Err(CloudError::usage(format!(
+                "--columns-from: field `{name}` is listed more than once"
+            )));
+        }
         columns.push(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
             name,
             r#type: column_type,
@@ -229,8 +247,18 @@ pub(super) fn build_streaming_destination(
 
 impl StreamingDestinationArgs {
     /// The destination columns: those read from `--columns-from` first, then
-    /// each `--column`. A name given by both is a usage error.
+    /// each `--column`. A name given by both is a usage error. Columns already
+    /// resolved by [`Self::resolve_columns_from_file`] are reused.
     pub(super) fn parsed_columns(
+        &self,
+    ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
+        if let Some(columns) = &self.resolved_columns {
+            return Ok(columns.clone());
+        }
+        self.read_columns()
+    }
+
+    fn read_columns(
         &self,
     ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
         let explicit = parse_columns(&self.columns)?;
@@ -250,6 +278,22 @@ impl StreamingDestinationArgs {
         }
         columns.extend(explicit);
         Ok(columns)
+    }
+
+    /// Validate the explicit `--column` values without any I/O.
+    pub(super) fn validate_explicit_columns(&self) -> CloudResult<()> {
+        parse_columns(&self.columns).map(|_| ())
+    }
+
+    /// Read and validate a `--columns-from` file before credentials are
+    /// resolved, keeping the result for [`Self::parsed_columns`]. Stdin (`-`)
+    /// is left for the handler, so it is read once and never blocks a run
+    /// that is about to fail on credentials.
+    pub(super) fn resolve_columns_from_file(&mut self) -> CloudResult<()> {
+        if matches!(self.columns_from.as_deref(), Some(source) if source != "-") {
+            self.resolved_columns = Some(self.read_columns()?);
+        }
+        Ok(())
     }
 
     /// Refuse an invocation where this destination's file flags and the
@@ -497,6 +541,14 @@ mod tests {
         assert_names(&error.message, &["id_without_type", "name:type"]);
     }
 
+    #[test]
+    fn parse_columns_rejects_a_repeated_name() {
+        let columns = vec!["id:UInt64".to_string(), "id:String".to_string()];
+        let error = parse_columns(&columns).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(&error.message, &["--column", "id"]);
+    }
+
     /// Parse `json` the way `--columns-from` does: as the response type that
     /// `clickpipe schema-discover --json` prints.
     fn discovery(
@@ -551,6 +603,8 @@ mod tests {
             serde_json::json!({"fields": [{"type": "String"}]}),
             serde_json::json!({"fields": [{"name": "", "type": "String"}]}),
             serde_json::json!({"fields": [{"name": "id"}]}),
+            serde_json::json!({"fields": [{"name": "id", "type": "Int64"},
+                                          {"name": "id", "type": "String"}]}),
         ] {
             let error = columns_from_discovery(discovery(json.clone())).unwrap_err();
             assert_eq!(
@@ -604,6 +658,7 @@ mod tests {
             columns_from: Some(path.clone()),
             destination_table: StreamingDestinationTableArgs::default(),
             destination_roles: Default::default(),
+            resolved_columns: None,
         };
 
         let columns = destination(&["ingested_at:DateTime"])
@@ -621,6 +676,191 @@ mod tests {
         let error = destination(&["id:UInt64"]).parsed_columns().unwrap_err();
         assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
         assert_names(&error.message, &["--column", "id", "--columns-from", &path]);
+    }
+
+    fn destination_reading(columns_from: &str) -> StreamingDestinationArgs {
+        StreamingDestinationArgs {
+            database: "db".into(),
+            table: "events".into(),
+            columns: vec!["ingested_at:DateTime".into()],
+            columns_from: Some(columns_from.into()),
+            destination_table: StreamingDestinationTableArgs::default(),
+            destination_roles: Default::default(),
+            resolved_columns: None,
+        }
+    }
+
+    #[test]
+    fn resolve_columns_from_file_reads_the_file_once_before_credentials() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(br#"{"fields": [{"name": "id", "type": "Int64"}]}"#)
+            .unwrap();
+        let mut destination = destination_reading(file.path().to_str().unwrap());
+        destination.resolve_columns_from_file().unwrap();
+        // The handler reuses the resolved columns rather than reading again.
+        drop(file);
+        assert_eq!(
+            name_type_pairs(&destination.parsed_columns().unwrap()),
+            [("id", "Int64"), ("ingested_at", "DateTime")]
+        );
+    }
+
+    #[test]
+    fn resolve_columns_from_file_keeps_usage_and_io_failures_apart() {
+        use crate::cloud::client::CloudErrorKind;
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"not json").unwrap();
+        let path = file.path().to_str().unwrap();
+        let error = destination_reading(path)
+            .resolve_columns_from_file()
+            .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
+        assert_names(&error.message, &["--columns-from", path]);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(br#"{"fields": [{"name": "ingested_at", "type": "DateTime"}]}"#)
+            .unwrap();
+        let error = destination_reading(file.path().to_str().unwrap())
+            .resolve_columns_from_file()
+            .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Usage);
+        assert_names(
+            &error.message,
+            &["--column", "ingested_at", "--columns-from"],
+        );
+
+        let missing = tempfile::tempdir().unwrap().path().join("missing.json");
+        let error = destination_reading(missing.to_str().unwrap())
+            .resolve_columns_from_file()
+            .unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure.map(|failure| failure.kind),
+            Some(crate::failure::FailureKind::Io)
+        );
+    }
+
+    #[test]
+    fn resolve_columns_from_file_leaves_stdin_for_the_handler() {
+        let mut destination = destination_reading("-");
+        destination.resolve_columns_from_file().unwrap();
+        assert!(destination.resolved_columns.is_none());
+
+        let mut destination = destination_reading("-");
+        destination.columns_from = None;
+        destination.resolve_columns_from_file().unwrap();
+        assert!(destination.resolved_columns.is_none());
+    }
+
+    #[test]
+    fn streaming_creates_reject_a_repeated_column_before_any_io() {
+        let mut kinesis = vec![
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "events",
+            "--region",
+            "eu-west-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        kinesis.extend(["--column", "id:UInt64"]);
+        let mut pubsub = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+        ];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        let mut object_storage = object_storage_create_cli_args();
+        object_storage.extend(["--column", "id:UInt64"]);
+
+        for args in [object_storage, kafka_create_cli_args(), kinesis, pubsub] {
+            for columns_from in [None, Some("-"), Some("/missing/discovery.json")] {
+                let mut args = args.clone();
+                args.extend(["--column", "id:String"]);
+                if let Some(columns_from) = columns_from {
+                    args.extend(["--columns-from", columns_from]);
+                }
+                let message = clickpipe_validation_message(&parse_clickpipe(&args))
+                    .unwrap_or_else(|| panic!("expected a duplicate refusal for {args:?}"));
+                assert_names(&message, &["--column", "id"]);
+            }
+        }
+    }
+
+    #[test]
+    fn every_streaming_create_reads_columns_from_files_before_credentials() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"not json").unwrap();
+        let path = file.path().to_str().unwrap();
+        let mut kinesis = vec![
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "events",
+            "--region",
+            "eu-west-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        let mut pubsub = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        let mut object_storage = object_storage_create_cli_args();
+        let mut kafka = kafka_create_cli_args();
+        for args in [&mut object_storage, &mut kafka, &mut kinesis, &mut pubsub] {
+            args.extend(["--columns-from", path]);
+            let mut command = parse_clickpipe(args);
+            let error = command.prepare_create_before_credentials().unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{}",
+                args[1]
+            );
+            assert_names(&error.message, &["--columns-from", path]);
+        }
+
+        // Other creates have no destination columns to read.
+        let mut postgres = parse_clickpipe(&postgres_cli_args(Some("public.events:events")));
+        postgres.prepare_create_before_credentials().unwrap();
     }
 
     #[test]
