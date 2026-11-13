@@ -535,6 +535,8 @@ pub(crate) struct RustInventory {
     /// are traversal edges, not wire models subject to model-field policy.
     error_type_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) manual_default_impls: BTreeSet<String>,
+    /// Model types with an inherent `pub fn new` associated function.
+    pub(crate) constructor_impls: BTreeSet<String>,
     pub(crate) metadata: MetadataInventory,
 }
 
@@ -778,6 +780,9 @@ impl RustInventory {
             if item_impl.trait_.is_some() {
                 continue;
             }
+            if has_public_new_constructor(item_impl) {
+                self.constructor_impls.insert(name.clone());
+            }
             let Some(enum_info) = self.enums.get_mut(&name) else {
                 continue;
             };
@@ -1001,6 +1006,52 @@ impl RustInventory {
         }
         defaults
     }
+
+    /// Model structs that carry a `#[cfg(feature = "deprecated-fields")]` field
+    /// and do not implement `Default`, split by whether they define an inherent
+    /// `pub fn new`.
+    ///
+    /// Without `Default` a caller must write an exhaustive struct literal, which
+    /// stops compiling as soon as any crate in the dependency graph enables
+    /// `deprecated-fields` (Cargo unifies features). A `new` constructor that
+    /// takes only the required fields keeps the feature additive.
+    pub(crate) fn deprecated_field_constructors(&self) -> DeprecatedFieldConstructors {
+        let mut constructors = DeprecatedFieldConstructors::default();
+        for (name, info) in &self.structs {
+            if info.derives_default
+                || self.manual_default_impls.contains(name)
+                || !info.fields.values().any(|field| field.deprecated_marker)
+            {
+                continue;
+            }
+            constructors.gated.insert(name.clone());
+            if self.constructor_impls.contains(name) {
+                constructors.with_new.insert(name.clone());
+            }
+        }
+        constructors
+    }
+}
+
+/// See [`RustInventory::deprecated_field_constructors`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeprecatedFieldConstructors {
+    /// Model structs without `Default` that carry a deprecated-gated field.
+    pub gated: BTreeSet<String>,
+    /// The subset of [`Self::gated`] with an inherent `pub fn new`.
+    pub with_new: BTreeSet<String>,
+}
+
+fn has_public_new_constructor(item_impl: &syn::ItemImpl) -> bool {
+    item_impl.items.iter().any(|impl_item| {
+        matches!(
+            impl_item,
+            ImplItem::Fn(function)
+                if matches!(function.vis, Visibility::Public(_))
+                    && function.sig.ident == "new"
+                    && function.sig.receiver().is_none()
+        )
+    })
 }
 
 /// See [`RustInventory::strict_model_defaults`].
@@ -1660,6 +1711,54 @@ mod tests {
                 ]
                 .map(String::from)
             )
+        );
+    }
+
+    #[test]
+    fn deprecated_field_constructors_requires_new_on_strict_gated_structs() {
+        let models = r#"
+            pub struct WithNew {
+                pub name: String,
+                #[cfg(feature = "deprecated-fields")]
+                pub legacy: Option<String>,
+            }
+            impl WithNew {
+                pub fn new(name: String) -> Self { todo!() }
+            }
+            pub struct PrivateNew {
+                pub name: String,
+                #[cfg(feature = "deprecated-fields")]
+                pub legacy: Option<String>,
+            }
+            impl PrivateNew {
+                fn new(name: String) -> Self { todo!() }
+                pub fn with(self) -> Self { self }
+            }
+            pub struct TraitNew {
+                #[cfg(feature = "deprecated-fields")]
+                pub legacy: Option<String>,
+            }
+            impl Builder for TraitNew {
+                fn new() -> Self { todo!() }
+            }
+            #[derive(Default)]
+            pub struct Defaulted {
+                #[cfg(feature = "deprecated-fields")]
+                pub legacy: Option<String>,
+            }
+            pub struct Ungated { pub name: String }
+        "#;
+
+        let constructors = RustInventory::parse("", models, "")
+            .unwrap()
+            .deprecated_field_constructors();
+        assert_eq!(
+            constructors.gated,
+            BTreeSet::from(["PrivateNew", "TraitNew", "WithNew"].map(String::from))
+        );
+        assert_eq!(
+            constructors.with_new,
+            BTreeSet::from(["WithNew".to_string()])
         );
     }
 

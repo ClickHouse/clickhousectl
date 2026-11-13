@@ -10,6 +10,9 @@ use clickhouse_cloud_api::models::{
 };
 use tabled::{Table, Tabled, settings::Style};
 
+// `..Default::default()` fills the `deprecated-fields`-gated fields; without the
+// feature every field is listed, so the update is needless only in that build.
+#[allow(clippy::needless_update)]
 fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> MemberPatchRequest {
     MemberPatchRequest {
         assigned_role_ids: if clear_roles {
@@ -19,19 +22,16 @@ fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> Member
         } else {
             Some(role_ids.to_vec())
         },
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
+        ..Default::default()
     }
 }
 
 fn build_invitation_create_request(email: &str, role_ids: &[String]) -> InvitationPostRequest {
     InvitationPostRequest {
-        email: email.to_string(),
         // The spec makes `assignedRoleIds` optional; keep sending it (possibly
         // `[]`) so the create request is unchanged.
         assigned_role_ids: Some(role_ids.to_vec()),
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
+        ..InvitationPostRequest::new(email.to_string())
     }
 }
 

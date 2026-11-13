@@ -74,3 +74,16 @@ pub struct InvitationPostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<InvitationPostRequestRole>,
 }
+
+impl InvitationPostRequest {
+    /// A request with only the required fields set. Prefer this to a struct
+    /// literal: it keeps compiling when `deprecated-fields` is enabled.
+    pub fn new(email: String) -> Self {
+        Self {
+            assigned_role_ids: None,
+            email,
+            #[cfg(feature = "deprecated-fields")]
+            role: None,
+        }
+    }
+}

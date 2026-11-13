@@ -487,3 +487,30 @@ fn notification_setting_rule_is_strict_on_required_fields() {
         serde_json::json!({})
     );
 }
+
+/// `new` leaves the deprecated `role` unset, so the body is the same with or
+/// without `deprecated-fields`.
+#[test]
+fn invitation_post_request_new_sends_only_required_fields() {
+    let req = InvitationPostRequest::new("alice@example.com".to_string());
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({"email": "alice@example.com"})
+    );
+}
+
+/// `new` leaves the deprecated `add` unset, so the body is the same with or
+/// without `deprecated-fields`.
+#[test]
+fn organization_private_endpoints_patch_new_sends_only_required_fields() {
+    let patch = OrganizationPrivateEndpointsPatch::new(vec![OrganizationPatchPrivateEndpoint {
+        cloud_provider: OrganizationPatchPrivateEndpointCloudprovider::Aws,
+        description: None,
+        id: "pe-1".to_string(),
+        region: OrganizationPatchPrivateEndpointRegion::Us_east_1,
+    }]);
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap(),
+        serde_json::json!({"remove": [{"cloudProvider": "aws", "id": "pe-1", "region": "us-east-1"}]})
+    );
+}

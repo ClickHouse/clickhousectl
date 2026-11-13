@@ -399,7 +399,7 @@ impl OpenApiInventory {
                         schema_type: schema_type(property).map(str::to_string),
                     },
                 );
-                if property.get("deprecated").and_then(Value::as_bool) == Some(true) {
+                if is_deprecated(property) {
                     self.deprecated_fields
                         .insert((schema_name.clone(), property_name.clone()), pointer);
                 }
@@ -751,12 +751,19 @@ pub(crate) fn required_fields(
             })
             .collect()
     };
+    // A deprecated field is compiled out by default, so it can never be
+    // required on the wire: gating it must stay additive under the
+    // `deprecated-fields` feature.
     required.retain(|name| {
         properties
             .get(name)
-            .is_some_and(|property| !is_nullable(property))
+            .is_some_and(|property| !is_nullable(property) && !is_deprecated(property))
     });
     required
+}
+
+fn is_deprecated(property: &Value) -> bool {
+    property.get("deprecated").and_then(Value::as_bool) == Some(true)
 }
 
 fn required_array(schema: &Value) -> BTreeSet<String> {
@@ -1955,6 +1962,32 @@ mod tests {
                 normalize_contract(&spec, &changed, &mut BTreeSet::new()).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn deprecated_request_fields_are_never_required() {
+        let config = AnalyzerConfig::default();
+        // Without `required[]` the description heuristic would mark both
+        // fields required; with it, the deprecated entry is still dropped.
+        let heuristic = serde_json::json!({"properties": {
+            "replicas": {"type": "integer"},
+            "concurrency": {"type": "integer", "deprecated": true}
+        }});
+        let explicit = serde_json::json!({
+            "required": ["name", "role"],
+            "properties": {
+                "name": {"type": "string"},
+                "role": {"type": "string", "deprecated": true}
+            }
+        });
+        assert_eq!(
+            required_fields("WidgetScaling", &heuristic, &config),
+            BTreeSet::from(["replicas".to_string()])
+        );
+        assert_eq!(
+            required_fields("WidgetPostRequest", &explicit, &config),
+            BTreeSet::from(["name".to_string()])
+        );
     }
 
     #[test]

@@ -2469,3 +2469,14 @@ fn click_pipe_object_storage_skip_first_lines_round_trips() {
     assert_eq!(missing.skip_first_lines, None);
     assert_eq!(nulled.skip_first_lines, None);
 }
+
+/// `new` leaves the deprecated `concurrency` unset, so the body is the same with
+/// or without `deprecated-fields`.
+#[test]
+fn clickpipe_scaling_new_sends_only_required_fields() {
+    let scaling = ClickPipeScaling::new(2, 500, 1.5);
+    assert_eq!(
+        serde_json::to_value(&scaling).unwrap(),
+        serde_json::json!({"replicas": 2, "replicaCpuMillicores": 500, "replicaMemoryGb": 1.5})
+    );
+}
