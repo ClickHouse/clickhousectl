@@ -36,9 +36,15 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
+# A new push to a PR supersedes its earlier run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  unit-tests:
-    name: Unit Tests
+  # Test CLI and Test Cloud API Library run the Rust tests.
+  path-mapping:
+    name: Install path mapping
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,8 +52,6 @@ jobs:
           persist-credentials: false
       - name: Verify install workflow path mapping
         run: python3 scripts/tests/test_classify_install_integration.py
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
-      - run: cargo test
 
   url-probing:
     name: URL Probing (${{ matrix.platform }})
@@ -125,6 +129,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
 
+      # Keyed by image: build scripts linked on a newer glibc fail on an older one.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.os }}
+
       - name: Build CLI
         run: cargo build
 
@@ -146,7 +156,20 @@ jobs:
 
       - name: Test already installed (skips download)
         run: |
-          ./target/debug/clickhousectl local install 25.12 2>&1 | grep "already installed"
+          marker="$RUNNER_TEMP/before-reinstall"
+          touch "$marker"
+          installed=$(./target/debug/clickhousectl local install 25.12 --json | jq -er '.version')
+          case "$installed" in
+            25.12.*) ;;
+            *) echo "expected a 25.12 build, got $installed"; exit 1 ;;
+          esac
+          # Reusing the build writes nothing under the versions directory.
+          changed=$(find ~/.clickhouse/versions -newer "$marker" -print)
+          if [ -n "$changed" ]; then
+            echo "expected no download, but these changed:"
+            echo "$changed"
+            exit 1
+          fi
 
       - name: Test force re-install
         run: |

@@ -24,6 +24,11 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
+# A new push to a PR supersedes its earlier run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test clickhouse-cloud-api
@@ -33,8 +38,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test drift report rendering
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      # The release preflight runs the same check against the tag.
+      - name: Check release versions agree
+        run: python3 scripts/check-release-versions.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build -p clickhouse-cloud-api -p clickhouse-openapi-analyzer
@@ -42,12 +57,12 @@ jobs:
       - name: Clippy
         run: cargo clippy -p clickhouse-cloud-api -p clickhouse-openapi-analyzer --all-targets -- -D warnings
 
+      # `deprecated-fields` is off by default, so only this step lints it.
+      - name: Clippy with every feature
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: Test
         run: cargo test -p clickhouse-cloud-api -p clickhouse-openapi-analyzer
 
-      - name: Test drift report rendering
-        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-
-      # The release preflight runs the same check against the tag.
-      - name: Check release versions agree
-        run: python3 scripts/check-release-versions.py
+      - name: Test with deprecated fields
+        run: cargo test -p clickhouse-cloud-api --features deprecated-fields

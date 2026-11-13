@@ -561,19 +561,31 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_and_unreachable_spec_write_no_github_outputs(self):
         report = {"schema_version": 12, "findings": [{"kind": "missing_struct_field"}]}
-        for argv, spec in (([str(SCRIPT), "--dry-run"], {}), ([str(SCRIPT)], None)):
+        # An unreachable spec fails the run instead of passing silently.
+        cases = (
+            ([str(SCRIPT), "--dry-run"], {}, None),
+            ([str(SCRIPT)], None, 1),
+            ([str(SCRIPT), "--dry-run"], None, 1),
+        )
+        for argv, spec, exit_code in cases:
             with self.subTest(argv=argv, spec=spec), tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp) / "github_output"
                 with (
                     mock.patch.object(sys, "argv", argv),
                     mock.patch.dict(drift.os.environ, {"GITHUB_OUTPUT": str(output)}),
                     mock.patch.object(drift, "fetch_live_spec", return_value=spec),
-                    mock.patch.object(drift, "run_analyzer", return_value=report),
+                    mock.patch.object(drift, "run_analyzer", return_value=report) as analyzer,
                     mock.patch.object(drift, "build_issue_body", return_value="body"),
                     mock.patch.object(drift, "sync_drift_issue") as sync_issue,
                     mock.patch("builtins.print"),
                 ):
-                    drift.main()
+                    if exit_code is None:
+                        drift.main()
+                    else:
+                        with self.assertRaises(SystemExit) as raised:
+                            drift.main()
+                        self.assertEqual(raised.exception.code, exit_code)
+                        analyzer.assert_not_called()
 
                 sync_issue.assert_not_called()
                 self.assertFalse(output.exists())
