@@ -76,8 +76,9 @@ the workflow; those files are the rules.
 3. Add library tests for what changed: missing-key → `None` and explicit-`null` → `None` for each new response type;
    request strictness and the `TryFrom` write-back for each split pair; wiremock coverage for each new method; facade
    paths for new exports. Add live integration steps for new operations to the owning suite.
-4. Map any added or renamed file in both classifiers (`scripts/classify-cloud-integration.py`,
-   `scripts/classify-install-integration.py`) and their fixtures.
+4. Map any added or renamed file under `crates/clickhouse-cloud-api/` in `scripts/classify-cloud-integration.py`
+   (unknown paths there select all suites). The install classifier is not involved unless a CLI file outside
+   `src/cloud/` was also added.
 5. Document the change, and any Rust caller migration, under `## Unreleased` in
    `crates/clickhouse-cloud-api/CHANGELOG.md`. The root README does not change in an API PR.
 6. Run the library gates from the root `AGENTS.md`, plus `cargo check --workspace --all-features` and both

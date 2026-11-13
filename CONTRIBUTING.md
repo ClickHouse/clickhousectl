@@ -55,6 +55,6 @@ For documentation changes:
 
 ## Add or change a command
 
-Follow the repository's [add-cli-command skill](.agents/skills/add-cli-command/SKILL.md) and [help-text rules](.agents/skills/cli-help-text/SKILL.md). Test parsing and runtime behavior, including read/write authorization and JSON errors. New or renamed source/test files need explicit classification in both integration classifiers.
+Follow the repository's [add-cli-command skill](.agents/skills/add-cli-command/SKILL.md) and [help-text rules](.agents/skills/cli-help-text/SKILL.md). Test parsing and runtime behavior, including read/write authorization and JSON errors. A new or renamed file needs a classifier entry only in these cases: under `crates/clickhouse-cloud-api/` for `scripts/classify-cloud-integration.py`, or a `crates/clickhousectl/src/**/*.rs` outside `src/cloud/` or a `crates/clickhousectl/tests/` file for `scripts/classify-install-integration.py` (see [development notes](docs/development.md#local-tests)).
 
 Use the [OpenAPI drift workflow](.agents/skills/openapi-drift-remediation/SKILL.md) for API drift and the [release workflow](.agents/skills/release/SKILL.md) for releases. These are task-specific procedures; ordinary documentation changes do not require release work.
