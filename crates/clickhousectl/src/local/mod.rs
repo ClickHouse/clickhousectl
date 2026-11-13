@@ -387,16 +387,10 @@ fn run_client(
         }
         (h, p, v, binary)
     } else {
-        let server_name = name.as_deref().unwrap_or("default");
-        let selection = if name.is_some() {
-            ManagedClientSelection::Named
-        } else {
-            ManagedClientSelection::Default
-        };
         // The canonical project root, so diagnostics identify the one physical
         // directory whose project-local state was inspected.
         let project = init::project_root()?;
-        let managed_error = |kind, binary_version| {
+        let managed_error = |kind, server_name: &str, selection, binary_version| {
             Error::ManagedClient(ManagedClientError {
                 kind,
                 project: project.clone(),
@@ -405,6 +399,45 @@ fn run_client(
                 binary_version,
             })
         };
+        // Before a server is selected, the error names what was asked for.
+        let requested = name.as_deref().unwrap_or("default");
+        let requested_selection = if name.is_some() {
+            ManagedClientSelection::Named
+        } else {
+            ManagedClientSelection::Default
+        };
+        let project_state_error = |source| {
+            managed_error(
+                ManagedClientErrorKind::ProjectStateUnavailable(Box::new(source)),
+                requested,
+                requested_selection,
+                None,
+            )
+        };
+        let metadata_lock = server::lock_recovered_metadata().map_err(project_state_error)?;
+        let names = match (&name, &metadata_lock) {
+            (None, Some(lock)) => {
+                server::list_clickhouse_server_names_locked(lock).map_err(project_state_error)?
+            }
+            _ => Vec::new(),
+        };
+        let (server_name, _) = select_server_or_default(
+            name,
+            &names,
+            server::Engine::Clickhouse,
+            "clickhousectl local client <name>",
+        )?;
+        let server_name = server_name.as_str();
+        // `default` keeps its own start guidance; any other server, named or
+        // the project's only one, is started by its name.
+        let selection =
+            if requested_selection == ManagedClientSelection::Default && server_name == "default" {
+                ManagedClientSelection::Default
+            } else {
+                ManagedClientSelection::Named
+            };
+        let managed_error =
+            |kind, binary_version| managed_error(kind, server_name, selection, binary_version);
         let project_state_error = |source| {
             managed_error(
                 ManagedClientErrorKind::ProjectStateUnavailable(Box::new(source)),
@@ -412,9 +445,7 @@ fn run_client(
             )
         };
         let server_not_found = || managed_error(ManagedClientErrorKind::ServerNotFound, None);
-        let metadata_lock = server::lock_recovered_metadata()
-            .map_err(project_state_error)?
-            .ok_or_else(server_not_found)?;
+        let metadata_lock = metadata_lock.ok_or_else(server_not_found)?;
         let entry = server::server_entry_locked(server_name, &metadata_lock)
             .map_err(project_state_error)?
             .ok_or_else(server_not_found)?;
@@ -856,9 +887,20 @@ fn dotenv_server(
     database: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let server_name = name.unwrap_or("default");
+    let metadata_lock = server::lock_recovered_metadata()?;
+    let names = match (name, &metadata_lock) {
+        (None, Some(lock)) => server::list_clickhouse_server_names_locked(lock)?,
+        _ => Vec::new(),
+    };
+    let (server_name, _) = select_server_or_default(
+        name.map(str::to_string),
+        &names,
+        server::Engine::Clickhouse,
+        "clickhousectl local clickhouse dotenv <name>",
+    )?;
+    let server_name = server_name.as_str();
     let server_not_found = || Error::ServerNotFound(server_name.to_string());
-    let metadata_lock = server::lock_recovered_metadata()?.ok_or_else(server_not_found)?;
+    let metadata_lock = metadata_lock.ok_or_else(server_not_found)?;
     let entry =
         server::server_entry_locked(server_name, &metadata_lock)?.ok_or_else(server_not_found)?;
     if !entry.running {
@@ -972,6 +1014,51 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
     }
 }
 
+/// The one rule for which server a local command acts on when its name may be
+/// omitted (#1064): the name given, else `default` if this project has it,
+/// else the engine's only server. `names` are the engine's servers in this
+/// project. `Ok(None)` means the name was omitted and there are none; `stop`
+/// then does nothing and the other commands look up `default`, which reports
+/// it missing. Several servers, none named `default`, is
+/// [`Error::ServerSelectionRequired`] listing them; `usage` is the command to
+/// suggest, with a `<name>` placeholder. `remove` deletes data, so it keeps its
+/// stricter rule and does not use this.
+pub(crate) fn select_server(
+    explicit: Option<String>,
+    names: &[String],
+    engine: server::Engine,
+    usage: &'static str,
+) -> Result<Option<(String, output::ServerSelection)>> {
+    if let Some(name) = explicit {
+        return Ok(Some((name, output::ServerSelection::Explicit)));
+    }
+    let implicit = |name: &str| Some((name.to_string(), output::ServerSelection::Implicit));
+    if names.iter().any(|name| name == "default") {
+        return Ok(implicit("default"));
+    }
+    match names {
+        [] => Ok(None),
+        [name] => Ok(implicit(name)),
+        names => Err(Error::ServerSelectionRequired {
+            engine,
+            names: names.to_vec(),
+            usage,
+        }),
+    }
+}
+
+/// [`select_server`] for commands that look up `default` when there is no
+/// server, so its absence is reported as for an explicit name.
+pub(crate) fn select_server_or_default(
+    explicit: Option<String>,
+    names: &[String],
+    engine: server::Engine,
+    usage: &'static str,
+) -> Result<(String, output::ServerSelection)> {
+    Ok(select_server(explicit, names, engine, usage)?
+        .unwrap_or_else(|| ("default".to_string(), output::ServerSelection::Implicit)))
+}
+
 fn stop_server(
     explicit_name: Option<String>,
     global: bool,
@@ -992,50 +1079,34 @@ fn stop_server(
     // metadata files. Without server state or an orphan there is nothing to
     // stop. Only ClickHouse is recovered, so Docker is never contacted.
     let metadata_lock = server::lock_recovered_engine_metadata(Some(server::Engine::Clickhouse))?;
-    let (name, selection, known) = match explicit_name {
-        Some(name) => (name, output::ServerSelection::Explicit, false),
-        None => {
-            let names = match &metadata_lock {
-                Some(lock) => server::list_clickhouse_server_names_locked(lock)?,
-                None => Vec::new(),
-            };
-            if names.iter().any(|name| name == "default") {
-                (
-                    "default".to_string(),
-                    output::ServerSelection::Implicit,
-                    true,
-                )
-            } else {
-                match names.as_slice() {
-                    [] => {
-                        let out = output::ServerStopNoopOutput {
-                            stopped: false,
-                            selection: output::ServerSelection::Implicit,
-                            reason: "no_clickhouse_servers",
-                            project_scope: project_state_missing
-                                .then(|| output::server_project_scope(project)),
-                            guidance: if project_state_missing {
-                                output::project_scope_guidance(
-                                    project.kind,
-                                    Some(ProjectServerCommand::Stop),
-                                )
-                            } else {
-                                Vec::new()
-                            },
-                        };
-                        output::print_output(&out, json);
-                        return Ok(());
-                    }
-                    [name] => (name.clone(), output::ServerSelection::Implicit, true),
-                    names => {
-                        return Err(Error::ServerStopSelectionRequired {
-                            available: names.len(),
-                        });
-                    }
-                }
-            }
-        }
+    let names = match (&explicit_name, &metadata_lock) {
+        (None, Some(lock)) => server::list_clickhouse_server_names_locked(lock)?,
+        _ => Vec::new(),
     };
+    let Some((name, selection)) = select_server(
+        explicit_name,
+        &names,
+        server::Engine::Clickhouse,
+        "clickhousectl local clickhouse stop <name>",
+    )?
+    else {
+        let out = output::ServerStopNoopOutput {
+            engine: server::Engine::Clickhouse,
+            stopped: false,
+            selection: output::ServerSelection::Implicit,
+            reason: "no_clickhouse_servers",
+            project_scope: project_state_missing.then(|| output::server_project_scope(project)),
+            guidance: if project_state_missing {
+                output::project_scope_guidance(project.kind, Some(ProjectServerCommand::Stop))
+            } else {
+                Vec::new()
+            },
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    };
+    // An implicit selection came from this project's server list.
+    let known = selection == output::ServerSelection::Implicit;
 
     let Some(metadata_lock) = metadata_lock else {
         // Only reachable for an explicit name: an omitted one returned above.
@@ -1717,6 +1788,70 @@ mod tests {
     #[test]
     fn classify_stop_unknown_name_is_not_found() {
         assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
+
+    fn select(explicit: Option<&str>, names: &[&str]) -> Result<Option<(String, &'static str)>> {
+        let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+        Ok(select_server(
+            explicit.map(str::to_string),
+            &names,
+            server::Engine::Postgres,
+            "clickhousectl local postgres stop <name>",
+        )?
+        .map(|(name, selection)| {
+            let selection = match selection {
+                output::ServerSelection::Explicit => "explicit",
+                output::ServerSelection::Implicit => "implicit",
+            };
+            (name, selection)
+        }))
+    }
+
+    #[test]
+    fn select_server_prefers_an_explicit_name_then_default_then_the_only_server() {
+        let pick = |name: &str, selection| Some((name.to_string(), selection));
+        // An explicit name wins, whether or not it is listed.
+        for names in [&[][..], &["default"], &["alpha", "beta"]] {
+            assert_eq!(select(Some("dev"), names).unwrap(), pick("dev", "explicit"));
+        }
+        assert_eq!(select(None, &[]).unwrap(), None);
+        assert_eq!(select(None, &["dev"]).unwrap(), pick("dev", "implicit"));
+        assert_eq!(
+            select(None, &["alpha", "default", "zeta"]).unwrap(),
+            pick("default", "implicit")
+        );
+    }
+
+    #[test]
+    fn select_server_lists_the_candidates_when_several_lack_default() {
+        let error = select(None, &["alpha", "beta"]).unwrap_err();
+        let Error::ServerSelectionRequired {
+            engine,
+            ref names,
+            usage,
+        } = error
+        else {
+            panic!("{error:?}");
+        };
+        assert_eq!(engine, server::Engine::Postgres);
+        assert_eq!(names, &["alpha", "beta"]);
+        let message = error.to_string();
+        for identifier in ["alpha", "beta", usage] {
+            assert!(message.contains(identifier), "{identifier}: {message}");
+        }
+        assert_eq!(
+            output::error_code(&error).as_str(),
+            "server_selection_required"
+        );
+    }
+
+    #[test]
+    fn select_server_or_default_looks_up_default_when_there_are_none() {
+        assert_eq!(
+            select_server_or_default(None, &[], server::Engine::Clickhouse, "usage <name>")
+                .unwrap(),
+            ("default".to_string(), output::ServerSelection::Implicit)
+        );
     }
 
     #[test]

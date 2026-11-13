@@ -44,6 +44,14 @@ impl Engine {
             Engine::Postgres => "postgres",
         }
     }
+
+    /// The engine's name in human text.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Engine::Clickhouse => "ClickHouse",
+            Engine::Postgres => "Postgres",
+        }
+    }
 }
 
 fn default_engine() -> Engine {
@@ -600,6 +608,36 @@ pub(crate) fn find_pg_instances_locked(name: &str, lock: &MetadataLock) -> Resul
         }
     }
     Ok(out)
+}
+
+/// The user-facing names of this project's Postgres instances, sorted and
+/// deduplicated across major versions. Reads metadata only, so this never
+/// contacts Docker.
+pub(crate) fn list_postgres_instance_names_locked(lock: &MetadataLock) -> Result<Vec<String>> {
+    let dir = match std::fs::read_dir(&lock.dir) {
+        Ok(d) => d,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut names = Vec::new();
+    for entry in dir {
+        let entry = entry?;
+        let Ok(fname) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(stem) = fname.strip_suffix(".json") else {
+            continue;
+        };
+        if !is_pg_instance_key(stem) || validate_server_name(stem).is_err() {
+            continue;
+        }
+        if load_info_locked(stem, lock)?.is_some_and(|info| info.engine == Engine::Postgres) {
+            names.push(crate::local::postgres::user_name_from_key(stem).to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 /// Load server metadata only if the underlying process/container is alive.
@@ -1838,6 +1876,38 @@ mod tests {
             ..test_info(0, "postgres:18")
         };
         assert_eq!(postgres.clickhouse_data_version(), None);
+    }
+
+    #[test]
+    fn postgres_instance_names_are_user_names_across_majors_without_clickhouse() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let postgres = |key: &str| ServerInfo {
+            name: key.into(),
+            engine: Engine::Postgres,
+            ..test_info(0, "postgres:18")
+        };
+        for info in [
+            postgres("app-pg17"),
+            postgres("app-pg18"),
+            postgres("default-pg18"),
+            // A ClickHouse server whose name looks like a Postgres key.
+            ServerInfo {
+                name: "legacy-pg1".into(),
+                ..test_info(0, "26.8.1.922")
+            },
+            ServerInfo {
+                name: "dev".into(),
+                ..test_info(0, "26.8.1.922")
+            },
+        ] {
+            save_server_info_locked(&info, &lock).unwrap();
+        }
+
+        assert_eq!(
+            list_postgres_instance_names_locked(&lock).unwrap(),
+            ["app", "default"]
+        );
     }
 
     #[test]

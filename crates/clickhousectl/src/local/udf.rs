@@ -96,10 +96,19 @@ pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
             dir,
             server,
             python,
-        } => deploy(&name, &dir, &server.server, python.as_deref(), json).await,
-        UdfCommands::List { server } => list(&server.server, json).await,
-        UdfCommands::Remove { name, server } => remove(&name, &server.server, json).await,
-        UdfCommands::Reload { server } => reload(&server.server, json).await,
+        } => {
+            deploy(
+                &name,
+                &dir,
+                server.server.as_deref(),
+                python.as_deref(),
+                json,
+            )
+            .await
+        }
+        UdfCommands::List { server } => list(server.server.as_deref(), json).await,
+        UdfCommands::Remove { name, server } => remove(&name, server.server.as_deref(), json).await,
+        UdfCommands::Reload { server } => reload(server.server.as_deref(), json).await,
     }
 }
 
@@ -430,7 +439,7 @@ fn python_template(name: &str) -> String {
 async fn deploy(
     name: &str,
     dir_arg: &udf::UdfDirArg,
-    server_name: &str,
+    server: Option<&str>,
     python: Option<&Path>,
     json: bool,
 ) -> Result<()> {
@@ -467,7 +476,11 @@ async fn deploy(
     .map_err(input_error)?;
     let ignored_files = ignored_files(&dir, &entries, runtime, native_arch);
 
-    let (target, mut lock) = server_target(server_name)?;
+    let (server_name, target, mut lock) = server_target(
+        server,
+        "clickhousectl local udf deploy <function> --server <name>",
+    )?;
+    let server_name = server_name.as_str();
     let data_dir_abs = target.data_dir.canonicalize()?;
     let (command, interpreter) = match native_arch {
         Some(arch) => (
@@ -1120,17 +1133,34 @@ struct ServerTarget {
     running: Option<ServerInfo>,
 }
 
-/// Resolve an existing local server by name, running or stopped. `local udf`
-/// never creates a server: a name with neither metadata nor a data directory
-/// is an error before anything is written. The metadata lock is returned so
-/// callers can hold it across their file writes and release it before any
-/// HTTP round trip.
-fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
+/// Resolve an existing local server, running or stopped, and return its name.
+/// `--server` is optional: without it the shared rule picks `default`, else
+/// the project's only ClickHouse server (#1064); `usage` is the command to
+/// suggest when several leave it ambiguous. `local udf` never creates a
+/// server: a name with neither metadata nor a data directory is an error
+/// before anything is written. The metadata lock is returned so callers can
+/// hold it across their file writes and release it before any HTTP round trip.
+fn server_target(
+    explicit: Option<&str>,
+    usage: &'static str,
+) -> Result<(String, ServerTarget, MetadataLock)> {
     // Without server state or an orphan there is no server to target, and
     // nothing is created to find that out.
+    let lock = server::lock_recovered_metadata()?;
+    let names = match (explicit, &lock) {
+        (None, Some(lock)) => server::list_clickhouse_server_names_locked(lock)?,
+        _ => Vec::new(),
+    };
+    let (name, _) = super::select_server_or_default(
+        explicit.map(str::to_string),
+        &names,
+        server::Engine::Clickhouse,
+        usage,
+    )?;
+    let name = name.as_str();
     // `local udf` must never write ClickHouse config into a Postgres data
     // directory.
-    let Some(lock) = server::lock_recovered_metadata()? else {
+    let Some(lock) = lock else {
         server::reject_postgres_instance_locked(name, None)?;
         return Err(server_not_found(name)?);
     };
@@ -1143,7 +1173,7 @@ fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
     if running.is_none() && !data_dir.is_dir() {
         return Err(server_not_found(name)?);
     }
-    Ok((ServerTarget { data_dir, running }, lock))
+    Ok((name.to_owned(), ServerTarget { data_dir, running }, lock))
 }
 
 fn server_not_found(name: &str) -> Result<Error> {
@@ -1629,8 +1659,10 @@ fn culprits_in_error_text(details: &str) -> Vec<String> {
 
 // ── list / remove / reload ──────────────────────────────────────────────────
 
-async fn list(server_name: &str, json: bool) -> Result<()> {
-    let (target, lock) = server_target(server_name)?;
+async fn list(server: Option<&str>, json: bool) -> Result<()> {
+    let (server_name, target, lock) =
+        server_target(server, "clickhousectl local udf list --server <name>")?;
+    let server_name = server_name.as_str();
     drop(lock);
     let loaded = match &target.running {
         Some(info) => Some(loaded_function_names(info, server_name).await?),
@@ -1663,8 +1695,12 @@ async fn list(server_name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
-    let (target, lock) = server_target(server_name)?;
+async fn remove(name: &str, server: Option<&str>, json: bool) -> Result<()> {
+    let (server_name, target, lock) = server_target(
+        server,
+        "clickhousectl local udf remove <function> --server <name>",
+    )?;
+    let server_name = server_name.as_str();
     let mut removed = false;
     for file in [
         function_xml_path(&target.data_dir, name),
@@ -1718,8 +1754,10 @@ async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn reload(server_name: &str, json: bool) -> Result<()> {
-    let (target, lock) = server_target(server_name)?;
+async fn reload(server: Option<&str>, json: bool) -> Result<()> {
+    let (server_name, target, lock) =
+        server_target(server, "clickhousectl local udf reload --server <name>")?;
+    let server_name = server_name.as_str();
     drop(lock);
     let info = require_running(&target, server_name)?;
     match send_query(info, RELOAD_FUNCTIONS_SQL).await {

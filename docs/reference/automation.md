@@ -163,7 +163,7 @@ Every command except `update`, `--version` included, checks for a newer release 
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
 | `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
-| `server_selection_required` | A server name (or, for `clickhouse stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
+| `server_selection_required` | A server name (or, for `clickhouse stop --global`, a `--project`) is required because the selection is ambiguous or unsafe: the name was omitted and several servers of that engine exist, none named `default` (the message lists them and `command` lists the engine's servers), or `remove` was given no name and there is no `default` |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
 | `invalid_server_name` | A stored server name contains path separators or `..`; a name given on the command line is rejected as a usage error, including a Postgres name with a character other than letters, digits, `_`, `.`, and `-` |
