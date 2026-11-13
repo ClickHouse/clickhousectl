@@ -122,6 +122,14 @@ CONTEXT FOR AGENTS:
   a notice to stderr; CLICKHOUSECTL_NO_UPDATE_CHECK=1 turns that off. `update` itself always checks.")]
     Update(UpdateArgs),
 
+    /// Print the shell hook that enables Tab completion
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Add to shell startup: bash `eval \"$(clickhousectl completions bash)\"`, zsh the same with `zsh`
+  after compinit, fish `clickhousectl completions fish | source`. Registers `clickhousectl` and `chctl`.
+  Prints the hook only and never edits rc files; Tab presses stay offline and send no telemetry.")]
+    Completions(CompletionsArgs),
+
     /// Manage anonymous usage telemetry
     #[cfg(feature = "telemetry")]
     #[command(after_help = "\
@@ -268,6 +276,20 @@ pub struct UpdateArgs {
     /// Check for updates without installing
     #[arg(long)]
     pub check: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to print the hook for
+    #[arg(value_enum)]
+    pub shell: CompletionShell,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
 }
 
 #[cfg(test)]
@@ -478,7 +500,14 @@ mod tests {
         }
 
         let root = Cli::command();
-        let mut top = vec!["local", "cloud", "skills", "search", "update"];
+        let mut top = vec![
+            "local",
+            "cloud",
+            "skills",
+            "search",
+            "update",
+            "completions",
+        ];
         if cfg!(feature = "telemetry") {
             top.push("telemetry");
         }
@@ -928,6 +957,21 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn completions_parses_each_supported_shell() {
+        for (name, shell) in [
+            ("bash", CompletionShell::Bash),
+            ("zsh", CompletionShell::Zsh),
+            ("fish", CompletionShell::Fish),
+        ] {
+            let cli = Cli::try_parse_from(["clickhousectl", "completions", name]).unwrap();
+            let Commands::Completions(args) = cli.command else {
+                panic!("expected completions command");
+            };
+            assert_eq!(args.shell, shell);
+        }
     }
 
     #[cfg(feature = "telemetry")]
