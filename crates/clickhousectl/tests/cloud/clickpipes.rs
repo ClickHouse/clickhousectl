@@ -693,6 +693,73 @@ async fn kinesis_auth_conflicts_are_secret_free_usage_errors_before_credentials_
 }
 
 #[tokio::test]
+async fn columns_from_file_errors_win_over_missing_credentials() {
+    // No credentials are configured, so reaching credential resolution would
+    // exit 4. A malformed file, or one sharing a name with --column, is a
+    // usage error (exit 2, clap text even in JSON mode); an unreadable file
+    // keeps the I/O contract (exit 1, JSON code `io`).
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let malformed = dir.path().join("malformed.json");
+    std::fs::write(&malformed, "not json").unwrap();
+    let duplicate = dir.path().join("duplicate.json");
+    std::fs::write(
+        &duplicate,
+        serde_json::json!({"fields": [{"name": "id", "type": "UInt64"}]}).to_string(),
+    )
+    .unwrap();
+    let missing = dir.path().join("missing.json");
+    let run = |columns_from: &Path, json: bool| {
+        let project = tempfile::tempdir().unwrap();
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .isolated_env()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri()])
+            .args(kinesis_auth_args(
+                "create",
+                &["--columns-from", columns_from.to_str().unwrap()],
+            ))
+            .stdin(Stdio::null());
+        if json {
+            command.arg("--json");
+        }
+        command.output().unwrap()
+    };
+
+    for json in [false, true] {
+        for (file, names) in [
+            (&malformed, vec!["--columns-from"]),
+            (&duplicate, vec!["--column", "id", "--columns-from"]),
+        ] {
+            let output = run(file, json);
+            assert_eq!(output.status.code(), Some(2), "json={json}: {output:?}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            for name in names {
+                assert!(stderr.contains(name), "{name}: {stderr}");
+            }
+            assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
+        }
+    }
+
+    let output = run(&missing, true);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "io");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("--columns-from")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn kinesis_destination_table_definition_can_be_read_from_stdin() {
     let mock = start_mock_clickpipes_api().await;
     let args = [
