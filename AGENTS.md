@@ -95,7 +95,7 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
   defaults, parsers, ranges, repeats, clashes.
 - **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on
   library request-struct fields with minimal + maximal inputs.
-- **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
+- **Cloud subprocess + wiremock** — `tests/cloud/`, one module per domain. Spawn the real binary against a local mock
   server. It is the only layer that runs handlers, so a test belongs here only if it exercises: a handler making
   two or more calls or a read-modify-write; a distinct error path's exit code or JSON error; process behaviour
   (stdout/stderr, closed pipes, files, env, credentials); auth-mode wiring, once rather than per command; or one
@@ -104,7 +104,7 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
   behaviour (`convert_error`, the OAuth write check), or wording.
 - **Local subprocess** — one `local_*` binary per concern under `crates/clickhousectl/tests/`, for what needs the
   real binary: files, processes, locks, signals, exit codes, JSON on stdout/stderr. Add a new file rather than
-  growing `cli_request_shape_test.rs`, which is Cloud-only.
+  growing `tests/cloud/`, which is Cloud-only.
 - **Live Cloud** — `#[ignore]`d `live_*_test.rs` under `crates/clickhousectl/tests/`, for CLI behaviour only real
   Cloud shows. They reuse the library's harness via `#[path]` and run in `cloud-integration.yml`
   (`docs/development.md`).
