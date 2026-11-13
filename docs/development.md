@@ -22,7 +22,7 @@ The API/analyzer crates share [crate-level instructions](../crates/clickhouse-cl
 Run the standard CLI gates from [Contributing](../CONTRIBUTING.md#build-and-test). Pick focused checks during development:
 
 - Clap parsing and request builders have tests beside command definitions.
-- `crates/clickhousectl/tests/cli_request_shape_test.rs` spawns the binary against wiremock for Cloud handler behaviour that the unit tests can't reach: multi-call flows, error paths, auth wiring, and output contracts. [AGENTS.md](../AGENTS.md#tests) holds the rule for what belongs there.
+- `crates/clickhousectl/tests/cloud/` (one test binary, one module per Cloud domain, shared helpers in `support.rs`) spawns the binary against wiremock for Cloud handler behaviour that the unit tests can't reach: multi-call flows, error paths, auth wiring, and output contracts. [AGENTS.md](../AGENTS.md#tests) holds the rule for what belongs there.
 - Local subprocess tests use separate `local_*` binaries for each concern.
 - `scripts/test-postgres-integration.sh` is an edge-case battery for `local postgres` against a real Docker daemon; `.github/workflows/test-postgres-integration.yml` runs it on PRs that touch `crates/clickhousectl/src/local/**`, and it can be run by hand with a built binary.
 - Pure version/auth/output logic uses inline tests.
@@ -45,7 +45,7 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_FEEDBACK_SEND_TIMEOUT_MS` | `feedback` send (10 s) |
 | `CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS` | `feedback` Cloud organization lookup (5 s) |
 
-Add a new override to that module rather than parsing an environment variable at the call site. Every subprocess test clears the inherited environment and sets `HOME` to a directory the test owns, so a developer's credentials, proxies and coding-agent variables never change the result. In `cli_request_shape_test.rs`, use `isolated_env()` in place of `env_clear()`: it clears the environment and turns the update check off.
+Add a new override to that module rather than parsing an environment variable at the call site. Every subprocess test clears the inherited environment and sets `HOME` to a directory the test owns, so a developer's credentials, proxies and coding-agent variables never change the result. In `tests/cloud/`, use `isolated_env()` from `support.rs` in place of `env_clear()`: it clears the environment and turns the update check off.
 
 Structural help tests check the full command tree, descriptions, shared flags, and agent context limits. CI runs them with default features only, so run the second command yourself when a change depends on telemetry or feedback being compiled out:
 
