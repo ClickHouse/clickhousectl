@@ -904,7 +904,7 @@ async fn serve_callback(
     }
     Some(match params.get("code").filter(|code| valid_code(code)) {
         Some(code) => {
-            write_response(&mut stream, "200 OK", SUCCESS_HTML).await;
+            write_response(&mut stream, "200 OK", APPROVED_HTML).await;
             Ok(code.clone())
         }
         None => {
@@ -993,8 +993,11 @@ async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: 
     .await;
 }
 
-const SUCCESS_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Access approved</title></head><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\"><h1>Access approved</h1><p>You can return to your terminal.</p></body></html>";
-const DENIED_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Access denied</title></head><body style=\"font-family:sans-serif;text-align:center;padding-top:4rem\"><h1>Access denied</h1><p>The request was denied. You can return to your terminal.</p></body></html>";
+/// Loopback page for an approved request; mirrors the console's confirmation
+/// view and tries to close its tab after a short countdown.
+const APPROVED_HTML: &str = include_str!("access_approved.html");
+/// Loopback page for a denied request, styled like [`APPROVED_HTML`].
+const DENIED_HTML: &str = include_str!("access_denied.html");
 const NOT_FOUND_HTML: &str = "<!doctype html><html><body>Not found</body></html>";
 const BAD_REQUEST_HTML: &str = "<!doctype html><html><body>Invalid request. You can close this tab and return to your terminal.</body></html>";
 
@@ -1204,6 +1207,18 @@ mod tests {
     fn bearer() -> RequestAuth {
         RequestAuth::Bearer {
             token: "fake".into(),
+        }
+    }
+
+    #[test]
+    fn approved_and_denied_pages_are_distinct_and_autoclose() {
+        assert_ne!(APPROVED_HTML, DENIED_HTML);
+        assert!(APPROVED_HTML.contains("class=\"banner success\""));
+        assert!(DENIED_HTML.contains("class=\"banner warning\""));
+        for html in [APPROVED_HTML, DENIED_HTML] {
+            assert!(!html.contains("{{"));
+            assert!(html.contains("var seconds = 5;"));
+            assert!(html.contains("window.close()"));
         }
     }
 
