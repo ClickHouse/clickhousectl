@@ -60,6 +60,18 @@ clickhousectl update
 
 The install script, `update`, and npm check each downloaded archive against the release's `SHA256SUMS`. See [Release verification](docs/reference/install-verification.md) to check a download or its build attestation yourself.
 
+### Shell completions
+
+To complete commands, flags, and local server names and installed versions with Tab, add one line to your shell startup file. It registers both `clickhousectl` and `chctl`:
+
+```bash
+eval "$(clickhousectl completions bash)"   # ~/.bashrc
+eval "$(clickhousectl completions zsh)"    # ~/.zshrc, after compinit
+clickhousectl completions fish | source    # ~/.config/fish/config.fish
+```
+
+Completion runs the installed CLI on each Tab press, so it stays current after `update`. It works offline and records no telemetry.
+
 ## Start locally
 
 Use the `latest` channel for the rolling master build of ClickHouse. A bare server start installs `latest` if no version or default is available.

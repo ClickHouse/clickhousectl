@@ -55,6 +55,9 @@ work on a branch, with an associated issue and a PR.
   `BrokenPipe` errors. Keep new manual writers on that handle; never suppress command/API failures or child exits.
   Crate-scoped `eprint!`/`eprintln!` there discard every stderr write failure, so use them, not hand-written
   `writeln!(stderr)`; clippy denies `std::`-qualified print macros.
+- Single exit (#320): every invocation ends in `main`'s telemetry tail. The only exemptions are shell completion
+  (`CHCTL_COMPLETE`, the first statement of `main`: no telemetry, update check, network or writes) and the hidden
+  `telemetry send` child. Completion value candidates read local state only, never the Cloud API.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
   `ChildExit(code)` passes a spawned child's status through. Clap uses `2` for usage errors.
 

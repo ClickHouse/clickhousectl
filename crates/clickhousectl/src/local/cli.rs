@@ -1,7 +1,21 @@
 use crate::version_manager::{self, VersionSpec};
 use clap::{ArgGroup, Args, Subcommand};
+use clap_complete::ArgValueCandidates;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+// Tab completion reads local state only; see `crate::completions`.
+fn complete_clickhouse_servers() -> ArgValueCandidates {
+    ArgValueCandidates::new(crate::completions::clickhouse_servers)
+}
+
+fn complete_postgres_servers() -> ArgValueCandidates {
+    ArgValueCandidates::new(crate::completions::postgres_servers)
+}
+
+fn complete_installed_versions() -> ArgValueCandidates {
+    ArgValueCandidates::new(crate::completions::installed_versions)
+}
 
 fn parse_server_name_arg(name: &str) -> Result<String, String> {
     crate::local::server::validate_server_name(name)
@@ -326,7 +340,7 @@ CONTEXT FOR AGENTS:
     )]
     Client {
         /// Server name to connect to (default: "default", else the only server)
-        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
         #[arg(display_order = 0)]
         name: Option<String>,
 
@@ -417,6 +431,7 @@ CONTEXT FOR AGENTS:
   Sets the version used by `clickhousectl local client` and `clickhousectl local clickhouse`.")]
     Use {
         /// Version to set as default ("latest", "stable", "lts", 25.12, or 25.12.5.44)
+        #[arg(add = complete_installed_versions())]
         version: UseVersionArg,
 
         /// Do not create or update the ~/.local/bin/clickhouse symlink
@@ -437,7 +452,7 @@ CONTEXT FOR AGENTS:
     Remove {
         /// Exact installed version to remove (not "latest"/"stable"/"lts")
         // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
-        #[arg(value_parser = parse_installed_version_arg)]
+        #[arg(value_parser = parse_installed_version_arg, add = complete_installed_versions())]
         version: String,
 
         /// Stop any server using this version and remove it even if it is the default
@@ -477,7 +492,7 @@ CONTEXT FOR AGENTS:
   Omitting --config on a later start removes the previously selected override.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -566,7 +581,7 @@ CONTEXT FOR AGENTS:
   or use `stop-all`.")]
     Stop {
         /// Name of the server to stop (default: "default", else the only server)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -607,7 +622,7 @@ CONTEXT FOR AGENTS:
   exactly one exists.")]
     Remove {
         /// Name of the server to remove (defaults to "default" if it exists)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
@@ -634,7 +649,7 @@ CONTEXT FOR AGENTS:
   CLICKHOUSE_* lines are kept.")]
     Dotenv {
         /// Server name (default: "default", else the only server)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -679,7 +694,7 @@ CONTEXT FOR AGENTS:
   A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -747,7 +762,7 @@ CONTEXT FOR AGENTS:
   or use `stop-all`.")]
     Stop {
         /// Name of the instance to stop (default: "default", else the only instance)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -775,7 +790,7 @@ CONTEXT FOR AGENTS:
   removing a running one errors.")]
     Remove {
         /// Name of the instance to remove (default: "default")
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -806,7 +821,7 @@ CONTEXT FOR AGENTS:
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default", else the only instance)
-        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_pg_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
         #[arg(display_order = 0)]
         name: Option<String>,
 
@@ -870,7 +885,7 @@ CONTEXT FOR AGENTS:
   Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
         /// Instance name (default: "default", else the only instance)
-        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -970,7 +985,7 @@ CONTEXT FOR AGENTS:
 #[derive(Args, Debug)]
 pub struct UdfServerArg {
     /// Local server name (default: "default", else the only server)
-    #[arg(long, value_name = "NAME", value_parser = parse_server_name_arg)]
+    #[arg(long, value_name = "NAME", value_parser = parse_server_name_arg, add = complete_clickhouse_servers())]
     pub server: Option<String>,
 }
 
