@@ -1,12 +1,12 @@
 [package]
 name = "clickhouse-cloud-api"
 version = "0.6.0"
-edition = "2024"
-rust-version = "1.94.1"
+edition.workspace = true
+rust-version.workspace = true
 description = "Typed Rust client for the ClickHouse Cloud API"
-license = "Apache-2.0"
-repository = "https://github.com/ClickHouse/clickhousectl"
-homepage = "https://github.com/ClickHouse/clickhousectl"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 keywords = ["clickhouse", "cloud", "api", "client"]
 categories = ["api-bindings", "database"]
 # Ship the library and its documentation only: the spec snapshot, tests and
