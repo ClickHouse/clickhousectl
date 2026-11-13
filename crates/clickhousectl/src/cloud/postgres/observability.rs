@@ -3,7 +3,8 @@ use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PostgresBackup, PostgresLogEntry, PostgresLogsGetListSeverity, PostgresLogsGetListSortorder,
-    PostgresMetrics, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PostgresMetrics, PostgresSlowQueryPattern, SlowQueryPatternsGetListSortby,
+    SlowQueryPatternsGetListSortorder,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -169,7 +170,8 @@ fn postgres_log_message(body: Option<&str>) -> String {
         .unwrap_or_else(|| body.to_string())
 }
 
-// These endpoints accept UTC timestamps with exactly three fractional digits.
+// These endpoints accept UTC timestamps with exactly three fractional digits,
+// for window bounds and the slow-query detail `--timestamp` alike.
 // Check the original fraction: chrono discards digits beyond nanosecond precision.
 pub(super) fn parse_postgres_window_datetime(value: &str) -> Result<String, String> {
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
@@ -182,7 +184,7 @@ pub(super) fn parse_postgres_window_datetime(value: &str) -> Result<String, Stri
             .any(|digit| digit != b'0')
     }) {
         return Err(format!(
-            "invalid datetime '{value}': Postgres time windows support at most millisecond precision"
+            "invalid datetime '{value}': Postgres timestamps support at most millisecond precision"
         ));
     }
     Ok(timestamp
@@ -447,10 +449,24 @@ pub(super) async fn postgres_slow_queries_list(
         return Ok(());
     }
 
+    println!("{}", render_slow_query_patterns(patterns));
+    Ok(())
+}
+
+/// One row per pattern, carrying the dimensions `slow-queries get` needs.
+fn render_slow_query_patterns(patterns: Vec<PostgresSlowQueryPattern>) -> String {
     #[derive(Tabled)]
     struct Row {
         #[tabled(rename = "Query ID")]
         query_id: String,
+        #[tabled(rename = "Database")]
+        db_name: String,
+        #[tabled(rename = "User")]
+        db_user: String,
+        #[tabled(rename = "Operation")]
+        db_operation: String,
+        #[tabled(rename = "App")]
+        app: String,
         #[tabled(rename = "Query")]
         query: String,
         #[tabled(rename = "Calls")]
@@ -463,13 +479,16 @@ pub(super) async fn postgres_slow_queries_list(
 
     let rows = patterns.into_iter().map(|pattern| Row {
         query_id: or_absent(pattern.query_id),
+        db_name: or_absent(pattern.db_name),
+        db_user: or_absent(pattern.db_user),
+        db_operation: or_absent(pattern.db_operation),
+        app: or_absent(pattern.app),
         query: or_absent(pattern.query_text),
         calls: or_absent(pattern.call_count),
         avg_duration_us: or_absent(pattern.avg_duration_us),
         total_duration_us: or_absent(pattern.total_duration_us),
     });
-    println!("{}", Table::new(rows).with(Style::markdown()));
-    Ok(())
+    Table::new(rows).with(Style::markdown()).to_string()
 }
 
 pub(super) async fn postgres_slow_query_get(
@@ -625,6 +644,72 @@ mod tests {
         });
         assert!(!empty.contains("Next cursor"));
         assert!(!empty.contains('|'));
+    }
+
+    #[test]
+    fn slow_query_list_human_table_shows_the_get_dimensions() {
+        let rendered = render_slow_query_patterns(vec![
+            PostgresSlowQueryPattern {
+                query_id: Some("query-1".into()),
+                query_text: Some("SELECT * FROM events WHERE id = $1".into()),
+                db_name: Some("app db".into()),
+                db_user: Some("reader+worker".into()),
+                db_operation: Some("SELECT & EXPLAIN".into()),
+                app: Some("reporting/api".into()),
+                call_count: Some(2),
+                avg_duration_us: Some(1190.8419405320817),
+                total_duration_us: Some(2381.6838810641634),
+                ..Default::default()
+            },
+            PostgresSlowQueryPattern {
+                query_id: Some("query-1".into()),
+                db_name: Some("app db".into()),
+                db_user: Some("writer".into()),
+                db_operation: Some("SELECT & EXPLAIN".into()),
+                total_duration_us: Some(0.125),
+                ..Default::default()
+            },
+        ]);
+        let cells = |needle: &str| -> Vec<String> {
+            rendered
+                .lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle} row:\n{rendered}"))
+                .split('|')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(
+            cells("reader+worker"),
+            [
+                "query-1",
+                "app db",
+                "reader+worker",
+                "SELECT & EXPLAIN",
+                "reporting/api",
+                "SELECT * FROM events WHERE id = $1",
+                "2",
+                "1190.8419405320817",
+                "2381.6838810641634",
+            ]
+        );
+        // Same query ID, told apart by its user; absent fields render as `-`.
+        assert_eq!(
+            cells("writer"),
+            [
+                "query-1",
+                "app db",
+                "writer",
+                "SELECT & EXPLAIN",
+                ABSENT,
+                ABSENT,
+                ABSENT,
+                ABSENT,
+                "0.125",
+            ]
+        );
     }
 
     #[test]
