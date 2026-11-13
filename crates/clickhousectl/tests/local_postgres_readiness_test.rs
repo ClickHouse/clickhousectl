@@ -122,8 +122,10 @@ impl FakeDocker {
                         write_json(&mut stream, 200, "{}");
                     }
                     ("GET", "/images/alpine:latest/json") => write_json(&mut stream, 200, "{}"),
+                    // The project-hashed name, then the pre-#1160 legacy name.
                     ("GET", path)
-                        if path.starts_with("/containers/clickhousectl-pg-default-18/json") =>
+                        if path.starts_with("/containers/clickhousectl-pg-")
+                            && path.contains("-default-18/json") =>
                     {
                         write_json(&mut stream, 404, r#"{"message":"No such container"}"#)
                     }
