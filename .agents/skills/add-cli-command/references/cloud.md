@@ -39,6 +39,8 @@ other endpoints.
      does that lookup.
    - Use `Permission::non_api(path, purpose)` for a command that calls no API. Add `.authorization(...)` when a
      command also needs SQL or another kind of access.
+   - Use `.oauth_only(...)` instead of `.authorization(...)` when the handler refuses API keys before any call;
+     help then shows only the authorization line, with no `API key` lines.
    - A parent command that also runs on its own, such as `org prometheus`, needs its own declaration.
    - Tests reject missing, duplicate and stale declarations. They don't compare the table with what the handler
      actually calls, so check that by reading the handler.
