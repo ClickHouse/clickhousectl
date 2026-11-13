@@ -24,6 +24,7 @@ Run the standard CLI gates from [Contributing](../CONTRIBUTING.md#build-and-test
 - Clap parsing and request builders have tests beside command definitions.
 - `crates/clickhousectl/tests/cli_request_shape_test.rs` spawns the binary against wiremock for Cloud handler behaviour that the unit tests can't reach: multi-call flows, error paths, auth wiring, and output contracts. [AGENTS.md](../AGENTS.md#tests) holds the rule for what belongs there.
 - Local subprocess tests use separate `local_*` binaries for each concern.
+- `scripts/test-postgres-integration.sh` is an edge-case battery for `local postgres` against a real Docker daemon; `.github/workflows/test-postgres-integration.yml` runs it on PRs that touch `crates/clickhousectl/src/local/**`, and it can be run by hand with a built binary.
 - Pure version/auth/output logic uses inline tests.
 
 Subprocess tests must not wait out production timeouts. `crates/clickhousectl/src/timing.rs` reads hidden overrides, each a whole number of milliseconds; any other value keeps the shipped default. They are for tests only, so no help text or user guide mentions them. Set them on the spawned command, after any `env_clear`:
@@ -66,7 +67,7 @@ Documentation paths alone do not select live suites.
 
 Use a dedicated test workspace: these tests create and change real Cloud resources. Maintainer labels, exact-SHA overrides, stacked-PR policy, and required checks are documented in [the CI guide](../.github/CLOUD_INTEGRATION.md). Affected suites run with `run-cloud-integration`; the decision check passes without the label when no suites are selected.
 
-The library's suites cover services (`integration_test`), Postgres (`integration_postgres_test`), organization access (`integration_org_test`), and ClickPipes (`tests/clickpipes/`; only Postgres CDC runs in CI).
+The library's suites cover services (`integration_test`), UDFs (`integration_udf_test`, run with the service suite), Postgres (`integration_postgres_test`), organization access (`integration_org_test`), and ClickPipes (`tests/clickpipes/`; only Postgres CDC runs in CI).
 
 Provide API credentials through your secret manager and set the test scope:
 
@@ -79,7 +80,7 @@ export CLICKHOUSE_CLOUD_TEST_REGION=eu-west-1
 `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` are required. The organization suite also requires `CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID` for a second user in the test organization.
 
 ```bash
-cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
+cargo test -p clickhouse-cloud-api --test integration_test --test integration_udf_test -- --ignored --nocapture
 cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
 cargo test -p clickhouse-cloud-api --test integration_org_test -- --ignored --nocapture
 ```
@@ -170,6 +171,7 @@ Live-API lifecycle suites are `#[ignore]`d by default (they provision real resou
 
 ```bash
 cargo test --test integration_test -- --ignored --nocapture           # ClickHouse service CRUD
+cargo test --test integration_udf_test -- --ignored --nocapture       # UDF versions and lists
 cargo test --test integration_postgres_test -- --ignored --nocapture  # Postgres service CRUD
 ```
 

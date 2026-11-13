@@ -100,7 +100,7 @@ BigQuery defaults to a one-time `snapshot`. For `--replication-mode cdc` or
 or `changes`). Each method rejects the other method's table field.
 
 ```bash
-chctl cloud clickpipe create bigquery "$SERVICE_ID" --name orders \
+clickhousectl cloud clickpipe create bigquery "$SERVICE_ID" --name orders \
   --service-account-file ./service-account.json --staging-path gs://bucket/staging \
   --replication-mode cdc --replication-method query_based \
   --sync-interval-seconds 60 --query-cdc-pull-sync-parallelism 4 \
