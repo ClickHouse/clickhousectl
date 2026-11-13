@@ -171,16 +171,25 @@ fn ensure_runtime_gitignore_in(dir: &Path) -> Result<RuntimeIgnoreResult> {
     })
 }
 
+/// Subdirectories `local init` creates under `clickhouse/`. `config.d` is the
+/// project's always-applied server config layer.
+pub const CLICKHOUSE_SCAFFOLD: [&str; 6] = [
+    "tables",
+    "materialized_views",
+    "queries",
+    "seed",
+    "udfs",
+    "config.d",
+];
+
 /// Initialize the exact current directory, like `git init`: inside another
 /// project this creates a nested one, which then wins for this directory.
 pub fn init() -> Result<InitResult> {
     let cwd = std::env::current_dir()?;
     let runtime_ignore = ensure_runtime_gitignore_in(&cwd.join(PROJECT_STATE_DIR))?;
 
-    let clickhouse_scaffold_created = create_project_scaffold(
-        cwd.join("clickhouse"),
-        &["tables", "materialized_views", "queries", "seed", "udfs"],
-    )?;
+    let clickhouse_scaffold_created =
+        create_project_scaffold(cwd.join("clickhouse"), &CLICKHOUSE_SCAFFOLD)?;
     let postgres_scaffold_created = create_project_scaffold(
         cwd.join("postgres"),
         &["tables", "views", "functions", "queries", "seed"],
