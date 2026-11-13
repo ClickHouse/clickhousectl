@@ -7,11 +7,14 @@ on:
       - "crates/clickhouse-cloud-api/**"
       - "crates/clickhouse-openapi-analyzer/**"
       - "scripts/check-openapi-drift.py"
+      - "scripts/check-release-versions.py"
       - "scripts/classify-cloud-integration.py"
       - "scripts/cloud-integration-decision.py"
       - "scripts/tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/clickhousectl/Cargo.toml"
+      - "npm/package.json"
       - ".github/workflows/test-cloud-api.yml"
       - ".github/workflows/cloud-integration-decision.yml"
 
@@ -44,3 +47,7 @@ jobs:
 
       - name: Test drift report rendering
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      # The release preflight runs the same check against the tag.
+      - name: Check release versions agree
+        run: python3 scripts/check-release-versions.py

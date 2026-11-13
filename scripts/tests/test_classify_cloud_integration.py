@@ -43,6 +43,8 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             ".cargo/config.toml": classifier.ALL_SUITES,
             ".github/workflows/cloud-integration.yml": classifier.ALL_SUITES,
             "scripts/classify-cloud-integration.py": classifier.ALL_SUITES,
+            "scripts/check-release-versions.py": classifier.NO_SUITES,
+            "scripts/tests/test_check_release_versions.py": classifier.NO_SUITES,
             "crates/clickhouse-cloud-api/src/new_domain.rs": None,
             "crates/clickhouse-cloud-api/src/template.txt": None,
             "crates/clickhouse-cloud-api/tests/new_live_test.rs": None,

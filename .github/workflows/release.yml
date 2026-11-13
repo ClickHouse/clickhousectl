@@ -13,8 +13,32 @@ env:
   DO_NOT_TRACK: "1"
 
 jobs:
+  # Every other job needs this one, directly or through `build`. On a tag it
+  # fails unless the tag is vX.Y.Z and every manifest and Cargo.lock carries
+  # X.Y.Z, so a missed bump stops before anything is built or published.
+  # Without a tag (workflow_dispatch from a branch) the manifests need only
+  # agree. The same script runs on pull requests (test-cloud-api.yml).
+  preflight:
+    name: Check release versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check tag and manifest versions
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            python3 scripts/check-release-versions.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 scripts/check-release-versions.py
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,14 +69,14 @@ jobs:
 
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --version 0.2.5
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Build
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
 
       - name: Verify static linking
@@ -332,7 +356,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: release
+    needs: [preflight, release]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     environment: release-publishing
@@ -367,7 +391,8 @@ jobs:
 
   publish-npm:
     name: Publish to npm
-    needs: release
+    # preflight guarantees npm/package.json already carries the tag version.
+    needs: [preflight, release]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     # `id-token: write` is required for npm OIDC trusted publishing. Do NOT
@@ -389,12 +414,6 @@ jobs:
           # silently fail and the registry returns a misleading 404 on publish.
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Align package version with tag
-        working-directory: npm
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       # install.js verifies the downloaded archive against this embedded copy
       # and refuses to install without it (#1307).
@@ -420,7 +439,9 @@ jobs:
 
   build-wheels:
     name: Build wheel (${{ matrix.target }})
-    needs: release
+    # preflight guarantees crates/clickhousectl/Cargo.toml, which sets the
+    # wheel version, already carries the tag version.
+    needs: [preflight, release]
     runs-on: ${{ matrix.os }}
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
@@ -451,26 +472,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Align Cargo version with tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Force the wheel version to match the release tag in case the in-repo
-          # Cargo.toml was not bumped before tagging. Mirrors the npm step above.
-          # awk (not `sed -i`) so this is portable to the BSD sed on macOS
-          # runners, where the GNU-only `0,/re/` range silently no-ops.
-          f=crates/clickhousectl/Cargo.toml
-          awk -v ver="$VERSION" \
-            'done!=1 && /^version = "[^"]*"$/ { print "version = \"" ver "\""; done=1; next } { print }' \
-            "$f" > "$f.tmp"
-          mv "$f.tmp" "$f"
-
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           working-directory: pypi
-          args: --release --out dist
+          args: --release --locked --out dist
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
