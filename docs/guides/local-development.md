@@ -37,7 +37,7 @@ clickhousectl local clickhouse list
 
 `local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, [UDF sources](user-defined-functions.md#scaffold-a-function), and [server config](#apply-a-custom-clickhouse-configuration) applied on every start. It initializes the current directory, or [`CLICKHOUSECTL_PROJECT_DIR`](#name-the-project-root-explicitly) when set: run inside an existing project, it creates a nested project and names the enclosing one.
 
-Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
+Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports; they must differ, and an omitted port never takes the one the other listener uses.
 
 Without a name, the first server is `default`; if it is already running, another start generates a new name. Use an explicit name for a repeatable workflow. Names ending in `-pg` and digits, such as `dev-pg17`, are how Postgres instances are stored on disk, so `local clickhouse` and `local udf` refuse them with a usage error (exit 2) unless an existing ClickHouse server already has that name.
 

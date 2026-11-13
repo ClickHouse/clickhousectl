@@ -113,3 +113,32 @@ fn both_name_forms_keep_following_version_and_passthrough_separate() {
         assert!(!child_args.lines().any(|arg| arg == "--version"));
     }
 }
+
+/// One port for both listeners is a usage error found before anything else
+/// in `start` runs: no project state, version lookup or download (#1452).
+#[test]
+fn identical_http_and_tcp_ports_fail_before_any_side_effect() {
+    for json in [false, true] {
+        let project = tempfile::tempdir().expect("create project tempdir");
+        let home = tempfile::tempdir().expect("create home tempdir");
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .current_dir(project.path())
+            .args(["local", "clickhouse", "start"])
+            .args(["--http-port", "18130", "--tcp-port", "18130"]);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().expect("run clickhousectl");
+
+        assert_eq!(output.status.code(), Some(2), "json={json}: {output:?}");
+        assert!(output.stdout.is_empty(), "json={json}: {output:?}");
+        assert!(!project.path().join(".clickhouse").exists(), "json={json}");
+        assert!(!home.path().join(".clickhouse").exists(), "json={json}");
+    }
+}

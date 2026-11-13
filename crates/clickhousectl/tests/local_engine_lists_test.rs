@@ -324,3 +324,52 @@ async fn stopped_postgres_error_points_at_a_list_that_shows_it() {
         "{listed}"
     );
 }
+
+/// `local clickhouse start` counts only running ClickHouse servers for its
+/// "already running" note, so a running Postgres instance is never inspected
+/// (#1452). Recovery lists containers but never inspects one by ID.
+#[tokio::test(flavor = "multi_thread")]
+async fn clickhouse_start_never_inspects_a_postgres_instance() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = seeded_project();
+    let docker = running_postgres_docker().await;
+    let home = tempfile::tempdir().unwrap();
+    let version = "25.12.9.61";
+    let binary = home
+        .path()
+        .join(format!(".clickhouse/versions/{version}/clickhouse"));
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, b"#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = run_in_home(
+        project.path(),
+        home.path(),
+        &docker.uri(),
+        &[
+            "local",
+            "clickhouse",
+            "start",
+            "--no-wait",
+            "--version",
+            version,
+            "--json",
+        ],
+    );
+    let body = json_ok(&output);
+    let pid = body["pid"].as_u64().unwrap() as i32;
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+
+    let inspected: Vec<_> = docker
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|request| request.url.path().to_string())
+        .filter(|path| path.ends_with("/containers/pg-container/json"))
+        .collect();
+    assert_eq!(inspected, Vec::<String>::new());
+}
