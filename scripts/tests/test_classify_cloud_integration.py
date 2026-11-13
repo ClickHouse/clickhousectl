@@ -38,6 +38,13 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs": frozenset(
                 {"service"}
             ),
+            "crates/clickhousectl/src/cloud/clickpipes/create.rs": frozenset(
+                {"clickpipes"}
+            ),
+            "crates/clickhousectl/src/cloud/clickpipes/sources/postgres.rs": frozenset(
+                {"clickpipes"}
+            ),
+            "crates/clickhousectl/src/cloud/clickpipes/manage.rs": classifier.NO_SUITES,
             "Cargo.lock": classifier.ALL_SUITES,
             "crates/clickhousectl/Cargo.toml": classifier.ALL_SUITES,
             ".cargo/config.toml": classifier.ALL_SUITES,
@@ -190,6 +197,20 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             with self.subTest(path=path):
                 selection = classifier.select_records([("M", (path,))])
                 self.assertEqual(selection.suites, ("service",))
+                self.assertFalse(selection.failed_closed)
+
+    def test_live_cli_clickpipe_create_postgres_paths_select_clickpipes(self):
+        for path in (
+            "crates/clickhousectl/src/cloud/clickpipes/create.rs",
+            "crates/clickhousectl/src/cloud/clickpipes/destination.rs",
+            "crates/clickhousectl/src/cloud/clickpipes/sources/mod.rs",
+            "crates/clickhousectl/src/cloud/clickpipes/sources/postgres.rs",
+            "crates/clickhousectl/src/cloud/clickpipes/table_mapping.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue((classifier.REPO_ROOT / path).is_file())
+                selection = classifier.select_records([("M", (path,))])
+                self.assertEqual(selection.suites, ("clickpipes",))
                 self.assertFalse(selection.failed_closed)
 
     def test_every_current_cloud_api_test_file_has_an_explicit_mapping(self):
