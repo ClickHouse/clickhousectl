@@ -487,18 +487,17 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         ));
     }
 
+    let provider = parse_serde_enum::<ServicePostRequestProvider>(
+        &options.provider,
+        "provider",
+        ServicePostRequestProvider::VALUES,
+    )?;
+    let region = match options.custom_region.as_deref() {
+        Some(region) => parse_region(region, "--custom-region")?,
+        None => parse_region(&options.region, "--region")?,
+    };
+
     Ok(ServicePostRequest {
-        name: options.name.clone(),
-        provider: parse_serde_enum::<ServicePostRequestProvider>(
-            &options.provider,
-            "provider",
-            ServicePostRequestProvider::VALUES,
-        )?,
-        region: match options.custom_region.as_deref() {
-            Some(region) => parse_region(region, "--custom-region")?,
-            None => parse_region(&options.region, "--region")?,
-        },
-        ip_access_list,
         min_replica_memory_gb: options.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: options.max_replica_memory_gb.map(f64::from),
         num_replicas: options.num_replicas.map(i64::from),
@@ -550,14 +549,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         backup_encryption_config: options.backup_encryption_config.clone(),
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
-        #[cfg(feature = "deprecated-fields")]
-        max_total_memory_gb: None,
-        #[cfg(feature = "deprecated-fields")]
-        min_total_memory_gb: None,
-        #[cfg(feature = "deprecated-fields")]
-        private_endpoint_ids: None,
-        #[cfg(feature = "deprecated-fields")]
-        tier: None,
+        ..ServicePostRequest::new(options.name.clone(), provider, region, ip_access_list)
     })
 }
 

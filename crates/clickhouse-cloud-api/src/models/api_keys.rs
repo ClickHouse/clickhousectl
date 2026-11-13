@@ -176,6 +176,23 @@ pub struct ApiKeyPostRequest {
     pub state: Option<ApiKeyPostRequestState>,
 }
 
+impl ApiKeyPostRequest {
+    /// A request with only the required fields set. Prefer this to a struct
+    /// literal: it keeps compiling when `deprecated-fields` is enabled.
+    pub fn new(name: String) -> Self {
+        Self {
+            assigned_role_ids: None,
+            expire_at: None,
+            hash_data: None,
+            ip_access_list: None,
+            name,
+            #[cfg(feature = "deprecated-fields")]
+            roles: None,
+            state: None,
+        }
+    }
+}
+
 /// `ApiKeyPostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostResponse {

@@ -328,7 +328,6 @@ fn parse_expire_at(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
 
 fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKeyPostRequest> {
     Ok(ApiKeyPostRequest {
-        name: options.name.clone(),
         expire_at: options
             .expires_at
             .as_deref()
@@ -347,11 +346,13 @@ fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKe
             options.hash_key_id_suffix.as_deref(),
             options.hash_key_secret.as_deref(),
         )?,
-        #[cfg(feature = "deprecated-fields")]
-        roles: None,
+        ..ApiKeyPostRequest::new(options.name.clone())
     })
 }
 
+// `..Default::default()` fills the `deprecated-fields`-gated fields; without the
+// feature every field is listed, so the update is needless only in that build.
+#[allow(clippy::needless_update)]
 fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKeyPatchRequest> {
     if options.clear_expiry && options.expires_at.is_some() {
         return Err(CloudError::usage(
@@ -387,8 +388,7 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
         } else {
             parse_ip_access_entries(&options.ip_allow)?
         },
-        #[cfg(feature = "deprecated-fields")]
-        roles: None,
+        ..Default::default()
     })
 }
 

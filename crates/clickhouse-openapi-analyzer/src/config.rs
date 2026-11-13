@@ -207,8 +207,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickStackAlertChartConfigOverlay", "name"),
     ("ClickStackAlertChartConfigOverlay", "where"),
     ("ClickStackAlertChartConfigOverlay", "whereLanguage"),
-    // Deprecated request fields are feature-gated out in favour of replacements.
-    ("OrganizationPrivateEndpointsPatch", "add"),
 ];
 
 // The deprecated API-key `roles` fields are feature-gated, frozen legacy API
