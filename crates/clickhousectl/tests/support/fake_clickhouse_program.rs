@@ -14,6 +14,8 @@
 //   `clickhouse` alone.
 // - FAKE_CLICKHOUSE_IGNORE_SIGTERM=1: the watchdog ignores SIGTERM instead of
 //   forwarding it to the server and exiting.
+// - FAKE_CLICKHOUSE_VERSION_OUTPUT: what `--version` prints, instead of a
+//   ClickHouse version line; `--version` never records or sleeps.
 
 use std::env;
 use std::fs::OpenOptions;
@@ -65,6 +67,13 @@ fn sleep_forever() -> ! {
 }
 
 fn main() {
+    if env::args().nth(1).as_deref() == Some("--version") {
+        match env::var("FAKE_CLICKHOUSE_VERSION_OUTPUT") {
+            Ok(output) => println!("{output}"),
+            Err(_) => println!("ClickHouse local version 26.9.1.4242 (fake build)."),
+        }
+        return;
+    }
     let ppid = unsafe { getppid() } as u32;
     match env::var(ROLE).as_deref() {
         Ok("watchdog") => watchdog(ppid),

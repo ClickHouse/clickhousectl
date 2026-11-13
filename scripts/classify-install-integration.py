@@ -32,6 +32,7 @@ INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/src/stdout.rs",
         "crates/clickhousectl/src/timing.rs",
         "crates/clickhousectl/src/user_agent.rs",
+        "crates/clickhousectl/tests/local_install_binary_test.rs",
         "crates/clickhousectl/tests/local_install_local_first_test.rs",
         "scripts/classify-install-integration.py",
         "scripts/tests/test_classify_install_integration.py",
