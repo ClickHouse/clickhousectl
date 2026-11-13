@@ -12,6 +12,18 @@ A directory containing `.clickhouse/` is a project root, as a directory containi
 
 ClickHouse binaries are shared globally in `~/.clickhouse/`, while each project's server data is isolated.
 
+## Name the project root explicitly
+
+Set `CLICKHOUSECTL_PROJECT_DIR` to make one directory the project root wherever commands run, for example in a script or CI job that changes directory, or a monorepo whose subdirectories have their own `.clickhouse/`:
+
+```bash
+export CLICKHOUSECTL_PROJECT_DIR=~/code/app
+clickhousectl local init               # initializes ~/code/app, not the current directory
+clickhousectl local clickhouse start   # state in ~/code/app/.clickhouse/
+```
+
+Discovery does not run: the directory is the root whether or not it holds `.clickhouse/` yet, and `local init` initializes it. A relative path is resolved against the current directory. The value must be an existing directory and not your home directory, whose `.clickhouse/` is the global one; any other value fails every command that uses the project, including Cloud commands reading saved API keys; local `--json` errors use code `invalid_project_dir`. Saved API keys, `.env` fallback, UDF sources and shell completion all follow the named root. An empty value counts as unset. The variable is read from the environment only, not from `.env`. With `--json`, `project_scope.kind` is `env_override`.
+
 ## Start ClickHouse and run SQL
 
 ```bash
@@ -23,7 +35,7 @@ clickhousectl local clickhouse list
 
 `local ch` is short for `local clickhouse`, and `local pg` for `local postgres`. The earlier name `local server` still works as an alias for `local clickhouse`.
 
-`local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, [UDF sources](user-defined-functions.md#scaffold-a-function), and [server config](#apply-a-custom-clickhouse-configuration) applied on every start. It always initializes the current directory: run inside an existing project, it creates a nested project and names the enclosing one.
+`local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, [UDF sources](user-defined-functions.md#scaffold-a-function), and [server config](#apply-a-custom-clickhouse-configuration) applied on every start. It initializes the current directory, or [`CLICKHOUSECTL_PROJECT_DIR`](#name-the-project-root-explicitly) when set: run inside an existing project, it creates a nested project and names the enclosing one.
 
 Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
 

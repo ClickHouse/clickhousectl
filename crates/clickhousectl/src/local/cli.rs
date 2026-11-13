@@ -281,8 +281,8 @@ CONTEXT FOR AGENTS:
   `.clickhouse/` holds runtime data and is git-ignored; the `clickhouse/` and `postgres/` SQL
   scaffolds are meant to be committed.
   Idempotent — re-running only creates what is missing.
-  Always initializes the current directory: inside another project it creates a nested one, which
-  then wins for this directory and below.
+  Initializes the current directory: inside another project it creates a nested one, which then
+  wins for this directory and below. With CLICKHOUSECTL_PROJECT_DIR set, initializes that instead.
   Next: `clickhousectl local clickhouse start`")]
     Init,
 
