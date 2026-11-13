@@ -42,6 +42,7 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_UPDATE_CHECK_TIMEOUT_MS` | Implicit update check (400 ms), run in the background by commands and awaited by `--version`; `0` skips the request. `update` still makes its explicit check. Users turn the check off with `CLICKHOUSECTL_NO_UPDATE_CHECK=1` (see the automation reference) |
 | `CHCTL_BINARY_VERSION_TIMEOUT_MS` | `local install --binary` wait for the file's `--version` (60 s) |
 | `CHCTL_SKILLS_DOWNLOAD_TIMEOUT_MS` | `skills` archive download, body included (300 s; connecting is capped at 30 s) |
+| `CHCTL_OAUTH_TIMEOUT_MS` | Each OAuth request: device login, its polls, and token refresh, body included (30 s; connecting is capped at 10 s) |
 | `CHCTL_FEEDBACK_SEND_TIMEOUT_MS` | `feedback` send (10 s) |
 | `CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS` | `feedback` Cloud organization lookup (5 s) |
 
