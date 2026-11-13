@@ -1655,8 +1655,81 @@ async fn a_forbidden_first_use_bind_exits_1_with_its_own_code() {
     assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
 }
 
+/// Restores a directory's write permission on drop, so `TempDir` cleanup
+/// succeeds even when the test fails while the directory is read-only.
+#[cfg(unix)]
+struct WritableOnDrop<'a>(&'a Path);
+
+#[cfg(unix)]
+impl Drop for WritableOnDrop<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// A first-use query binds the caller's key without touching the disk
+/// (#1450): with inline `--api-key`/`--api-secret` it succeeds from a
+/// read-only directory that is not a project, and leaves no `.clickhouse/`
+/// behind to mark it as one.
+#[cfg(unix)]
 #[tokio::test]
-async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() {
+async fn first_use_query_from_a_read_only_directory_writes_nothing_locally() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let control = start_mock_control_plane_with_service().await;
+    mount_successful_caller_key_bind(&control).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let workdir = root.path().join("read-only");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&workdir).unwrap();
+    std::fs::set_permissions(&workdir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let _writable = WritableOnDrop(&workdir);
+
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(&workdir)
+        .stdin(Stdio::null())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "--api-key",
+            "fake-key-for-tests",
+            "--api-secret",
+            "fake-secret-for-tests",
+            "service",
+            "query",
+            "--id",
+            TEST_SERVICE_ID,
+            "--org-id",
+            FIRST_USE_ORG_ID,
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    assert_eq!(
+        control_plane_writes(&control).await,
+        [format!("POST {}", first_use_endpoint_path())],
+        "the query must have gone through the first-use bind"
+    );
+    // Holds under root too, which could otherwise write the directory.
+    assert!(!workdir.join(".clickhouse").exists());
+}
+
+#[tokio::test]
+async fn concurrent_first_use_binds_converge_and_leave_credentials_untouched() {
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1669,19 +1742,8 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
     let original_credentials = write_preserved_query_credentials(project.path());
     std::fs::create_dir(project.path().join("home")).unwrap();
 
-    // Lock ownership is held by the OS file handle. Contents left by a dead
-    // process must not make the lock stale or block the next bind.
-    let lock_path = project.path().join(".clickhouse/query-provisioning.lock");
-    std::fs::write(&lock_path, "stale owner metadata").unwrap();
-    let provisioning_lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .unwrap();
-    provisioning_lock.lock().unwrap();
-
     // A stateful endpoint: each GET reports what the last upsert bound, so a
-    // bind that did not see the previous one's result would show up here.
+    // run that reads after another's bind finds the caller already bound.
     let bound: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let endpoint_bound = Arc::new(AtomicBool::new(false));
     let get_state = Arc::clone(&bound);
@@ -1716,7 +1778,6 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
             upsert_flag.store(true, Ordering::SeqCst);
             endpoint_upsert_ok()
         })
-        .expect(1)
         .mount(&control)
         .await;
 
@@ -1745,20 +1806,6 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
                 .expect("failed to spawn clickhousectl"),
         );
     }
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        while control_plane_requests_to(&control, "/v1/whoami").await < PROCESS_COUNT {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("concurrent queries did not all reach the bind");
-    assert_eq!(
-        control_plane_requests_to(&control, &first_use_endpoint_path()).await,
-        0,
-        "the endpoint is only read under the provisioning lock"
-    );
-
-    drop(provisioning_lock);
     for child in children {
         let output = child
             .wait_with_output()
@@ -1777,18 +1824,27 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
         })
         .map(|request| serde_json::from_slice(&request.body).unwrap())
         .collect();
-    // The first bind writes; every later one, serialized behind it, finds the
-    // caller already bound, writes nothing and retries its query once.
-    assert_eq!(upserts.len(), 1);
-    assert_eq!(
-        upserts[0]["openApiKeys"],
-        serde_json::json!([CALLER_KEY_UUID]),
-        "serialized binds never duplicate or drop the caller's key"
-    );
+    // Runs that read before any bind landed each upsert; the rest find the
+    // caller already bound and write nothing. Every upsert binds the same key,
+    // so the binds converge on one binding however they interleave.
+    assert!((1..=PROCESS_COUNT).contains(&upserts.len()), "{upserts:#?}");
+    for upsert in &upserts {
+        assert_eq!(
+            upsert["openApiKeys"],
+            serde_json::json!([CALLER_KEY_UUID]),
+            "concurrent binds never duplicate or drop the caller's key"
+        );
+    }
     assert_eq!(
         control_plane_writes(&control).await.len(),
-        1,
-        "the upsert is the only write"
+        upserts.len(),
+        "the upserts are the only writes"
+    );
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/query-provisioning.lock")
+            .exists()
     );
     let credentials: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
