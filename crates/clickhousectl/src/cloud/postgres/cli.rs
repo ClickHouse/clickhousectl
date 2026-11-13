@@ -552,12 +552,8 @@ pub enum SlowQueryCommands {
     },
     /// Get a slow query pattern with recent executions
     Get {
-        /// Postgres service ID (from `cloud postgres list`)
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        postgres_id: String,
-        /// Stable query pattern ID (from `slow-queries list`)
-        #[arg(value_parser = NonEmptyStringValueParser::new())]
-        query_id: String,
+        #[command(flatten)]
+        target: SlowQueryTarget,
         /// Database name from the list result
         #[arg(long)]
         db_name: String,
@@ -570,10 +566,61 @@ pub enum SlowQueryCommands {
         /// Application name from the list result
         #[arg(long)]
         app: Option<String>,
-        /// Execution timestamp (ISO 8601 / RFC 3339); the API currently ignores it and covers the last 24 hours
-        #[arg(long, value_parser = parse_datetime)]
+        /// Execution timestamp (RFC 3339, at most millisecond precision)
+        ///
+        /// Converted to UTC. Recent executions currently cover the last
+        /// 24 hours whatever the value.
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         timestamp: Option<String>,
     },
+}
+
+/// The Postgres service selector plus the required query pattern ID, with the
+/// same grammar as `ServiceSettingTarget`: `<POSTGRES_ID> <QUERY_ID>` or
+/// `--name <NAME> <QUERY_ID>`. Clap's allow_missing_positional would shift the
+/// ID into the query slot when an option follows it; --name decides grammar.
+#[derive(clap::Args)]
+pub struct SlowQueryTarget {
+    /// Postgres service ID, or query pattern ID with --name
+    #[arg(
+        value_name = "POSTGRES_ID_OR_QUERY_ID",
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    id_or_query_id: String,
+    /// Stable query pattern ID (from `slow-queries list`)
+    #[arg(
+        value_name = "QUERY_ID",
+        required_unless_present = "name",
+        conflicts_with = "name",
+        value_parser = NonEmptyStringValueParser::new(),
+    )]
+    query_id: Option<String>,
+    /// Exact Postgres service name within the selected organization
+    #[arg(long)]
+    name: Option<String>,
+}
+
+impl SlowQueryTarget {
+    pub(super) fn parts(&self) -> (NameSelector, &str) {
+        match &self.name {
+            Some(name) => (
+                NameSelector {
+                    id: None,
+                    name: Some(name.clone()),
+                },
+                &self.id_or_query_id,
+            ),
+            None => (
+                NameSelector {
+                    id: Some(self.id_or_query_id.clone()),
+                    name: None,
+                },
+                self.query_id
+                    .as_deref()
+                    .expect("clap requires the query ID with a positional service ID"),
+            ),
+        }
+    }
 }
 
 impl PrometheusCommands {
@@ -2078,8 +2125,7 @@ mod tests {
         ]);
         assert!(!cmd.is_write());
         let PostgresCommands::SlowQueries(SlowQueryCommands::Get {
-            postgres_id,
-            query_id,
+            target,
             db_name,
             db_user,
             db_operation,
@@ -2089,13 +2135,127 @@ mod tests {
         else {
             panic!("expected slow-query detail");
         };
-        assert_eq!(postgres_id, "pg-1");
+        let (selector, query_id) = target.parts();
+        assert_eq!(selector.id.as_deref(), Some("pg-1"));
+        assert!(selector.name.is_none());
         assert_eq!(query_id, "query-1");
         assert_eq!(db_name, "app");
         assert_eq!(db_user, "reader");
         assert_eq!(db_operation, "SELECT");
         assert_eq!(app.as_deref(), Some("reporter"));
-        assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00Z"));
+        assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00.000Z"));
+    }
+
+    fn slow_query_get_args<'a>(selector: &[&'a str], extra: &[&'a str]) -> Vec<&'a str> {
+        [
+            &["clickhousectl", "cloud", "postgres", "slow-queries", "get"][..],
+            selector,
+            &[
+                "--db-name",
+                "app",
+                "--db-user",
+                "reader",
+                "--db-operation",
+                "SELECT",
+            ][..],
+            extra,
+        ]
+        .concat()
+    }
+
+    fn parse_slow_query_get(
+        selector: &[&str],
+        extra: &[&str],
+    ) -> (SlowQueryTarget, Option<String>) {
+        match parse_postgres(&slow_query_get_args(selector, extra)) {
+            PostgresCommands::SlowQueries(SlowQueryCommands::Get {
+                target, timestamp, ..
+            }) => (target, timestamp),
+            _ => panic!("expected slow-query detail"),
+        }
+    }
+
+    #[test]
+    fn slow_query_detail_selects_the_service_by_id_or_name_with_a_positional_query_id() {
+        for (selector, id, name) in [
+            (&["pg-1", "query-1"][..], Some("pg-1"), None),
+            (
+                &["--name", "analytics", "query-1"][..],
+                None,
+                Some("analytics"),
+            ),
+            (
+                &["query-1", "--name", "analytics"][..],
+                None,
+                Some("analytics"),
+            ),
+        ] {
+            let (target, _) = parse_slow_query_get(selector, &[]);
+            let (service, query_id) = target.parts();
+            assert_eq!(service.id.as_deref(), id, "{selector:?}");
+            assert_eq!(service.name.as_deref(), name, "{selector:?}");
+            assert_eq!(query_id, "query-1", "{selector:?}");
+        }
+
+        // Options between the service ID and the query ID keep both in place.
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "--db-name",
+            "app",
+            "query-1",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+        ]);
+        assert!(cli.is_ok(), "{:?}", cli.err());
+
+        for (selector, kind) in [
+            (
+                &["pg-1", "query-1", "--name", "analytics"][..],
+                clap::error::ErrorKind::ArgumentConflict,
+            ),
+            (
+                &["query-1"][..],
+                clap::error::ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                &["--name", "analytics"][..],
+                clap::error::ErrorKind::MissingRequiredArgument,
+            ),
+        ] {
+            let error = Cli::try_parse_from(slow_query_get_args(selector, &[]))
+                .err()
+                .unwrap_or_else(|| panic!("{selector:?} should not parse"));
+            assert_eq!(error.kind(), kind, "{selector:?}");
+            assert_eq!(error.exit_code(), 2, "{selector:?}");
+        }
+    }
+
+    #[test]
+    fn slow_query_detail_timestamp_is_normalised_to_utc_milliseconds() {
+        for (input, expected) in [
+            ("2026-11-13T18:42:00Z", "2026-11-13T18:42:00.000Z"),
+            ("2026-11-13T18:42:00+00:00", "2026-11-13T18:42:00.000Z"),
+            ("2026-11-13T19:42:00.5+01:00", "2026-11-13T18:42:00.500Z"),
+        ] {
+            let (_, timestamp) =
+                parse_slow_query_get(&["pg-1", "query-1"], &["--timestamp", input]);
+            assert_eq!(timestamp.as_deref(), Some(expected), "{input}");
+        }
+        let error = Cli::try_parse_from(slow_query_get_args(
+            &["pg-1", "query-1"],
+            &["--timestamp", "2026-11-13T18:42:00.1234Z"],
+        ))
+        .err()
+        .expect("sub-millisecond timestamp");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]
