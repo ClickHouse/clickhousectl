@@ -1,20 +1,24 @@
 # Cloud integration decisions
 
 `Cloud Integration` remains on demand for pull requests. The required
-`Cloud integration decision` check is bound to one exact PR head SHA. On every
-push to a same-repository PR, a secret-free planner run classifies the
-base-to-head diff. The check passes only after one of these outcomes:
+`Cloud integration decision` check is bound to one exact PR head SHA. When a
+PR is opened or pushed, the controller applies the default-branch classifier to
+GitHub's list of changed file names; it never checks out or runs PR code. On
+every push to a same-repository PR, a secret-free planner run also classifies
+the base-to-head diff. The check passes only after one of these outcomes:
 
-1. The trusted planner selects no live suites. The check passes with no
-   action needed, and the environment-bearing job stays skipped.
+1. The trusted classifier selects no live suites. The check passes with no
+   action needed, and the environment-bearing job stays skipped. This holds
+   for Dependabot and fork PRs too, which get no planner run.
 2. The planner selects live suites, the check waits for authorization, you
    apply the `run-cloud-integration` label, and every selected suite passes.
 3. A maintainer records a one-shot override for the current full head SHA.
 
 After a push that selects live suites, remove and reapply
-`run-cloud-integration` to start a run for the new SHA. Earlier live results and overrides do not carry forward. Fork PRs do
-not receive Cloud secrets; use a same-repository mirror or the explicit
-maintainer override.
+`run-cloud-integration` to start a run for the new SHA. Earlier live results and overrides do not carry forward. Fork and
+Dependabot PRs do not receive Cloud secrets or a planner run. When one selects
+live suites (every Dependabot Cargo update does, because `Cargo.lock` selects
+all suites), use a same-repository mirror or the explicit maintainer override.
 
 ## Maintainer override
 
@@ -39,6 +43,8 @@ run replaces it as the current decision. A planner-only run, whose
 environment-bearing job never ran, never replaces a settled decision for that
 SHA whatever it concludes. If that run fails, the decision stays
 failing until the run succeeds or a maintainer records a subsequent override.
+A no-suite decision recorded when the PR was pushed is settled too, so a later
+planner failure on that SHA does not turn it red.
 
 A PR that changes `.github/workflows/cloud-integration.yml` cannot use that
 modified workflow to attest itself. Its decision remains failing until a

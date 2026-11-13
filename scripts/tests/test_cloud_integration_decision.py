@@ -191,20 +191,94 @@ class GitHubAPITests(unittest.TestCase):
 
 
 class ControllerFlowTests(unittest.TestCase):
-    def test_initialize_uses_create_only_for_the_exact_head(self):
+    def initialize(self, files, *, head_repo=REPO, current=None, existing=None):
+        """Run `initialize` against a PR whose API file list is `files`."""
         api = mock.Mock()
+        api.find_decision_check.return_value = existing
+        api.get_pull.side_effect = current or (
+            pull_request(head_repo=head_repo),
+            pull_request(head_repo=head_repo),
+        )
+        if isinstance(files, Exception):
+            api.list_pull_files.side_effect = files
+        else:
+            api.list_pull_files.return_value = files
         api.upsert_decision.return_value = {"id": 42}
-
         with mock.patch("builtins.print"):
             decision.initialize(
-                api, {"pull_request": pull_request(head_repo=None)}, REPO
+                api, {"pull_request": pull_request(head_repo=head_repo)}, REPO
             )
+        return api
 
+    def initial_conclusion(self, api):
         sha, result = api.upsert_decision.call_args.args
         self.assertEqual(sha, HEAD_SHA)
-        self.assertEqual(result.conclusion, "action_required")
-        self.assertIn("fork PR", result.summary)
         self.assertTrue(api.upsert_decision.call_args.kwargs["create_only"])
+        return result.conclusion
+
+    def test_initialize_passes_a_head_that_selects_no_suites(self):
+        docs_only = [{"status": "modified", "filename": "README.md"}]
+        # Fork and Dependabot PRs never get a planner run, so this is their
+        # only way to pass without an override.
+        for head_repo in (REPO, "someone/fork", None):
+            with self.subTest(head_repo=head_repo):
+                api = self.initialize(docs_only, head_repo=head_repo)
+                self.assertEqual(self.initial_conclusion(api), "success")
+
+    def test_initialize_waits_when_suites_are_selected(self):
+        api = self.initialize(
+            [{"status": "modified", "filename": "Cargo.lock"}], head_repo=None
+        )
+        self.assertEqual(self.initial_conclusion(api), "action_required")
+        self.assertIn("fork PR", api.upsert_decision.call_args.args[1].summary)
+
+    def test_initialize_waits_when_the_cloud_workflow_changes(self):
+        cases = [
+            {"status": "modified", "filename": decision.SOURCE_WORKFLOW_PATH},
+            {
+                "status": "renamed",
+                "filename": ".github/workflows/renamed.yml",
+                "previous_filename": decision.SOURCE_WORKFLOW_PATH,
+            },
+        ]
+        for changed in cases:
+            with (
+                self.subTest(changed=changed),
+                # Even if the classifier stopped mapping the workflow.
+                mock.patch.object(
+                    decision.classifier, "classify_path", return_value=frozenset()
+                ),
+            ):
+                api = self.initialize([changed])
+                self.assertEqual(self.initial_conclusion(api), "action_required")
+
+    def test_initialize_waits_when_selection_fails_closed(self):
+        cases = [
+            [{"status": "unchanged", "filename": "README.md"}],
+            decision.ControllerError("PR file list reached the limit"),
+            decision.APIError(502, "bad gateway"),
+        ]
+        for files in cases:
+            with self.subTest(files=files):
+                api = self.initialize(files)
+                self.assertEqual(self.initial_conclusion(api), "action_required")
+
+    def test_initialize_waits_when_the_pr_moves_while_files_are_read(self):
+        docs_only = [{"status": "modified", "filename": "README.md"}]
+        moved = [
+            (pull_request(head_sha=NEW_HEAD_SHA), pull_request(head_sha=NEW_HEAD_SHA)),
+            (pull_request(), pull_request(head_sha=NEW_HEAD_SHA)),
+            (pull_request(), pull_request(base_sha=NEW_HEAD_SHA)),
+        ]
+        for current in moved:
+            with self.subTest(current=current):
+                api = self.initialize(docs_only, current=current)
+                self.assertEqual(self.initial_conclusion(api), "action_required")
+
+    def test_initialize_leaves_an_existing_decision_alone(self):
+        api = self.initialize([], existing={"id": 7, "conclusion": "failure"})
+        api.list_pull_files.assert_not_called()
+        api.upsert_decision.assert_not_called()
 
     def test_reconcile_ignores_run_without_one_associated_pull(self):
         api = mock.Mock()

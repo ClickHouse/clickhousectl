@@ -706,8 +706,9 @@ def main():
     print("Fetching live OpenAPI spec...", file=sys.stderr)
     live_spec = fetch_live_spec()
     if live_spec is None:
-        print(f"WARNING: Could not reach {LIVE_SPEC_URL} — skipping drift check.", file=sys.stderr)
-        return
+        # Fail the run rather than pass silently; the drift issue is untouched.
+        print(f"ERROR: Could not fetch the live spec from {LIVE_SPEC_URL}.", file=sys.stderr)
+        raise SystemExit(1)
 
     print("Running shared Rust drift analyzer...", file=sys.stderr)
     try:
