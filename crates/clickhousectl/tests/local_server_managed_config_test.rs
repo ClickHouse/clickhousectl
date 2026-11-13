@@ -28,9 +28,11 @@ fn clickhousectl_binary() -> PathBuf {
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
         .env(
             "FAKE_CLICKHOUSE_ARGS_FILE",
             home.join("clickhouse-args.txt"),
