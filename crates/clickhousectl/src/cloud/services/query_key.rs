@@ -648,7 +648,10 @@ mod tests {
         let stamps = Arc::new(Mutex::new(Vec::new()));
         let counter = Arc::clone(&attempts);
         let recorder = Arc::clone(&stamps);
-        let started = std::time::Instant::now();
+        // The paused clock only moves when the loop sleeps, so the stamps are
+        // exact. `std::time::Instant` ignores the pause and would make every
+        // bound below vacuous.
+        let started = tokio::time::Instant::now();
         let _ = upsert_until_key_propagates(propagation, move || {
             counter.fetch_add(1, Ordering::SeqCst);
             recorder.lock().unwrap().push(started.elapsed());
@@ -656,19 +659,14 @@ mod tests {
         })
         .await;
         let stamps = stamps.lock().unwrap();
-        // Sleeps of 5, 10, 10, 10, ... ms: at most one attempt per capped
-        // backoff, and the last one lands at or before the deadline.
-        assert!(stamps.len() >= 3, "{stamps:?}");
-        assert!(
-            stamps.last().unwrap() <= &(propagation.timeout + Duration::from_millis(20)),
-            "{stamps:?}"
-        );
-        for pair in stamps.windows(2) {
-            assert!(
-                pair[1] - pair[0] <= propagation.max_backoff + Duration::from_millis(20),
-                "{stamps:?}"
-            );
-        }
+        // Sleeps of 5, then 10 (the cap) until the last one is cut to the 5 ms
+        // left before the deadline; the attempt at the deadline is the last.
+        let expected: Vec<Duration> = [0, 5, 15, 25, 35, 40]
+            .into_iter()
+            .map(Duration::from_millis)
+            .collect();
+        assert_eq!(*stamps, expected);
+        assert_eq!(attempts.load(Ordering::SeqCst), expected.len());
     }
 
     fn endpoint(

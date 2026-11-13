@@ -1276,6 +1276,32 @@ mod tests {
         );
     }
 
+    /// `SOURCE=` sends an empty description, which clears one; a bare
+    /// source sends none at all (#589).
+    #[test]
+    fn build_api_key_requests_send_an_empty_allowlist_description_only_when_asked() {
+        let update = build_api_key_update_request(&KeyUpdateOptions {
+            ip_allow: vec!["203.0.113.0/24=".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"ipAccessList": [{"source": "203.0.113.0/24", "description": ""}]})
+        );
+
+        let create = build_api_key_create_request(&KeyCreateOptions {
+            name: "ci-key".to_string(),
+            ip_allow: vec!["198.51.100.4".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(create).unwrap()["ipAccessList"],
+            serde_json::json!([{"source": "198.51.100.4"}])
+        );
+    }
+
     #[test]
     fn build_api_key_update_request_rejects_conflicting_expiry_changes() {
         let error = build_api_key_update_request(&KeyUpdateOptions {
