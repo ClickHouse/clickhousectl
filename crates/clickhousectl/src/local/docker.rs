@@ -11,7 +11,7 @@
 //!  * `clickhousectl.engine=postgres`
 //!  * `clickhousectl.name=<server-name>`
 //!  * `clickhousectl.major=<major-version>`
-//!  * `clickhousectl.project=<canonical project cwd>`
+//!  * `clickhousectl.project=<canonical project root>`
 //!  * `created_by=clickhousectl_<crate-version>`
 
 use crate::error::{Error, Result};
@@ -33,10 +33,46 @@ pub fn created_by_value() -> String {
     format!("clickhousectl_{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Container name for a Postgres instance: `clickhousectl-pg-<name>-<major>`.
-/// Distinct (name, major) pairs always get distinct container names.
-pub fn pg_container_name(user_name: &str, major: &str) -> String {
+/// Container name for a Postgres instance:
+/// `clickhousectl-pg-<project hash>-<name>-<major>`.
+///
+/// Docker container names are global to the daemon, so the name carries the
+/// first 8 hex digits of the SHA-256 of `project_cwd`, the exact value written
+/// into the `clickhousectl.project` label. Two projects can then both run an
+/// instance with the same name and major. Within a project, distinct
+/// (name, major) pairs always get distinct container names.
+pub fn pg_container_name(project_cwd: &str, user_name: &str, major: &str) -> String {
+    format!(
+        "clickhousectl-pg-{}-{}-{}",
+        project_hash(project_cwd),
+        user_name,
+        major
+    )
+}
+
+/// The name releases before #1160 used, with no project hash. Existing
+/// containers keep it, since every command after creation resolves a
+/// container by its stored ID, never by name.
+fn legacy_pg_container_name(user_name: &str, major: &str) -> String {
     format!("clickhousectl-pg-{}-{}", user_name, major)
+}
+
+fn project_hash(project_cwd: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(project_cwd.as_bytes())
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// True only when a container's labels say this CLI created it as Postgres
+/// for `project_cwd`. Missing labels, or another project's, never match.
+fn labels_owned_by_project(labels: Option<&HashMap<String, String>>, project_cwd: &str) -> bool {
+    labels.is_some_and(|labels| {
+        labels.get(LABEL_ENGINE).map(String::as_str) == Some("postgres")
+            && labels.get(LABEL_PROJECT).map(String::as_str) == Some(project_cwd)
+    })
 }
 
 /// Connect to the local Docker daemon and verify it's reachable.
@@ -401,7 +437,11 @@ pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Resu
     };
 
     let create_opts = CreateContainerOptionsBuilder::default()
-        .name(&pg_container_name(opts.user_name, opts.major))
+        .name(&pg_container_name(
+            opts.project_cwd,
+            opts.user_name,
+            opts.major,
+        ))
         .build();
 
     let created = docker
@@ -411,41 +451,49 @@ pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Resu
     Ok(created.id)
 }
 
-/// If a container with our managed name (`clickhousectl-pg-<name>-<major>`)
-/// exists in any state, remove it — but only when it carries our labels for
-/// the current project. Returns Ok(()) if the name is free or was cleaned
-/// up, or an actionable error if the name is held by an unrelated container.
+/// If a container with our managed name
+/// (`clickhousectl-pg-<project hash>-<name>-<major>`) exists in any state,
+/// remove it — but only when it carries our labels for the current project.
+/// Returns Ok(()) if the name is free or was cleaned up, or an actionable
+/// error if the name is held by an unrelated container.
+///
+/// A container under the pre-#1160 name (`clickhousectl-pg-<name>-<major>`)
+/// is an orphan of this project only when its labels say so; it is then
+/// removed the same way, since it binds the data directory the new container
+/// will use. Under any other labels it belongs to someone else and
+/// is left alone: it no longer blocks the new name.
 pub async fn ensure_name_free(
     docker: &Docker,
     user_name: &str,
     major: &str,
     project_cwd: &str,
 ) -> Result<()> {
-    use bollard::errors::Error as BErr;
-    let cname = pg_container_name(user_name, major);
-    match docker.inspect_container(&cname, None).await {
-        Ok(info) => {
-            let labels_match = info
-                .config
-                .as_ref()
-                .and_then(|c| c.labels.as_ref())
-                .map(|l| {
-                    l.get(LABEL_ENGINE).map(String::as_str) == Some("postgres")
-                        && l.get(LABEL_PROJECT).map(String::as_str) == Some(project_cwd)
-                })
-                .unwrap_or(false);
-            if !labels_match {
-                return Err(Error::ContainerNameConflict(cname));
-            }
-            let id = info.id.unwrap_or(cname.clone());
-            let _ = stop_container(docker, &id).await;
-            remove_container(docker, &id).await
+    let cname = pg_container_name(project_cwd, user_name, major);
+    if let Some(info) = inspect_container(docker, &cname).await? {
+        if !labels_owned_by_project(
+            info.config.as_ref().and_then(|c| c.labels.as_ref()),
+            project_cwd,
+        ) {
+            return Err(Error::ContainerNameConflict(cname));
         }
-        Err(BErr::DockerResponseServerError {
-            status_code: 404, ..
-        }) => Ok(()),
-        Err(e) => Err(Error::DockerError(e.to_string())),
+        remove_orphan(docker, info.id.unwrap_or(cname)).await?;
     }
+
+    let legacy = legacy_pg_container_name(user_name, major);
+    if let Some(info) = inspect_container(docker, &legacy).await?
+        && labels_owned_by_project(
+            info.config.as_ref().and_then(|c| c.labels.as_ref()),
+            project_cwd,
+        )
+    {
+        remove_orphan(docker, info.id.unwrap_or(legacy)).await?;
+    }
+    Ok(())
+}
+
+async fn remove_orphan(docker: &Docker, id: String) -> Result<()> {
+    let _ = stop_container(docker, &id).await;
+    remove_container(docker, &id).await
 }
 
 /// A missing container is distinct from an inspection failure. Only Docker's
@@ -1242,6 +1290,57 @@ mod tests {
     fn inspect_with_ports(ports: serde_json::Value) -> bollard::models::ContainerInspectResponse {
         serde_json::from_value(serde_json::json!({ "NetworkSettings": { "Ports": ports } }))
             .expect("parse inspect response")
+    }
+
+    #[test]
+    fn pg_container_name_is_stable_per_project_and_distinct_between_projects() {
+        let first = pg_container_name("/work/one", "dev", "18");
+        assert_eq!(first, pg_container_name("/work/one", "dev", "18"));
+        assert_ne!(first, pg_container_name("/work/two", "dev", "18"));
+        assert_ne!(first, pg_container_name("/work/one", "dev", "17"));
+        assert_ne!(first, pg_container_name("/work/one", "test", "18"));
+        assert_ne!(first, legacy_pg_container_name("dev", "18"));
+
+        // The hash is the label value's digest, so it is reproducible from
+        // `docker inspect`:
+        // `printf '/work/one' | shasum -a 256 | cut -c1-8`
+        assert_eq!(first, "clickhousectl-pg-bb6571d4-dev-18");
+
+        // Docker accepts [a-zA-Z0-9][a-zA-Z0-9_.-]* for container names, even
+        // for a project path full of characters it would reject.
+        let odd = pg_container_name("/tmp/a b/ü:*", "my_db.v-1", "18");
+        assert!(
+            odd.starts_with(|c: char| c.is_ascii_alphanumeric()),
+            "{odd}"
+        );
+        assert!(
+            odd.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')),
+            "{odd}"
+        );
+    }
+
+    #[test]
+    fn only_this_projects_postgres_labels_allow_orphan_removal() {
+        let labels = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect()
+        };
+        let ours = labels(&[(LABEL_ENGINE, "postgres"), (LABEL_PROJECT, "/work/one")]);
+        assert!(labels_owned_by_project(Some(&ours), "/work/one"));
+
+        let other_project = labels(&[(LABEL_ENGINE, "postgres"), (LABEL_PROJECT, "/work/two")]);
+        assert!(!labels_owned_by_project(Some(&other_project), "/work/one"));
+
+        let other_engine = labels(&[(LABEL_ENGINE, "clickhouse"), (LABEL_PROJECT, "/work/one")]);
+        assert!(!labels_owned_by_project(Some(&other_engine), "/work/one"));
+
+        let project_only = labels(&[(LABEL_PROJECT, "/work/one")]);
+        assert!(!labels_owned_by_project(Some(&project_only), "/work/one"));
+        assert!(!labels_owned_by_project(Some(&HashMap::new()), "/work/one"));
+        assert!(!labels_owned_by_project(None, "/work/one"));
     }
 
     #[test]

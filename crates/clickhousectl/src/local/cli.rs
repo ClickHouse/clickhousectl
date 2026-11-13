@@ -9,7 +9,7 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
 }
 
 /// A Postgres name also becomes part of the Docker container name
-/// `clickhousectl-pg-<name>-<major>`, so it may use only the characters Docker
+/// `clickhousectl-pg-<project hash>-<name>-<major>`, so it may use only the characters Docker
 /// allows there. Checked at parse time so every invalid name is a usage error.
 fn parse_pg_server_name_arg(name: &str) -> Result<String, String> {
     let name = parse_server_name_arg(name)?;
