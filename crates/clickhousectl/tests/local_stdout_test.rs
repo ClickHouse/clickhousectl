@@ -19,14 +19,15 @@ fn run_closed(command: &mut Command) -> Output {
     command.stdout(writer).output().unwrap()
 }
 
+// `--version` is left out: it always checks for a newer release online and
+// may print an update notice on stderr, which a hermetic test cannot pin.
 #[test]
-fn closed_stdout_is_quiet_for_local_output_help_and_version() {
+fn closed_stdout_is_quiet_for_local_output_and_help() {
     let home = tempfile::tempdir().unwrap();
     for args in [
         vec!["local", "list"],
         vec!["local", "list", "--json"],
         vec!["--help"],
-        vec!["--version"],
     ] {
         let output = run_closed(&mut command(home.path(), &args));
         assert_eq!(output.status.code(), Some(0), "{args:?}: {output:?}");
