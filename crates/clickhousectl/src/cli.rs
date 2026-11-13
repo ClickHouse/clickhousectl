@@ -23,6 +23,7 @@ CONTEXT FOR AGENTS:
   (`cloud auth login --api-key X --api-secret Y`) allow writes.
   Create account: `cloud auth signup`
   Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
+  Check state first: `clickhousectl cloud auth status --json`, `clickhousectl local status --json`
   Install the ClickHouse agent skills: `clickhousectl skills --agent claude`"
     };
 }
@@ -352,6 +353,22 @@ mod tests {
             }
         });
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The root agent context points at status commands; they must exist and take `--json`.
+    #[test]
+    fn root_agent_context_status_commands_parse() {
+        let commands: Vec<_> = ROOT_AFTER_HELP
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|span| span.starts_with("clickhousectl ") && span.ends_with(" --json"))
+            .collect();
+        assert!(commands.len() >= 2, "{commands:?}");
+        for command in commands {
+            Cli::try_parse_from(command.split_whitespace())
+                .unwrap_or_else(|error| panic!("`{command}` does not parse: {error}"));
+        }
     }
 
     /// A `--file` request body has no clap schema, so the command's agent
