@@ -445,6 +445,16 @@ pub enum Error {
         minimum: &'static str,
     },
 
+    /// `cloud service client` signs in with the native client's `--login`,
+    /// which older builds do not have.
+    #[error(
+        "ClickHouse client version '{version}' cannot sign in to ClickHouse Cloud with --login. Install ClickHouse {minimum} or newer with `clickhousectl local install latest`, then pass `--version <version>` or run `clickhousectl local use latest`."
+    )]
+    ClientLoginUnsupported {
+        version: String,
+        minimum: &'static str,
+    },
+
     #[error(
         "Server '{name}' last ran ClickHouse {version}, which is not installed. Reinstall it with `clickhousectl local install {version}`, or pass `--version <version>` to run this server's data on another version."
     )]

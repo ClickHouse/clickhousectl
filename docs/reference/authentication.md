@@ -23,6 +23,8 @@ clickhousectl cloud auth status
 
 If a saved OAuth login cannot be read or uses an older format without complete authorization configuration, `auth status` shows OAuth as `Login required`, not `Not configured`, and explains the problem below the table with the command to log in again. JSON output includes this explanation in `oauth_warning`, separate from any identity-verification `warning`; it is shown even when an API key is active. Run `clickhousectl cloud auth login` to log in again. Without a higher-priority API key source, Cloud commands exit 4 (`auth_required` in JSON) with an explicit re-login message. The unusable file is left unchanged; the CLI does not reconstruct its authorization configuration from built-in defaults or environment variables.
 
+`cloud service client` is the exception to both modes for SQL: either credential only looks up the service, and `clickhouse client --login` then signs you in to the service itself through its own browser flow, as your Cloud user. That needs a person at a browser, so it does not suit CI or agents. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client).
+
 For automation, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through a secret manager. The CLI does not save environment credentials. For development it also reads `.env` from the current directory or, when that has none, from the [project root](../guides/local-development.md); the first file found is used alone, never merged. Keep that file out of version control and restrict access. Flags are available, but command-line secrets can appear in shell history and process listings.
 
 ## Credential precedence
