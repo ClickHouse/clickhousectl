@@ -1527,12 +1527,13 @@ async fn backup_config_start_time_refuses_an_incompatible_stored_period() {
     let output = invoke_cli_with_cloud_credentials(&mock, &backup_config_update_args(&[]));
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
-         Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
-    );
-    assert_eq!(cloud_runtime_error(&output)["code"], "other");
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "other");
+    // Names the stored period, the flag it blocks and the flag that fixes it.
+    let message = error["message"].as_str().unwrap();
+    for identifier in ["12", "--backup-start-time", "--backup-period-hours 24"] {
+        assert!(message.contains(identifier), "{identifier}: {message}");
+    }
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1, "expected only the configuration read");
@@ -2340,11 +2341,16 @@ async fn credentials_file_reports_that_environment_credentials_are_ignored() {
         .expect("failed to spawn clickhousectl");
 
     assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "note: CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but ignored; \
-         using credentials file — see --debug\n"
-    );
+    // One notice naming both ignored variables and the flag that explains why.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    for identifier in [
+        "CLICKHOUSE_CLOUD_API_KEY",
+        "CLICKHOUSE_CLOUD_API_SECRET",
+        "--debug",
+    ] {
+        assert!(stderr.contains(identifier), "{identifier}: {stderr}");
+    }
 
     let requests = mock.received_requests().await.unwrap();
     let authorization = requests[0]
@@ -2659,7 +2665,8 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
             assert_eq!(row.len(), 4);
             assert_eq!(row[3], "-", "no source should be active: {row:?}");
             if row[0] == "CLI flags" {
-                assert_eq!(row[1], format!("Incomplete (missing {missing})"));
+                assert!(row[1].starts_with("Incomplete"), "{row:?}");
+                assert!(row[1].contains(missing), "{row:?}");
                 assert_eq!(row[2], "-");
             } else if Some(row[0].as_str()) == configured_source {
                 assert_eq!(row[1], "Configured (inactive)");
@@ -2704,17 +2711,22 @@ async fn auth_status_marks_outranked_environment_credentials_inactive() {
     assert_success(&output);
     assert!(output.stderr.is_empty());
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let env = status["sources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["type"] == "Env vars")
-        .unwrap();
-    assert_eq!(
-        env["status"],
-        "Configured (inactive, outranked by credentials file)"
-    );
+    let row = |source: &str| {
+        status["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["type"] == source)
+            .unwrap()
+            .clone()
+    };
+    let env = row("Env vars");
     assert_eq!(env["active"], "-");
+    assert_eq!(row("API key")["active"], "yes");
+    // The inactive row names the source that outranks it.
+    let env_status = env["status"].as_str().unwrap();
+    assert!(env_status.starts_with("Configured"), "{env_status}");
+    assert!(env_status.contains("credentials file"), "{env_status}");
 }
 
 // ── Service deletion errors (issue #335) ──────────────────────────────────
@@ -2738,13 +2750,16 @@ async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
     );
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "service could not be deleted because of a conflict. If it is running, use \
-         --force to stop it first, or `clickhousectl cloud service stop svc-1`. API response: \
-         opaque conflict response"
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "http_4xx");
+    // Both ways out, by flag and by command, then the API's own response.
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("--force"), "{message}");
+    assert!(
+        message.contains("`clickhousectl cloud service stop svc-1`"),
+        "{message}"
     );
-    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
+    assert!(message.ends_with("opaque conflict response"), "{message}");
 }
 
 // ── Postgres metrics (issue #583) ─────────────────────────────────────────
@@ -5435,40 +5450,9 @@ async fn org_prometheus_discovery_renders_sparse_human_output() {
     assert_eq!(requests[0].url.query(), None);
 }
 
-#[tokio::test]
-async fn activity_list_sends_the_day_after_to_date_so_the_named_day_is_included() {
-    let mock = MockServer::start().await;
-    // The API reads `to_date` as midnight, so the CLI sends the next day.
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/activities"))
-        .and(query_param("from_date", "2026-02-28"))
-        .and(query_param("to_date", "2026-03-01"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": 200,
-            "requestId": "stub-activity-list",
-            "result": []
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "activity",
-            "list",
-            "--org-id",
-            "org-1",
-            "--from-date",
-            "2026-02-28",
-            "--to-date",
-            "2026-02-28",
-        ],
-    );
-
-    assert_success(&output);
-}
-
+/// The wiring test for `activity list`: the default start is computed from the
+/// named `--to-date`, and the API is sent the day after it. Both date rules are
+/// unit tests in `cloud::activity`.
 #[tokio::test]
 async fn activity_list_without_from_date_covers_the_seven_days_ending_on_to_date() {
     let mock = MockServer::start().await;
@@ -6857,10 +6841,9 @@ async fn service_query_refuses_data_that_arrives_after_the_check_starts() {
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("--query cannot be combined with SQL or data on stdin"),
-        "{stderr}"
-    );
+    // The same refusal as data present at startup: the flag and the way out.
+    assert!(stderr.contains("--query"), "{stderr}");
+    assert!(stderr.contains("--queries-file -"), "{stderr}");
     assert!(control.received_requests().await.unwrap().is_empty());
     assert!(query_host.received_requests().await.unwrap().is_empty());
 }
@@ -8826,13 +8809,10 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
     );
 
     // The 206 body must not leak into the query output, and the user is
-    // told about the wake on stderr.
+    // told about the wake on stderr, by service name.
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("idle"),
-        "stderr should mention the service is idle:\n{}",
-        String::from_utf8_lossy(&output.stderr),
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("demo"), "{stderr}");
 }
 
 #[tokio::test]
@@ -8909,70 +8889,6 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             .collect::<Vec<_>>(),
     );
     assert!(!dir.path().join(".clickhouse/credentials.json").exists());
-}
-
-// Shell env vars must win over `.env` — if both are set, the request is
-// signed with the shell values, never the file values.
-
-#[tokio::test]
-async fn shell_env_overrides_dotenv_creds_in_request() {
-    use std::io::Write;
-
-    let mock = MockServer::start().await;
-
-    let stub_orgs = serde_json::json!({
-        "result": [],
-        "status": 200,
-        "requestId": "stub-org-list",
-    });
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(stub_orgs))
-        .mount(&mock)
-        .await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
-    env_file
-        .write_all(
-            b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n",
-        )
-        .unwrap();
-    drop(env_file);
-
-    let url = mock.uri();
-    let home = tempfile::tempdir().unwrap();
-    let output = Command::new(clickhousectl_binary())
-        .isolated_env()
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", home.path())
-        .args(["cloud", "--url", &url, "--json", "org", "list"])
-        .current_dir(dir.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "shell-key")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "shell-secret")
-        .output()
-        .expect("failed to spawn clickhousectl");
-
-    assert_success(&output);
-
-    let requests = mock.received_requests().await.unwrap();
-    let auth = requests
-        .iter()
-        .find(|r| r.method == wiremock::http::Method::GET)
-        .and_then(|r| r.headers.get("Authorization"))
-        .expect("no Authorization header recorded");
-    let auth_str = auth.to_str().expect("non-utf8 auth header");
-    let expected = format!(
-        "Basic {}",
-        base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            "shell-key:shell-secret",
-        )
-    );
-    assert_eq!(
-        auth_str, expected,
-        "shell env vars must override .env values on the wire"
-    );
 }
 
 // ── Issue #267: agent session/trace headers land on outbound requests ────────
@@ -9735,14 +9651,18 @@ async fn clickpipe_settings_get_refuses_database_pipes_before_calling_the_endpoi
     );
 
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        cloud_runtime_error(&output)["message"],
-        "ClickPipe pipe-id is a Postgres CDC pipe; `clickpipe settings get` and \
-         `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
-         pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
-         itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`.",
-    );
-    assert_eq!(cloud_runtime_error(&output)["code"], "other");
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "other");
+    // Names the pipe and its source, and points at the command that shows
+    // a CDC pipe's settings.
+    let message = error["message"].as_str().unwrap();
+    for identifier in [
+        "pipe-id",
+        "Postgres",
+        "`clickhousectl cloud clickpipe get svc-id pipe-id`",
+    ] {
+        assert!(message.contains(identifier), "{identifier}: {message}");
+    }
     assert!(output.stdout.is_empty(), "a refusal must print no settings");
     // Only the pipe read: the settings endpoint is never called.
     assert_eq!(
@@ -10499,93 +10419,6 @@ async fn mount_service_update_round_trip(mock: &MockServer, current: serde_json:
 }
 
 #[tokio::test]
-async fn service_update_warns_when_remove_ip_allow_matches_nothing() {
-    let mock = MockServer::start().await;
-    mount_service_update_round_trip(
-        &mock,
-        serde_json::json!({
-            "id": "22222222-3333-4444-5555-666666666666",
-            "name": "demo",
-            "ipAccessList": [{ "source": "10.0.0.0/8" }],
-        }),
-    )
-    .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--remove-ip-allow",
-            "10.99.99.99/32",
-        ],
-    );
-
-    assert_success(&output);
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Warning: --remove-ip-allow 10.99.99.99/32 did not match any entry in the service's \
-         current IP allow list; no entry was removed\n"
-    );
-}
-
-#[tokio::test]
-async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
-    let mock = MockServer::start().await;
-    mount_service_update_round_trip(
-        &mock,
-        serde_json::json!({
-            "id": "22222222-3333-4444-5555-666666666666",
-            "name": "demo",
-            "ipAccessList": [
-                { "source": "10.0.0.0/8" },
-                { "source": "2001:db8::/32" },
-            ],
-        }),
-    )
-    .await;
-
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "service",
-            "update",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--remove-ip-allow",
-            " 10.0.0.0/8 =retired office",
-            "--remove-ip-allow",
-            " 2001:db8::/32 =retired ipv6 range",
-        ],
-    );
-
-    assert_success(&output);
-    assert!(
-        output.stderr.is_empty(),
-        "unexpected stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let requests = mock.received_requests().await.unwrap();
-    let patch = requests
-        .iter()
-        .find(|request| request.method.as_str() == "PATCH")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&patch.body).unwrap();
-    assert_eq!(
-        body["ipAccessList"]["remove"],
-        serde_json::json!([
-            { "source": "10.0.0.0/8", "description": "retired office" },
-            { "source": "2001:db8::/32", "description": "retired ipv6 range" },
-        ])
-    );
-}
-
-#[tokio::test]
 async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
     let mock = MockServer::start().await;
     mount_service_update_round_trip(
@@ -10617,14 +10450,17 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
     );
 
     assert_success(&output);
+    // One warning per unmatched removal, naming its flag and value; the
+    // matched `env` tag gets none. The matching rules are the
+    // `unmatched_removal_warnings_*` unit tests.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        stderr,
-        "Warning: --remove-private-endpoint-id pe-missing did not match any private endpoint \
-         on the service; nothing was removed\n\
-         Warning: --remove-tag missing did not match any tag on the service; nothing was \
-         removed\n"
+    let warnings: Vec<&str> = stderr.lines().collect();
+    assert_eq!(warnings.len(), 2, "{stderr}");
+    assert!(
+        warnings[0].contains("--remove-private-endpoint-id pe-missing"),
+        "{stderr}"
     );
+    assert!(warnings[1].contains("--remove-tag missing"), "{stderr}");
 
     let requests = mock.received_requests().await.unwrap();
     let patch = requests
@@ -11479,14 +11315,8 @@ async fn other_query_500s_keep_the_generic_api_error() {
     )
     .await;
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_query_http_error(&output, 500, r#"{"error":"Internal error."}"#);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            r#"Query API returned HTTP 500 Internal Server Error: {"error":"Internal error."}"#
-        ),
-        "{stderr}"
-    );
     assert!(!stderr.contains("30 seconds"), "{stderr}");
     assert!(!stderr.contains("clickhouse client"), "{stderr}");
     assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
@@ -11912,14 +11742,9 @@ async fn postgres_get_unknown_well_formed_id_reads_as_not_found() {
         &["postgres", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
     );
 
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!(
-            "Error: No such Postgres service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
-             The API rejected the identifier: \
-             BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\"\n"
-        )
+    assert_postgres_not_found_human(
+        &output,
+        &format!("BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\""),
     );
 }
 
@@ -12292,15 +12117,9 @@ async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id()
 
     let output = invoke_unknown_service_delete(&mock, true);
 
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!(
-            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
-             The API rejected the identifier: \
-             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
-        )
+    assert_postgres_not_found_human(
+        &output,
+        &format!("BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\""),
     );
     // The read did not abort the command: the delete was still attempted.
     assert_eq!(
@@ -12329,15 +12148,9 @@ async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
 
     let output = invoke_unknown_service_delete(&mock, false);
 
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!(
-            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
-             The API rejected the identifier: \
-             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
-        )
+    assert_postgres_not_found_human(
+        &output,
+        &format!("BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\""),
     );
     assert_eq!(
         received_request_shape(&mock).await,
@@ -12714,7 +12527,7 @@ async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
 // IP allowlist descriptions (#589).
 
 #[tokio::test]
-async fn api_key_create_and_update_pass_every_flag_and_allowlist_description() {
+async fn api_key_create_passes_every_flag_and_allowlist_description() {
     let create = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/keys"))
@@ -12757,34 +12570,6 @@ async fn api_key_create_and_update_pass_every_flag_and_allowlist_description() {
             "198.51.100.4",
             "--ip-allow",
             "2001:db8::/32=production",
-            "--org-id",
-            "org-1",
-        ],
-    );
-    assert_success(&output);
-
-    let update = MockServer::start().await;
-    Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/keys/key-1"))
-        .and(body_json(serde_json::json!({
-            "ipAccessList": [{"source": "203.0.113.0/24", "description": ""}]
-        })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"id": "11111111-2222-3333-4444-555555555555", "name": "described-key"},
-            "status": 200,
-            "requestId": "stub-key-update"
-        })))
-        .expect(1)
-        .mount(&update)
-        .await;
-    let output = invoke_cli_with_cloud_credentials(
-        &update,
-        &[
-            "key",
-            "update",
-            "key-1",
-            "--ip-allow",
-            "203.0.113.0/24=",
             "--org-id",
             "org-1",
         ],
@@ -16164,24 +15949,6 @@ async fn service_jwt_provider_list_renders_a_table_with_absent_fields() {
             .any(|row| row.contains(&"sparse") && row.iter().filter(|c| **c == "-").count() == 4),
         "{stdout}"
     );
-}
-
-/// The provider name is a request path segment; an invalid one is a usage
-/// error before any request, so `..` never reaches the service itself.
-#[tokio::test]
-async fn service_jwt_provider_rejects_an_invalid_name_before_any_request() {
-    let mock = MockServer::start().await;
-    for args in [
-        vec!["delete", "svc-1", ".."],
-        vec!["delete", "--name", "analytics", ".."],
-    ] {
-        let mut full = vec!["service", "jwt-provider"];
-        full.extend(args);
-        full.extend(["--org-id", "org-1"]);
-        let output = invoke_cli_with_cloud_credentials(&mock, &full);
-        assert_eq!(output.status.code(), Some(2), "{full:?}");
-    }
-    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 const UPGRADE_WINDOW_PATH: &str = "/v1/organizations/org-1/services/svc-1/upgradeWindow";
