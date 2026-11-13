@@ -123,8 +123,10 @@ impl Drop for Fixture {
 fn client_command(project: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_clickhousectl"));
     command
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
+        .env("HOME", project)
         // An empty directory forces fallback regardless of the host's tools.
         .env("PATH", project.join("empty-path"))
         .current_dir(project)
@@ -564,7 +566,12 @@ fn real_docker_file_and_stdin_apply_sql_and_propagate_errors() {
         thread::sleep(Duration::from_millis(200));
     }
     let run = |args: &[&str], input: Option<&str>| {
-        let mut child = client_command(project.path())
+        let mut command = client_command(project.path());
+        // The cleared environment would otherwise hide a non-default daemon.
+        if let Some(host) = std::env::var_os("DOCKER_HOST") {
+            command.env("DOCKER_HOST", host);
+        }
+        let mut child = command
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

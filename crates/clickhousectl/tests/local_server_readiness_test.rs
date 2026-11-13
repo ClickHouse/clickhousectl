@@ -24,9 +24,11 @@ fn run_start(project: &Path, home: &Path, http_port: u16, tcp_port: u16) -> Outp
     let http_port_arg = http_port.to_string();
     let tcp_port_arg = tcp_port.to_string();
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
         .env("FAKE_CLICKHOUSE_HTTP_PORT", &http_port_arg)
         .env("FAKE_CLICKHOUSE_PORT", tcp_port.to_string())
         .current_dir(project)

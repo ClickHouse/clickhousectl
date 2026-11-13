@@ -281,6 +281,10 @@ impl Cli {
             .env("HOME", &self.home)
             .env("DO_NOT_TRACK", "1")
             .env("CLICKHOUSECTL_NO_UPDATE_CHECK", "1")
+            // Output follows the flags, not a coding agent running the tests,
+            // and no developer project outranks the temporary workdir.
+            .env("CLICKHOUSECTL_AUTO_JSON", "0")
+            .env_remove("CLICKHOUSECTL_PROJECT_DIR")
             .env(
                 "CLICKHOUSE_CLOUD_API_KEY",
                 required_env("CLICKHOUSE_CLOUD_API_KEY")?,
