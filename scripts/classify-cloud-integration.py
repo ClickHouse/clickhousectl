@@ -28,6 +28,9 @@ SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/services/query.rs": frozenset({"service"}),
     "crates/clickhousectl/src/cloud/services/query_key.rs": frozenset({"service"}),
     "crates/clickhousectl/src/cloud/udfs.rs": frozenset({"service"}),
+    # Release version check: runs offline, reaches no Cloud API.
+    "scripts/check-release-versions.py": NO_SUITES,
+    "scripts/tests/test_check_release_versions.py": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/client/activity.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/api_keys.rs": frozenset(
