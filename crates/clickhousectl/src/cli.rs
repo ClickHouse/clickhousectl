@@ -77,6 +77,7 @@ CONTEXT FOR AGENTS:
   Run `local init` once in the project directory; project-scoped commands then work from any
   subdirectory (nearest `.clickhouse/` wins; `~/.clickhouse` is global, never a project).
   Outside a project they use the current directory, and server starts create `.clickhouse/` there.
+  CLICKHOUSECTL_PROJECT_DIR=<dir> skips discovery: <dir> is the project root (`local init` too).
   `clickhousectl local clickhouse start` bootstraps from zero — installs `latest` if nothing is set up.
   Typical flow: `local init` -> `local clickhouse start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),

@@ -17,6 +17,46 @@ pub enum ProjectRootKind {
     /// Read-only commands report an empty project; commands that create state
     /// create `.clickhouse/` here.
     Unmarked,
+    /// [`PROJECT_DIR_ENV`] named the root, whether or not it holds
+    /// `.clickhouse/` yet. Discovery does not run, and changing directory
+    /// never selects another project.
+    Override,
+}
+
+/// Names the project root explicitly, replacing discovery (#250).
+pub const PROJECT_DIR_ENV: &str = "CLICKHOUSECTL_PROJECT_DIR";
+
+/// Why [`PROJECT_DIR_ENV`] was refused. Carried inside the `io::Error` that
+/// [`project_root`] returns, so every caller's `?` keeps working and
+/// `From<io::Error> for Error` turns it back into its own variant.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{PROJECT_DIR_ENV}={value} {reason}; set it to an existing project directory or unset it")]
+pub struct ProjectDirOverrideError {
+    /// The variable's value as given.
+    pub value: String,
+    pub reason: ProjectDirOverrideReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectDirOverrideReason {
+    /// The path does not exist or cannot be resolved.
+    Missing,
+    /// The path exists but is not a directory.
+    NotADirectory,
+    /// The path is the home directory, whose `.clickhouse/` is the global one.
+    HomeDirectory,
+}
+
+impl std::fmt::Display for ProjectDirOverrideReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "does not exist",
+            Self::NotADirectory => "is not a directory",
+            Self::HomeDirectory => {
+                "is the home directory, whose .clickhouse/ is global, not a project"
+            }
+        })
+    }
 }
 
 /// The project this invocation acts on.
@@ -28,8 +68,12 @@ pub struct ProjectRoot {
 }
 
 impl ProjectRoot {
+    /// A project was found or named: a `.clickhouse/` marker or the
+    /// [`PROJECT_DIR_ENV`] override. False only when the current directory
+    /// stands in because nothing was found, the one case where changing
+    /// directory can select a project.
     pub fn is_marked(&self) -> bool {
-        self.kind == ProjectRootKind::Marked
+        self.kind != ProjectRootKind::Unmarked
     }
 
     /// `<root>/.clickhouse`, which may not exist yet.
@@ -90,18 +134,77 @@ fn owned_by_current_user(_path: &Path, metadata: &Metadata) -> bool {
     metadata.uid() == unsafe { libc::geteuid() }
 }
 
+/// The root [`PROJECT_DIR_ENV`] names, or `None` when it is unset or empty.
+///
+/// A relative value is resolved against `cwd`, then canonicalized. It must be
+/// an existing directory other than `home` (canonical), whose `.clickhouse/`
+/// is the global directory. Unlike an ancestor marker in discovery, the
+/// directory is not checked for ownership or symlinks: it was named
+/// explicitly, as the current directory is, rather than adopted silently.
+pub fn override_project_root(
+    value: Option<&std::ffi::OsStr>,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> std::io::Result<Option<ProjectRoot>> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let refuse = |reason| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            ProjectDirOverrideError {
+                value: value.to_string_lossy().into_owned(),
+                reason,
+            },
+        )
+    };
+    let dir = cwd
+        .join(value)
+        .canonicalize()
+        .map_err(|_| refuse(ProjectDirOverrideReason::Missing))?;
+    if !dir.is_dir() {
+        return Err(refuse(ProjectDirOverrideReason::NotADirectory));
+    }
+    if Some(dir.as_path()) == home {
+        return Err(refuse(ProjectDirOverrideReason::HomeDirectory));
+    }
+    Ok(Some(ProjectRoot {
+        dir,
+        kind: ProjectRootKind::Override,
+    }))
+}
+
+/// The override when [`PROJECT_DIR_ENV`] is set, else discovery from `cwd`.
+fn resolve_project_root(
+    value: Option<&std::ffi::OsStr>,
+    cwd: &Path,
+    home: Option<&Path>,
+    owned: impl Fn(&Path, &Metadata) -> bool,
+) -> std::io::Result<ProjectRoot> {
+    match override_project_root(value, cwd, home)? {
+        Some(root) => Ok(root),
+        None => Ok(discover_project_root(cwd, home, owned)),
+    }
+}
+
 static PROJECT_ROOT: OnceLock<ProjectRoot> = OnceLock::new();
 
 /// The project root of this invocation, resolved on first use and then fixed
 /// for the rest of the process, so a concurrent `local init` in an ancestor
-/// cannot move a command's state half-way through.
+/// cannot move a command's state half-way through. A refused
+/// [`PROJECT_DIR_ENV`] is an error, not cached, on every call.
 pub fn project_root() -> std::io::Result<&'static ProjectRoot> {
     if let Some(root) = PROJECT_ROOT.get() {
         return Ok(root);
     }
     let cwd = std::env::current_dir()?.canonicalize()?;
     let home = dirs::home_dir().and_then(|home| home.canonicalize().ok());
-    let root = discover_project_root(&cwd, home.as_deref(), owned_by_current_user);
+    let root = resolve_project_root(
+        std::env::var_os(PROJECT_DIR_ENV).as_deref(),
+        &cwd,
+        home.as_deref(),
+        owned_by_current_user,
+    )?;
     Ok(PROJECT_ROOT.get_or_init(|| root))
 }
 
@@ -114,11 +217,23 @@ pub fn local_dir() -> std::io::Result<PathBuf> {
 
 /// The project that encloses the current directory when `local init` would
 /// create a nested one here: the current directory has no `.clickhouse/` and an
-/// ancestor project was found.
+/// ancestor project was found. Never with [`PROJECT_DIR_ENV`] set, since `init`
+/// then initializes the named root.
 pub fn enclosing_project() -> Result<Option<PathBuf>> {
     let root = project_root()?;
     let cwd = std::env::current_dir()?.canonicalize()?;
-    Ok((root.is_marked() && root.dir != cwd).then(|| root.dir.clone()))
+    Ok((root.kind == ProjectRootKind::Marked && root.dir != cwd).then(|| root.dir.clone()))
+}
+
+/// The directory `local init` initializes: the [`PROJECT_DIR_ENV`] root when
+/// set, so later commands find what it created, else the exact current
+/// directory.
+pub fn init_dir() -> Result<PathBuf> {
+    let root = project_root()?;
+    if root.kind == ProjectRootKind::Override {
+        return Ok(root.dir.clone());
+    }
+    Ok(std::env::current_dir()?)
 }
 
 /// Which project-local paths `init()` created during this invocation. The
@@ -182,16 +297,16 @@ pub const CLICKHOUSE_SCAFFOLD: [&str; 6] = [
     "config.d",
 ];
 
-/// Initialize the exact current directory, like `git init`: inside another
-/// project this creates a nested one, which then wins for this directory.
+/// Initialize [`init_dir`], like `git init`: inside another project this
+/// creates a nested one, which then wins for this directory.
 pub fn init() -> Result<InitResult> {
-    let cwd = std::env::current_dir()?;
-    let runtime_ignore = ensure_runtime_gitignore_in(&cwd.join(PROJECT_STATE_DIR))?;
+    let dir = init_dir()?;
+    let runtime_ignore = ensure_runtime_gitignore_in(&dir.join(PROJECT_STATE_DIR))?;
 
     let clickhouse_scaffold_created =
-        create_project_scaffold(cwd.join("clickhouse"), &CLICKHOUSE_SCAFFOLD)?;
+        create_project_scaffold(dir.join("clickhouse"), &CLICKHOUSE_SCAFFOLD)?;
     let postgres_scaffold_created = create_project_scaffold(
-        cwd.join("postgres"),
+        dir.join("postgres"),
         &["tables", "views", "functions", "queries", "seed"],
     )?;
 
@@ -397,6 +512,84 @@ mod tests {
             discover_project_root(&cwd, Some(&tree.ceiling()), all_owned),
             unmarked(cwd)
         );
+    }
+
+    fn overridden(dir: PathBuf) -> ProjectRoot {
+        ProjectRoot {
+            dir,
+            kind: ProjectRootKind::Override,
+        }
+    }
+
+    fn refusal(error: std::io::Error) -> ProjectDirOverrideReason {
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ProjectDirOverrideError>())
+            .expect("an override refusal")
+            .reason
+    }
+
+    #[test]
+    fn the_override_replaces_discovery_with_or_without_a_marker() {
+        let tree = Tree::new();
+        let home = tree.dir("home");
+        tree.mark("app");
+        let cwd = tree.dir("app/sub");
+        let unmarked_target = tree.dir("elsewhere");
+        let marked_target = tree.mark("other");
+        for target in [unmarked_target, marked_target] {
+            assert_eq!(
+                resolve_project_root(Some(target.as_os_str()), &cwd, Some(&home), all_owned)
+                    .unwrap(),
+                overridden(target)
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_override_resolves_against_the_current_directory() {
+        let tree = Tree::new();
+        let target = tree.dir("app");
+        let cwd = tree.dir("app/sub/deep");
+        assert_eq!(
+            override_project_root(Some("../..".as_ref()), &cwd, None).unwrap(),
+            Some(overridden(target))
+        );
+    }
+
+    #[test]
+    fn an_unset_or_empty_override_falls_back_to_discovery() {
+        let tree = Tree::new();
+        let project = tree.mark("app");
+        let cwd = tree.dir("app/sub");
+        for value in [None, Some("".as_ref())] {
+            assert_eq!(
+                resolve_project_root(value, &cwd, Some(&tree.ceiling()), all_owned).unwrap(),
+                marked(project.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_file_or_home_override_is_refused() {
+        let tree = Tree::new();
+        let home = tree.mark("home");
+        let cwd = tree.dir("work");
+        std::fs::write(tree.path("file"), "").unwrap();
+        for (value, reason) in [
+            (tree.path("missing"), ProjectDirOverrideReason::Missing),
+            (tree.path("file"), ProjectDirOverrideReason::NotADirectory),
+            (home.clone(), ProjectDirOverrideReason::HomeDirectory),
+            // A spelling of home that only canonicalization reveals.
+            (
+                tree.path("work/../home/."),
+                ProjectDirOverrideReason::HomeDirectory,
+            ),
+        ] {
+            let error = override_project_root(Some(value.as_os_str()), &cwd, Some(&home))
+                .expect_err("refused");
+            assert_eq!(refusal(error), reason, "{}", value.display());
+        }
     }
 
     #[test]

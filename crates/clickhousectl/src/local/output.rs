@@ -100,6 +100,8 @@ pub(crate) enum LocalErrorCode {
     /// body names the file and gives conservative recovery guidance without
     /// exposing serde's source text.
     ServerMetadataInvalid,
+    /// `CLICKHOUSECTL_PROJECT_DIR` names no usable project root.
+    InvalidProjectDir,
     IoError,
     LocalError,
 }
@@ -154,6 +156,7 @@ impl LocalErrorCode {
             Self::SqlInputOpenFailed => "sql_input_open_failed",
             Self::SqlInputReadFailed => "sql_input_read_failed",
             Self::ServerMetadataInvalid => "server_metadata_invalid",
+            Self::InvalidProjectDir => "invalid_project_dir",
             Self::IoError => "io_error",
             Self::LocalError => "local_error",
         }
@@ -265,6 +268,8 @@ pub(crate) enum LocalProjectScopeKind {
     ProjectRoot,
     /// No project was found, so the current directory was used.
     CurrentDirectory,
+    /// `CLICKHOUSECTL_PROJECT_DIR` named `path`; discovery did not run.
+    EnvOverride,
 }
 
 impl From<ProjectRootKind> for LocalProjectScopeKind {
@@ -272,6 +277,7 @@ impl From<ProjectRootKind> for LocalProjectScopeKind {
         match kind {
             ProjectRootKind::Marked => Self::ProjectRoot,
             ProjectRootKind::Unmarked => Self::CurrentDirectory,
+            ProjectRootKind::Override => Self::EnvOverride,
         }
     }
 }
@@ -738,6 +744,7 @@ impl LocalErrorBody {
             // ── filesystem and metadata ─────────────────────────────────────
             // The OS's or serde's text goes in `details`; the paths stay out.
             Error::Io(source) | Error::ProcessScan(source) => io_mapping(source),
+            Error::InvalidProjectDir(_) => Mapping::parity(LocalErrorCode::InvalidProjectDir),
             Error::Json(source) => io_mapping(source),
             Error::CreateDir { source, .. }
             | Error::ServerMetadataPermission { source, .. }
@@ -950,7 +957,7 @@ pub(crate) fn project_list_guidance(
     list: &'static str,
 ) -> Vec<LocalGuidance> {
     match kind {
-        ProjectRootKind::Marked => vec![LocalGuidance {
+        ProjectRootKind::Marked | ProjectRootKind::Override => vec![LocalGuidance {
             action: LocalGuidanceAction::ListProjectServers,
             message: "List the servers in this project",
             command: Some(list),
@@ -1208,6 +1215,10 @@ pub struct InitOutput {
     /// one before this run and act on this new project after it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enclosing_project: Option<String>,
+    /// The directory initialized, which `paths` are relative to, when
+    /// `CLICKHOUSECTL_PROJECT_DIR` named it instead of the current directory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
 }
 
 impl fmt::Display for InitOutput {
@@ -1229,6 +1240,13 @@ impl fmt::Display for InitOutput {
             .filter(|path| !path.starts_with(".clickhouse/"))
         {
             write!(f, "\nCreated project scaffold in {path}")?;
+        }
+        if let Some(dir) = &self.project_dir {
+            write!(
+                f,
+                "\nProject root: '{dir}' (from {})",
+                crate::init::PROJECT_DIR_ENV
+            )?;
         }
         if let Some(enclosing) = &self.enclosing_project {
             write!(
@@ -1607,7 +1625,7 @@ pub(crate) fn empty_list_guidance(list: ProjectList, kind: ProjectRootKind) -> V
     // Inside a project an empty list is accurate: there is nowhere to change
     // to, only other projects to look in.
     let mut guidance = match kind {
-        ProjectRootKind::Marked => Vec::new(),
+        ProjectRootKind::Marked | ProjectRootKind::Override => Vec::new(),
         ProjectRootKind::Unmarked => project_list_guidance(kind, list.command()),
     };
     if list.covers_clickhouse() {
@@ -3509,6 +3527,7 @@ mod tests {
             ],
             already_initialized: false,
             enclosing_project: None,
+            project_dir: None,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3527,6 +3546,7 @@ mod tests {
             paths: vec![],
             already_initialized: true,
             enclosing_project: None,
+            project_dir: None,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3824,6 +3844,7 @@ mod tests {
                 paths: paths.iter().map(|path| path.to_string()).collect(),
                 already_initialized,
                 enclosing_project: None,
+                project_dir: None,
             }
             .to_string()
         };
@@ -4259,7 +4280,11 @@ mod tests {
             ),
             (ProjectList::Status, "clickhousectl local status", true),
         ] {
-            for kind in [ProjectRootKind::Unmarked, ProjectRootKind::Marked] {
+            for kind in [
+                ProjectRootKind::Unmarked,
+                ProjectRootKind::Marked,
+                ProjectRootKind::Override,
+            ] {
                 let guidance = empty_list_guidance(list, kind);
                 let actions: Vec<_> = guidance.iter().map(|hint| hint.action).collect();
                 let mut expected = match kind {
@@ -4267,7 +4292,7 @@ mod tests {
                         LocalGuidanceAction::ReturnToProjectRoot,
                         LocalGuidanceAction::ListProjectServers,
                     ],
-                    ProjectRootKind::Marked => Vec::new(),
+                    ProjectRootKind::Marked | ProjectRootKind::Override => Vec::new(),
                 };
                 if global {
                     expected.push(LocalGuidanceAction::ListGlobalServers);

@@ -397,7 +397,13 @@ pub(crate) const NO_PROJECT_FOUND: &str = "No `.clickhouse` project directory wa
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
+
+    /// `CLICKHOUSECTL_PROJECT_DIR` was set to a directory that cannot be the
+    /// project root (#250). Raised inside `init::project_root`'s
+    /// `io::Result` and split out of [`Error::Io`] by `From`.
+    #[error(transparent)]
+    InvalidProjectDir(crate::init::ProjectDirOverrideError),
 
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
@@ -1122,6 +1128,22 @@ fn udf_names_verb(names: &[String]) -> String {
     match names {
         [_] => format!("{} is", udf_names(names)),
         _ => format!("{} are", udf_names(names)),
+    }
+}
+
+/// Every `?` on an `io::Error` lands here, so a refused project-dir override
+/// keeps its own variant however many `io::Result` layers it crossed.
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        type Refusal = crate::init::ProjectDirOverrideError;
+        if !error.get_ref().is_some_and(|inner| inner.is::<Refusal>()) {
+            return Error::Io(error);
+        }
+        let refusal = error
+            .into_inner()
+            .and_then(|inner| inner.downcast::<Refusal>().ok())
+            .expect("checked to hold a project-dir refusal");
+        Error::InvalidProjectDir(*refusal)
     }
 }
 

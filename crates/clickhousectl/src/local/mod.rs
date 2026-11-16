@@ -51,6 +51,9 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             let enclosing = init::enclosing_project()?;
             let mut out = init_output(init::init()?);
             out.enclosing_project = enclosing.map(|dir| dir.display().to_string());
+            let project = init::project_root()?;
+            out.project_dir = (project.kind == init::ProjectRootKind::Override)
+                .then(|| project.dir.display().to_string());
             output::print_output(&out, json);
             Ok(())
         }
@@ -1576,6 +1579,7 @@ fn init_output(result: init::InitResult) -> output::InitOutput {
         paths,
         already_initialized: !result.clickhouse_dir_created,
         enclosing_project: None,
+        project_dir: None,
     }
 }
 
