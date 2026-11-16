@@ -268,7 +268,7 @@ pub fn classify_api_error(error: &clickhouse_cloud_api::Error) -> ApiFailure {
 
 /// Kind for a plain HTTP status. `408`/`504` are timeouts and `429` is rate
 /// limiting; everything else collapses to its class.
-fn status_kind(status: u16) -> FailureKind {
+pub(crate) fn status_kind(status: u16) -> FailureKind {
     match status {
         429 => FailureKind::RateLimited,
         408 | 504 => FailureKind::Timeout,

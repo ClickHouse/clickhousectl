@@ -197,6 +197,7 @@ impl CloudErrorDetail {
             }
             Error::Http(error) if error.is_timeout() => CloudErrorCode::Timeout,
             Error::Http(_) => CloudErrorCode::Transport,
+            Error::UpdateCheck { failure, .. } => CloudErrorCode::from_failure(*failure),
             _ => CloudErrorCode::Other,
         };
         std::borrow::Cow::Owned(Self::new(code, error.to_string()))
@@ -827,7 +828,23 @@ mod tests {
                 4,
             ),
             (Error::Cancelled, "cancelled", 3),
-            (Error::Cloud("validation failed".into()), "other", 1),
+            (Error::Skills("validation failed".into()), "other", 1),
+            (
+                Error::UpdateCheck {
+                    message: "timed out".into(),
+                    failure: crate::failure::FailureKind::Timeout,
+                },
+                "timeout",
+                1,
+            ),
+            (
+                Error::UpdateCheck {
+                    message: "unreachable".into(),
+                    failure: crate::failure::FailureKind::Transport,
+                },
+                "transport",
+                1,
+            ),
             (Error::Io(std::io::Error::other("read failed")), "io", 1),
         ] {
             let detail = CloudErrorDetail::from_error(&error);

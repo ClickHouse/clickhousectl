@@ -781,12 +781,11 @@ impl LocalErrorOutput {
             // These belong to other command surfaces and are never printed
             // through this envelope; `ChildExit` passes the child's status
             // through without an error object at all.
-            Error::Cloud(_)
-            | Error::CloudDetailed(_)
+            Error::CloudDetailed(_)
             | Error::AuthRequired(_)
             | Error::Usage(_)
             | Error::Skills(_)
-            | Error::UpdateCheck(_)
+            | Error::UpdateCheck { .. }
             | Error::ChildExit(_) => {
                 Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
             }

@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::failure::FailureKind;
 use crate::paths;
 use flate2::read::GzDecoder;
 use serde::Serialize;
@@ -129,29 +130,74 @@ fn tag_from_release_location(location: &str) -> Option<String> {
     parse_release_tag(tag)
 }
 
+/// Why one source of the latest release tag failed: the text for the human
+/// message, and its class for the `--json` code (#1312).
+#[derive(Debug)]
+struct TagSourceError {
+    message: String,
+    failure: FailureKind,
+}
+
+impl TagSourceError {
+    /// A response that arrived but held no release tag.
+    fn no_tag(message: String) -> Self {
+        Self {
+            message,
+            failure: FailureKind::Other,
+        }
+    }
+
+    /// A response whose status says why it held no release tag.
+    fn status(message: String, status: reqwest::StatusCode) -> Self {
+        let failure = if status.is_client_error() || status.is_server_error() {
+            crate::failure::status_kind(status.as_u16())
+        } else {
+            FailureKind::Other
+        };
+        Self { message, failure }
+    }
+}
+
+impl From<reqwest::Error> for TagSourceError {
+    /// Classified from the error's own kind, never its text.
+    fn from(error: reqwest::Error) -> Self {
+        let failure = if error.is_timeout() {
+            FailureKind::Timeout
+        } else if let Some(status) = error.status() {
+            crate::failure::status_kind(status.as_u16())
+        } else {
+            FailureKind::Transport
+        };
+        Self {
+            message: error.to_string(),
+            failure,
+        }
+    }
+}
+
 /// Read `latest.txt`. builds.clickhouse.com caches every path for days, so a
 /// unique query string makes the CDN fetch it from the bucket.
 async fn fetch_manifest_tag(
     client: &reqwest::Client,
     url: &str,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<String, TagSourceError> {
     let url = format!("{}?t={}", url, now_secs());
     let response = client
         .get(&url)
         .send()
         .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?;
-    let body = response.text().await.map_err(|e| e.to_string())?;
-    parse_release_tag(&body).ok_or_else(|| format!("{} did not contain a release tag", url))
+        .and_then(|r| r.error_for_status())?;
+    let body = response.text().await?;
+    parse_release_tag(&body)
+        .ok_or_else(|| TagSourceError::no_tag(format!("{} did not contain a release tag", url)))
 }
 
 /// Read the tag from the `releases/latest` redirect without following it.
 async fn fetch_release_redirect_tag(
     client: &reqwest::Client,
     url: &str,
-) -> std::result::Result<String, String> {
-    let response = client.get(url).send().await.map_err(|e| e.to_string())?;
+) -> std::result::Result<String, TagSourceError> {
+    let response = client.get(url).send().await?;
     response
         .headers()
         .get(reqwest::header::LOCATION)
@@ -159,10 +205,13 @@ async fn fetch_release_redirect_tag(
         .filter(|_| response.status().is_redirection())
         .and_then(tag_from_release_location)
         .ok_or_else(|| {
-            format!(
-                "{} returned {} without a release tag redirect",
-                url,
-                response.status()
+            TagSourceError::status(
+                format!(
+                    "{} returned {} without a release tag redirect",
+                    url,
+                    response.status()
+                ),
+                response.status(),
             )
         })
 }
@@ -180,11 +229,17 @@ async fn resolve_latest_tag(
     };
     fetch_release_redirect_tag(client, release_page_url)
         .await
-        .map_err(|redirect_err| {
-            Error::UpdateCheck(format!(
+        .map_err(|redirect_err| Error::UpdateCheck {
+            message: format!(
                 "Could not determine the latest clickhousectl version: {}; {}",
-                manifest_err, redirect_err
-            ))
+                manifest_err.message, redirect_err.message
+            ),
+            // The fallback ran last; the manifest's class stands in only when
+            // the fallback's failure has none.
+            failure: match redirect_err.failure {
+                FailureKind::Other => manifest_err.failure,
+                failure => failure,
+            },
         })
 }
 
@@ -200,8 +255,9 @@ async fn fetch_latest_tag(timeout: std::time::Duration) -> Result<String> {
         resolve_latest_tag(&client, LATEST_MANIFEST_URL, LATEST_RELEASE_PAGE_URL),
     )
     .await
-    .map_err(|_| {
-        Error::UpdateCheck("Timed out determining the latest clickhousectl version".into())
+    .map_err(|_| Error::UpdateCheck {
+        message: "Timed out determining the latest clickhousectl version".into(),
+        failure: FailureKind::Timeout,
     })?
 }
 
@@ -708,10 +764,76 @@ mod tests {
                 .await;
 
             let err = resolve(&server).await.unwrap_err();
-            assert!(matches!(&err, Error::UpdateCheck(_)), "got: {err:?}");
+            // The fallback's class wins: it is the last request made.
+            assert!(
+                matches!(
+                    &err,
+                    Error::UpdateCheck {
+                        failure: FailureKind::RateLimited,
+                        ..
+                    }
+                ),
+                "got: {err:?}"
+            );
             let msg = err.to_string();
             assert!(msg.contains("403"), "got: {}", msg);
             assert!(msg.contains("429"), "got: {}", msg);
+        }
+
+        /// Each source's failure is classified from the request, so `update
+        /// --check --json` reports `transport`/`timeout` (#1312).
+        #[tokio::test]
+        async fn source_failures_keep_their_class() {
+            let failure = |result: Result<String>| match result.unwrap_err() {
+                Error::UpdateCheck { failure, .. } => failure,
+                other => panic!("got: {other:?}"),
+            };
+
+            // Answers without a tag fall back to the manifest's class.
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+                .mount(&server)
+                .await;
+            assert_eq!(failure(resolve(&server).await), FailureKind::Other);
+            Mock::given(method("GET"))
+                .and(path("/latest.txt"))
+                .respond_with(ResponseTemplate::new(503))
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            assert_eq!(failure(resolve(&server).await), FailureKind::Http5xx);
+
+            let closed = {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                format!("http://{}", listener.local_addr().unwrap())
+            };
+            let unreachable = resolve_latest_tag(
+                &client(),
+                &format!("{closed}/latest.txt"),
+                &format!("{closed}/releases/latest"),
+            )
+            .await;
+            assert_eq!(failure(unreachable), FailureKind::Transport);
+
+            let slow = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(5)),
+                )
+                .mount(&slow)
+                .await;
+            let impatient = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(50))
+                .build()
+                .unwrap();
+            let timed_out = resolve_latest_tag(
+                &impatient,
+                &format!("{}/latest.txt", slow.uri()),
+                &format!("{}/releases/latest", slow.uri()),
+            )
+            .await;
+            assert_eq!(failure(timed_out), FailureKind::Timeout);
         }
     }
 }

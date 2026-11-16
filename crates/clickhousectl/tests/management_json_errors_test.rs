@@ -15,10 +15,10 @@ fn closed_proxy() -> String {
 fn update_and_skills_network_failures_print_a_json_error_envelope() {
     let proxy = closed_proxy();
     for (args, code, agent) in [
-        (vec!["update", "--check", "--json"], "other", false),
+        (vec!["update", "--check", "--json"], "transport", false),
         // Never plain `update`: if the proxy were ignored it would replace
         // the test binary.
-        (vec!["update", "--check"], "other", true),
+        (vec!["update", "--check"], "transport", true),
         (
             vec!["skills", "--agent", "claude", "--json"],
             "transport",

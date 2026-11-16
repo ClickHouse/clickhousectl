@@ -13,13 +13,14 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("auth whoami", &[&op::WHOAMI_GET]).unscoped(),
 ];
 
-use crate::cloud::client::{CloudClient, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
 use crate::cloud::output::print_human;
 use crate::cloud::{
     AuthSource, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
 };
 use crate::error::Error;
+use crate::failure::{ApiFailure, FailureKind};
 use clap::Subcommand;
 use clickhouse_cloud_api::models::Whoami;
 use serde::{Deserialize, Serialize};
@@ -221,7 +222,7 @@ pub async fn run(
         } => {
             if interactive {
                 let (key, secret) =
-                    prompt_api_credentials().map_err(|error| Error::Cloud(error.to_string()))?;
+                    prompt_api_credentials().map_err(super::cloud_error_to_top_level)?;
                 login_with_api_key(&key, &secret, api_url, json).await
             } else if api_key.is_some() || api_secret.is_some() {
                 let key = api_key.ok_or_else(|| {
@@ -239,9 +240,9 @@ pub async fn run(
                 let url = api_url.unwrap_or(DEFAULT_API_URL);
                 let tokens = device_auth_login(url, json)
                     .await
-                    .map_err(|error| Error::Cloud(error.to_string()))?;
-                save_tokens(&tokens).map_err(|error| Error::Cloud(error.to_string()))?;
-                let tokens_path = tokens_path().map_err(|error| Error::Cloud(error.to_string()))?;
+                    .map_err(super::cloud_error_to_top_level)?;
+                save_tokens(&tokens).map_err(super::cloud_error_to_top_level)?;
+                let tokens_path = tokens_path().map_err(super::cloud_error_to_top_level)?;
                 let report = oauth_login_report(&tokens, tokens_path.display().to_string()).await;
                 if !json {
                     println!("Logged in successfully.");
@@ -253,8 +254,9 @@ pub async fn run(
         AuthCommands::Whoami => unreachable!("whoami runs through run_with_client"),
         AuthCommands::Signup => {
             let api_url = api_url.unwrap_or("https://api.clickhouse.cloud");
-            let parsed = url::Url::parse(api_url)
-                .map_err(|error| Error::Cloud(format!("Invalid URL: {}", error)))?;
+            let parsed = url::Url::parse(api_url).map_err(|error| {
+                super::cloud_error_to_top_level(CloudError::new(format!("Invalid URL: {error}")))
+            })?;
             let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
             let base_host = host.strip_prefix("api.").unwrap_or(host);
             let url = format!(
@@ -278,8 +280,7 @@ pub async fn run(
                 clear_tokens();
             }
             if clear_api_keys {
-                credentials::clear_credentials()
-                    .map_err(|error| Error::Cloud(error.to_string()))?;
+                credentials::clear_credentials().map_err(super::cloud_error_to_top_level)?;
             }
             LogoutReport::new(clear_oauth, clear_api_keys).write(&mut crate::stdout::stdout(), json)
         }
@@ -722,7 +723,7 @@ async fn login_with_api_key(
         .map(normalize_api_url)
         .unwrap_or_else(|| DEFAULT_API_URL.to_string());
     credentials::set_api_credentials(key.to_owned(), secret.to_owned(), &api_url)
-        .map_err(|error| Error::Cloud(error.to_string()))?;
+        .map_err(super::cloud_error_to_top_level)?;
     let saved = credentials::credentials_path().display().to_string();
     let report = LoginReport::new(saved, verification, "could not verify the credentials");
     if !json {
@@ -753,7 +754,7 @@ fn print_login_report(report: &LoginReport, json: bool) -> crate::error::Result<
     Ok(())
 }
 
-fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
+fn prompt_api_credentials() -> CloudResult<(String, String)> {
     use std::io::Write;
 
     print!("API Key: ");
@@ -763,7 +764,7 @@ fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std
     let api_key = api_key.trim().to_string();
 
     if api_key.is_empty() {
-        return Err("API key cannot be empty".into());
+        return Err(CloudError::new("API key cannot be empty"));
     }
 
     print!("API Secret: ");
@@ -771,7 +772,7 @@ fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std
     let api_secret = rpassword::read_password()?;
 
     if api_secret.is_empty() {
-        return Err("API secret cannot be empty".into());
+        return Err(CloudError::new("API secret cannot be empty"));
     }
 
     Ok((api_key, api_secret))
@@ -815,10 +816,30 @@ where
 }
 
 /// OAuth form bodies contain credentials; never forward them via redirects.
-fn oauth_client() -> Result<reqwest::Client, reqwest::Error> {
+fn oauth_client() -> CloudResult<reqwest::Client> {
     crate::http::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
+        .map_err(oauth_http_error)
+}
+
+/// An OAuth request got no usable HTTP response. Classified from the reqwest
+/// error's own kind, as the Cloud API boundary classifies its transport errors.
+fn oauth_http_error(error: reqwest::Error) -> CloudError {
+    let kind = if error.is_timeout() {
+        FailureKind::Timeout
+    } else {
+        FailureKind::Transport
+    };
+    CloudError::new(error.to_string()).with_failure(ApiFailure::new(kind))
+}
+
+/// The OAuth server answered with a status it should not have.
+fn oauth_status_error(message: String, status: reqwest::StatusCode) -> CloudError {
+    CloudError::new(message).with_failure(ApiFailure::with_status(
+        crate::failure::status_kind(status.as_u16()),
+        status.as_u16(),
+    ))
 }
 
 struct KnownAuthConfig {
@@ -997,8 +1018,12 @@ struct TokenErrorResponse {
 /// OAuth login is user identity (not org-scoped like API keys), so tokens live
 /// in the CLI's global home alongside installed versions and configs, rather
 /// than per-project under `./.clickhouse/`.
-pub fn tokens_path() -> Result<PathBuf, crate::error::Error> {
-    Ok(crate::paths::base_dir()?.join("tokens.json"))
+pub fn tokens_path() -> CloudResult<PathBuf> {
+    let base = crate::paths::base_dir().map_err(|error| match error {
+        Error::Io(error) => CloudError::from(error),
+        error => CloudError::new(error.to_string()),
+    })?;
+    Ok(base.join("tokens.json"))
 }
 
 /// A saved login could not be read or decoded. Never reconstruct its issuer
@@ -1028,7 +1053,7 @@ fn read_tokens(path: &std::path::Path) -> Result<Option<TokenStore>, UnusableTok
     }
 }
 
-pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_tokens(tokens: &TokenStore) -> CloudResult<()> {
     let path = tokens_path()?;
     let _lock = lock_tokens(&path)?;
     save_tokens_to(&path, tokens)
@@ -1036,10 +1061,7 @@ pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>
 
 /// Write the token file atomically and owner-only. Callers hold the
 /// [`lock_tokens`] lock.
-fn save_tokens_to(
-    path: &std::path::Path,
-    tokens: &TokenStore,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn save_tokens_to(path: &std::path::Path, tokens: &TokenStore) -> CloudResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1075,13 +1097,13 @@ pub fn is_token_valid(tokens: &TokenStore) -> bool {
 
 /// Run the OAuth device flow. The code and URL are instructions for a human,
 /// so in JSON mode they go to stderr and stdout keeps only the login report.
-pub async fn device_auth_login(
-    api_url: &str,
-    json: bool,
-) -> Result<TokenStore, Box<dyn std::error::Error>> {
+pub async fn device_auth_login(api_url: &str, json: bool) -> CloudResult<TokenStore> {
     let api_url = normalize_api_url(api_url);
-    let config = auth_config_for_url(&api_url)
-        .map_err(|error| format!("Cannot resolve OAuth configuration for '{api_url}': {error}"))?;
+    let config = auth_config_for_url(&api_url).map_err(|error| {
+        CloudError::new(format!(
+            "Cannot resolve OAuth configuration for '{api_url}': {error}"
+        ))
+    })?;
 
     let client = oauth_client()?;
 
@@ -1097,17 +1119,20 @@ pub async fn device_auth_login(
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form_body)
         .send()
-        .await?;
+        .await
+        .map_err(oauth_http_error)?;
 
     let status = resp.status();
-    let resp_body = resp.bytes().await?;
+    let resp_body = resp.bytes().await.map_err(oauth_http_error)?;
 
     if !status.is_success() {
-        return Err(format!(
-            "Failed to start device authorization: {}",
-            String::from_utf8_lossy(&resp_body)
-        )
-        .into());
+        return Err(oauth_status_error(
+            format!(
+                "Failed to start device authorization: {}",
+                String::from_utf8_lossy(&resp_body)
+            ),
+            status,
+        ));
     }
 
     let device_resp: DeviceCodeResponse = serde_json::from_slice(&resp_body)?;
@@ -1147,7 +1172,7 @@ pub async fn device_auth_login(
         tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
         if std::time::Instant::now() > deadline {
-            return Err("Device authorization timed out".into());
+            return Err(CloudError::new("Device authorization timed out"));
         }
 
         let poll_body = format!(
@@ -1161,10 +1186,11 @@ pub async fn device_auth_login(
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(poll_body)
             .send()
-            .await?;
+            .await
+            .map_err(oauth_http_error)?;
 
         let status = resp.status();
-        let body_bytes = resp.bytes().await?;
+        let body_bytes = resp.bytes().await.map_err(oauth_http_error)?;
         let body = String::from_utf8_lossy(&body_bytes);
 
         if status.is_success() {
@@ -1187,23 +1213,22 @@ pub async fn device_auth_login(
                 interval += 5;
                 continue;
             }
-            "expired_token" => return Err("Device code expired. Please try again.".into()),
-            "access_denied" => return Err("Authorization denied by user.".into()),
+            "expired_token" => {
+                return Err(CloudError::new("Device code expired. Please try again."));
+            }
+            "access_denied" => return Err(CloudError::new("Authorization denied by user.")),
             _ => {
-                return Err(format!(
+                return Err(CloudError::new(format!(
                     "Authorization failed: {} ({})",
                     error_resp.error,
                     error_resp.error_description.unwrap_or_default()
-                )
-                .into());
+                )));
             }
         }
     }
 }
 
-pub async fn refresh_access_token(
-    tokens: &TokenStore,
-) -> Result<TokenStore, Box<dyn std::error::Error>> {
+pub async fn refresh_access_token(tokens: &TokenStore) -> CloudResult<TokenStore> {
     let config = &tokens.auth_config;
 
     let client = oauth_client()?;
@@ -1219,17 +1244,20 @@ pub async fn refresh_access_token(
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form_body)
         .send()
-        .await?;
+        .await
+        .map_err(oauth_http_error)?;
 
     let status = resp.status();
-    let resp_body = resp.bytes().await?;
+    let resp_body = resp.bytes().await.map_err(oauth_http_error)?;
 
     if !status.is_success() {
-        return Err(format!(
-            "Token refresh failed: {}",
-            String::from_utf8_lossy(&resp_body)
-        )
-        .into());
+        return Err(oauth_status_error(
+            format!(
+                "Token refresh failed: {}",
+                String::from_utf8_lossy(&resp_body)
+            ),
+            status,
+        ));
     }
 
     let token_resp: TokenResponse = serde_json::from_slice(&resp_body)?;
@@ -1253,7 +1281,7 @@ pub async fn refresh_access_token(
 /// reason, and an expired file keeps `auth status` showing `Expired` and lets
 /// the credential resolver report [`OAUTH_LOGIN_EXPIRED`] instead of "no
 /// credentials". Only `auth logout` and a new login replace the file.
-pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ensure_fresh_tokens(json: bool) -> CloudResult<()> {
     // Leave unusable files intact. The credential resolver reports the re-login
     // error only if no higher-precedence credential source wins.
     let Ok(Some(tokens)) = load_tokens() else {
@@ -1268,13 +1296,14 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
 /// Refresh the login at `path` under [`lock_tokens`]. The file is re-read once
 /// the lock is held: another process may have refreshed it while this one
 /// waited, and its refresh token may already be spent.
-async fn refresh_saved_tokens(
-    path: &std::path::Path,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn refresh_saved_tokens(path: &std::path::Path, json: bool) -> CloudResult<()> {
     let lock_path = path.to_path_buf();
     // Waiting can last as long as another process's refresh request.
-    let _lock = tokio::task::spawn_blocking(move || lock_tokens(&lock_path)).await??;
+    let _lock = tokio::task::spawn_blocking(move || lock_tokens(&lock_path))
+        .await
+        .map_err(|error| {
+            CloudError::new(format!("failed to wait for the token lock: {error}"))
+        })??;
 
     let Ok(Some(tokens)) = read_tokens(path) else {
         return Ok(());
@@ -1517,6 +1546,38 @@ mod tests {
             });
             std::fs::write(&global, serde_json::to_vec(&old).unwrap()).unwrap();
             assert!(read_tokens(&global).is_err());
+        }
+    }
+
+    /// OAuth requests carry the typed class of their failure, so `--json`
+    /// reports `transport`/`http_5xx` rather than `other` (#1312).
+    #[tokio::test]
+    async fn oauth_request_failures_keep_their_class() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let issuer = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&issuer)
+            .await;
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        for (auth_url, kind, status) in [
+            (issuer.uri(), FailureKind::Http5xx, Some(503)),
+            (closed, FailureKind::Transport, None),
+        ] {
+            let mut tokens = sample_tokens();
+            tokens.auth_config = AuthConfig {
+                auth_url,
+                client_id: "client".into(),
+            };
+            let error = refresh_access_token(&tokens).await.unwrap_err();
+            let failure = error.failure.expect("classified");
+            assert_eq!((failure.kind, failure.http_status), (kind, status));
         }
     }
 

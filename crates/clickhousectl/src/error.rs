@@ -485,9 +485,13 @@ pub enum Error {
     Download(String),
 
     /// `update` could not determine the latest release. Not a download
-    /// failure: `update --check` downloads nothing.
-    #[error("{0}")]
-    UpdateCheck(String),
+    /// failure: `update --check` downloads nothing. `failure` is classified
+    /// from the request that failed, never from `message` (#1312).
+    #[error("{message}")]
+    UpdateCheck {
+        message: String,
+        failure: crate::failure::FailureKind,
+    },
 
     #[error("{0}")]
     Network(#[from] NetworkFailure),
@@ -714,14 +718,10 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("{0}")]
-    Cloud(String),
-
-    /// A cloud failure that also carries a machine-readable detail (#644).
+    /// A Cloud runtime failure with its machine-readable detail (#644).
     ///
-    /// Human mode prints exactly what [`Error::Cloud`] would — the detail's
-    /// own message — so the two modes never disagree; `--json` emits the
-    /// detail instead of the prose.
+    /// Human mode prints the detail's own message, so the two modes never
+    /// disagree; `--json` emits the detail instead of the prose.
     #[error("{}", .0.message)]
     CloudDetailed(Box<crate::cloud::output::CloudErrorDetail>),
 
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn generic_errors_map_to_1() {
-        assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
+        assert_eq!(Error::Skills("boom".into()).exit_code(), 1);
         assert_eq!(Error::VersionNotFound("25.12".into()).exit_code(), 1);
         assert_eq!(
             Error::VersionInUse {
@@ -1204,7 +1204,7 @@ mod tests {
     fn child_exit_codes_pass_through_without_changing_normal_mappings() {
         assert_eq!(Error::ChildExit(42).exit_code(), 42);
         assert_eq!(Error::ChildExit(255).exit_code(), 255);
-        assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
+        assert_eq!(Error::Skills("boom".into()).exit_code(), 1);
         assert_eq!(Error::Cancelled.exit_code(), 3);
         assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
     }
