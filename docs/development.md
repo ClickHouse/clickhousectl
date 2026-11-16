@@ -33,6 +33,7 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_UDF_LOAD_TIMEOUT_MS` | `local udf deploy` reload window (10 s) |
 | `CHCTL_TERM_TIMEOUT_MS` | SIGTERM grace before SIGKILL on local stop (2.5 s) |
 | `CHCTL_SERVICE_STOP_POLL_INTERVAL_MS` | `cloud service delete --force` stop poll interval (5 s) |
+| `CHCTL_SERVICE_STOP_TIMEOUT_MS` | `cloud service delete --force` stop wait (600 s) |
 | `CHCTL_UDF_POLL_INTERVAL_MS` | `cloud udf` service poll interval (5 s) |
 | `CHCTL_QUERY_READINESS_TIMEOUT_MS` | Query API readiness window after a key bind (120 s) |
 | `CHCTL_KEY_PROPAGATION_TIMEOUT_MS` | Retry window for a first-use key-binding upsert while the key propagates (30 s) |

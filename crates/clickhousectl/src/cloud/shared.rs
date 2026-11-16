@@ -1,10 +1,13 @@
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, Result as CloudResult, Scope, name_not_found,
 };
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
+use crate::failure::{ApiFailure, FailureKind};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{IpAccessListEntry, ResourceTagsV1};
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 /// Resolve the shared cloud organization scope lazily.
 pub(super) async fn resolve_org_id(client: &CloudClient) -> CloudResult<String> {
@@ -25,6 +28,90 @@ impl PollProgress {
         self.previous_state = Some(state.to_string());
         (verbose || changed).then(|| format!("  state: {state}"))
     }
+}
+
+/// Gap between probes while a command waits on a Cloud resource. Callers
+/// resolve their own `crate::timing` override of it into [`Wait::interval`].
+pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// What one probe of a [`wait_for`] showed.
+pub(super) enum Outcome {
+    Done,
+    /// Still on the way; the state is what the probe saw.
+    Pending(String),
+    /// The wait cannot succeed; the code is the JSON code it reports.
+    Failed(String, CloudErrorCode),
+}
+
+/// How [`wait_for`] polls.
+pub(super) struct Wait<'a> {
+    /// Names the wait in its failure and timeout messages.
+    pub what: &'a str,
+    pub timeout: Duration,
+    /// Ends the timeout message: what to check or rerun.
+    pub hint: &'a str,
+    pub interval: Duration,
+    /// Sleep one interval before the first probe, for a change just requested.
+    pub settle_first: bool,
+}
+
+/// Probe `fetch` every [`Wait::interval`] until `classify` says the wait is
+/// over or [`Wait::timeout`] passes. `observe` sees every probe that
+/// classified, so the caller renders its own progress.
+pub(super) async fn wait_for<T, Fut, F, C, O>(
+    wait: Wait<'_>,
+    mut fetch: F,
+    classify: C,
+    mut observe: O,
+) -> CloudResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = CloudResult<T>>,
+    C: Fn(&T) -> CloudResult<Outcome>,
+    O: FnMut(&T, &Outcome),
+{
+    let started = Instant::now();
+    if wait.settle_first {
+        tokio::time::sleep(wait.interval.min(wait.timeout)).await;
+    }
+    loop {
+        let value = fetch().await?;
+        let outcome = classify(&value)?;
+        observe(&value, &outcome);
+        let state = match outcome {
+            Outcome::Done => return Ok(value),
+            Outcome::Failed(reason, code) => {
+                let message = format!("{} failed: {reason}", wait.what);
+                return Err(CloudError::new(message.clone())
+                    .with_details(CloudErrorDetail::new(code, message)));
+            }
+            Outcome::Pending(state) => state,
+        };
+        let elapsed = started.elapsed();
+        if elapsed >= wait.timeout {
+            return Err(wait_timeout_error(
+                wait.what,
+                wait.timeout,
+                &state,
+                wait.hint,
+            ));
+        }
+        tokio::time::sleep(wait.interval.min(wait.timeout - elapsed)).await;
+    }
+}
+
+/// What timed out, the bound, the last state seen, then the caller's hint.
+pub(super) fn wait_timeout_error(
+    what: &str,
+    timeout: Duration,
+    last_state: &str,
+    hint: &str,
+) -> CloudError {
+    CloudError::new(format!(
+        "{what} did not finish within {}s (last state: {last_state}); {hint}",
+        timeout.as_secs()
+    ))
+    .with_failure(ApiFailure::new(FailureKind::Timeout))
 }
 
 /// An existing resource is selected by its opaque positional ID or exact name.
@@ -1046,5 +1133,79 @@ mod poll_progress_tests {
         let mut progress = PollProgress::default();
         assert!(progress.render("stopping", true).is_some());
         assert!(progress.render("stopping", true).is_some());
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::{Outcome, Wait, wait_for};
+    use crate::cloud::client::Result as CloudResult;
+    use crate::cloud::output::CloudErrorCode;
+    use crate::failure::FailureKind;
+    use std::time::Duration;
+
+    /// Probes answer `states` in order (the last one repeats); "done" and
+    /// "failed" end the wait. Returns the result and the probes it made.
+    async fn run(states: &[&'static str], timeout: Duration) -> (CloudResult<&'static str>, usize) {
+        let mut probes = 0;
+        let mut observed = Vec::new();
+        let result = wait_for(
+            Wait {
+                what: "the test wait",
+                timeout,
+                hint: "check `clickhousectl cloud service get svc-1`",
+                interval: Duration::ZERO,
+                settle_first: false,
+            },
+            || {
+                let state = states[probes.min(states.len() - 1)];
+                probes += 1;
+                async move { Ok(state) }
+            },
+            |state| {
+                Ok(match *state {
+                    "done" => Outcome::Done,
+                    "failed" => Outcome::Failed("it broke".into(), CloudErrorCode::Other),
+                    pending => Outcome::Pending(pending.into()),
+                })
+            },
+            |state, _| observed.push(*state),
+        )
+        .await;
+        assert_eq!(observed.len(), probes, "every probe is observed");
+        (result, probes)
+    }
+
+    #[tokio::test]
+    async fn wait_for_returns_the_value_that_finished_it() {
+        let long = Duration::from_secs(600);
+        let (result, probes) = run(&["stopping", "stopping", "done"], long).await;
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(probes, 3);
+    }
+
+    #[tokio::test]
+    async fn wait_for_stops_at_a_failed_state_with_its_code() {
+        let (result, probes) = run(&["stopping", "failed"], Duration::from_secs(600)).await;
+        let error = result.unwrap_err();
+        assert_eq!(probes, 2);
+        assert!(error.message.starts_with("the test wait"), "{error}");
+        assert_eq!(error.details.unwrap().code, CloudErrorCode::Other);
+    }
+
+    #[tokio::test]
+    async fn wait_for_times_out_naming_the_last_state_and_the_hint() {
+        let (result, probes) = run(&["starting", "stopping"], Duration::ZERO).await;
+        let error = result.unwrap_err();
+        assert_eq!(probes, 1, "a spent deadline still probes once");
+        assert_eq!(error.failure.unwrap().kind, FailureKind::Timeout);
+        assert!(error.message.starts_with("the test wait"), "{error}");
+        assert!(error.message.contains("starting"), "{error}");
+        assert!(
+            error
+                .message
+                .ends_with("`clickhousectl cloud service get svc-1`"),
+            "{error}"
+        );
     }
 }

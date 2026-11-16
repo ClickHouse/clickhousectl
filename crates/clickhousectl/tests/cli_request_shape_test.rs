@@ -4792,6 +4792,17 @@ fn spawn_service_delete(
     stdout: Stdio,
     stderr: Stdio,
 ) -> std::process::Child {
+    spawn_service_delete_with_env(mock, project_dir, force, stdout, stderr, &[])
+}
+
+fn spawn_service_delete_with_env(
+    mock: &MockServer,
+    project_dir: &Path,
+    force: bool,
+    stdout: Stdio,
+    stderr: Stdio,
+    env: &[(&str, &str)],
+) -> std::process::Child {
     let url = mock.uri();
     let mut args = vec![
         "cloud",
@@ -4816,6 +4827,7 @@ fn spawn_service_delete(
         // A forced delete of a running service polls the stop; keep the
         // test from waiting out the shipped 5 s interval.
         .env("CHCTL_SERVICE_STOP_POLL_INTERVAL_MS", "100")
+        .envs(env.iter().copied())
         .current_dir(project_dir)
         .args(args)
         .stdin(Stdio::null())
@@ -5005,6 +5017,12 @@ async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
 /// Mock a `--force` delete of a service whose `GET`s answer `states` in
 /// order: the first is the pre-stop check, the rest come from the poll loop.
 async fn mount_forced_delete_stop_sequence(mock: &MockServer, states: &'static [&'static str]) {
+    mount_forced_stop_sequence(mock, states).await;
+    mount_forced_delete_call(mock, 1).await;
+}
+
+/// The `GET`s and the stop `PATCH` of [`mount_forced_delete_stop_sequence`].
+async fn mount_forced_stop_sequence(mock: &MockServer, states: &'static [&'static str]) {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -5047,12 +5065,15 @@ async fn mount_forced_delete_stop_sequence(mock: &MockServer, states: &'static [
         .expect(1)
         .mount(mock)
         .await;
+}
+
+async fn mount_forced_delete_call(mock: &MockServer, expected: u64) {
     Mock::given(method("DELETE"))
         .and(path(format!(
             "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
         )))
         .respond_with(successful_delete_response("stub-service-delete"))
-        .expect(1)
+        .expect(expected)
         .mount(mock)
         .await;
 }
@@ -5112,6 +5133,65 @@ async fn forced_service_delete_survives_a_closed_stderr_while_stopping() {
             format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
         )),
         "unexpected request sequence: {shape:?}"
+    );
+}
+
+/// A stop that ends somewhere other than `stopped` fails the forced delete
+/// before it deletes anything (#1065).
+#[tokio::test]
+async fn forced_service_delete_fails_when_the_service_leaves_the_stop_path() {
+    let mock = MockServer::start().await;
+    mount_forced_stop_sequence(&mock, &["running", "stopping", "softdeleted"]).await;
+    mount_forced_delete_call(&mock, 0).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_service_delete(&mock, dir.path(), true);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Progress lines precede the error object.
+    let start = stderr
+        .find("\n{")
+        .expect("a JSON error after the progress lines");
+    let error: Value = serde_json::from_str(&stderr[start..]).expect("JSON error");
+    assert_eq!(error["error"]["code"], "other", "{stderr}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("softdeleted"), "{message}");
+}
+
+/// A stop that outlasts the deadline fails with `timeout`, naming the last
+/// state and the command to check, and deletes nothing (#1065).
+#[tokio::test]
+async fn forced_service_delete_times_out_waiting_for_the_stop() {
+    let mock = MockServer::start().await;
+    mount_forced_stop_sequence(&mock, &["running", "stopping"]).await;
+    mount_forced_delete_call(&mock, 0).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = spawn_service_delete_with_env(
+        &mock,
+        dir.path(),
+        true,
+        Stdio::piped(),
+        Stdio::piped(),
+        &[("CHCTL_SERVICE_STOP_TIMEOUT_MS", "0")],
+    )
+    .wait_with_output()
+    .expect("failed to run clickhousectl");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Progress lines precede the error object.
+    let start = stderr
+        .find("\n{")
+        .expect("a JSON error after the progress lines");
+    let error: Value = serde_json::from_str(&stderr[start..]).expect("JSON error");
+    assert_eq!(error["error"]["code"], "timeout", "{stderr}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("stopping"), "{message}");
+    assert!(
+        message.contains(&format!("cloud service get {DELETE_TEST_SERVICE_ID}")),
+        "{message}"
     );
 }
 

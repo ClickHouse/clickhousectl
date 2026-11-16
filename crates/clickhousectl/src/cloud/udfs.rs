@@ -49,7 +49,7 @@ use crate::cloud::client::{
 };
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, or_absent, print_human};
-use crate::cloud::shared::{PollProgress, resolve_org_id};
+use crate::cloud::shared::{Outcome, POLL_INTERVAL, PollProgress, Wait, resolve_org_id, wait_for};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
 use crate::udf::{self, DEFINITION_FILE, SourceEntry, UdfDirArg, UdfInputError, UdfRuntimeKind};
@@ -60,11 +60,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
 
-/// Gap between polls while the CLI waits on the service (a wake).
-const UDF_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Longest `--wake` waits for an idle service to reach `running`.
 const SERVICE_WAKE_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -932,24 +930,15 @@ async fn upload_artifact(
 
 // ── waiting ─────────────────────────────────────────────────────────────────
 
-/// What one poll showed.
-enum Outcome {
-    Done,
-    Pending(String),
-    /// The wait cannot succeed; the code is the JSON code it reports.
-    Failed(String, CloudErrorCode),
-}
-
-/// Poll `fetch` every [`UDF_POLL_INTERVAL`] until `classify` says the wait
-/// is over. Progress lines (state transitions only) go to stderr in human
-/// mode; the caller prints the final object exactly once. `follow_up` is the
-/// command a timeout points at.
-async fn wait_for<T, Fut, F, C>(
+/// A UDF wait: in human mode, a header and the pending states' transitions
+/// on stderr; the caller prints the final object exactly once. `follow_up` is
+/// the command a timeout points at.
+async fn wait_with_progress<T, Fut, F, C>(
     what: String,
     timeout: Duration,
     verbose: bool,
     follow_up: &str,
-    mut fetch: F,
+    fetch: F,
     classify: C,
 ) -> CloudResult<T>
 where
@@ -957,44 +946,33 @@ where
     Fut: std::future::Future<Output = CloudResult<T>>,
     C: Fn(&T) -> CloudResult<Outcome>,
 {
-    let started = Instant::now();
-    let mut progress = PollProgress::default();
     if verbose {
         eprintln!("Waiting for {what} (up to {}s)", timeout.as_secs());
     }
-    loop {
-        let value = fetch().await?;
-        match classify(&value)? {
-            Outcome::Done => return Ok(value),
-            Outcome::Failed(reason, code) => {
-                let message = format!("{what} failed: {reason}");
-                return Err(CloudError::new(message.clone())
-                    .with_details(CloudErrorDetail::new(code, message)));
-            }
-            Outcome::Pending(state) => {
-                if verbose && let Some(line) = progress.render(&state, false) {
-                    eprintln!("{line}");
-                }
-            }
-        }
-        let elapsed = started.elapsed();
-        if elapsed >= timeout {
-            return Err(wait_timeout_error(&what, timeout, follow_up));
-        }
-        let interval = crate::timing::duration_override(
+    let mut progress = PollProgress::default();
+    let wait = Wait {
+        what: &what,
+        timeout,
+        hint: &check_hint(follow_up),
+        interval: crate::timing::duration_override(
             crate::timing::UDF_POLL_INTERVAL_ENV,
-            UDF_POLL_INTERVAL,
-        );
-        tokio::time::sleep(interval.min(timeout - elapsed)).await;
-    }
+            POLL_INTERVAL,
+        ),
+        settle_first: false,
+    };
+    wait_for(wait, fetch, classify, |_, outcome| {
+        if verbose
+            && let Outcome::Pending(state) = outcome
+            && let Some(line) = progress.render(state, false)
+        {
+            eprintln!("{line}");
+        }
+    })
+    .await
 }
 
-fn wait_timeout_error(what: &str, timeout: Duration, follow_up: &str) -> CloudError {
-    CloudError::new(format!(
-        "{what} did not finish within {}s; it may still complete, check `{follow_up}`",
-        timeout.as_secs()
-    ))
-    .with_failure(ApiFailure::new(FailureKind::Timeout))
+fn check_hint(follow_up: &str) -> String {
+    format!("it may still complete, check `{follow_up}`")
 }
 
 fn classify_wake_state(state: Option<&ServiceState>) -> CloudResult<Outcome> {
@@ -1032,7 +1010,7 @@ async fn wait_for_service_running(
     timeout: Duration,
     verbose: bool,
 ) -> CloudResult<Service> {
-    wait_for(
+    wait_with_progress(
         format!("the wake of service {service}"),
         timeout,
         verbose,
@@ -1136,7 +1114,7 @@ async fn wait_for_udf_version(
     timeout: Duration,
     verbose: bool,
 ) -> CloudResult<Udf> {
-    wait_for(
+    wait_with_progress(
         format!("the build of UDF {name} version {version}"),
         timeout,
         verbose,
@@ -1155,7 +1133,7 @@ async fn wait_for_attachment(
     timeout: Duration,
     verbose: bool,
 ) -> CloudResult<UdfAttachment> {
-    wait_for(
+    wait_with_progress(
         format!("the deployment of UDF {name} to service {service}"),
         timeout,
         verbose,
@@ -1878,6 +1856,7 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
     use crate::cloud::client::CloudErrorKind;
+    use crate::cloud::shared::wait_timeout_error;
     use clap::Parser;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
@@ -2447,7 +2426,8 @@ mod tests {
         let timeout = wait_timeout_error(
             "the wake of service svc-1",
             Duration::from_secs(7),
-            "clickhousectl cloud service get svc-1",
+            "awaking",
+            &check_hint("clickhousectl cloud service get svc-1"),
         );
         // What timed out, the bound, then the follow-up command.
         assert!(
@@ -2702,7 +2682,8 @@ mod tests {
         let timeout = resume.after_build_wait(wait_timeout_error(
             "the build of UDF my_udf version 5",
             Duration::from_secs(1),
-            "clickhousectl cloud udf get my_udf",
+            "building",
+            &check_hint("clickhousectl cloud udf get my_udf"),
         ));
         // The timeout keeps its own line and gains the attach to resume with.
         let (first, resume_line) = timeout.message.split_once('\n').expect("a resume line");

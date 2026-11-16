@@ -92,6 +92,7 @@ When a local error's text comes from another program, `message` is clickhousectl
 | CDC scaling (`clickpipe cdc-scaling update`) | Poll `cdc-scaling get` until `replicaCpuMillicores` shows the requested value; another update meanwhile fails with a conflict |
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
+| `service delete --force` stop wait | Waits up to 10 minutes for the stop; `timeout`, or `other` when the service leaves the stop path, means nothing was deleted: check `service get`, then rerun |
 | UDF creation/attachment | Wait for the version to be ready and inspect the service attachment; `udf deploy` waits for both |
 
 The asynchronous commands add a `next` object to their `--json` output that names the poll. The CLI still returns as soon as the API accepts the request:

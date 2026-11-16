@@ -10,6 +10,8 @@ use std::time::Duration;
 pub const UDF_LOAD_TIMEOUT_ENV: &str = "CHCTL_UDF_LOAD_TIMEOUT_MS";
 /// Gap between polls while `cloud service delete --force` waits for a stop.
 pub const SERVICE_STOP_POLL_INTERVAL_ENV: &str = "CHCTL_SERVICE_STOP_POLL_INTERVAL_MS";
+/// Bounds how long `cloud service delete --force` waits for a stop.
+pub const SERVICE_STOP_TIMEOUT_ENV: &str = "CHCTL_SERVICE_STOP_TIMEOUT_MS";
 /// How long a SIGTERMed local server is given before SIGKILL.
 pub const TERM_TIMEOUT_ENV: &str = "CHCTL_TERM_TIMEOUT_MS";
 /// Gap between polls while `cloud udf` waits on a service.

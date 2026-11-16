@@ -226,14 +226,15 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Irreversible. A running service cannot be deleted: stop it first, or pass --force.
-  --force stops the service and polls until the stop finishes — minutes on a real service, with
-    progress lines on stderr.")]
+  --force stops the service and waits up to 10 minutes for the stop, with progress lines on stderr.
+  If the wait times out (code `timeout`) or the service leaves the stop path, nothing is deleted:
+    check `cloud service get <id>`, then rerun.")]
     Delete {
         /// Service ID
         #[command(flatten)]
         service_id: NameSelector,
 
-        /// Stop the service first if it is running, then delete (waits for the stop)
+        /// Stop the service first if it is running, then delete (waits up to 10 min)
         #[arg(long)]
         force: bool,
     },

@@ -5,7 +5,7 @@ use crate::cloud::client::{
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, NextStep, json_with_next, or_absent, print_human,
 };
-use crate::cloud::shared::PollProgress;
+use crate::cloud::shared::{Outcome, POLL_INTERVAL, PollProgress, Wait, wait_for};
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
 use crate::failure::{ApiFailure, FailureKind};
 use clickhouse_cloud_api::models::{
@@ -23,10 +23,10 @@ use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Resp
 use std::{collections::HashSet, io::IsTerminal, path::Path, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
-/// Gap between `GET service` calls while `service delete --force` waits for a
-/// stop to finish. A real stop takes minutes, so the loop can emit dozens of
-/// progress lines — see `crate::stdout` for why none of them may panic.
-const STOP_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Longest `service delete --force` waits for a stop to finish. A real stop
+/// takes minutes, so the wait can emit dozens of progress lines — see
+/// `crate::stdout` for why none of them may panic.
+const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// `host:port` of a service's first endpoint, for list tables.
 ///
@@ -992,25 +992,27 @@ async fn validate_dynamic_byoc_profile(
     Ok(())
 }
 
-fn classify_stop_poll_state(state: Option<&ServiceState>) -> CloudResult<bool> {
-    let state = state
-        .ok_or_else(|| {
-            CloudError::new(
-                "the API response omitted the service state while waiting for the service to stop, \
+/// Classify one probe of the `delete --force` stop wait. The match is
+/// exhaustive, so a state the library learns is a compile error here.
+fn classify_stop_poll_state(state: Option<&ServiceState>) -> CloudResult<Outcome> {
+    use ServiceState::*;
+    match state {
+        Some(Stopped | Idle) => Ok(Outcome::Done),
+        Some(
+            state @ (Stopping | Running | Starting | Awaking | Partially_running | Provisioning
+            | Unknown(_)),
+        ) => Ok(Outcome::Pending(state.to_string())),
+        Some(
+            state @ (Terminating | Terminated | Softdeleting | Softdeleted | Degraded | Failed),
+        ) => Ok(Outcome::Failed(
+            format!("the service entered state '{state}' instead of stopping"),
+            CloudErrorCode::Other,
+        )),
+        None => Err(CloudError::new(
+            "the API response omitted the service state while waiting for the service to stop, \
              so the stop cannot be confirmed",
-            )
-        })?
-        .to_string();
-    if matches!(state.as_str(), "stopped" | "idle") {
-        return Ok(true);
+        )),
     }
-    if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
-        return Err(CloudError::new(format!(
-            "service entered unexpected state '{}' while waiting for stop",
-            state
-        )));
-    }
-    Ok(false)
 }
 
 fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
@@ -1076,11 +1078,11 @@ pub(super) async fn service_delete(
 
     if force {
         let service = client.get_service_if_exists(&org_id, service_id).await?;
-        let state = service
-            .as_ref()
-            .map(|service| or_absent(service.state.as_ref()))
-            .unwrap_or_default();
-        if matches!(state.as_str(), "running" | "idle" | "starting") {
+        let state = service.as_ref().and_then(|service| service.state.as_ref());
+        if matches!(
+            state,
+            Some(ServiceState::Running | ServiceState::Idle | ServiceState::Starting)
+        ) {
             // This loop streams progress for as long as the stop takes
             // (minutes), so it routinely outlives whatever was reading its
             // output; a panicking write once turned a successful delete into
@@ -1093,21 +1095,38 @@ pub(super) async fn service_delete(
             let verbose_polling =
                 std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
             let mut progress = PollProgress::default();
-            let interval = crate::timing::duration_override(
-                crate::timing::SERVICE_STOP_POLL_INTERVAL_ENV,
-                STOP_POLL_INTERVAL,
+            let what = format!("the stop of service {service_id}");
+            let hint = format!(
+                "the service was not deleted; check it with `clickhousectl cloud service get \
+                 {service_id}`, then rerun `clickhousectl cloud service delete {service_id} --force`"
             );
-            loop {
-                tokio::time::sleep(interval).await;
-                let service = client.get_service(&org_id, service_id).await?;
-                let state = or_absent(service.state.as_ref());
-                if let Some(line) = progress.render(&state, verbose_polling) {
-                    eprintln!("{line}");
-                }
-                if classify_stop_poll_state(service.state.as_ref())? {
-                    break;
-                }
-            }
+            let wait = Wait {
+                what: &what,
+                timeout: crate::timing::duration_override(
+                    crate::timing::SERVICE_STOP_TIMEOUT_ENV,
+                    SERVICE_STOP_TIMEOUT,
+                ),
+                hint: &hint,
+                interval: crate::timing::duration_override(
+                    crate::timing::SERVICE_STOP_POLL_INTERVAL_ENV,
+                    POLL_INTERVAL,
+                ),
+                // The stop was just requested; an idle service may still read
+                // `idle` on an immediate probe.
+                settle_first: true,
+            };
+            wait_for(
+                wait,
+                || client.get_service(&org_id, service_id),
+                |service| classify_stop_poll_state(service.state.as_ref()),
+                |service, _| {
+                    let state = or_absent(service.state.as_ref());
+                    if let Some(line) = progress.render(&state, verbose_polling) {
+                        eprintln!("{line}");
+                    }
+                },
+            )
+            .await?;
         }
     }
 
@@ -1501,27 +1520,56 @@ mod tests {
         );
     }
 
+    /// Every typed state, so a variant added to the library has to be placed
+    /// here as well as in the exhaustive match.
     #[test]
-    fn classify_stop_poll_state_fails_on_an_absent_state() {
-        let error = classify_stop_poll_state(None).unwrap_err();
-        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
-        // Not the terminal-state failure, which names the state it saw.
-        let terminal = classify_stop_poll_state(Some(&ServiceState::Failed)).unwrap_err();
-        assert!(terminal.message.contains("'failed'"), "{terminal}");
-        assert!(!error.message.contains('\''), "{error}");
+    fn classify_stop_poll_state_covers_every_service_state() {
+        use ServiceState::*;
+        let outcome = |state: ServiceState| match classify_stop_poll_state(Some(&state)) {
+            Ok(Outcome::Done) => "done".to_string(),
+            Ok(Outcome::Pending(seen)) => {
+                assert_eq!(seen, state.to_string());
+                "pending".to_string()
+            }
+            Ok(Outcome::Failed(reason, code)) => {
+                assert!(reason.contains(&format!("'{state}'")), "{reason}");
+                assert_eq!(code, CloudErrorCode::Other);
+                "failed".to_string()
+            }
+            Err(error) => panic!("{state}: {error}"),
+        };
+        for state in [Stopped, Idle] {
+            assert_eq!(outcome(state), "done");
+        }
+        for state in [
+            Stopping,
+            Running,
+            Starting,
+            Awaking,
+            Partially_running,
+            Provisioning,
+            Unknown("hibernating".into()),
+        ] {
+            assert_eq!(outcome(state), "pending");
+        }
+        for state in [
+            Terminating,
+            Terminated,
+            Softdeleting,
+            Softdeleted,
+            Degraded,
+            Failed,
+        ] {
+            assert_eq!(outcome(state), "failed");
+        }
     }
 
     #[test]
-    fn classify_stop_poll_state_separates_stopped_waiting_and_failed() {
-        assert!(classify_stop_poll_state(Some(&ServiceState::Stopped)).unwrap());
-        assert!(classify_stop_poll_state(Some(&ServiceState::Idle)).unwrap());
-        assert!(!classify_stop_poll_state(Some(&ServiceState::Stopping)).unwrap());
-        assert!(!classify_stop_poll_state(Some(&ServiceState::Running)).unwrap());
-        assert!(
-            !classify_stop_poll_state(Some(&ServiceState::Unknown("hibernating".into()))).unwrap()
-        );
-        assert!(classify_stop_poll_state(Some(&ServiceState::Failed)).is_err());
-        assert!(classify_stop_poll_state(Some(&ServiceState::Unknown("deleted".into()))).is_err());
+    fn classify_stop_poll_state_fails_on_an_absent_state() {
+        let error = classify_stop_poll_state(None)
+            .err()
+            .expect("an absent state is an error");
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
     }
 
     #[test]
