@@ -25,6 +25,13 @@ pub struct AnalyzerConfig {
     /// `Option<T>` by policy. Entries become stale when the schema is removed,
     /// response-only, or the override no longer changes requiredness.
     pub partial_required_schemas: BTreeSet<String>,
+    /// Schemas without `required[]` whose every field is optional in a
+    /// request, although the description heuristic marks some required; keyed
+    /// by spec schema name. Requiredness resolution treats each listed schema
+    /// as all-optional (request position only). Entries become stale when the
+    /// schema is removed, response-only, gains `required[]`, or the override no
+    /// longer changes requiredness. A schema may not also be partial-required.
+    pub optional_request_schemas: BTreeSet<String>,
     /// Unsupported locations whose value sets are acknowledged in the snapshot.
     /// Changes to those sets still produce actionable drift.
     pub acknowledged_unsupported_enum_pointers: BTreeSet<String>,
@@ -58,6 +65,7 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
         deprecated_field_exemptions: BTreeSet::new(),
         extra_enum_value_exemptions: BTreeSet::new(),
         partial_required_schemas: BTreeSet::new(),
+        optional_request_schemas: strings(OPTIONAL_REQUEST_SCHEMAS),
         acknowledged_unsupported_enum_pointers: strings(ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS),
     }
 }
@@ -72,6 +80,37 @@ const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
     ("PostgresSlowQueryPattern", "maxDurationUs"),
     ("PostgresSlowQueryPattern", "totalDurationUs"),
     ("PostgresQueryExecution", "durationUs"),
+];
+
+// Request schemas with no `required[]` whose every field is optional on the
+// wire. The description fallback marks most of their fields required;
+// following it would make every valid request invalid.
+const OPTIONAL_REQUEST_SCHEMAS: &[&str] = &[
+    // The source wrappers carry one property per source kind and are mutually
+    // exclusive: a request sends exactly one arm, plus `validateSamples`. Since
+    // the spec dropped the `| null` unions, the description fallback marks
+    // every arm required. Non-Postgres requests must be able to omit the
+    // Postgres arm, and so on for every kind. Live object-storage creates and
+    // PATCHes on 2026-09-05 omitted `validateSamples` and succeeded; omission
+    // must stay distinct from explicit false.
+    "ClickPipePatchSource",
+    "ClickPipePostSource",
+    "ClickPipeSchemaDiscoverySource",
+    // The settings PUT is partial and its keys are source-specific
+    // (`streaming_*` for streaming pipes, `object_storage_*` for object
+    // storage). `kafka_read_committed` is Kafka-only: the PUT is rejected with
+    // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
+    // for every other source, so absence is the only way a non-Kafka update
+    // can express "does not apply". `object_storage_max_file_size` is also a
+    // private-preview setting that orgs must have enabled by support.
+    "ClickPipeSettingsPutRequest",
+    // Despite its non-Patch name and descriptions that omit the "Optional"
+    // prefix, RoleUpdateRequest is used only by PATCH and the operation states
+    // that all three fields are optional and only supplied fields are changed.
+    "RoleUpdateRequest",
+    // Postgres configuration is partial: zero-value defaults fail, and omission
+    // selects the server default.
+    "pgConfig",
 ];
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
@@ -91,14 +130,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // not nullable, so the description fallback marks it required for every
     // format. Omission is how a JSON, CSV or Parquet create leaves it out.
     ("ClickPipePostObjectStorageSource", "skipFirstLines"),
-    // Non-Postgres pipe requests must be able to omit the Postgres union arm.
-    ("ClickPipePostSource", "postgres"),
-    ("ClickPipePatchSource", "postgres"),
-    // A live object-storage PATCH on 2026-09-05 omitted validateSamples and
-    // succeeded without changing source or destination state. The nested
-    // schema has no required[], but the description fallback marks the field
-    // required because it cannot inherit the parent PATCH method.
-    ("ClickPipePatchSource", "validateSamples"),
     // The official Terraform provider's merged #618 sends Postgres mapping-only
     // PATCHes with credentials/settings omitted and with only the non-empty
     // add/remove delta. Its maintainers verified this shape against the API:
@@ -107,9 +138,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipePatchPostgresSource", "settings"),
     ("ClickPipePatchPostgresSource", "tableMappingsToAdd"),
     ("ClickPipePatchPostgresSource", "tableMappingsToRemove"),
-    // The control plane accepted an object-storage create with validateSamples
-    // absent on 2026-09-05. Omission must stay distinct from explicit false.
-    ("ClickPipePostSource", "validateSamples"),
     // CDC mode and numeric ranges require absence unless meaningful values exist.
     ("ClickPipePostgresPipeSettings", "publicationName"),
     ("ClickPipePostgresPipeSettings", "replicationSlotName"),
@@ -131,89 +159,8 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // https://github.com/ClickHouse/terraform-provider-clickhouse/blob/7c1d20d485f260f410698a17936cf7793bb5d9e1/internal/service/clickhouse/resource/clickpipe_kafka_update_payload_test.go
     ("ClickPipePatchKafkaSource", "credentials"),
     ("ClickPipePatchKafkaSource", "reversePrivateEndpointIds"),
-    // `kafka_read_committed` is Kafka-only: the settings PUT is rejected with
-    // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
-    // for every other source, and the schema carries no `required[]`, so
-    // requiredness resolves from the description heuristic. Absence is the only
-    // way a non-Kafka settings update can express "does not apply"; keeping this
-    // `T` would put the key on every request and break all non-Kafka pipes.
-    ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
-    // The source wrappers below carry one property per source kind and are
-    // mutually exclusive: a request sends exactly one arm (plus
-    // `validateSamples`). The schemas have no `required[]` and, since the spec
-    // dropped the `| null` unions, the description fallback marks every arm
-    // required — following it would make every valid request invalid.
-    ("ClickPipePostSource", "bigquery"),
-    ("ClickPipePostSource", "kafka"),
-    ("ClickPipePostSource", "kinesis"),
-    ("ClickPipePostSource", "mongodb"),
-    ("ClickPipePostSource", "mysql"),
-    ("ClickPipePostSource", "objectStorage"),
-    ("ClickPipePostSource", "pubsub"),
-    ("ClickPipePatchSource", "kafka"),
-    ("ClickPipePatchSource", "kinesis"),
-    ("ClickPipePatchSource", "mongodb"),
-    ("ClickPipePatchSource", "mysql"),
-    ("ClickPipePatchSource", "objectStorage"),
-    ("ClickPipePatchSource", "pubsub"),
-    ("ClickPipeSchemaDiscoverySource", "kafka"),
-    ("ClickPipeSchemaDiscoverySource", "kinesis"),
-    ("ClickPipeSchemaDiscoverySource", "objectStorage"),
-    ("ClickPipeSchemaDiscoverySource", "pubsub"),
-    // The settings PUT is partial and its keys are source-specific
-    // (`streaming_*` for streaming pipes, `object_storage_*` for object
-    // storage), as with `kafka_read_committed` above. The schema has no
-    // `required[]`, so the description fallback marks every key required;
-    // requiring all of them would make every valid settings update invalid.
-    (
-        "ClickPipeSettingsPutRequest",
-        "clickhouse_max_download_threads",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "clickhouse_max_insert_threads",
-    ),
-    ("ClickPipeSettingsPutRequest", "clickhouse_max_threads"),
-    (
-        "ClickPipeSettingsPutRequest",
-        "clickhouse_min_insert_block_size_bytes",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "clickhouse_parallel_distributed_insert_select",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "clickhouse_parallel_view_processing",
-    ),
-    ("ClickPipeSettingsPutRequest", "object_storage_concurrency"),
-    (
-        "ClickPipeSettingsPutRequest",
-        "object_storage_max_file_count",
-    ),
-    // Also a private-preview setting that orgs must have enabled by support.
-    (
-        "ClickPipeSettingsPutRequest",
-        "object_storage_max_file_size",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "object_storage_max_insert_bytes",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "object_storage_polling_interval_ms",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "object_storage_use_cluster_function",
-    ),
-    (
-        "ClickPipeSettingsPutRequest",
-        "streaming_max_insert_wait_ms",
-    ),
-    // The same source-conditional contract applies to settings nested in a
-    // create request: on 2026-09-05 an object-storage create with the key set
+    // ClickPipeSettingsPutRequest's source-conditional contract also applies to
+    // settings nested in a create request: on 2026-09-05 an object-storage create with the key set
     // to false was rejected, while omitting it succeeded.
     ("ClickPipeSettings", "kafka_read_committed"),
     // object_storage_max_file_size is object-storage-only and private preview
@@ -245,73 +192,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickStackAlertChartConfigOverlay", "whereLanguage"),
     // Deprecated request fields are feature-gated out in favour of replacements.
     ("OrganizationPrivateEndpointsPatch", "add"),
-    // Despite its non-Patch name and descriptions that omit the "Optional"
-    // prefix, RoleUpdateRequest is used only by PATCH and the operation states
-    // that all three fields are optional and only supplied fields are changed.
-    ("RoleUpdateRequest", "actors"),
-    ("RoleUpdateRequest", "name"),
-    ("RoleUpdateRequest", "policies"),
-    // PgConfig is partial: zero-value defaults fail, omission selects server defaults.
-    ("PgConfig", "autovacuum_analyze_scale_factor"),
-    ("PgConfig", "autovacuum_analyze_threshold"),
-    ("PgConfig", "autovacuum_freeze_max_age"),
-    ("PgConfig", "autovacuum_max_workers"),
-    ("PgConfig", "autovacuum_naptime"),
-    ("PgConfig", "autovacuum_vacuum_cost_delay"),
-    ("PgConfig", "autovacuum_vacuum_cost_limit"),
-    ("PgConfig", "autovacuum_vacuum_insert_scale_factor"),
-    ("PgConfig", "autovacuum_vacuum_insert_threshold"),
-    ("PgConfig", "autovacuum_vacuum_scale_factor"),
-    ("PgConfig", "autovacuum_vacuum_threshold"),
-    ("PgConfig", "autovacuum_work_mem"),
-    ("PgConfig", "bgwriter_delay"),
-    ("PgConfig", "bgwriter_flush_after"),
-    ("PgConfig", "bgwriter_lru_maxpages"),
-    ("PgConfig", "bgwriter_lru_multiplier"),
-    ("PgConfig", "checkpoint_timeout"),
-    ("PgConfig", "default_toast_compression"),
-    ("PgConfig", "default_transaction_isolation"),
-    ("PgConfig", "effective_cache_size"),
-    ("PgConfig", "effective_io_concurrency"),
-    ("PgConfig", "enable_parallel_hash"),
-    ("PgConfig", "hash_mem_multiplier"),
-    ("PgConfig", "idle_in_transaction_session_timeout"),
-    ("PgConfig", "idle_session_timeout"),
-    ("PgConfig", "io_method"),
-    ("PgConfig", "io_workers"),
-    ("PgConfig", "lock_timeout"),
-    ("PgConfig", "log_lock_waits"),
-    ("PgConfig", "log_min_duration_statement"),
-    ("PgConfig", "log_parameter_max_length"),
-    ("PgConfig", "log_temp_files"),
-    ("PgConfig", "logical_decoding_work_mem"),
-    ("PgConfig", "maintenance_io_concurrency"),
-    ("PgConfig", "maintenance_work_mem"),
-    ("PgConfig", "max_connections"),
-    ("PgConfig", "max_logical_replication_workers"),
-    ("PgConfig", "max_parallel_maintenance_workers"),
-    ("PgConfig", "max_parallel_workers"),
-    ("PgConfig", "max_parallel_workers_per_gather"),
-    ("PgConfig", "max_replication_slots"),
-    ("PgConfig", "max_slot_wal_keep_size"),
-    ("PgConfig", "max_sync_workers_per_subscription"),
-    ("PgConfig", "max_wal_senders"),
-    ("PgConfig", "max_wal_size"),
-    ("PgConfig", "max_worker_processes"),
-    ("PgConfig", "min_wal_size"),
-    ("PgConfig", "random_page_cost"),
-    ("PgConfig", "shared_memory_percent"),
-    ("PgConfig", "ssl_min_protocol_version"),
-    ("PgConfig", "statement_timeout"),
-    ("PgConfig", "temp_buffers"),
-    ("PgConfig", "track_activity_query_size"),
-    ("PgConfig", "transaction_timeout"),
-    ("PgConfig", "vacuum_cost_delay"),
-    ("PgConfig", "wal_buffers"),
-    ("PgConfig", "wal_compression"),
-    ("PgConfig", "wal_keep_size"),
-    ("PgConfig", "wal_sender_timeout"),
-    ("PgConfig", "work_mem"),
 ];
 
 // The deprecated API-key `roles` fields are feature-gated, frozen legacy API

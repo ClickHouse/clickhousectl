@@ -113,6 +113,7 @@ pub(crate) struct OpenApiInventory {
     pub(crate) inline_responses: BTreeMap<String, (String, Value)>,
     /// Configured overrides that change resolved request-position requiredness.
     pub(crate) partial_required_hits: BTreeSet<String>,
+    pub(crate) optional_request_hits: BTreeSet<String>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
@@ -144,24 +145,43 @@ impl OpenApiInventory {
         inventory.collect_schemas(spec, config)?;
         inventory.collect_schema_positions(spec);
         let default_config = AnalyzerConfig::default();
-        for name in &config.partial_required_schemas {
+        // An override is hit only when it changes request-position
+        // requiredness. A schema listed as both partial-required and
+        // all-optional is contradictory, so neither entry counts as hit.
+        let effective_override = |name: &String| {
             let changes_requiredness = |schema: &Value| {
                 required_fields(name, schema, config)
                     != required_fields(name, schema, &default_config)
             };
-            if let Some(schema) = spec
-                .pointer("/components/schemas")
-                .and_then(|schemas| schemas.get(name))
-                && inventory.is_request_position(name)
-                && (changes_requiredness(schema)
-                    || inventory
-                        .inline_union_objects
-                        .iter()
-                        .any(|(parent, _, branch)| parent == name && changes_requiredness(branch)))
-            {
-                inventory.partial_required_hits.insert(name.clone());
-            }
-        }
+            !(config.partial_required_schemas.contains(name)
+                && config.optional_request_schemas.contains(name))
+                && spec
+                    .pointer("/components/schemas")
+                    .and_then(|schemas| schemas.get(name))
+                    .is_some_and(|schema| {
+                        inventory.is_request_position(name)
+                            && (changes_requiredness(schema)
+                                || inventory.inline_union_objects.iter().any(
+                                    |(parent, _, branch)| {
+                                        parent == name && changes_requiredness(branch)
+                                    },
+                                ))
+                    })
+        };
+        let partial_required_hits = config
+            .partial_required_schemas
+            .iter()
+            .filter(|name| effective_override(name))
+            .cloned()
+            .collect();
+        let optional_request_hits = config
+            .optional_request_schemas
+            .iter()
+            .filter(|name| effective_override(name))
+            .cloned()
+            .collect();
+        inventory.partial_required_hits = partial_required_hits;
+        inventory.optional_request_hits = optional_request_hits;
         collect_refs(spec, &mut Vec::new(), &mut inventory.referenced_schemas);
         collect_enums(spec, &mut inventory.enum_constraints);
         inventory
@@ -697,6 +717,11 @@ pub(crate) fn required_fields(
         return BTreeSet::new();
     };
     if schema_name.contains("Patch") && schema_name.ends_with("Request") {
+        return BTreeSet::new();
+    }
+    if config.optional_request_schemas.contains(schema_name)
+        && schema.get("required").and_then(Value::as_array).is_none()
+    {
         return BTreeSet::new();
     }
 

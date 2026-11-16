@@ -228,7 +228,7 @@ Occasionally the spec cannot be followed literally because verified API
 behavior differs. All such policy lives in
 `crates/clickhouse-openapi-analyzer/src/config.rs`, including optionality,
 extra-field, deprecated-field, extra-enum-value, non-OpenAPI-method, partial
-required-schema, and unsupported-enum configuration.
+required-schema, all-optional request-schema, and unsupported-enum configuration.
 
 Add an exemption only for a deliberate runtime behavior and document why the
 spec cannot be followed. New unsupported-enum acknowledgements also require a
