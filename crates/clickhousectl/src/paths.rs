@@ -71,6 +71,74 @@ pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
     })
 }
 
+/// Replace `path` with `bytes` so readers see either the old file or the
+/// complete new one, never a truncated file.
+///
+/// The bytes go to a temporary file in the same directory that already has
+/// `mode` (Unix only) before any byte is written, and is synced before it is
+/// renamed over `path`. Pass `0o600` for secrets. The parent directory must
+/// exist.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    atomic_write_with(path, bytes, mode, sync_directory)
+}
+
+fn atomic_write_with(
+    path: &Path,
+    bytes: &[u8],
+    #[cfg_attr(not(unix), allow(unused_variables))] mode: u32,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", path.display()),
+        )
+    })?;
+    let prefix = format!(
+        ".{}.",
+        path.file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default()
+    );
+    let mut temporary = tempfile::Builder::new().prefix(&prefix).tempfile_in(dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| {
+        std::io::Error::new(
+            error.error.kind(),
+            format!("failed to replace {}: {}", path.display(), error.error),
+        )
+    })?;
+
+    // The replacement is already authoritative. Reporting a later directory
+    // fsync failure as an unsuccessful save can make callers undo work whose
+    // result is present in the file (for example, delete a live API key).
+    let _ = sync_parent(dir);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Returns the user-local PATH-style bin directory (~/.local/bin/)
 pub fn global_bin_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| {
@@ -133,5 +201,16 @@ mod tests {
             "{message}"
         );
         assert!(message.ends_with(&source.to_string()), "{message}");
+    }
+
+    #[test]
+    fn atomic_write_succeeds_when_directory_sync_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("file.json");
+        atomic_write_with(&path, b"new", 0o600, |_| {
+            Err(std::io::Error::other("directory sync failed"))
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
     }
 }

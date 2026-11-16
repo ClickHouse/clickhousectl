@@ -3,7 +3,6 @@ use crate::init;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const QUERY_PROVISIONING_LOCK: &str = "query-provisioning.lock";
@@ -82,7 +81,7 @@ fn ensure_local_dir() -> CloudResult<PathBuf> {
     Ok(dir)
 }
 
-fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -167,56 +166,8 @@ pub fn clear_credentials() -> CloudResult<()> {
 
 fn save_credentials(creds: &Credentials) -> CloudResult<()> {
     ensure_local_dir()?;
-    let path = credentials_path();
-    save_credentials_to(&path, creds, sync_directory)
-}
-
-fn save_credentials_to(
-    path: &Path,
-    creds: &Credentials,
-    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> CloudResult<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| CloudError::new(format!("{} has no parent directory", path.display())))?;
     let json = serde_json::to_string_pretty(creds)?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".credentials.json.")
-        .tempfile_in(dir)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    temporary.write_all(json.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| {
-        CloudError::new(format!(
-            "failed to replace {}: {}",
-            path.display(),
-            error.error
-        ))
-    })?;
-
-    // The replacement is already authoritative. Reporting a later directory
-    // fsync failure as an unsuccessful save can make callers delete a live key
-    // whose credentials are present in this file.
-    let _ = sync_parent(dir);
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sync_directory(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_dir: &Path) -> std::io::Result<()> {
+    crate::paths::atomic_write(&credentials_path(), json.as_bytes(), 0o600)?;
     Ok(())
 }
 
@@ -409,26 +360,6 @@ mod tests {
             dev.api_base_url(),
             "https://api.control-plane.clickhouse-dev.com/v1"
         );
-    }
-
-    #[test]
-    fn committed_credentials_succeed_when_directory_sync_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("credentials.json");
-        let creds = Credentials {
-            api_key: Some("key".into()),
-            api_secret: Some("secret".into()),
-            ..Credentials::default()
-        };
-
-        save_credentials_to(&path, &creds, |_| {
-            Err(std::io::Error::other("directory sync failed"))
-        })
-        .unwrap();
-
-        let stored: Credentials = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(stored.api_key.as_deref(), Some("key"));
-        assert_eq!(stored.api_secret.as_deref(), Some("secret"));
     }
 
     #[test]
