@@ -248,6 +248,24 @@ mod tests {
     fn default_from_date_covers_seven_days_ending_today() {
         let today = NaiveDate::from_ymd_opt(2026, 3, 3).unwrap();
         assert_eq!(default_from_date(None, today), "2026-02-25");
+        // A named end day wins over today, across a leap day.
+        assert_eq!(default_from_date(Some("2024-03-01"), today), "2024-02-24");
+    }
+
+    /// The API reads `to_date` as midnight, so the named day is sent as the
+    /// day after it, across month, leap-day and year boundaries.
+    #[test]
+    fn exclusive_end_date_sends_the_day_after_the_named_day() {
+        for (to_date, sent) in [
+            ("2026-02-28", "2026-03-01"),
+            ("2024-02-28", "2024-02-29"),
+            ("2024-02-29", "2024-03-01"),
+            ("2025-12-31", "2026-01-01"),
+        ] {
+            assert_eq!(exclusive_end_date(to_date), sent, "{to_date}");
+        }
+        // No representable next day: the value is sent as given.
+        assert_eq!(exclusive_end_date("9999-12-31"), "9999-12-31");
     }
 
     #[test]

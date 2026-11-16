@@ -2204,6 +2204,14 @@ mod tests {
         let request = build_update_service_request(&options).unwrap();
 
         assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
+        // The removal sends the trimmed source with its description.
+        assert_eq!(
+            serde_json::to_value(request.ip_access_list.unwrap().remove).unwrap(),
+            serde_json::json!([
+                { "source": "192.0.2.0/24", "description": "old office" },
+                { "source": "2001:db8::/32", "description": "old ipv6 range" },
+            ])
+        );
     }
 
     #[test]
