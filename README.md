@@ -22,7 +22,7 @@
 
 - **[ClickHouse](https://clickhouse.com/clickhouse)** is the open-source, column-oriented SQL database for analytics. Install and switch local versions, run isolated servers, and execute SQL.
 - **[ClickHouse Cloud](https://clickhouse.com/cloud)** runs ClickHouse as a managed service on AWS, GCP, and Azure. Create, configure, scale, back up, and query services from the terminal.
-- **[ClickHouse Managed Postgres](https://clickhouse.com/cloud/postgres)** runs PostgreSQL for transactional applications, with ClickHouse integration for analytics. Use Docker-backed Postgres locally, then create, monitor, configure, and restore managed services in Cloud.
+- **[ClickHouse Managed Postgres](https://clickhouse.com/cloud/postgres)** runs PostgreSQL for transactional applications, with ClickHouse integration for analytics. Run Postgres with the pg_clickhouse extension locally, then create, monitor, configure, and restore managed services in Cloud.
 - **[ClickPipes](https://clickhouse.com/cloud/clickpipes)** ingests data into ClickHouse Cloud from object storage, streams, and databases through change data capture. Create, inspect, update, scale, and troubleshoot pipelines.
 - **[ClickStack](https://clickhouse.com/clickstack)** combines ClickHouse, OpenTelemetry, and the HyperDX UI for observability. Manage sources, roles, saved searches, dashboards, alerts, and webhooks for an existing [Managed ClickStack](https://clickhouse.com/cloud/clickstack) service.
 
@@ -85,7 +85,7 @@ clickhousectl local clickhouse stop dev
 
 `local init` marks the directory as a project; later commands work from it or any subdirectory, as Git does. Each named server has isolated data under the project's `.clickhouse/`; stopping preserves it for the next start.
 
-For local Postgres, start Docker first:
+Local Postgres needs no Docker: the first start downloads a PostgreSQL build that includes the pg_clickhouse extension.
 
 ```bash
 clickhousectl local postgres start dev
