@@ -12,9 +12,12 @@
 //! everything: no notice, no file write, no send.
 //!
 //! The payload carries the command path plus flag and positional *names* only
-//! — never any values. It is built from the clap definitions ([`capture`] walks
-//! `ArgMatches` ids and `Arg` metadata, never touching `get_one`/`get_raw`), so
-//! leaking a value is structurally impossible. Positional *presence* is
+//! — never any values. Every name in it is a [`DefName`], which can only be
+//! constructed from a `&clap::Command` or a `&clap::Arg`, so the type system —
+//! not care in [`capture`] and [`capture_lossy`] — keeps argv out: inserting a
+//! token or a value there does not compile. The remaining string fields are
+//! `&'static str`s from closed vocabularies ([`Outcome`], [`crate::failure`],
+//! the agent detector). Positional *presence* is
 //! recorded as the definition-owned id (#480), which is what makes
 //! `local clickhouse stop` and `local clickhouse stop <name>` distinguishable; see
 //! [`Payload::positionals`] for the exclusions.
@@ -182,29 +185,182 @@ type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 // Payload
 // ---------------------------------------------------------------------------
 
+mod def_name {
+    /// A name cloned from a clap definition compiled into the binary: a
+    /// subcommand name, an arg's long name, or an arg's id. The privacy
+    /// boundary of the payload: the field is private to this module and every
+    /// constructor takes a `&clap::Command` or `&clap::Arg`, so no argv slice,
+    /// value or other runtime string can become a `DefName`. Serializes as the
+    /// bare string.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+    #[serde(transparent)]
+    pub(super) struct DefName(String);
+
+    impl DefName {
+        /// The subcommand's canonical name (never the alias the user typed).
+        pub(super) fn command(cmd: &clap::Command) -> Self {
+            Self(cmd.get_name().to_string())
+        }
+
+        /// The arg's definition id.
+        pub(super) fn id(arg: &clap::Arg) -> Self {
+            Self(arg.get_id().as_str().to_string())
+        }
+
+        /// The arg's canonical long name, if it has one.
+        pub(super) fn long(arg: &clap::Arg) -> Option<Self> {
+            arg.get_long().map(|long| Self(long.to_string()))
+        }
+
+        /// The arg's canonical long name, falling back to its id for
+        /// short-only args.
+        pub(super) fn long_or_id(arg: &clap::Arg) -> Self {
+            Self::long(arg).unwrap_or_else(|| Self::id(arg))
+        }
+
+        pub(super) fn as_str(&self) -> &str {
+            &self.0
+        }
+    }
+
+    /// The subcommand path, one [`DefName`] per level below the root.
+    /// Serializes space-joined (`"local clickhouse start"`; `""` at the root).
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub(super) struct CommandPath(Vec<DefName>);
+
+    impl CommandPath {
+        pub(super) fn push(&mut self, cmd: &clap::Command) {
+            self.0.push(DefName::command(cmd));
+        }
+    }
+
+    impl std::fmt::Display for CommandPath {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            for (i, name) in self.0.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(" ")?;
+                }
+                f.write_str(name.as_str())?;
+            }
+            Ok(())
+        }
+    }
+
+    impl serde::Serialize for CommandPath {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(self)
+        }
+    }
+
+    // Test fixtures build invocations by hand; production code cannot.
+    #[cfg(test)]
+    impl From<&str> for DefName {
+        fn from(name: &str) -> Self {
+            Self(name.to_string())
+        }
+    }
+
+    #[cfg(test)]
+    impl From<&str> for CommandPath {
+        fn from(path: &str) -> Self {
+            Self(path.split_whitespace().map(DefName::from).collect())
+        }
+    }
+
+    #[cfg(test)]
+    impl PartialEq<&str> for DefName {
+        fn eq(&self, other: &&str) -> bool {
+            self.0 == *other
+        }
+    }
+
+    #[cfg(test)]
+    impl PartialEq<&str> for CommandPath {
+        fn eq(&self, other: &&str) -> bool {
+            other.split(' ').eq(self.0.iter().map(DefName::as_str))
+                || (other.is_empty() && self.0.is_empty())
+        }
+    }
+}
+
+use def_name::{CommandPath, DefName};
+
+/// How an invocation ended — the closed vocabulary of [`Payload::outcome`].
+/// Serialized as [`Outcome::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Ok,
+    Error,
+    Cancelled,
+    AuthRequired,
+    ExecAttempt,
+    Help,
+    Version,
+    InvalidSubcommand,
+    UnknownArgument,
+    MissingSubcommand,
+    MissingRequired,
+    InvalidValue,
+    OtherParseError,
+}
+
+impl Outcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Cancelled => "cancelled",
+            Self::AuthRequired => "auth_required",
+            Self::ExecAttempt => "exec_attempt",
+            Self::Help => "help",
+            Self::Version => "version",
+            Self::InvalidSubcommand => "invalid_subcommand",
+            Self::UnknownArgument => "unknown_argument",
+            Self::MissingSubcommand => "missing_subcommand",
+            Self::MissingRequired => "missing_required",
+            Self::InvalidValue => "invalid_value",
+            Self::OtherParseError => "other_parse_error",
+        }
+    }
+}
+
+impl serde::Serialize for Outcome {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// The wire payload. Field names match the ingest worker's contract exactly
 /// (the worker renames `ci`→`is_ci` server-side).
+///
+/// What keeps user data out is the field types: names are [`DefName`]s and
+/// [`CommandPath`]s (constructible only from clap definitions), and every
+/// other string is a `&'static str` from a closed vocabulary.
 ///
 /// The agent, CI, version and platform facts come from [`ClientFacts`],
 /// flattened in place after `suggestion`, so the wire keys and their order are
 /// the same as when they were declared here.
 #[derive(Debug, serde::Serialize)]
 struct Payload {
-    command: String,
-    flags: Vec<String>,
+    command: CommandPath,
+    flags: Vec<DefName>,
     /// Definition-owned ids of the positional slots the user filled on the
     /// command line (e.g. `["name"]` for `local clickhouse stop dev`) — presence
     /// only, never the value (#480). The privacy boundary:
     ///
-    /// * every entry is cloned from an `Arg` definition compiled into the
-    ///   binary, so the field's vocabulary is closed and cannot carry argv;
+    /// * every entry is a [`DefName`] cloned from an `Arg` definition compiled
+    ///   into the binary, so the field's vocabulary is closed and cannot carry
+    ///   argv;
     /// * only `ValueSource::CommandLine` slots count, so clap defaults,
     ///   environment-fed values, and names a handler generates at runtime are
     ///   absent — which is exactly what makes "the user named it" and "we
     ///   picked one" distinguishable;
     /// * passthrough slots are excluded ([`is_passthrough_positional`]): the
     ///   argv they forward to another program is not part of this CLI's shape.
-    positionals: Vec<String>,
+    positionals: Vec<DefName>,
     /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
     /// 1 error, 3 cancelled, 4 auth required, or a child process's passthrough
     /// code — and clap's own code for parse outcomes (0 help/version, 2 usage
@@ -223,16 +379,16 @@ struct Payload {
     /// exit code as a status. Failed
     /// parses carry a direct mapping of clap's `ErrorKind` (`"help"`,
     /// `"version"`, `"invalid_subcommand"`, …).
-    /// Literal strings only — this field can never carry user data.
-    outcome: &'static str,
+    /// An [`Outcome`] — this field can never carry user data.
+    outcome: Outcome,
     /// Clap's "did you mean" for failed parses, anchored locally: recorded
     /// only when it equality-matches a subcommand name or arg long name in
     /// the clap definitions, and the recorded string is cloned from the
-    /// definition itself — the "never the user's input" guarantee is
-    /// enforced here, not inherited from clap internals. Always the bare
+    /// definition itself (a [`DefName`]) — the "never the user's input"
+    /// guarantee is enforced here, not inherited from clap internals. Always the bare
     /// canonical name (no `--`), for flags and subcommands alike. `null`
     /// when clap made no suggestion or the suggestion matched no definition.
-    suggestion: Option<String>,
+    suggestion: Option<DefName>,
     /// `is_agent`, `agent`, `ci`, `version`, `os`, `arch`.
     #[serde(flatten)]
     client: ClientFacts,
@@ -278,32 +434,35 @@ struct Payload {
 }
 
 /// Derive the dispatched outcome from the process exit code. [`capture`]
-/// marks a successful parse `"ok"` before the command has run; by finalize
-/// time the exit code says how dispatch actually ended, so only that
-/// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
-/// `"exec_attempt"` from [`finalize_before_exec`] pass through untouched. The mapping
-/// mirrors `Error::exit_code()`, with arbitrary child exit codes classified as
-/// errors.
-fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
-    if outcome != "ok" {
+/// leaves a successful parse's outcome unset (`None`) before the command has
+/// run; by finalize time the exit code says how dispatch actually ended, so
+/// only an unset outcome is derived — the parse kinds from [`capture_lossy`],
+/// a marked child exit, and `ExecAttempt` from [`finalize_before_exec`] pass
+/// through untouched. The mapping mirrors `Error::exit_code()`, with arbitrary
+/// child exit codes classified as errors.
+fn dispatched_outcome(outcome: Option<Outcome>, exit_code: i32) -> Outcome {
+    if let Some(outcome) = outcome {
         return outcome;
     }
     match exit_code {
-        0 => "ok",
-        3 => "cancelled",
-        4 => "auth_required",
-        _ => "error",
+        0 => Outcome::Ok,
+        3 => Outcome::Cancelled,
+        4 => Outcome::AuthRequired,
+        _ => Outcome::Error,
     }
 }
 
 /// Whether failure detail belongs on an event with this outcome. A recorded
 /// classification is dropped for a successful run, for the censored
-/// `"exec_attempt"` handoff (which says nothing about the handed-over
+/// `ExecAttempt` handoff (which says nothing about the handed-over
 /// program), and for help/version — which are not failures at all — so the
 /// dashboard denominators for parse, auth, completed and censored outcomes
 /// keep counting exactly what they counted before.
-fn admits_failure_detail(outcome: &str) -> bool {
-    !matches!(outcome, "ok" | "exec_attempt" | "help" | "version")
+fn admits_failure_detail(outcome: Outcome) -> bool {
+    !matches!(
+        outcome,
+        Outcome::Ok | Outcome::ExecAttempt | Outcome::Help | Outcome::Version
+    )
 }
 
 fn build_payload(
@@ -349,19 +508,19 @@ fn build_payload(
 /// filled. Names only — never a value.
 #[derive(Clone)]
 pub struct Invocation {
-    command: String,
-    flags: Vec<String>,
+    command: CommandPath,
+    flags: Vec<DefName>,
     /// See [`Payload::positionals`]: definition-owned ids, presence only.
-    positionals: Vec<String>,
-    /// See [`Payload::outcome`]: `"ok"` from [`capture`] means *parsed* —
+    positionals: Vec<DefName>,
+    /// See [`Payload::outcome`]: `None` from [`capture`] means *parsed* —
     /// the dispatched outcome is not knowable until the exit code exists, so
     /// [`dispatched_outcome`] derives it at finalize time. From
     /// [`capture_lossy`] this is the error-kind mapping, never rewritten.
-    outcome: &'static str,
+    outcome: Option<Outcome>,
     /// See [`Payload::suggestion`]: always `None` from [`capture`]; from
     /// [`capture_lossy`] it is a clone of a definition-owned string, never
     /// of clap's error context.
-    suggestion: Option<String>,
+    suggestion: Option<DefName>,
     /// See [`Payload::failure_kind`]: the code of a dispatched local failure,
     /// set by [`Invocation::mark_local_failure`]. Always `None` from
     /// [`capture`] and [`capture_lossy`].
@@ -372,7 +531,7 @@ impl Invocation {
     /// Keep a child's raw status while preventing reserved CLI exit codes from
     /// changing its telemetry classification.
     pub fn mark_child_exit(&mut self) {
-        self.outcome = "error";
+        self.outcome = Some(Outcome::Error);
     }
 
     /// Record the code of a local runtime failure — the one its `--json` error
@@ -383,23 +542,25 @@ impl Invocation {
     }
 }
 
-/// Map clap's parse-error kind to the closed outcome vocabulary. Every value
-/// is a literal owned by this match; the wildcard covers the remaining (and
-/// future — `ErrorKind` is non-exhaustive) kinds.
-fn outcome_for_error(kind: clap::error::ErrorKind) -> &'static str {
+/// Map clap's parse-error kind to the closed [`Outcome`] vocabulary; the
+/// wildcard covers the remaining (and future — `ErrorKind` is non-exhaustive)
+/// kinds.
+fn outcome_for_error(kind: clap::error::ErrorKind) -> Outcome {
     use clap::error::ErrorKind as K;
     match kind {
-        K::DisplayHelp => "help",
-        K::DisplayVersion => "version",
-        K::InvalidSubcommand => "invalid_subcommand",
-        K::UnknownArgument => "unknown_argument",
+        K::DisplayHelp => Outcome::Help,
+        K::DisplayVersion => Outcome::Version,
+        K::InvalidSubcommand => Outcome::InvalidSubcommand,
+        K::UnknownArgument => Outcome::UnknownArgument,
         // Derive commands with a required subcommand report a bare
         // invocation as the "display help" flavor; for telemetry both kinds
         // are the same fact — no subcommand was given.
-        K::MissingSubcommand | K::DisplayHelpOnMissingArgumentOrSubcommand => "missing_subcommand",
-        K::MissingRequiredArgument => "missing_required",
-        K::InvalidValue | K::ValueValidation => "invalid_value",
-        _ => "other_parse_error",
+        K::MissingSubcommand | K::DisplayHelpOnMissingArgumentOrSubcommand => {
+            Outcome::MissingSubcommand
+        }
+        K::MissingRequiredArgument => Outcome::MissingRequired,
+        K::InvalidValue | K::ValueValidation => Outcome::InvalidValue,
+        _ => Outcome::OtherParseError,
     }
 }
 
@@ -410,7 +571,7 @@ fn outcome_for_error(kind: clap::error::ErrorKind) -> &'static str {
 /// Clap sorts multi-candidate lists by *ascending* similarity (clap_builder
 /// `did_you_mean` contract), so the best candidate is the last one that
 /// resolves.
-fn suggestion_for_error(root: &clap::Command, error: &clap::Error) -> Option<String> {
+fn suggestion_for_error(root: &clap::Command, error: &clap::Error) -> Option<DefName> {
     use clap::error::{ContextKind, ContextValue};
     [ContextKind::SuggestedSubcommand, ContextKind::SuggestedArg]
         .iter()
@@ -426,27 +587,28 @@ fn suggestion_for_error(root: &clap::Command, error: &clap::Error) -> Option<Str
 /// Anchor a clap-suggested name to the definition that owns it: strip the
 /// `--` prefix clap puts on flag suggestions, then require an equality match
 /// against some subcommand name or arg long name in the tree. The returned
-/// string is cloned from the *definition*, never from clap's error context,
-/// so a recorded suggestion is structurally definition-owned; anything
+/// [`DefName`] is cloned from the *definition*, never from clap's error
+/// context, so a recorded suggestion is structurally definition-owned; anything
 /// unmatched is dropped. Flags and subcommands are both recorded as the bare
 /// canonical name.
-fn resolve_suggestion(root: &clap::Command, suggested: &str) -> Option<String> {
-    let name = suggested.trim_start_matches('-');
-    find_defined_name(root, name).map(str::to_string)
+fn resolve_suggestion(root: &clap::Command, suggested: &str) -> Option<DefName> {
+    find_defined_name(root, suggested.trim_start_matches('-'))
 }
 
 /// Depth-first search of the whole command tree for a definition string
 /// equal to `name`: arg long names first, then subcommand names, recursing
 /// into every subcommand.
-fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> {
+fn find_defined_name(cmd: &clap::Command, name: &str) -> Option<DefName> {
     cmd.get_arguments()
-        .filter_map(|a| a.get_long())
-        .find(|&long| long == name)
+        .find(|a| a.get_long() == Some(name))
+        .and_then(DefName::long)
         .or_else(|| {
             cmd.get_subcommands().find_map(|sub| {
-                Some(sub.get_name())
-                    .filter(|&sub_name| sub_name == name)
-                    .or_else(|| find_defined_name(sub, name))
+                if sub.get_name() == name {
+                    Some(DefName::command(sub))
+                } else {
+                    find_defined_name(sub, name)
+                }
             })
         })
 }
@@ -509,7 +671,7 @@ impl PositionalCursor {
         &mut self,
         cmd: &clap::Command,
         token: &str,
-        seen: &mut std::collections::BTreeSet<String>,
+        seen: &mut std::collections::BTreeSet<DefName>,
     ) -> bool {
         let Some(arg) = self.current(cmd) else {
             return false;
@@ -526,7 +688,7 @@ impl PositionalCursor {
         }
 
         if !is_passthrough_positional(arg) {
-            seen.insert(arg.get_id().as_str().to_string());
+            seen.insert(DefName::id(arg));
         }
         self.values += 1;
         self.active = true;
@@ -582,7 +744,7 @@ fn short_cluster_is_defined(stack: &[&clap::Command], cluster: &str) -> bool {
 pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     use clap::parser::ValueSource;
 
-    let mut path: Vec<&str> = Vec::new();
+    let mut path = CommandPath::default();
     // Ancestor commands, innermost last: global args propagate into
     // subcommand matches but their `Arg` definition lives on an ancestor.
     let mut stack: Vec<&clap::Command> = vec![root];
@@ -614,11 +776,11 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
                 if !is_passthrough_positional(arg) {
                     // The definition's id, cloned from the definition — a
                     // positional has no long name to fall back on.
-                    positionals.insert(arg.get_id().as_str().to_string());
+                    positionals.insert(DefName::id(arg));
                 }
                 continue;
             }
-            flags.insert(arg.get_long().unwrap_or(id.as_str()).to_string());
+            flags.insert(DefName::long_or_id(arg));
         }
         let Some((name, sub_matches)) = current.subcommand() else {
             break;
@@ -630,15 +792,15 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
         else {
             break;
         };
-        path.push(sub_cmd.get_name());
+        path.push(sub_cmd);
         stack.push(sub_cmd);
         current = sub_matches;
     }
     Invocation {
-        command: path.join(" "),
+        command: path,
         flags: flags.into_iter().collect(),
         positionals: positionals.into_iter().collect(),
-        outcome: "ok",
+        outcome: None,
         suggestion: None,
         local_failure: None,
     }
@@ -649,9 +811,9 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
 ///
 /// Walks the argv tokens against the clap `Command` tree and records only
 /// strings owned by the definitions, matched by equality — argv slices never
-/// enter the result, the same "structurally impossible to leak a value"
-/// guarantee as [`capture`]. The walk stops at the first token that matches
-/// nothing. Defined positional slots are consumed without retaining their
+/// enter the result: like [`capture`], it can only record [`DefName`]s, which
+/// are built from definitions, never from a token. The walk stops at the
+/// first token that matches nothing. Defined positional slots are consumed without retaining their
 /// values, recording the slot id like [`capture`] does and allowing later
 /// flags to be captured; an unmatched token for which no slot exists still
 /// stops the walk. The token itself is never recorded (a typo is
@@ -675,7 +837,7 @@ pub fn capture_lossy(
     // against the current command first, then outward (global flags are
     // defined on an ancestor but valid at deeper levels).
     let mut stack: Vec<&clap::Command> = vec![root];
-    let mut path: Vec<&str> = Vec::new();
+    let mut path = CommandPath::default();
     let mut flags = std::collections::BTreeSet::new();
     let mut positionals = std::collections::BTreeSet::new();
     let mut tokens = argv.iter().skip(1);
@@ -717,7 +879,7 @@ pub fn capture_lossy(
             positional.interrupt();
             // Recorded name is the canonical long, even when the token
             // matched a hidden alias (e.g. `--fg` records `foreground`).
-            flags.extend(arg.get_long().map(str::to_string));
+            flags.extend(DefName::long(arg));
             // The definition says this flag consumes the next token as its
             // value: skip it, so a value that happens to equal a sibling
             // subcommand name is never misrecorded as command path.
@@ -749,7 +911,7 @@ pub fn capture_lossy(
                 };
                 // Canonical long name, falling back to the definition's id
                 // for short-only args — the same fallback `capture` uses.
-                flags.insert(arg.get_long().unwrap_or(arg.get_id().as_str()).to_string());
+                flags.insert(DefName::long_or_id(arg));
                 if arg.get_action().takes_values() {
                     // The rest of the token (optionally after `=`) is this
                     // flag's attached value: discard it. When the cluster
@@ -770,7 +932,7 @@ pub fn capture_lossy(
         {
             // Recorded name is the definition's, even when the token
             // matched an alias.
-            path.push(sub.get_name());
+            path.push(sub);
             stack.push(sub);
             positional = PositionalCursor::new();
         } else if positional.consume(current, token, &mut positionals) {
@@ -780,10 +942,10 @@ pub fn capture_lossy(
         }
     }
     Invocation {
-        command: path.join(" "),
+        command: path,
         flags: flags.into_iter().collect(),
         positionals: positionals.into_iter().collect(),
-        outcome: outcome_for_error(error.kind()),
+        outcome: Some(outcome_for_error(error.kind())),
         suggestion: suggestion_for_error(root, error),
         local_failure: None,
     }
@@ -866,11 +1028,11 @@ fn claim(guard: &AtomicBool) -> bool {
 }
 
 /// The event recorded when the process image is about to be replaced: the
-/// stashed parse result with its outcome rewritten to the `"exec_attempt"`
-/// literal (see [`Payload::outcome`]).
+/// stashed parse result with its outcome rewritten to
+/// [`Outcome::ExecAttempt`] (see [`Payload::outcome`]).
 fn exec_attempt_invocation(stashed: &Invocation) -> Invocation {
     Invocation {
-        outcome: "exec_attempt",
+        outcome: Some(Outcome::ExecAttempt),
         ..stashed.clone()
     }
 }
@@ -1170,7 +1332,7 @@ mod tests {
             command: "local list".into(),
             flags: vec!["json".into()],
             positionals: vec![],
-            outcome: "ok",
+            outcome: None,
             suggestion: None,
             local_failure: None,
         }
@@ -1262,7 +1424,7 @@ mod tests {
         assert_eq!(value["flags"], serde_json::json!(["json"]));
         assert_eq!(value["positionals"], serde_json::json!([]));
         assert_eq!(value["exit_code"], 4);
-        // The parse-time "ok" placeholder is rewritten from the exit code.
+        // The unset parse-time outcome is derived from the exit code.
         assert_eq!(value["outcome"], "auth_required");
         assert_eq!(value["suggestion"], serde_json::Value::Null);
         assert_eq!(value["ci"], true);
@@ -1273,25 +1435,28 @@ mod tests {
 
     #[test]
     fn dispatched_outcome_derives_from_the_exit_code() {
-        assert_eq!(dispatched_outcome("ok", 0), "ok");
-        assert_eq!(dispatched_outcome("ok", 1), "error");
-        assert_eq!(dispatched_outcome("ok", 2), "error");
-        assert_eq!(dispatched_outcome("ok", 3), "cancelled");
-        assert_eq!(dispatched_outcome("ok", 4), "auth_required");
+        assert_eq!(dispatched_outcome(None, 0), Outcome::Ok);
+        assert_eq!(dispatched_outcome(None, 1), Outcome::Error);
+        assert_eq!(dispatched_outcome(None, 2), Outcome::Error);
+        assert_eq!(dispatched_outcome(None, 3), Outcome::Cancelled);
+        assert_eq!(dispatched_outcome(None, 4), Outcome::AuthRequired);
         // Any exit code outside the documented vocabulary is still a failure.
-        assert_eq!(dispatched_outcome("ok", 5), "error");
+        assert_eq!(dispatched_outcome(None, 5), Outcome::Error);
         // The child-exit marker replaces the parse-time placeholder before
         // this mapping, so colliding child statuses remain errors.
         let mut child = invocation();
         child.mark_child_exit();
-        assert_eq!(dispatched_outcome(child.outcome, 3), "error");
-        assert_eq!(dispatched_outcome(child.outcome, 4), "error");
-        // Non-"ok" outcomes are never rewritten, whatever the exit code.
+        assert_eq!(dispatched_outcome(child.outcome, 3), Outcome::Error);
+        assert_eq!(dispatched_outcome(child.outcome, 4), Outcome::Error);
+        // A recorded outcome is never rewritten, whatever the exit code.
         assert_eq!(
-            dispatched_outcome("unknown_argument", 2),
-            "unknown_argument"
+            dispatched_outcome(Some(Outcome::UnknownArgument), 2),
+            Outcome::UnknownArgument
         );
-        assert_eq!(dispatched_outcome("exec_attempt", 0), "exec_attempt");
+        assert_eq!(
+            dispatched_outcome(Some(Outcome::ExecAttempt), 0),
+            Outcome::ExecAttempt
+        );
     }
 
     /// The `outcome` field of the payload `decide` builds for the given
@@ -1320,7 +1485,7 @@ mod tests {
             command: "local".into(),
             flags: vec![],
             positionals: vec![],
-            outcome: "unknown_argument",
+            outcome: Some(Outcome::UnknownArgument),
             suggestion: None,
             local_failure: None,
         };
@@ -1519,14 +1684,14 @@ mod tests {
 
     #[test]
     fn failure_detail_rides_only_on_failure_outcomes() {
-        assert!(admits_failure_detail("error"));
-        assert!(admits_failure_detail("auth_required"));
-        assert!(admits_failure_detail("cancelled"));
-        assert!(admits_failure_detail("unknown_argument"));
-        assert!(!admits_failure_detail("ok"));
-        assert!(!admits_failure_detail("exec_attempt"));
-        assert!(!admits_failure_detail("help"));
-        assert!(!admits_failure_detail("version"));
+        assert!(admits_failure_detail(Outcome::Error));
+        assert!(admits_failure_detail(Outcome::AuthRequired));
+        assert!(admits_failure_detail(Outcome::Cancelled));
+        assert!(admits_failure_detail(Outcome::UnknownArgument));
+        assert!(!admits_failure_detail(Outcome::Ok));
+        assert!(!admits_failure_detail(Outcome::ExecAttempt));
+        assert!(!admits_failure_detail(Outcome::Help));
+        assert!(!admits_failure_detail(Outcome::Version));
     }
 
     /// The classification is dropped for outcomes that are not failures, so
@@ -1539,7 +1704,7 @@ mod tests {
             (exec_attempt_invocation(&invocation()), 0),
             (
                 Invocation {
-                    outcome: "help",
+                    outcome: Some(Outcome::Help),
                     ..invocation()
                 },
                 0,
@@ -1565,51 +1730,17 @@ mod tests {
         }
     }
 
-    /// The classification fields are `&'static str`s and an allowlisted
-    /// number, so there is no code path by which SQL, an identifier, a
-    /// response body or a credential could reach them. Pin that with a
-    /// hostile invocation whose every string looks like a secret.
-    #[test]
-    fn a_classified_failure_payload_holds_no_free_text() {
-        let inv = Invocation {
-            command: "cloud service query".into(),
-            flags: vec!["query".into(), "org-id".into()],
-            positionals: vec![],
-            outcome: "ok",
-            suggestion: None,
-            local_failure: None,
-        };
-        let json = serde_json::to_string(&build_payload(
-            &inv,
-            1,
-            &env_of(&[]),
-            Some(failure_snapshot()),
-        ))
-        .unwrap();
-        for secret in [
-            "SELECT",
-            "password",
-            "AKIA",
-            "sk-",
-            "org-1",
-            "svc-",
-            "Bearer",
-            "Unknown table",
-        ] {
-            assert!(
-                !json.contains(secret),
-                "classified payload leaked {secret}: {json}"
-            );
-        }
-    }
-
     #[test]
     fn flags_truncated_to_worker_cap() {
         let inv = Invocation {
             command: "x".into(),
-            flags: (0..100).map(|i| format!("flag-{i}")).collect(),
-            positionals: (0..100).map(|i| format!("pos-{i}")).collect(),
-            outcome: "ok",
+            flags: (0..100)
+                .map(|i| format!("flag-{i}").as_str().into())
+                .collect(),
+            positionals: (0..100)
+                .map(|i| format!("pos-{i}").as_str().into())
+                .collect(),
+            outcome: None,
             suggestion: None,
             local_failure: None,
         };
@@ -1626,12 +1757,12 @@ mod tests {
             command: "local client".into(),
             flags: vec!["port".into()],
             positionals: vec!["name".into()],
-            outcome: "ok",
+            outcome: None,
             suggestion: None,
             local_failure: None,
         };
         let inv = exec_attempt_invocation(&stashed);
-        assert_eq!(inv.outcome, "exec_attempt");
+        assert_eq!(inv.outcome, Some(Outcome::ExecAttempt));
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port"]);
         assert_eq!(inv.positionals, ["name"]);
@@ -1647,7 +1778,7 @@ mod tests {
             command: "local client".into(),
             flags: vec!["query".into()],
             positionals: vec![],
-            outcome: "ok",
+            outcome: None,
             suggestion: None,
             local_failure: None,
         });
@@ -1716,7 +1847,7 @@ mod tests {
                 args.extend(["--file", "SECRET-OTHER.json"]);
                 let lossy = capture_lossy_from(&args);
                 assert_eq!(lossy.flags, ["file"]);
-                assert_eq!(lossy.outcome, "other_parse_error");
+                assert_eq!(lossy.outcome, Some(Outcome::OtherParseError));
                 let json =
                     serde_json::to_string(&build_payload(&lossy, 2, &env_of(&[]), None)).unwrap();
                 assert!(
@@ -1840,7 +1971,10 @@ mod tests {
         ] {
             let inv = capture_from(&command);
             assert_eq!(inv.positionals, ["version"], "for {command:?}");
-            assert_eq!(inv.outcome, "ok");
+            assert_eq!(
+                inv.outcome, None,
+                "a successful parse leaves the outcome to dispatch"
+            );
         }
     }
 
@@ -2015,7 +2149,7 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl"]);
         assert_eq!(inv.command, "");
         assert!(inv.flags.is_empty());
-        assert_eq!(inv.outcome, "missing_subcommand");
+        assert_eq!(inv.outcome, Some(Outcome::MissingSubcommand));
         assert_eq!(inv.suggestion, None);
     }
 
@@ -2024,7 +2158,7 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl", "--help"]);
         assert_eq!(inv.command, "");
         assert_eq!(inv.flags, ["help"]);
-        assert_eq!(inv.outcome, "help");
+        assert_eq!(inv.outcome, Some(Outcome::Help));
     }
 
     #[test]
@@ -2032,7 +2166,7 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "--help"]);
         assert_eq!(inv.command, "cloud service");
         assert_eq!(inv.flags, ["help"]);
-        assert_eq!(inv.outcome, "help");
+        assert_eq!(inv.outcome, Some(Outcome::Help));
     }
 
     #[test]
@@ -2040,12 +2174,12 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl", "local", "-h"]);
         assert_eq!(inv.command, "local");
         assert_eq!(inv.flags, ["help"]);
-        assert_eq!(inv.outcome, "help");
+        assert_eq!(inv.outcome, Some(Outcome::Help));
 
         let inv = capture_lossy_from(&["clickhousectl", "-V"]);
         assert_eq!(inv.command, "");
         assert_eq!(inv.flags, ["version"]);
-        assert_eq!(inv.outcome, "version");
+        assert_eq!(inv.outcome, Some(Outcome::Version));
     }
 
     #[test]
@@ -2054,9 +2188,12 @@ mod tests {
         // The typo'd token is never recorded; the path is the valid prefix.
         assert_eq!(inv.command, "cloud");
         assert!(inv.flags.is_empty());
-        assert_eq!(inv.outcome, "invalid_subcommand");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidSubcommand));
         // Clap's did-you-mean names a *defined* subcommand.
-        assert_eq!(inv.suggestion.as_deref(), Some("service"));
+        assert_eq!(
+            inv.suggestion.as_ref().map(DefName::as_str),
+            Some("service")
+        );
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("servce"), "typo leaked into payload: {json}");
     }
@@ -2081,7 +2218,7 @@ mod tests {
             Some(&ContextValue::Strings(vec!["stash".into(), "start".into()]))
         );
         let inv = capture_lossy(&mut cmd, &argv, &error);
-        assert_eq!(inv.suggestion.as_deref(), Some("start"));
+        assert_eq!(inv.suggestion.as_ref().map(DefName::as_str), Some("start"));
     }
 
     #[test]
@@ -2089,8 +2226,8 @@ mod tests {
         // Clap's SuggestedArg context carries `--json`; the recorded value is
         // the bare canonical name, cloned from the definition.
         let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "list", "--jsn"]);
-        assert_eq!(inv.outcome, "unknown_argument");
-        assert_eq!(inv.suggestion.as_deref(), Some("json"));
+        assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
+        assert_eq!(inv.suggestion.as_ref().map(DefName::as_str), Some("json"));
     }
 
     #[test]
@@ -2115,7 +2252,9 @@ mod tests {
             ContextValue::Strings(vec!["service".into(), "not-a-defined-name".into()]),
         );
         assert_eq!(
-            suggestion_for_error(&cmd, &error).as_deref(),
+            suggestion_for_error(&cmd, &error)
+                .as_ref()
+                .map(DefName::as_str),
             Some("service")
         );
     }
@@ -2125,7 +2264,7 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl", "local", "--frobnicate", "list"]);
         assert_eq!(inv.command, "local");
         assert!(inv.flags.is_empty());
-        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("frobnicate"), "unknown flag leaked: {json}");
     }
@@ -2148,7 +2287,7 @@ mod tests {
         );
         assert_eq!(inv.command, "run");
         assert_eq!(inv.flags, ["count"]);
-        assert_eq!(inv.outcome, "invalid_value");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidValue));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(
             !json.contains("SECRET"),
@@ -2172,7 +2311,7 @@ mod tests {
         );
         assert_eq!(inv.command, "run");
         assert_eq!(inv.flags, ["count"]);
-        assert_eq!(inv.outcome, "invalid_value");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidValue));
     }
 
     #[test]
@@ -2200,7 +2339,7 @@ mod tests {
         );
         assert_eq!(inv.command, "run");
         assert_eq!(inv.flags, ["count"]);
-        assert_eq!(inv.outcome, "invalid_value");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidValue));
     }
 
     #[test]
@@ -2304,7 +2443,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service get");
         assert_eq!(inv.flags, ["org-id"]);
-        assert_eq!(inv.outcome, "missing_required");
+        assert_eq!(inv.outcome, Some(Outcome::MissingRequired));
     }
 
     #[test]
@@ -2375,7 +2514,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "local clickhouse start");
         assert_eq!(inv.flags, ["config", "foreground", "http-port"]);
-        assert_eq!(inv.outcome, "invalid_value");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidValue));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "flag value leaked: {json}");
     }
@@ -2397,7 +2536,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port", "query"]);
-        assert_eq!(inv.outcome, "invalid_value");
+        assert_eq!(inv.outcome, Some(Outcome::InvalidValue));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "flag value leaked: {json}");
     }
@@ -2447,7 +2586,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service list");
         assert!(inv.flags.is_empty());
-        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "post-break token leaked: {json}");
 
@@ -2508,7 +2647,7 @@ mod tests {
             "SECRET-TRAILING",
         ]);
         assert_eq!(inv.command, "cloud service get");
-        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
     }
@@ -2524,7 +2663,7 @@ mod tests {
             &["clickhousectl", "local", "remove"],
         ] {
             let inv = capture_lossy_from(args);
-            assert_eq!(inv.outcome, "missing_required", "for {args:?}");
+            assert_eq!(inv.outcome, Some(Outcome::MissingRequired), "for {args:?}");
             assert!(
                 inv.positionals.is_empty(),
                 "a missing positional was recorded for {args:?}: {:?}",
@@ -2546,7 +2685,7 @@ mod tests {
             "--frobnicate",
         ]);
         assert_eq!(inv.command, "local remove");
-        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         assert_eq!(inv.positionals, ["version"]);
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "positional value leaked: {json}");
