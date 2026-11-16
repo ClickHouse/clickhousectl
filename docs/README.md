@@ -1,6 +1,6 @@
 # Documentation
 
-Start with the [README](../README.md) for installation and product examples. These guides follow the CLI in this checkout. Run `<command> --help` for all flags and the authorization requirements of your installed version.
+Start with the [README](../README.md) for installation and product examples. These guides follow the CLI in this checkout. Run `clickhousectl search <words>` to find a command or flag by keyword, and `<command> --help` for all flags and the authorization requirements of your installed version.
 
 ## Task guides
 

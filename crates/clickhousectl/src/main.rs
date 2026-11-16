@@ -18,6 +18,7 @@ mod http;
 mod init;
 mod local;
 mod paths;
+mod search;
 mod skills;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -431,6 +432,7 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Local(args) => Some(args.json),
         Commands::Cloud(args) => Some(args.json),
         Commands::Skills(args) => Some(args.json),
+        Commands::Search(args) => Some(args.json),
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(args) => Some(args.json),
         #[cfg(feature = "feedback")]
@@ -444,6 +446,7 @@ fn management_error_json(cmd: &Commands) -> bool {
     match cmd {
         Commands::Update(args) => json_output(args.json),
         Commands::Skills(args) => json_output(args.json),
+        Commands::Search(args) => json_output(args.json),
         // Local and Cloud print their own envelopes; `telemetry` and
         // `feedback` keep their text diagnostics deliberately.
         Commands::Local(_) | Commands::Cloud(_) => false,
@@ -476,6 +479,10 @@ async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local(args) => local::run(args.command, json_output(args.json)).await,
         Commands::Skills(args) => run_skills(args).await,
+        Commands::Search(args) => {
+            let json = json_output(args.json);
+            search::run(args, json)
+        }
         Commands::Cloud(args) => {
             let json = json_output(args.json);
             cloud::run(*args, json).await
@@ -1000,6 +1007,14 @@ mod tests {
         );
         assert_eq!(
             command_json_flag(&parse(&["clickhousectl", "skills", "--json"])),
+            Some(true)
+        );
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "search", "ip"])),
+            Some(false)
+        );
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "search", "ip", "--json"])),
             Some(true)
         );
         // The update command never surfaces the notice.

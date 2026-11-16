@@ -24,6 +24,7 @@ CONTEXT FOR AGENTS:
   Create account: `cloud auth signup`
   Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
   Check state first: `clickhousectl cloud auth status --json`, `clickhousectl local status --json`
+  Find a command or flag by keyword: `clickhousectl search <words>`
   Install the ClickHouse agent skills: `clickhousectl skills --agent claude`"
     };
 }
@@ -102,6 +103,13 @@ CONTEXT FOR AGENTS:
   Scope: prompted on a TTY, else the current project directory; --global forces your home directory.
   The universal `.agents/skills` target is always installed, alongside any selected agent.")]
     Skills(SkillsArgs),
+
+    /// Search commands and flags by keyword
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Matches command names, descriptions and flags; words of 3+ letters also match as prefixes.
+  No match still exits 0, with no results (--json: `results` is empty); then walk `--help`.")]
+    Search(SearchArgs),
 
     /// Update clickhousectl to the latest version
     #[command(after_help = "\
@@ -230,6 +238,25 @@ impl SkillsArgs {
             None
         }
     }
+}
+
+#[derive(Args, Debug)]
+pub struct SearchArgs {
+    /// Words to look for, such as `ip allow` or `idle timeout`
+    #[arg(required = true, num_args = 1.., value_name = "WORDS")]
+    pub terms: Vec<String>,
+
+    /// Maximum number of commands to show
+    #[arg(
+        long,
+        default_value_t = 5,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=50)
+    )]
+    pub limit: usize,
+
+    /// Output as JSON
+    #[arg(long, display_order = help_order::JSON)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -451,7 +478,7 @@ mod tests {
         }
 
         let root = Cli::command();
-        let mut top = vec!["local", "cloud", "skills", "update"];
+        let mut top = vec!["local", "cloud", "skills", "search", "update"];
         if cfg!(feature = "telemetry") {
             top.push("telemetry");
         }
@@ -866,6 +893,41 @@ mod tests {
         for agent in crate::skills::supported_agent_keys() {
             assert!(message.contains(agent), "missing `{agent}`: {message}");
         }
+    }
+
+    fn parse_search(argv: &[&str]) -> Result<SearchArgs, clap::Error> {
+        let cli = Cli::try_parse_from(argv)?;
+        let Commands::Search(args) = cli.command else {
+            panic!("expected search command");
+        };
+        Ok(args)
+    }
+
+    #[test]
+    fn search_takes_every_word_a_bounded_limit_and_json_after_the_words() {
+        let args = parse_search(&["clickhousectl", "search", "ip", "allow", "list"]).unwrap();
+        assert_eq!(args.terms, ["ip", "allow", "list"]);
+        assert_eq!(args.limit, 5);
+        assert!(!args.json);
+
+        let args = parse_search(&["clickhousectl", "search", "idle", "--json", "timeout"]).unwrap();
+        assert_eq!(args.terms, ["idle", "timeout"]);
+        assert!(args.json);
+
+        let args = parse_search(&["clickhousectl", "search", "--limit", "50", "ip"]).unwrap();
+        assert_eq!(args.limit, 50);
+
+        for limit in ["0", "51"] {
+            let error = parse_search(&["clickhousectl", "search", "--limit", limit, "ip"])
+                .expect_err("limit out of range");
+            assert_eq!(error.exit_code(), 2, "{limit}");
+        }
+        let error =
+            parse_search(&["clickhousectl", "search", "--json"]).expect_err("words are required");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[cfg(feature = "telemetry")]

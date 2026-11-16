@@ -156,6 +156,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/src/local/docker.rs",
                     "crates/clickhousectl/src/local/postgres.rs",
                     "crates/clickhousectl/src/local/udf.rs",
+                    "crates/clickhousectl/src/search.rs",
                     "crates/clickhousectl/src/skills.rs",
                     "crates/clickhousectl/src/telemetry.rs",
                     "crates/clickhousectl/src/udf.rs",
