@@ -639,6 +639,23 @@ pub enum Error {
     #[error("Postgres error: {0}")]
     PostgresUsage(String),
 
+    /// No usable Postgres bundle for the native runtime: the manifest is not
+    /// readable by this version, or names nothing for this request and
+    /// platform. Self-composed, including its recovery guidance.
+    #[error("Postgres bundle unavailable: {0}")]
+    PostgresBundleUnavailable(String),
+
+    /// A downloaded Postgres bundle does not match the sha256 its manifest
+    /// names; nothing was extracted or installed.
+    #[error(
+        "Postgres bundle '{file}' failed verification: expected sha256 {expected}, got {actual}; nothing was installed"
+    )]
+    PostgresBundleChecksum {
+        file: String,
+        expected: String,
+        actual: String,
+    },
+
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
     #[error("child process exited with code {0}")]

@@ -1,27 +1,33 @@
 //! Handlers for `clickhousectl local postgres ...` subcommands.
 //!
-//! All Docker work goes through `local::docker`. State is reused from
-//! `local::server` — Postgres entries land in the same metadata directory and
-//! show up alongside ClickHouse in `local status`.
+//! An instance runs in one of two runtimes ([`PgRuntime`]) and keeps the one
+//! it was created with: native, a postmaster from a downloaded bundle
+//! (`local::pg_bundle`, `local::pg_native`), or Docker (`local::docker`).
+//! `start` chooses for a new instance in [`select_start_runtime`]; every other
+//! command reads the choice back with `ServerInfo::pg_runtime`. State is
+//! reused from `local::server` — Postgres entries land in the same metadata
+//! directory and show up alongside ClickHouse in `local status`.
 
 use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
 use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
-use crate::local::server::{self, Engine, ServerInfo};
+use crate::local::pg_bundle::{self, InstalledBundle, PgVersionRequest};
+use crate::local::pg_native::{self, BundleIdentity, NativeState};
+use crate::local::server::{self, Engine, PgRuntime, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
 use std::future::Future;
 use std::io::IsTerminal;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::time::Duration;
 
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
 const DEFAULT_DATABASE: &str = "postgres";
-/// Default image tag when `--version` is not given. Within the supported
-/// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
+/// Default version when `--version` is not given: a major both runtimes
+/// serve. Docker also takes any 17/18 image tag (`17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const READINESS_LOG_LINES: usize = 50;
@@ -181,17 +187,21 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             password,
             database,
             env,
+            docker,
             wait_timeout,
         } => {
             start(
-                name.or(name_flag),
-                version,
-                port,
-                user,
-                password,
-                database,
-                env,
-                Duration::from_secs(wait_timeout.into()),
+                StartArgs {
+                    name: name.or(name_flag),
+                    version,
+                    port,
+                    user,
+                    password,
+                    database,
+                    extra_env: env,
+                    docker,
+                    wait_timeout: Duration::from_secs(wait_timeout.into()),
+                },
                 json,
             )
             .await
@@ -247,8 +257,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn start(
+struct StartArgs {
     name: Option<String>,
     version: Option<String>,
     port: Option<u16>,
@@ -256,9 +265,110 @@ async fn start(
     password: Option<String>,
     database: Option<String>,
     extra_env: Vec<String>,
+    docker: bool,
     wait_timeout: Duration,
-    json: bool,
-) -> Result<()> {
+}
+
+/// What a start asks for that only the Docker runtime provides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DockerOnlyFeature {
+    /// `--env`: container environment variables.
+    Env,
+    /// A `--version` that is an image tag rather than `17`, `18` or
+    /// `<major>.<minor>`.
+    ImageTag(String),
+}
+
+impl DockerOnlyFeature {
+    fn of(version: Option<&str>, has_extra_env: bool) -> Option<Self> {
+        if has_extra_env {
+            return Some(Self::Env);
+        }
+        version
+            .filter(|tag| PgVersionRequest::parse(tag).is_none())
+            .map(|tag| Self::ImageTag(tag.to_string()))
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Env => "`--env` sets container environment variables".to_string(),
+            Self::ImageTag(tag) => format!(
+                "`--version {tag}` is a Docker image tag (the native runtime takes 17, 18 or \
+                 <major>.<minor>)"
+            ),
+        }
+    }
+}
+
+/// The one decision between runtimes for `start`.
+///
+/// An existing instance keeps the runtime it was created with, so a Docker
+/// instance from before the native runtime existed resumes without the flag.
+/// A new instance is native unless `--docker` is given. Asking for the other
+/// runtime, or for a Docker-only feature without it, is a usage error that
+/// names the fix.
+fn select_start_runtime(
+    prior: Option<PgRuntime>,
+    docker: bool,
+    docker_only: Option<&DockerOnlyFeature>,
+    name: &str,
+    major: &str,
+) -> Result<PgRuntime> {
+    use clap::error::ErrorKind;
+    let recreate = format!(
+        "remove it first with `clickhousectl local postgres remove {name} --version {major}` \
+         (this deletes its data) to recreate it with `--docker`"
+    );
+    match (prior, docker, docker_only) {
+        (Some(PgRuntime::Docker), _, _) | (None, true, _) => Ok(PgRuntime::Docker),
+        (Some(PgRuntime::Native), true, _) => Err(Error::usage(
+            ErrorKind::ArgumentConflict,
+            format!(
+                "Postgres instance '{name}' (major {major}) runs natively, and `--docker` cannot \
+                 change an existing instance. Start it without `--docker`, or {recreate}"
+            ),
+        )),
+        (Some(PgRuntime::Native), false, Some(feature)) => Err(Error::usage(
+            ErrorKind::ArgumentConflict,
+            format!(
+                "{}, which needs the Docker runtime, and Postgres instance '{name}' (major \
+                 {major}) runs natively. Drop the option, or {recreate}",
+                feature.describe()
+            ),
+        )),
+        (None, false, Some(feature)) => Err(Error::usage(
+            ErrorKind::ArgumentConflict,
+            format!(
+                "{}, which needs the Docker runtime; add `--docker`",
+                feature.describe()
+            ),
+        )),
+        (Some(PgRuntime::Native) | None, false, None) => Ok(PgRuntime::Native),
+    }
+}
+
+/// The error for an instance whose runtime changed between choosing a
+/// runtime and acting on it: another command removed and recreated it.
+fn runtime_changed(name: &str) -> Error {
+    Error::PostgresUsage(format!(
+        "Postgres instance '{name}' was changed by another command while this one was starting \
+         it; run the command again"
+    ))
+}
+
+async fn start(args: StartArgs, json: bool) -> Result<()> {
+    let StartArgs {
+        name,
+        version,
+        port,
+        user,
+        password,
+        database,
+        extra_env,
+        docker,
+        wait_timeout,
+    } = args;
+    let docker_only = DockerOnlyFeature::of(version.as_deref(), !extra_env.is_empty());
     let has_extra_env = !extra_env.is_empty();
     let preflight = validate_start_options(
         name.as_deref(),
@@ -267,6 +377,85 @@ async fn start(
         password.as_deref(),
         extra_env,
     )?;
+
+    // Look at what exists under the project lock, then release it: both
+    // runtimes resolve their target again before changing anything.
+    let (user_name, major, prior) = {
+        let metadata_lock = server::lock_metadata()?;
+        server::recover_current_project_servers_locked(&metadata_lock)?;
+        let user_name = match name {
+            Some(name) => name,
+            None => default_pg_name_locked(&metadata_lock)?,
+        };
+        let (_, major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let key = server::pg_instance_key(&user_name, &major);
+        let prior = server::load_info_locked(&key, &metadata_lock)?;
+        (user_name, major, prior)
+    };
+    let prior_runtime = prior.as_ref().and_then(ServerInfo::pg_runtime);
+    let runtime = select_start_runtime(
+        prior_runtime,
+        docker,
+        docker_only.as_ref(),
+        &user_name,
+        &major,
+    )?;
+
+    let request = StartRequest {
+        name: user_name,
+        version,
+        port,
+        user,
+        password,
+        database,
+        preflight,
+        has_extra_env,
+        wait_timeout,
+    };
+    match runtime {
+        PgRuntime::Docker => {
+            if !docker && !json {
+                eprintln!(
+                    "Note: postgres '{}' (major {major}) is a Docker instance; resuming it in \
+                     Docker.",
+                    request.name
+                );
+            }
+            start_docker(request, json).await
+        }
+        PgRuntime::Native => start_native(request, json).await,
+    }
+}
+
+/// A validated start, for the runtime [`select_start_runtime`] chose.
+struct StartRequest {
+    /// The instance name, already defaulted.
+    name: String,
+    version: Option<String>,
+    /// The port the user asked for, if any; `preflight.host_port` is the
+    /// same port once checked.
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    database: Option<String>,
+    preflight: StartPreflight,
+    has_extra_env: bool,
+    wait_timeout: Duration,
+}
+
+async fn start_docker(request: StartRequest, json: bool) -> Result<()> {
+    let StartRequest {
+        name: user_name,
+        version,
+        port,
+        user,
+        password,
+        database,
+        preflight,
+        has_extra_env,
+        wait_timeout,
+    } = request;
     let host_port = preflight.host_port;
     let extra_env = preflight.extra_env;
     let password_from_env = preflight.password_from_env;
@@ -279,15 +468,17 @@ async fn start(
         // before potentially slow fresh-image inspection and pulling.
         let metadata_lock = server::lock_metadata()?;
         server::recover_current_project_servers_locked(&metadata_lock)?;
-        let user_name = match name.as_deref() {
-            Some(name) => name.to_string(),
-            None => default_pg_name_locked(&metadata_lock)?,
-        };
         let (tag, major) =
             resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
         let key = server::pg_instance_key(&user_name, &major);
         let prior = server::load_info_locked(&key, &metadata_lock)?;
         drop(metadata_lock);
+        if prior
+            .as_ref()
+            .is_some_and(|prior| prior.pg_runtime() != Some(PgRuntime::Docker))
+        {
+            return Err(runtime_changed(&user_name));
+        }
 
         if prior.is_none() {
             if !docker::image_exists(&docker, &tag).await? {
@@ -427,8 +618,11 @@ async fn start(
 
         let out = output::PostgresStartOutput {
             name: user_name,
-            container_id,
+            runtime: output::PostgresRuntime::Docker,
+            container_id: Some(container_id),
+            pid: None,
             image: format!("postgres:{tag}"),
+            extensions: Default::default(),
             port: host_port,
             user,
             password,
@@ -437,6 +631,379 @@ async fn start(
         output::print_output(&out, json);
         return Ok(());
     }
+}
+
+/// A password `initdb --pwfile` can carry: one non-empty line.
+fn validate_native_password(password: &str) -> Result<()> {
+    if password.is_empty() || password.contains(['\n', '\r']) {
+        return Err(Error::usage(
+            clap::error::ErrorKind::InvalidValue,
+            "--password must be a single non-empty line",
+        ));
+    }
+    Ok(())
+}
+
+async fn start_native(request: StartRequest, json: bool) -> Result<()> {
+    let StartRequest {
+        name: user_name,
+        version,
+        port,
+        user,
+        password,
+        database,
+        preflight,
+        wait_timeout,
+        ..
+    } = request;
+    pg_native::reject_root()?;
+    if let Some(password) = &password {
+        validate_native_password(password)?;
+    }
+    let project_cwd = crate::init::project_root()?.dir.display().to_string();
+
+    loop {
+        // Resolve an optimistic target, then release the project-wide lock
+        // before a possible bundle download.
+        let metadata_lock = server::lock_metadata()?;
+        let (tag, major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let key = server::pg_instance_key(&user_name, &major);
+        let prior = server::load_info_locked(&key, &metadata_lock)?;
+        drop(metadata_lock);
+        if prior
+            .as_ref()
+            .is_some_and(|prior| prior.pg_runtime() != Some(PgRuntime::Native))
+        {
+            return Err(runtime_changed(&user_name));
+        }
+
+        let bundle = match &prior {
+            // Data directories work across minors of a major, so an existing
+            // instance takes the newest installed bundle and needs no network.
+            Some(_) => pg_bundle::bundle_for_existing(&major, json).await?,
+            None => {
+                let request = PgVersionRequest::parse(&tag).ok_or_else(|| {
+                    Error::PostgresUsage(format!(
+                        "'{tag}' is not a version the native runtime serves; use 17, 18 or \
+                         <major>.<minor>, or add `--docker`"
+                    ))
+                })?;
+                pg_bundle::ensure_bundle(&request, false, json).await?
+            }
+        };
+
+        let metadata_lock = server::lock_metadata()?;
+        let (current_tag, current_major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let current_key = server::pg_instance_key(&user_name, &current_major);
+        let current = server::load_info_locked(&current_key, &metadata_lock)?;
+        if current_tag != tag || current_key != key || current != prior {
+            drop(metadata_lock);
+            continue;
+        }
+        crate::init::ensure_runtime_gitignore()?;
+
+        let started = match prior {
+            Some(prior) => {
+                if !json
+                    && (port.is_some()
+                        || user.is_some()
+                        || password.is_some()
+                        || database.is_some())
+                {
+                    eprintln!(
+                        "Note: postgres '{user_name}' (major {major}) already exists; resuming \
+                         with stored settings. Run `local postgres remove {user_name}` to start \
+                         over."
+                    );
+                }
+                resume_native(prior, &bundle, wait_timeout, metadata_lock).await?
+            }
+            None => {
+                let host_port = match preflight.host_port {
+                    Some(port) => port,
+                    None => resolve_port(None)?,
+                };
+                let state = NativeState {
+                    postgres_major: major.clone(),
+                    bundle: BundleIdentity::of(&bundle),
+                    user: user.unwrap_or_else(|| DEFAULT_USER.to_string()),
+                    password: password.unwrap_or_else(generate_password),
+                    database: database.unwrap_or_else(|| DEFAULT_DATABASE.to_string()),
+                };
+                let info = ServerInfo {
+                    name: key,
+                    pid: 0,
+                    version: format!("postgres:{}", bundle.spec.postgres_version),
+                    last_version: None,
+                    http_port: 0,
+                    tcp_port: host_port,
+                    started_at: server::now_timestamp(),
+                    cwd: project_cwd,
+                    engine: Engine::Postgres,
+                    container_id: None,
+                };
+                create_native(info, state, &bundle, wait_timeout, metadata_lock).await?
+            }
+        };
+
+        let NativeStarted { info, state } = started;
+        let out = output::PostgresStartOutput {
+            name: user_name,
+            runtime: output::PostgresRuntime::Native,
+            container_id: None,
+            pid: Some(info.pid),
+            image: info.version,
+            extensions: bundle.spec.extensions.clone(),
+            port: info.tcp_port,
+            user: state.user,
+            password: state.password,
+            database: state.database,
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    }
+}
+
+/// A native instance that is running and ready.
+struct NativeStarted {
+    info: ServerInfo,
+    state: NativeState,
+}
+
+/// Initialize and start a new native instance. `info` describes it with no
+/// PID yet. Any failure stops the postmaster and removes what this attempt
+/// created, so a retry starts clean.
+async fn create_native(
+    mut info: ServerInfo,
+    state: NativeState,
+    bundle: &InstalledBundle,
+    wait_timeout: Duration,
+    metadata_lock: server::MetadataLock,
+) -> Result<NativeStarted> {
+    let instance_dir = metadata_lock.servers_dir().join(&info.name);
+    let display_name = user_name_from_key(&info.name).to_string();
+    if !fresh_instance_dir_is_disposable(&instance_dir) {
+        // Data without metadata has no known credentials to resume with.
+        return Err(Error::PostgresUsage(format!(
+            "'{}' already holds files, but no Postgres instance is recorded for it. Move or \
+             delete that directory, then start again.",
+            instance_dir.display()
+        )));
+    }
+    std::fs::create_dir_all(instance_dir.join("data"))?;
+
+    let spawned = async {
+        pg_native::initdb(&pg_native::InitOptions {
+            bundle,
+            instance_dir: &instance_dir,
+            name: &display_name,
+            user: &state.user,
+            password: &state.password,
+        })
+        .await?;
+        pg_native::save_state(&instance_dir, &state)?;
+        pg_native::spawn_postmaster(bundle, &instance_dir, info.tcp_port)
+    }
+    .await;
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(primary) => {
+            return Err(rollback_native_create(
+                None,
+                &info.name,
+                primary,
+                &metadata_lock,
+            ));
+        }
+    };
+    info.pid = child.id();
+    if let Err(primary) = server::save_server_info_locked(&info, &metadata_lock) {
+        return Err(rollback_native_create(
+            Some(&mut child),
+            &info.name,
+            primary,
+            &metadata_lock,
+        ));
+    }
+    drop(metadata_lock);
+
+    let ready = async {
+        pg_native::wait_ready(
+            &mut child,
+            bundle,
+            &instance_dir,
+            &display_name,
+            info.tcp_port,
+            wait_timeout,
+        )
+        .await?;
+        if state.database != DEFAULT_DATABASE {
+            pg_native::create_database(
+                bundle,
+                info.tcp_port,
+                &state.user,
+                &state.password,
+                &state.database,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(primary) = ready {
+        // Stop the postmaster before anything that can fail, such as taking
+        // the lock again.
+        let stopped = pg_native::stop_child(&mut child);
+        let metadata_lock = server::lock_metadata()?;
+        let primary = match stopped {
+            Ok(()) => primary,
+            Err(cleanup) => {
+                return Err(Error::PostgresStartupRollback {
+                    primary: Box::new(primary),
+                    cleanup: format!(
+                        "could not stop the postmaster (PID {}): {cleanup}; its data and \
+                         metadata were kept, run `clickhousectl local postgres remove {}` to \
+                         clean up",
+                        info.pid, display_name
+                    ),
+                });
+            }
+        };
+        return Err(rollback_native_create(
+            None,
+            &info.name,
+            primary,
+            &metadata_lock,
+        ));
+    }
+    Ok(NativeStarted { info, state })
+}
+
+/// Undo a failed [`create_native`]: stop the postmaster if it was spawned,
+/// then delete the instance directory and metadata this attempt created.
+/// When the postmaster cannot be stopped, both are kept so `remove` can
+/// finish the job.
+fn rollback_native_create(
+    child: Option<&mut Child>,
+    key: &str,
+    primary: Error,
+    metadata_lock: &server::MetadataLock,
+) -> Error {
+    let instance_dir = metadata_lock.servers_dir().join(key);
+    let cleanup = || -> std::result::Result<(), String> {
+        if let Some(child) = child {
+            pg_native::stop_child(child).map_err(|error| {
+                format!(
+                    "could not stop the postmaster: {error}; run `clickhousectl local postgres \
+                     remove {}` to clean up",
+                    user_name_from_key(key)
+                )
+            })?;
+        }
+        match std::fs::remove_dir_all(&instance_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to remove '{}': {error}",
+                    instance_dir.display()
+                ));
+            }
+        }
+        server::try_remove_server_info_locked(key, metadata_lock)
+            .map_err(|error| format!("failed to remove metadata: {error}"))
+    };
+    match cleanup() {
+        Ok(()) => primary,
+        Err(cleanup) => Error::PostgresStartupRollback {
+            primary: Box::new(primary),
+            cleanup,
+        },
+    }
+}
+
+/// Start an existing, stopped native instance on its stored port with its
+/// stored credentials. A failure after the postmaster is spawned stops it
+/// and leaves the instance recorded as stopped.
+async fn resume_native(
+    prior: ServerInfo,
+    bundle: &InstalledBundle,
+    wait_timeout: Duration,
+    metadata_lock: server::MetadataLock,
+) -> Result<NativeStarted> {
+    let instance_dir = metadata_lock.servers_dir().join(&prior.name);
+    let display_name = user_name_from_key(&prior.name).to_string();
+    if pg_native::is_running(&instance_dir) {
+        return Err(Error::ServerAlreadyRunning(display_name));
+    }
+    let state = pg_native::load_state(&instance_dir)?
+        .filter(|_| pg_native::is_initialized(&instance_dir))
+        .ok_or_else(|| {
+            Error::PostgresUsage(format!(
+                "server '{display_name}' ({}) has metadata but its data directory is gone or \
+                 incomplete. Run `clickhousectl local postgres remove {display_name}` to clear \
+                 it and start fresh.",
+                prior.version
+            ))
+        })?;
+    ensure_resume_port_free(&display_name, prior.tcp_port)?;
+
+    let mut child = pg_native::spawn_postmaster(bundle, &instance_dir, prior.tcp_port)?;
+    let stopped = ServerInfo {
+        pid: 0,
+        ..prior.clone()
+    };
+    let info = ServerInfo {
+        pid: child.id(),
+        version: format!("postgres:{}", bundle.spec.postgres_version),
+        started_at: server::now_timestamp(),
+        ..prior
+    };
+    let state = NativeState {
+        bundle: BundleIdentity::of(bundle),
+        ..state
+    };
+    let recorded = server::save_server_info_locked(&info, &metadata_lock)
+        .and_then(|()| pg_native::save_state(&instance_dir, &state));
+    let ready = match recorded {
+        Ok(()) => {
+            drop(metadata_lock);
+            pg_native::wait_ready(
+                &mut child,
+                bundle,
+                &instance_dir,
+                &display_name,
+                info.tcp_port,
+                wait_timeout,
+            )
+            .await
+        }
+        Err(error) => {
+            drop(metadata_lock);
+            Err(error)
+        }
+    };
+    if let Err(primary) = ready {
+        let stopped_child = pg_native::stop_child(&mut child);
+        // Best effort: liveness comes from the postmaster's own PID file, so
+        // a PID left behind here is display-only.
+        if let Ok(lock) = server::lock_metadata() {
+            let _ = server::save_server_info_locked(&stopped, &lock);
+        }
+        return Err(match stopped_child {
+            Ok(()) => primary,
+            Err(cleanup) => Error::PostgresStartupRollback {
+                primary: Box::new(primary),
+                cleanup: format!(
+                    "could not stop the resumed postmaster (PID {}): {cleanup}",
+                    info.pid
+                ),
+            },
+        });
+    }
+    Ok(NativeStarted { info, state })
 }
 
 /// A fresh attempt owns an absent or empty instance directory, including one
@@ -558,9 +1125,11 @@ fn default_pg_name_locked_with(
     is_container_running: impl Fn(&str) -> Result<bool>,
 ) -> Result<String> {
     for info in server::find_pg_instances_locked("default", metadata_lock)? {
-        if let Some(id) = info.container_id.as_deref()
-            && is_container_running(id)?
-        {
+        let running = match info.container_id.as_deref() {
+            Some(id) => is_container_running(id)?,
+            None => pg_native::is_running(&metadata_lock.servers_dir().join(&info.name)),
+        };
+        if running {
             return server::generate_random_name_locked(metadata_lock);
         }
     }
@@ -764,8 +1333,11 @@ async fn resume_existing(
 
     let out = output::PostgresStartOutput {
         name: display_name,
-        container_id,
+        runtime: output::PostgresRuntime::Docker,
+        container_id: Some(container_id),
+        pid: None,
         image: info.version,
+        extensions: Default::default(),
         port: info.tcp_port,
         user,
         password,
@@ -1186,6 +1758,25 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
     let (target, metadata_lock) = lock_and_resolve_pg_target(name, version)?;
     let key = target.name.clone();
+    if target.pg_runtime() == Some(PgRuntime::Native) {
+        // Everything a native instance owns is in its directory, so stopping
+        // the postmaster and deleting the directory leaves nothing behind.
+        if server::is_server_running_locked(&key, &metadata_lock)? {
+            server::kill_server_locked(&key, &metadata_lock)?;
+        }
+        match std::fs::remove_dir_all(server::servers_dir_join(&key)?) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        server::try_remove_server_info_locked(&key, &metadata_lock)?;
+        let out = output::ServerRemoveOutput {
+            name: name.to_string(),
+            selection: None,
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    }
     if server::is_server_running_locked(&key, &metadata_lock)? {
         let tag = target
             .version
@@ -1243,7 +1834,8 @@ async fn client(
         }
         let h = host.unwrap_or_else(|| "127.0.0.1".to_string());
         let p = port.unwrap_or(DEFAULT_PG_PORT);
-        return exec_host_psql(
+        return exec_psql(
+            Path::new("psql"),
             &h,
             p,
             DEFAULT_USER,
@@ -1270,6 +1862,22 @@ async fn client(
     }
     drop(metadata_lock);
 
+    if info.pg_runtime() == Some(PgRuntime::Native) {
+        let state = native_state(&info)?;
+        let bundle = installed_bundle_for(&state)?;
+        return exec_psql(
+            &bundle.bin("psql"),
+            "127.0.0.1",
+            info.tcp_port,
+            &state.user,
+            Some(&state.password),
+            &state.database,
+            query,
+            queries_file,
+            extra_args,
+        );
+    }
+
     let docker = docker::connect().await?;
     let container_id = info
         .container_id
@@ -1279,7 +1887,8 @@ async fn client(
 
     // Prefer host psql; fall back to docker exec.
     if host_has_psql() {
-        return exec_host_psql(
+        return exec_psql(
+            Path::new("psql"),
             "127.0.0.1",
             info.tcp_port,
             &user,
@@ -1369,8 +1978,33 @@ fn host_has_psql() -> bool {
         .unwrap_or(false)
 }
 
+/// The stored credentials of a native instance.
+fn native_state(info: &ServerInfo) -> Result<NativeState> {
+    let name = user_name_from_key(&info.name);
+    pg_native::load_state(&server::servers_dir_join(&info.name)?)?.ok_or_else(|| {
+        Error::PostgresUsage(format!(
+            "server '{name}' ({}) has no stored connection details. Run `clickhousectl local \
+             postgres remove {name}` to clear it and start fresh.",
+            info.version
+        ))
+    })
+}
+
+/// The installed bundle whose client tools match a native instance's major.
+fn installed_bundle_for(state: &NativeState) -> Result<InstalledBundle> {
+    let major = &state.postgres_major;
+    pg_bundle::newest_installed(&PgVersionRequest::major(major))?.ok_or_else(|| {
+        Error::PostgresBundleUnavailable(format!(
+            "no PostgreSQL {major} bundle is installed; run `clickhousectl local install \
+             postgres@{major}`"
+        ))
+    })
+}
+
+/// Hand this process over to `program`, a `psql`: the host's, or a bundle's.
 #[allow(clippy::too_many_arguments)]
-fn exec_host_psql(
+fn exec_psql(
+    program: &Path,
     host: &str,
     port: u16,
     user: &str,
@@ -1384,7 +2018,7 @@ fn exec_host_psql(
     // psql reads a non-terminal stdin as a script unless -c supplies input.
     let script_input =
         queries_file.is_some() || (query.is_none() && !std::io::stdin().is_terminal());
-    let mut cmd = Command::new("psql");
+    let mut cmd = Command::new(program);
     cmd.arg("-h")
         .arg(host)
         .arg("-p")
@@ -1437,10 +2071,17 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
     }
     drop(metadata_lock);
 
-    // Read user/password/db from the container env so we always emit accurate creds.
-    let (user, password, database) = docker::block_on(read_pg_env_for_dotenv(
-        info.container_id.as_deref().unwrap_or_default(),
-    ));
+    let (user, password, database) = match info.pg_runtime() {
+        Some(PgRuntime::Native) => {
+            let state = native_state(&info)?;
+            (state.user, state.password, state.database)
+        }
+        // Read user/password/db from the container env so we always emit
+        // accurate creds.
+        _ => docker::block_on(read_pg_env_for_dotenv(
+            info.container_id.as_deref().unwrap_or_default(),
+        )),
+    };
 
     let vars: Vec<(&str, String)> = vec![
         ("POSTGRES_HOST", "127.0.0.1".to_string()),
@@ -1517,6 +2158,106 @@ mod tests {
                 .pop_front()
                 .expect("fake pg_isready result exhausted")
         }
+    }
+
+    #[test]
+    fn docker_only_features_are_env_and_image_tags() {
+        for version in [None, Some("17"), Some("18"), Some("18.6")] {
+            assert_eq!(DockerOnlyFeature::of(version, false), None, "{version:?}");
+        }
+        assert_eq!(
+            DockerOnlyFeature::of(Some("18-bookworm"), false),
+            Some(DockerOnlyFeature::ImageTag("18-bookworm".into()))
+        );
+        assert_eq!(
+            DockerOnlyFeature::of(Some("17.2-alpine"), false),
+            Some(DockerOnlyFeature::ImageTag("17.2-alpine".into()))
+        );
+        assert_eq!(
+            DockerOnlyFeature::of(Some("18"), true),
+            Some(DockerOnlyFeature::Env)
+        );
+    }
+
+    #[test]
+    fn start_runtime_is_native_unless_docker_is_asked_for_or_already_in_use() {
+        let select = |prior, docker, feature: Option<DockerOnlyFeature>| {
+            select_start_runtime(prior, docker, feature.as_ref(), "dev", "18")
+        };
+        let env = || Some(DockerOnlyFeature::Env);
+        let tag = || Some(DockerOnlyFeature::ImageTag("18-bookworm".into()));
+
+        // New instances.
+        assert_eq!(select(None, false, None).unwrap(), PgRuntime::Native);
+        assert_eq!(select(None, true, None).unwrap(), PgRuntime::Docker);
+        assert_eq!(select(None, true, env()).unwrap(), PgRuntime::Docker);
+        assert_eq!(select(None, true, tag()).unwrap(), PgRuntime::Docker);
+        // An instance keeps its runtime: Docker ones from older versions
+        // resume without the flag, with or without Docker-only options.
+        for docker in [false, true] {
+            for feature in [None, env(), tag()] {
+                assert_eq!(
+                    select(Some(PgRuntime::Docker), docker, feature).unwrap(),
+                    PgRuntime::Docker
+                );
+            }
+        }
+        assert_eq!(
+            select(Some(PgRuntime::Native), false, None).unwrap(),
+            PgRuntime::Native
+        );
+
+        // Usage errors (exit 2) that name the flag and the instance.
+        for (prior, docker, feature) in [
+            (None, false, env()),
+            (None, false, tag()),
+            (Some(PgRuntime::Native), true, None),
+            (Some(PgRuntime::Native), true, env()),
+            (Some(PgRuntime::Native), false, env()),
+            (Some(PgRuntime::Native), false, tag()),
+        ] {
+            let error = select(prior, docker, feature.clone()).unwrap_err();
+            assert_eq!(error.exit_code(), 2, "{prior:?} {docker} {feature:?}");
+            let message = error.to_string();
+            assert!(message.contains("--docker"), "{message}");
+            if prior.is_some() {
+                assert!(
+                    message.contains("clickhousectl local postgres remove dev --version 18"),
+                    "{message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_passwords_are_one_non_empty_line() {
+        assert!(validate_native_password("example-password").is_ok());
+        for password in ["", "two\nlines", "carriage\rreturn"] {
+            let error = validate_native_password(password).unwrap_err();
+            assert_eq!(error.exit_code(), 2, "{password:?}");
+        }
+    }
+
+    #[test]
+    fn runtime_follows_the_recorded_container() {
+        let mut info = ServerInfo {
+            name: server::pg_instance_key("dev", "18"),
+            pid: 0,
+            version: "postgres:18.7".into(),
+            last_version: None,
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/project".into(),
+            engine: Engine::Postgres,
+            container_id: None,
+        };
+        assert_eq!(info.pg_runtime(), Some(PgRuntime::Native));
+        // What every Docker start has written, before and since.
+        info.container_id = Some("abc123".into());
+        assert_eq!(info.pg_runtime(), Some(PgRuntime::Docker));
+        info.engine = Engine::Clickhouse;
+        assert_eq!(info.pg_runtime(), None);
     }
 
     #[test]
