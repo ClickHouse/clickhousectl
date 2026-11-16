@@ -191,12 +191,13 @@ fn real_env_lookup(key: &str) -> Option<String> {
 }
 
 /// Loader for the `.clickhouse/credentials.json` tier. Production passes
-/// `credentials::load_credentials`; tests pass a closure over a synthetic
+/// `credentials::try_load_credentials`, which fails on an unreadable or
+/// corrupt file rather than reporting it absent (#1327); tests pass a closure over a synthetic
 /// value (or `None`). Injected for the same reason as `EnvLookup`: the file
 /// lives under the process cwd, which `cargo test` does not isolate, so a
 /// developer's saved project credentials would otherwise win precedence over
 /// the env tier these tests are exercising.
-type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::Credentials>;
+type CredentialsLookup<'a> = &'a dyn Fn() -> Result<Option<crate::cloud::credentials::Credentials>>;
 
 /// Loader for the OAuth token tier (`~/.clickhouse/tokens.json`). Injected for
 /// the same reason as `CredentialsLookup`.
@@ -230,15 +231,15 @@ fn resolve_auth(
         url_override,
         crate::dotenv::get(),
         &real_env_lookup,
-        &crate::cloud::credentials::load_credentials,
+        &crate::cloud::credentials::try_load_credentials,
         &crate::cloud::auth::load_tokens,
     )
 }
 
 /// Walk the precedence ladder once. Order: CLI flags, credentials file, env
-/// vars (with `.env` fallback), OAuth tokens. Errors only when CLI flags
-/// are half-set (key without secret or vice versa) or when nothing usable
-/// is configured.
+/// vars (with `.env` fallback), OAuth tokens. Errors when CLI flags are
+/// half-set (key without secret or vice versa), when the credentials file
+/// exists but cannot be read or parsed, or when nothing usable is configured.
 ///
 /// `env_lookup`, `load_credentials`, and `load_tokens` are the injection
 /// points that let tests feed a controlled snapshot of every source without
@@ -274,7 +275,7 @@ fn resolve_auth_with_sources(
         });
     }
 
-    if let Some(creds) = load_credentials()
+    if let Some(creds) = load_credentials()?
         && let Some((key, secret)) = creds.api_credentials()
     {
         return Ok(ResolvedAuth {
@@ -422,17 +423,6 @@ fn env_cred_presence_with_sources(
 }
 
 impl AuthSource {
-    /// Short label for the source (useful for tables / compact output).
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
-        match self {
-            AuthSource::CliFlags => "CLI flags",
-            AuthSource::CredentialsFile => "Credentials file",
-            AuthSource::EnvVars => "Env vars",
-            AuthSource::OAuthTokens => "OAuth",
-        }
-    }
-
     /// One-line description including the concrete source (flag, path, env var names).
     pub fn describe(&self) -> String {
         match self {
@@ -1472,17 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_source_label_and_describe() {
-        let sources = [
-            AuthSource::CliFlags,
-            AuthSource::CredentialsFile,
-            AuthSource::EnvVars,
-            AuthSource::OAuthTokens,
-        ];
-        let labels: std::collections::HashSet<_> = sources.iter().map(AuthSource::label).collect();
-        assert_eq!(labels.len(), sources.len(), "labels must be distinct");
-        assert!(labels.iter().all(|label| !label.is_empty()));
-
+    fn auth_source_describe_names_the_source() {
         // Each description names the concrete source it was read from.
         let cli = AuthSource::CliFlags.describe();
         assert!(
@@ -2034,8 +2014,8 @@ mod tests {
     // No-op loaders for the file-backed tiers, so the env/dotenv precedence
     // tests don't depend on whatever `.clickhouse/` files happen to live under
     // the test cwd.
-    fn no_credentials() -> Option<crate::cloud::credentials::Credentials> {
-        None
+    fn no_credentials() -> Result<Option<crate::cloud::credentials::Credentials>> {
+        Ok(None)
     }
 
     fn no_tokens() -> std::result::Result<
@@ -2046,12 +2026,48 @@ mod tests {
     }
 
     // A populated credentials file, for asserting the file tier wins over env.
-    fn some_credentials() -> Option<crate::cloud::credentials::Credentials> {
-        Some(crate::cloud::credentials::Credentials {
+    fn some_credentials() -> Result<Option<crate::cloud::credentials::Credentials>> {
+        Ok(Some(crate::cloud::credentials::Credentials {
             api_key: Some("file_k".to_string()),
             api_secret: Some("file_s".to_string()),
             ..Default::default()
-        })
+        }))
+    }
+
+    /// A credentials file that exists but cannot be used is an error, not an
+    /// absent tier: usable env credentials below it are not used (#1327).
+    #[test]
+    fn unusable_credentials_file_does_not_fall_through() {
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "env_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
+        ]);
+        let corrupt = || Err(CloudError::new("failed to parse credentials.json"));
+        let error = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv_with(&[]),
+            &lookup_from(&env),
+            &corrupt,
+            &no_tokens,
+        )
+        .err()
+        .expect("a corrupt credentials file must not resolve to env credentials");
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(error.message, "failed to parse credentials.json");
+        // CLI flags rank above the file, so they never read it.
+        let flags = resolve_auth_with_sources(
+            Some("k"),
+            Some("s"),
+            None,
+            &dotenv_with(&[]),
+            &lookup_from(&env),
+            &corrupt,
+            &no_tokens,
+        )
+        .unwrap();
+        assert_eq!(flags.source, AuthSource::CliFlags);
     }
 
     /// An expired saved login (#1224) is an auth error naming the expiry, not
@@ -2093,11 +2109,11 @@ mod tests {
     fn empty_saved_credentials_do_not_shadow_usable_sources() {
         for (key, secret) in [("", ""), ("", "file_s"), ("file_k", "")] {
             let saved = || {
-                Some(crate::cloud::credentials::Credentials {
+                Ok(Some(crate::cloud::credentials::Credentials {
                     api_key: Some(key.to_owned()),
                     api_secret: Some(secret.to_owned()),
                     ..Default::default()
-                })
+                }))
             };
             let dotenv = dotenv_with(&[]);
             let env = env_map(&[
@@ -2206,7 +2222,7 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
         ]);
         for (saved_url, url_override, expected) in cases {
-            let saved = || Some(saved_key_for(saved_url));
+            let saved = || Ok(Some(saved_key_for(saved_url)));
             let result = resolve_auth_with_sources(
                 None,
                 None,
@@ -2242,7 +2258,7 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_KEY", "env_k"),
             ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
         ]);
-        let saved = || Some(saved_key_for(Some(DEV_URL)));
+        let saved = || Ok(Some(saved_key_for(Some(DEV_URL))));
         let flags = resolve_auth_with_sources(
             Some("k"),
             Some("s"),

@@ -112,13 +112,10 @@ pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLo
     Ok(QueryProvisioningLock { _file: file })
 }
 
-pub fn load_credentials() -> Option<Credentials> {
-    let path = credentials_path();
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
-}
-
-fn try_load_credentials() -> CloudResult<Option<Credentials>> {
+/// Read the saved credentials, or `None` when no file exists. A file that
+/// cannot be read (tagged `io`) or parsed is an error naming its path, never
+/// "no credentials": resolution must not fall through to a lower tier (#1327).
+pub(crate) fn try_load_credentials() -> CloudResult<Option<Credentials>> {
     let path = credentials_path();
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
@@ -130,8 +127,13 @@ fn try_load_credentials() -> CloudResult<Option<Credentials>> {
             );
         }
     };
-    let credentials = serde_json::from_str(&data)
-        .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))?;
+    let credentials = serde_json::from_str(&data).map_err(|error| {
+        CloudError::new(format!(
+            "failed to parse {}: {error}. Fix or remove the file \
+             (`clickhousectl cloud auth logout --api-keys` removes it).",
+            path.display()
+        ))
+    })?;
     Ok(Some(credentials))
 }
 

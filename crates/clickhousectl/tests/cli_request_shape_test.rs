@@ -1166,6 +1166,49 @@ async fn api_key_login_preserves_malformed_credentials() {
     assert_eq!(std::fs::read(credentials_path).unwrap(), original);
 }
 
+/// A corrupt credentials file fails Cloud commands instead of falling through
+/// to the usable env credentials below it, and `auth status` reports it
+/// rather than showing the API key tier as absent (#1327).
+#[tokio::test]
+async fn corrupt_credentials_file_fails_closed_and_is_reported_by_status() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join("credentials.json"), b"{corrupt\n").unwrap();
+
+    let output = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit")
+        .args(["service", "list", "--org-id", "org-1"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "other");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(".clickhouse/credentials.json"),
+        "{message}"
+    );
+
+    let output = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit")
+        .args(["auth", "status"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warning = status["credentials_warning"].as_str().unwrap();
+    assert!(
+        warning.contains(".clickhouse/credentials.json"),
+        "{warning}"
+    );
+    let sources = status["sources"].as_array().unwrap();
+    assert!(sources.iter().all(|row| row["active"] == "-"), "{status}");
+    assert_eq!(status["verification"], "skipped");
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[test]
 fn logout_does_not_report_success_when_credentials_removal_fails() {
     let dir = tempfile::tempdir().unwrap();

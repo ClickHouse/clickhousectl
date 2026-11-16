@@ -382,8 +382,18 @@ pub async fn run(
                 }
             }
 
-            let saved = credentials::load_credentials();
+            // An unreadable or corrupt file is reported, not shown as absent:
+            // Cloud commands fail on it rather than falling through (#1327).
+            let mut credentials_warning = None;
+            let saved = match credentials::try_load_credentials() {
+                Ok(saved) => saved,
+                Err(error) => {
+                    credentials_warning = Some(error.message);
+                    None
+                }
+            };
             let (status, scope) = match saved.as_ref() {
+                _ if credentials_warning.is_some() => ("Unreadable".into(), "-"),
                 Some(creds) if creds.api_credentials().is_some() => {
                     (configured_status(AuthSource::CredentialsFile), "read/write")
                 }
@@ -471,6 +481,9 @@ pub async fn run(
                             "[debug] auth source: none (incomplete CLI flags: missing {missing})"
                         );
                     }
+                    None if credentials_warning.is_some() => {
+                        eprintln!("[debug] auth source: none (saved API key file unreadable)");
+                    }
                     None if oauth_warning.is_some() => {
                         eprintln!("[debug] auth source: none (saved OAuth login unusable)");
                     }
@@ -497,18 +510,25 @@ pub async fn run(
                     sources: Vec<AuthRow>,
                     #[serde(skip_serializing_if = "Option::is_none")]
                     oauth_warning: Option<&'a str>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    credentials_warning: Option<&'a str>,
                     #[serde(flatten)]
                     identity: &'a IdentityCheck,
                 }
                 let output = StatusOutput {
                     sources: rows,
                     oauth_warning,
+                    credentials_warning: credentials_warning.as_deref(),
                     identity: &identity,
                 };
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
                 if let Some(warning) = oauth_warning {
+                    println!();
+                    println!("{warning}");
+                }
+                if let Some(warning) = &credentials_warning {
                     println!();
                     println!("{warning}");
                 }
@@ -965,8 +985,9 @@ fn auth_config_for_url_with(
     }
 }
 
-/// Normalize a user-provided URL into the API base URL we store and use.
-/// Ensures it has a scheme and the /v1 path suffix.
+/// Normalize a user-provided URL into the API base URL we store and use:
+/// trailing slashes are trimmed and a `/v1` path suffix is added if missing.
+/// The scheme is left as given.
 pub fn normalize_api_url(url: &str) -> String {
     let url = url.trim_end_matches('/');
     if url.ends_with("/v1") {
