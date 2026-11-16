@@ -13,6 +13,8 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
+use std::process::Stdio;
+use std::time::Duration;
 use tar::Archive;
 
 /// Install a version spec, trying installed versions first before any remote call.
@@ -341,6 +343,179 @@ pub async fn ensure_installed(
         Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
         other => other,
     }
+}
+
+/// How long `local install --binary` gives the copied file to answer `--version`.
+const BINARY_VERSION_TIMEOUT: Duration = Duration::from_secs(60);
+/// The most of each output stream that probe keeps. A file that writes more
+/// is not ClickHouse; its pipe is closed and it fails or times out.
+const BINARY_VERSION_OUTPUT_LIMIT: u64 = 64 * 1024;
+
+/// Install a local ClickHouse build (#129): copy `source` into staging, ask the
+/// copy (never the original) for its version, and commit it under that
+/// version. A file that does not report a ClickHouse version leaves nothing
+/// installed, and an installed version is replaced only with `force`.
+pub async fn install_from_binary(
+    source: &Path,
+    force: bool,
+    structured_output: bool,
+) -> Result<String> {
+    let rejected = |reason: String| Error::NotAClickHouseBinary {
+        path: source.display().to_string(),
+        reason,
+    };
+    check_source_binary(source).map_err(rejected)?;
+    let platform = Platform::detect()?;
+    paths::ensure_dirs()?;
+    let versions_dir = paths::versions_dir()?;
+
+    let staging = InstallStaging::create(&versions_dir)?;
+    let binary_path = staging.binary_path();
+    if !structured_output {
+        eprintln!("Copying {}...", source.display());
+    }
+    std::fs::copy(source, &binary_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "could not copy {} to {}: {error}",
+                source.display(),
+                binary_path.display()
+            ),
+        )
+    })?;
+    std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+
+    if !structured_output {
+        eprintln!("Detecting version...");
+    }
+    let mut probe = tokio::process::Command::new(&binary_path);
+    probe.arg("--version");
+    let timeout = crate::timing::duration_override(
+        crate::timing::BINARY_VERSION_TIMEOUT_ENV,
+        BINARY_VERSION_TIMEOUT,
+    );
+    let output = run_version_probe(probe, timeout).await.map_err(rejected)?;
+    let version = parse_clickhouse_version_output(&output).ok_or_else(|| {
+        rejected(format!(
+            "`--version` reported no ClickHouse version: {}",
+            excerpt(output.as_bytes())
+        ))
+    })?;
+    // The version becomes a directory under ~/.clickhouse/versions/ (#1291).
+    paths::validate_installed_version(&version)?;
+
+    let commit_lock = CommitLock::acquire(&versions_dir).await?;
+    commit_staged_install_locked(
+        &commit_lock,
+        &versions_dir,
+        &staging,
+        &version,
+        force,
+        false,
+        &platform,
+        None,
+        |_| Ok(false),
+        |_| Ok(()),
+    )?;
+    drop(commit_lock);
+
+    if !structured_output {
+        eprintln!("Installed ClickHouse {} from {}", version, source.display());
+    }
+    Ok(version)
+}
+
+/// The reason `source` cannot be installed with `--binary`, if any. Symlinks
+/// are followed: `build/programs/clickhouse-server` links to the real binary.
+fn check_source_binary(source: &Path) -> std::result::Result<(), String> {
+    let metadata =
+        std::fs::metadata(source).map_err(|error| format!("it cannot be read: {error}"))?;
+    if !metadata.is_file() {
+        return Err("it is not a regular file".to_string());
+    }
+    Ok(())
+}
+
+/// Run `command` with no stdin and return its stdout, or why it did not
+/// succeed within `timeout`. The child is killed if the wait ends early.
+async fn run_version_probe(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> std::result::Result<String, String> {
+    use tokio::io::AsyncReadExt;
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("it could not be run: {error}"))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    // Each reader owns its pipe and closes it once it stops reading, at EOF or
+    // at the limit, so a child still writing gets EPIPE instead of blocking
+    // the other stream's EOF until the timeout.
+    async fn read_bounded(pipe: impl tokio::io::AsyncRead + Unpin) -> (io::Result<usize>, Vec<u8>) {
+        let mut buffer = Vec::new();
+        let read = pipe
+            .take(BINARY_VERSION_OUTPUT_LIMIT)
+            .read_to_end(&mut buffer)
+            .await;
+        (read, buffer)
+    }
+    let run = async {
+        let ((read_out, out), (read_err, err)) =
+            tokio::join!(read_bounded(stdout), read_bounded(stderr));
+        let status = child.wait().await;
+        (read_out.and(read_err), status, out, err)
+    };
+    match tokio::time::timeout(timeout, run).await {
+        Err(_) => Err(format!("`--version` did not finish within {timeout:?}")),
+        Ok((_, Err(error), _, _)) | Ok((Err(error), _, _, _)) => {
+            Err(format!("`--version` failed: {error}"))
+        }
+        Ok((Ok(_), Ok(status), out, err)) => {
+            if status.success() {
+                Ok(String::from_utf8_lossy(&out).into_owned())
+            } else if err.iter().all(u8::is_ascii_whitespace) {
+                Err(format!("`--version` exited with {status}"))
+            } else {
+                Err(format!(
+                    "`--version` exited with {status}: {}",
+                    excerpt(&err)
+                ))
+            }
+        }
+    }
+}
+
+/// The version on the first `ClickHouse ...` line, as in
+/// "ClickHouse local version 25.12.9.61 (official build).", so another
+/// program's four-part version is never taken for one.
+fn parse_clickhouse_version_output(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("ClickHouse "))
+        .find_map(|line| parse_version_output(line).ok())
+}
+
+/// The start of a foreign program's output, for an error message.
+fn excerpt(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 200;
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim();
+    if text.is_empty() {
+        return "(no output)".to_string();
+    }
+    if text.chars().count() <= MAX_CHARS {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(MAX_CHARS).collect();
+    format!("{cut}...")
 }
 
 fn is_installed(binary_path: &Path) -> bool {
@@ -1337,6 +1512,112 @@ mod tests {
         }
         for output in ["Some random output without a version.", ""] {
             assert!(parse_version_output(output).is_err(), "{output:?}");
+        }
+    }
+
+    #[test]
+    fn a_binary_version_comes_only_from_a_clickhouse_line() {
+        for (output, expected) in [
+            (
+                "ClickHouse local version 25.12.9.61 (official build).\n",
+                "25.12.9.61",
+            ),
+            // A local build has no build tag and may print a warning first.
+            (
+                "warning: x\nClickHouse local version 26.1.1.1.\n",
+                "26.1.1.1",
+            ),
+        ] {
+            assert_eq!(
+                parse_clickhouse_version_output(output).as_deref(),
+                Some(expected),
+                "{output:?}"
+            );
+        }
+        for output in [
+            "",
+            "Python 3.12.1",
+            "tool 1.2.3.4",
+            "ClickHouse keeper, no version",
+        ] {
+            assert_eq!(parse_clickhouse_version_output(output), None, "{output:?}");
+        }
+    }
+
+    #[test]
+    fn binary_source_must_be_a_readable_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("clickhouse");
+        fs::write(&file, b"binary").unwrap();
+        let link = temp.path().join("clickhouse-server");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        check_source_binary(&file).unwrap();
+        check_source_binary(&link).unwrap();
+
+        check_source_binary(temp.path()).unwrap_err();
+        check_source_binary(&temp.path().join("missing")).unwrap_err();
+    }
+
+    fn shell_probe(script: &str) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[tokio::test]
+    async fn version_probe_returns_stdout_only_on_success() {
+        let out = run_version_probe(
+            shell_probe("echo 'ClickHouse local version 26.1.1.1.'"),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            parse_clickhouse_version_output(&out).as_deref(),
+            Some("26.1.1.1")
+        );
+
+        let error = run_version_probe(
+            shell_probe("echo stderr-token >&2; exit 3"),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("stderr-token"), "{error}");
+        assert!(error.contains('3'), "{error}");
+
+        let missing = tokio::process::Command::new("/nonexistent/clickhouse");
+        run_version_probe(missing, Duration::from_secs(20))
+            .await
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn version_probe_kills_a_binary_that_never_answers() {
+        // A shell builtin loop, so no child process outlives the kill.
+        let started = Instant::now();
+        let error = run_version_probe(
+            shell_probe("while :; do :; done"),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("100ms"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn version_probe_stops_reading_a_flood_of_output() {
+        let started = Instant::now();
+        let result = run_version_probe(
+            shell_probe("while echo flood-of-output; do :; done"),
+            Duration::from_secs(20),
+        )
+        .await;
+        // The pipe closes at the limit, so the loop ends rather than the wait.
+        assert!(started.elapsed() < Duration::from_secs(20));
+        if let Ok(out) = result {
+            assert!(out.len() as u64 <= BINARY_VERSION_OUTPUT_LIMIT);
         }
     }
 

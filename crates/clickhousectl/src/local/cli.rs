@@ -1,5 +1,6 @@
 use crate::version_manager::{self, VersionSpec};
 use clap::{ArgGroup, Args, Subcommand};
+use std::path::PathBuf;
 use std::str::FromStr;
 
 fn parse_server_name_arg(name: &str) -> Result<String, String> {
@@ -121,7 +122,9 @@ const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   The first ClickHouse version installed becomes the default; later installs do not change it.
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
-  `postgres@<tag>` pulls a Docker image instead (needs Docker running) and never sets a default.";
+  `postgres@<tag>` pulls a Docker image instead (needs Docker running) and never sets a default.
+  --binary copies the file (e.g. build/programs/clickhouse) and installs it as the version its
+  `--version` reports; rebuild and pass --force to replace that version.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallVersionArg {
@@ -377,10 +380,17 @@ CONTEXT FOR AGENTS:
     },
 
     /// Install a ClickHouse version or Postgres image
-    #[command(after_help = INSTALL_AFTER_HELP)]
+    #[command(
+        after_help = INSTALL_AFTER_HELP,
+        group(ArgGroup::new("source").args(["version", "binary"]).required(true))
+    )]
     Install {
         /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or image selector (postgres@18)
-        version: InstallVersionArg,
+        version: Option<InstallVersionArg>,
+
+        /// Install a local ClickHouse build under the version it reports
+        #[arg(long, value_name = "PATH")]
+        binary: Option<PathBuf>,
 
         /// Re-install even if already installed
         #[arg(long)]
@@ -1196,7 +1206,7 @@ mod tests {
             ("25.12.9.61", VersionSpec::Exact("25.12.9.61".to_string())),
         ] {
             let LocalCommands::Install {
-                version: InstallVersionArg::ClickHouse(version),
+                version: Some(InstallVersionArg::ClickHouse(version)),
                 ..
             } = local_command(&["install", input])
             else {
@@ -1247,7 +1257,7 @@ mod tests {
             ("  postgres@17  ", "17"),
         ] {
             let LocalCommands::Install {
-                version: InstallVersionArg::Postgres(tag),
+                version: Some(InstallVersionArg::Postgres(tag)),
                 ..
             } = local_command(&["install", input])
             else {
@@ -1270,6 +1280,37 @@ mod tests {
             &["client", "--host", "remote", "--version", "postgres@18"],
             &["`local install`", "`local client --version`"],
         );
+    }
+
+    #[test]
+    fn install_takes_exactly_one_of_a_version_or_a_binary() {
+        let LocalCommands::Install {
+            version: None,
+            binary: Some(binary),
+            force: true,
+        } = local_command(&[
+            "install",
+            "--binary",
+            "build/programs/clickhouse",
+            "--force",
+        ])
+        else {
+            panic!("expected a --binary install");
+        };
+        assert_eq!(binary, PathBuf::from("build/programs/clickhouse"));
+
+        assert_eq!(
+            local_parse_error(&["install"]).kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        // A Postgres selector is a version too, so it cannot join --binary.
+        for version in ["latest", "postgres@18"] {
+            assert_eq!(
+                local_parse_error(&["install", version, "--binary", "./clickhouse"]).kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{version}"
+            );
+        }
     }
 
     #[test]

@@ -447,6 +447,12 @@ pub enum Error {
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 
+    /// `local install --binary` was given a file that is not a runnable
+    /// ClickHouse build (#129); nothing was installed. `reason` can carry the
+    /// file's own `--version` output, so JSON puts it in `details`.
+    #[error("{path} is not a usable ClickHouse binary ({reason}); nothing was installed")]
+    NotAClickHouseBinary { path: String, reason: String },
+
     /// `local remove` was asked to delete a version that a running server was
     /// started from. The blocking servers are named with their project root
     /// because the check spans every project, not just the current directory:

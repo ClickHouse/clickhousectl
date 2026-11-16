@@ -50,6 +50,16 @@ clickhousectl local list --remote
 
 A bare start installs `latest` if no version or default is available, without setting a default. Pin a version or use `local use stable` to avoid tracking master. Reusing `latest` requires a successful remote freshness check; an unavailable server is an error, not a fallback to an unverified build.
 
+### Install a local ClickHouse build
+
+To run a ClickHouse binary you built yourself, install it from its path:
+
+```bash
+clickhousectl local install --binary ~/ClickHouse/build/programs/clickhouse
+```
+
+`clickhousectl` copies the file into `~/.clickhouse/versions/`, runs the copy with `--version`, and installs it under the version it reports, such as `26.1.1.1`. Select that version with `local use` or `clickhouse start --version`, and remove it with `local remove`, like any other install. A later rebuild usually reports the same version, so pass `--force` to replace the installed copy; servers already running keep the old binary until restarted. A file that does not run or does not report a ClickHouse version within 60 seconds is rejected and nothing is installed.
+
 ## Run SQL with `local client`
 
 Connect to a running server by name. `local client` finds its TCP port and uses the same ClickHouse binary as the server. With no name, it picks a server by the [selection rule](#choose-a-server-by-name).
