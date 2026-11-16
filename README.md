@@ -58,6 +58,8 @@ clickhousectl update
 
 `update` replaces binaries installed by the script, a download, or Cargo; npm, uv, pipx, and pip installs are upgraded with their package manager, and `update` prints that command.
 
+The install script, `update`, and npm check each downloaded archive against the release's `SHA256SUMS`. See [Release verification](docs/reference/install-verification.md) to check a download or its build attestation yourself.
+
 ## Start locally
 
 Use the `latest` channel for the rolling master build of ClickHouse. A bare server start installs `latest` if no version or default is available.

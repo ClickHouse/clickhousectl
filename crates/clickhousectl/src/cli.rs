@@ -107,7 +107,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   npm, pip, uv and pipx installs are never replaced: `update` exits 1 naming that package manager's
   upgrade command (--json: error code `package_managed`, the command in `command`); --check still works.
-  Otherwise the new binary must pass `--version` before it replaces the running one.")]
+  Otherwise nothing is replaced unless the GitHub release's SHA256SUMS lists the archive's digest
+  (--json: `verification_failed` if not) and the new binary passes `--version`.")]
     Update(UpdateArgs),
 
     /// Manage anonymous usage telemetry

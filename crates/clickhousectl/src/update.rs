@@ -17,6 +17,12 @@ const LATEST_MANIFEST_URL: &str = "https://builds.clickhouse.com/clickhousectl/l
 /// latest release, which is not subject to the REST API's 60 requests/hour
 /// unauthenticated limit.
 const LATEST_RELEASE_PAGE_URL: &str = "https://github.com/ClickHouse/clickhousectl/releases/latest";
+/// Where each release's `SHA256SUMS` is read: the GitHub release, not
+/// builds.clickhouse.com, so the server that serves an archive cannot also
+/// vouch for it (#1307).
+const RELEASE_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/ClickHouse/clickhousectl/releases/download";
+const CHECKSUMS_FILE: &str = "SHA256SUMS";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 /// Set to `npm` by the npm package's launcher (`npm/bin/cli.js`) on the
@@ -455,7 +461,15 @@ pub async fn perform_update(json: bool) -> Result<UpdateResult> {
         println!("Downloading clickhousectl v{}...", display);
     }
 
-    let archive_bytes = download_archive(&download_url).await?;
+    let sums_url = format!(
+        "{}/{}/{}",
+        RELEASE_DOWNLOAD_BASE_URL, latest, CHECKSUMS_FILE
+    );
+    let client = crate::http::client_builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let archive_bytes =
+        download_verified_archive(&client, &download_url, &sums_url, &archive_name).await?;
     let binary_bytes = extract_binary_from_archive(&archive_bytes)?;
 
     // Get the path to the currently running binary
@@ -476,10 +490,7 @@ pub async fn perform_update(json: bool) -> Result<UpdateResult> {
     Ok(result)
 }
 
-async fn download_archive(url: &str) -> Result<Vec<u8>> {
-    let client = crate::http::client_builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+async fn download(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     let response = client
         .get(url)
         .send()
@@ -487,6 +498,50 @@ async fn download_archive(url: &str) -> Result<Vec<u8>> {
         .error_for_status()
         .map_err(|e| Error::Download(format!("Download failed: {}", e)))?;
     Ok(response.bytes().await?.to_vec())
+}
+
+/// Download the release archive and check it against the release's
+/// `SHA256SUMS`. Missing sums, a missing entry or a different digest is an
+/// error, so nothing unverified reaches the binary swap (#1307).
+async fn download_verified_archive(
+    client: &reqwest::Client,
+    archive_url: &str,
+    sums_url: &str,
+    archive_name: &str,
+) -> Result<Vec<u8>> {
+    let sums = download(client, sums_url).await?;
+    let expected =
+        expected_sha256(&String::from_utf8_lossy(&sums), archive_name).ok_or_else(|| {
+            Error::ArchiveVerification(format!("{} has no SHA-256 for {}", sums_url, archive_name))
+        })?;
+    let archive = download(client, archive_url).await?;
+    let actual = sha256_hex(&archive);
+    if actual != expected {
+        return Err(Error::ArchiveVerification(format!(
+            "{} does not match {}: expected SHA-256 {}, got {}",
+            archive_name, sums_url, expected, actual
+        )));
+    }
+    Ok(archive)
+}
+
+/// The lowercase hex SHA-256 that `sums`, in `sha256sum` output form
+/// (`<digest>  <name>` or `<digest> *<name>` per line), lists for `file`.
+fn expected_sha256(sums: &str, file: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (digest, name) = line.trim_end_matches('\r').split_once(' ')?;
+        let name = name.strip_prefix([' ', '*'])?;
+        (name == file && digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| digest.to_ascii_lowercase())
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// How long the downloaded binary has to answer `--version`.
@@ -1030,6 +1085,94 @@ mod tests {
             assert!(matches!(&err, Error::Download(_)), "got: {err:?}");
             assert_eq!(fs::read(&target).unwrap(), b"old binary");
             assert_eq!(entries(dir.path()), ["clickhousectl"]);
+        }
+    }
+
+    #[test]
+    fn sha256sums_lines_are_matched_by_exact_file_name() {
+        let digest = "ab".repeat(32);
+        let sums = format!(
+            "{d}  other.tar.gz\n{D} *app.tar.gz\r\nnot-hex  app.tar.gz\n",
+            d = "cd".repeat(32),
+            D = digest.to_uppercase()
+        );
+        assert_eq!(expected_sha256(&sums, "app.tar.gz"), Some(digest));
+        assert_eq!(expected_sha256(&sums, "app.tar"), None);
+        assert_eq!(expected_sha256("ab  app.tar.gz\n", "app.tar.gz"), None);
+        // `sha256sum` prints lowercase hex; this is the digest of no bytes.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// `update` checks the archive against the release's `SHA256SUMS` before
+    /// anything is extracted or swapped, and fails closed (#1307).
+    mod verify {
+        use super::super::*;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const ARCHIVE: &str = "clickhousectl-x86_64-apple-darwin-v9.9.9.tar.gz";
+
+        async fn serve(server: &MockServer, archive: &[u8], sums: Option<String>, hits: u64) {
+            Mock::given(method("GET"))
+                .and(path(format!("/{ARCHIVE}")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(archive.to_vec()))
+                .expect(hits)
+                .mount(server)
+                .await;
+            let sums = match sums {
+                Some(body) => ResponseTemplate::new(200).set_body_string(body),
+                None => ResponseTemplate::new(404),
+            };
+            Mock::given(method("GET"))
+                .and(path("/SHA256SUMS"))
+                .respond_with(sums)
+                .mount(server)
+                .await;
+        }
+
+        async fn fetch(server: &MockServer) -> Result<Vec<u8>> {
+            download_verified_archive(
+                &reqwest::Client::new(),
+                &format!("{}/{ARCHIVE}", server.uri()),
+                &format!("{}/SHA256SUMS", server.uri()),
+                ARCHIVE,
+            )
+            .await
+        }
+
+        #[tokio::test]
+        async fn an_archive_matching_its_listed_digest_is_returned() {
+            let server = MockServer::start().await;
+            let sums = format!("{}  {ARCHIVE}\n", sha256_hex(b"release"));
+            serve(&server, b"release", Some(sums), 1).await;
+            assert_eq!(fetch(&server).await.unwrap(), b"release");
+        }
+
+        #[tokio::test]
+        async fn a_different_digest_is_rejected() {
+            let server = MockServer::start().await;
+            let sums = format!("{}  {ARCHIVE}\n", sha256_hex(b"release"));
+            serve(&server, b"tampered", Some(sums), 1).await;
+            let err = fetch(&server).await.unwrap_err();
+            assert!(matches!(err, Error::ArchiveVerification(_)), "got: {err:?}");
+            assert!(err.to_string().contains(ARCHIVE), "got: {err}");
+        }
+
+        #[tokio::test]
+        async fn missing_sums_or_entry_fails_before_the_archive_download() {
+            let server = MockServer::start().await;
+            serve(&server, b"release", None, 0).await;
+            let err = fetch(&server).await.unwrap_err();
+            assert!(matches!(err, Error::Download(_)), "got: {err:?}");
+
+            let server = MockServer::start().await;
+            let sums = format!("{}  other.tar.gz\n", sha256_hex(b"release"));
+            serve(&server, b"release", Some(sums), 0).await;
+            let err = fetch(&server).await.unwrap_err();
+            assert!(matches!(err, Error::ArchiveVerification(_)), "got: {err:?}");
         }
     }
 

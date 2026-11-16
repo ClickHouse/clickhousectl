@@ -4,6 +4,7 @@
 /npm/package-lock.json
 /npm/*.tgz
 /npm/README.md
+/npm/SHA256SUMS
 /pypi/target/
 /pypi/dist/
 .env

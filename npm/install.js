@@ -2,7 +2,12 @@
 // Downloads the platform-appropriate clickhousectl binary from
 // builds.clickhouse.com and places it next to bin/clickhousectl. Invoked as
 // the package's postinstall script.
+//
+// The release workflow embeds the release's SHA256SUMS in the published
+// package, so the archive is checked against digests that came through the
+// npm registry rather than the server that served it (#1307).
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -60,6 +65,30 @@ async function download(url, dest) {
   });
 }
 
+// The digest SHA256SUMS lists for `archiveName`, in `sha256sum` output form
+// (`<digest>  <name>` or `<digest> *<name>` per line). A missing file or
+// entry is an error: the install fails closed.
+function expectedSha256(archiveName) {
+  const sumsPath = path.join(__dirname, 'SHA256SUMS');
+  let sums;
+  try {
+    sums = fs.readFileSync(sumsPath, 'utf8');
+  } catch (err) {
+    throw new Error(`cannot read ${sumsPath} to verify the download: ${err.message}`);
+  }
+  for (const line of sums.split(/\r?\n/)) {
+    const match = /^([0-9a-fA-F]{64}) [ *](.+)$/.exec(line);
+    if (match && match[2] === archiveName) {
+      return match[1].toLowerCase();
+    }
+  }
+  throw new Error(`${sumsPath} has no SHA-256 for ${archiveName}`);
+}
+
+function sha256File(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
 async function main() {
   // npm install with --ignore-scripts will skip this entirely, which is the
   // documented escape hatch for users who don't want network access on install.
@@ -68,6 +97,7 @@ async function main() {
   const target = resolveTarget();
   const archiveName = `clickhousectl-${target}-v${version}.tar.gz`;
   const url = `${BUILDS_BASE_URL}/${archiveName}`;
+  const expected = expectedSha256(archiveName);
 
   const vendorDir = path.join(__dirname, 'vendor');
   fs.mkdirSync(vendorDir, { recursive: true });
@@ -75,6 +105,13 @@ async function main() {
 
   console.log(`clickhousectl: downloading ${url}`);
   await download(url, archivePath);
+  const actual = sha256File(archivePath);
+  if (actual !== expected) {
+    fs.unlinkSync(archivePath);
+    throw new Error(
+      `${archiveName} does not match SHA256SUMS: expected SHA-256 ${expected}, got ${actual}`
+    );
+  }
 
   // The archive contains a single directory `clickhousectl-{target}-v{version}/`
   // with `clickhousectl` inside. --strip-components=1 unpacks the binary

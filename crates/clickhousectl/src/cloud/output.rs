@@ -103,6 +103,9 @@ pub enum CloudErrorCode {
     /// `update` found an npm or pip/uv/pipx install and replaced nothing:
     /// `command` is the package manager's upgrade command (#1305).
     PackageManaged,
+    /// `update` downloaded an archive that the release's `SHA256SUMS` does
+    /// not list or whose digest differs, and replaced nothing (#1307).
+    VerificationFailed,
 }
 
 impl CloudErrorCode {
@@ -146,6 +149,7 @@ impl CloudErrorCode {
         Self::ClickPipeStillPausing,
         Self::ClickPipeStartNotApplied,
         Self::PackageManaged,
+        Self::VerificationFailed,
     ];
 }
 
@@ -207,6 +211,7 @@ impl CloudErrorDetail {
                 detail.command = Some((*command).to_owned());
                 return std::borrow::Cow::Owned(detail);
             }
+            Error::ArchiveVerification(_) => CloudErrorCode::VerificationFailed,
             _ => CloudErrorCode::Other,
         };
         std::borrow::Cow::Owned(Self::new(code, error.to_string()))
@@ -824,6 +829,7 @@ mod tests {
                 "clickpipe_still_pausing",
                 "clickpipe_start_not_applied",
                 "package_managed",
+                "verification_failed",
             ]
         );
     }
@@ -875,6 +881,11 @@ mod tests {
                 1,
             ),
             (Error::Io(std::io::Error::other("read failed")), "io", 1),
+            (
+                Error::ArchiveVerification("digest differs".into()),
+                "verification_failed",
+                1,
+            ),
         ] {
             let detail = CloudErrorDetail::from_error(&error);
             let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();

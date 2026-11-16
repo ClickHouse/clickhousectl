@@ -6,14 +6,19 @@ description: Releases a new `clickhousectl` and `clickhouse-cloud-api` version �
 # Release
 
 One tag publishes everything. `.github/workflows/release.yml` runs on a `v*` tag push: build → smoke tests →
-**Upload to builds.clickhouse.com** → **Create Release** (the GitHub release and its `.tar.gz` assets) →
-**Publish latest.txt**, plus crates.io, npm and PyPI in separate jobs. crates.io uses a token; npm, PyPI and the S3 upload use OIDC.
+**Upload to builds.clickhouse.com** (also writes `SHA256SUMS` and the provenance attestation) → **Create Release**
+(the GitHub release with its `.tar.gz` assets and `SHA256SUMS`) → **Publish latest.txt**, plus crates.io, npm and
+PyPI in separate jobs. crates.io uses a token; npm, PyPI and the S3 upload use OIDC.
 
 The binaries are served from builds.clickhouse.com, not from GitHub. `clickhousectl update` and `install.sh` read
 the latest tag from `https://builds.clickhouse.com/clickhousectl/latest.txt`, then download
 `clickhousectl-<target>-vX.Y.Z.tar.gz` from the same directory. The npm postinstall downloads its own package
 version. The upload runs before **Create Release** so a new release is never visible without its archives, and
 **Publish latest.txt** runs last so `latest.txt` never names a version without them.
+
+`update`, `install.sh` and the npm postinstall refuse an archive that the release's `SHA256SUMS` does not vouch
+for. `update` and `install.sh` read it from the GitHub release; npm reads the copy the publish job embeds in the
+package. A release without `SHA256SUMS` therefore cannot be installed by the script or `update`.
 
 `latest.txt` only moves forwards: re-running an older tag leaves a newer value alone. The job fails unless
 builds.clickhouse.com serves the expected tag afterwards. Clients fall back to GitHub's
@@ -49,8 +54,10 @@ version is already published.
 
 **Upload to builds.clickhouse.com** assumes `arn:aws:iam::542516086801:role/external-s3-upload` through GitHub
 OIDC and copies the four `.tar.gz` archives (`aarch64`/`x86_64` × `apple-darwin`/`unknown-linux-musl`) to
-`s3://clickhouse-builds/clickhousectl/`. It skips an archive already in the bucket and never overwrites one:
-builds.clickhouse.com caches them for days.
+`s3://clickhouse-builds/clickhousectl/`. It never overwrites an archive already in the bucket, because
+builds.clickhouse.com caches them for days; it downloads that published copy instead, so `SHA256SUMS`, the
+attestation and the GitHub release assets always describe the bytes builds.clickhouse.com serves. A re-run is
+therefore safe, but never delete an archive from the bucket to "republish" it.
 
 - An AWS `AccessDenied` or OIDC error means the role or its trust policy changed. The role is managed in
   ClickHouse/clickhouse-private `tests/ci/terraform/external_s3_upload.tf`; ask the user to raise it with the CI
@@ -69,6 +76,8 @@ for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86
   curl -fsSI "https://builds.clickhouse.com/clickhousectl/clickhousectl-$t-vX.Y.Z.tar.gz" >/dev/null && echo "ok $t" || echo "MISSING $t"
 done
 curl -fsS "https://builds.clickhouse.com/clickhousectl/latest.txt?t=$(date +%s)"   # must print vX.Y.Z
+cd "$(mktemp -d)" && gh release download vX.Y.Z -R ClickHouse/clickhousectl && sha256sum -c SHA256SUMS
+gh attestation verify clickhousectl-x86_64-unknown-linux-musl-vX.Y.Z.tar.gz -R ClickHouse/clickhousectl
 ```
 
 Then `clickhousectl update` from an older install should report and install `vX.Y.Z`. Check the crates.io, npm
@@ -82,5 +91,6 @@ and PyPI pages show the new version.
 - [ ] release.yml fully green
 - [ ] All four builds.clickhouse.com archives return 200
 - [ ] builds.clickhouse.com/clickhousectl/latest.txt serves vX.Y.Z
+- [ ] The GitHub release has SHA256SUMS, it matches the archives, and `gh attestation verify` passes
 - [ ] `clickhousectl update` reaches the new version
 ```
