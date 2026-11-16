@@ -55,7 +55,12 @@ python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 Never pin wording in help, README, error messages or human output; assert codes, fields and identifiers instead ([AGENTS.md](../AGENTS.md#tests)). Verify commands with `cargo run -q -p clickhousectl -- <command> --help` and inspect the parent screen too.
 
-The Cloud and local-install classifiers fail closed for unclassified source/test files. Update both when adding or renaming one. Documentation paths alone do not select live suites. See `scripts/classify-cloud-integration.py` and `scripts/classify-install-integration.py`.
+Each classifier fails closed for one set of paths, and a new or renamed file needs an entry only in the matching one:
+
+- `scripts/classify-cloud-integration.py`: any file under `crates/clickhouse-cloud-api/` (`src/`, `tests/`, other `.rs`). An unmapped path selects all live Cloud suites, and a unit test requires every current file to be mapped. Keep entries for deleted or renamed paths so those diffs still select the right suites. Files elsewhere, including all of `crates/clickhousectl/` and the analyzer, select no suite by default; add a CLI path only when a change to it should select a live suite.
+- `scripts/classify-install-integration.py`: a `crates/clickhousectl/src/**/*.rs` file outside `src/cloud/`, or any file under `crates/clickhousectl/tests/`, must be listed as install-relevant or not. A test requires every current file to be listed. Install-relevant entries must also be added to `.github/workflows/test-install.yml` `paths:`; a test checks the two match.
+
+Documentation paths alone do not select live suites.
 
 ## Live Cloud integration
 

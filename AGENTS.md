@@ -123,12 +123,10 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
 - Pin all GitHub Actions deps to SHA hashes, not tags. Never populate secrets in Actions triggered by external PRs.
 - `audit.yml` runs `cargo audit --deny warnings` on manifest/lockfile PRs and every weekday; fix or bump an advisory
   rather than ignoring it. Dependabot (`.github/dependabot.yml`) opens weekly grouped Cargo and Actions updates.
-- Two path classifiers fail closed; **both** need an entry when a source or test file is added or renamed, or CI
-  breaks. `scripts/classify-cloud-integration.py` maps API-library source/test paths to the `service`, `postgres`,
-  `organization`, `clickpipes` suites (unknown paths select all suites);
-  `scripts/classify-install-integration.py` holds `INSTALL_EXACT_PATHS`/`INSTALL_PREFIXES` for the live local install
-  matrix, verified by `test-cli.yml` and `test-install.yml` on PRs that touch the classifier or the CLI
-  (`scripts/tests/test_classify_install_integration.py`).
+- Path classifiers: add or rename a file under `crates/clickhouse-cloud-api/` and `scripts/classify-cloud-integration.py`
+  needs an entry (unknown paths select all live suites); add or rename a `crates/clickhousectl/src/**/*.rs` outside
+  `src/cloud/`, or a file in `crates/clickhousectl/tests/`, and `scripts/classify-install-integration.py` does. Install-relevant
+  entries also go in `test-install.yml` `paths:` (an inventory test checks). Other paths need neither.
 - Affected Cloud integration suites run only after the `run-cloud-integration` label is applied; the
   `Cloud integration decision` check passes by itself when none are affected. Rules: `.github/CLOUD_INTEGRATION.md`.
 

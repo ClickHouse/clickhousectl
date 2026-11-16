@@ -17,8 +17,10 @@ Paths are relative to `crates/clickhousectl/`.
 
 - Add `Cli::try_parse_from` tests next to the clap definition for a new flag that has a default, a custom
   parser or value range, repetition, or conflicts and requirements. Skip a flag the derive alone parses.
-- For each new source or test file, add an entry to both `scripts/classify-cloud-integration.py` and
-  `scripts/classify-install-integration.py`. CI fails on a file that is in neither.
+- Classifier entries: a new `crates/clickhousectl/src/**/*.rs` outside `src/cloud/`, or a new file in
+  `crates/clickhousectl/tests/`, needs one in `scripts/classify-install-integration.py` (plus
+  `test-install.yml` `paths:` if install-relevant). A `src/cloud/` file needs none. Add a
+  `scripts/classify-cloud-integration.py` entry only if a CLI file should select a live Cloud suite.
 - Update the relevant user guide or reference under `docs/` when users will see the change, following
   `CONTRIBUTING.md`. Keep safety and behavioral details beside the affected task. Change the root `README.md`
   only when its capability overview or representative examples need updating; do not add a flag catalog.
@@ -31,7 +33,7 @@ Copy this checklist and tick it off as you go:
 - [ ] Procedure steps (local.md or cloud.md)
 - [ ] Help text follows the cli-help-text skill
 - [ ] try_parse_from tests for flags with their own parsing rules
-- [ ] Both classifiers map new files
+- [ ] Install classifier lists new CLI files outside `src/cloud/` and `tests/`
 - [ ] Relevant guide/reference and any affected README example
 - [ ] Documentation links and command examples checked
 - [ ] fmt, both clippy configurations, tests
