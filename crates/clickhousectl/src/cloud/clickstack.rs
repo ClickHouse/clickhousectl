@@ -126,28 +126,19 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 use crate::cloud::client::{CloudClient, CloudError, ResourceKind, Result as CloudResult, Scope};
-use crate::cloud::config::{
-    deserialize_strict_config, deserialize_strict_value, read_config_value, read_typed_config,
-};
+use crate::cloud::config::read_lossless_config;
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use clap::Subcommand;
 use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{
-    ClickStackAlertChannelEmail, ClickStackAlertChannelWebhook, ClickStackAlertResponse,
-    ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest, ClickStackCreateRoleRequest,
-    ClickStackDashboardResponse, ClickStackLogSource,
-    ClickStackLogSourceUsetextindexforimplicitcolumn, ClickStackMaterializedView,
-    ClickStackMaterializedViewMingranularity, ClickStackMetricSource, ClickStackPromqlSource,
-    ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchFilterType,
-    ClickStackSavedSearchInput, ClickStackSavedSearchInputWherelanguage, ClickStackSessionSource,
-    ClickStackSource, ClickStackSourceResponse, ClickStackTraceSource,
-    ClickStackTraceSourceUsetextindexforimplicitcolumn, ClickStackUpdateAlertRequest,
-    ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
+    ClickStackAlertResponse, ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest,
+    ClickStackCreateRoleRequest, ClickStackDashboardResponse, ClickStackRole,
+    ClickStackSavedSearch, ClickStackSavedSearchInput, ClickStackSource, ClickStackSourceResponse,
+    ClickStackUpdateAlertRequest, ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
     ClickStackValidateDashboardResponse, ClickStackValidateWebhookResponse, ClickStackWebhook,
     ClickStackWebhookInput,
 };
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::future::Future;
@@ -724,2179 +715,6 @@ fn field<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
     value.as_object()?.get(name)
 }
 
-fn build_source_request(config_file: &str) -> CloudResult<ClickStackSource> {
-    parse_source_request(read_config_value(config_file)?, config_file)
-}
-
-fn build_create_role_request(config_file: &str) -> CloudResult<ClickStackCreateRoleRequest> {
-    let value = read_config_value(config_file)?;
-    validate_role_permissions(&value, config_file)?;
-    deserialize_strict_config(value, config_file)
-}
-
-fn build_update_role_request(config_file: &str) -> CloudResult<ClickStackUpdateRoleRequest> {
-    let value = read_config_value(config_file)?;
-    validate_role_permissions(&value, config_file)?;
-    deserialize_strict_config(value, config_file)
-}
-
-/// Strictly check each permission against the variant its `integration`
-/// selects. The library's permission union dispatches through raw JSON, so
-/// the strict request-body check cannot see unknown fields inside one.
-fn validate_role_permissions(value: &Value, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackClickHouseCASLPermission, ClickStackMongoDBCASLPermission,
-    };
-    let Some(permissions) = field(value, "permissions").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for (index, permission) in permissions.iter().enumerate() {
-        let path = format!("permissions[{index}]");
-        let checked = match field(permission, "integration").and_then(Value::as_str) {
-            Some("clickhouse") => strict_union_variant::<ClickStackClickHouseCASLPermission>(
-                permission, &path, source,
-            )
-            .map(drop),
-            Some("mongodb") => {
-                strict_union_variant::<ClickStackMongoDBCASLPermission>(permission, &path, source)
-                    .map(drop)
-            }
-            Some(other) => {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("unknown {path}.integration `{other}`; expected clickhouse or mongodb"),
-                ));
-            }
-            None => {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("{path}.integration must be clickhouse or mongodb"),
-                ));
-            }
-        };
-        checked?;
-        // A MongoDB condition value is an untagged string-or-`$regex` union,
-        // which serde buffers before matching, so the strict check above cannot
-        // see an unknown key inside a `$regex` object.
-        let conditions = field(permission, "conditions")
-            .filter(|_| field(permission, "integration") == Some(&Value::from("mongodb")))
-            .and_then(Value::as_object);
-        for (name, condition) in conditions.into_iter().flatten() {
-            if let Some(key) = condition.as_object().and_then(|object| {
-                object
-                    .keys()
-                    .find(|key| !["$regex", "$options"].contains(&key.as_str()))
-            }) {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("unknown field `{path}.conditions.{name}.{key}`"),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn build_create_dashboard_request(
-    config_file: &str,
-) -> CloudResult<ClickStackCreateDashboardRequest> {
-    let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, DashboardFilterShape::Input, config_file)?;
-    let request = deserialize_strict_config(value, config_file)?;
-    validate_create_dashboard_enums(&request, config_file)?;
-    Ok(request)
-}
-
-fn build_update_dashboard_request(
-    config_file: &str,
-) -> CloudResult<ClickStackUpdateDashboardRequest> {
-    let value = read_config_value(config_file)?;
-    validate_dashboard_unions(&value, DashboardFilterShape::WithId, config_file)?;
-    let request = deserialize_strict_config(value, config_file)?;
-    validate_update_dashboard_enums(&request, config_file)?;
-    Ok(request)
-}
-
-fn build_create_alert_request(config_file: &str) -> CloudResult<ClickStackCreateAlertRequest> {
-    let value = read_config_value(config_file)?;
-    validate_alert_unions(&value, config_file)?;
-    let request = deserialize_strict_config(value, config_file)?;
-    validate_create_alert_request(&request, config_file)?;
-    Ok(request)
-}
-
-fn build_update_alert_request(config_file: &str) -> CloudResult<ClickStackUpdateAlertRequest> {
-    let value = read_config_value(config_file)?;
-    validate_alert_unions(&value, config_file)?;
-    let request = deserialize_strict_config(value, config_file)?;
-    validate_update_alert_request(&request, config_file)?;
-    Ok(request)
-}
-
-fn build_webhook_request(config_file: &str) -> CloudResult<ClickStackWebhookInput> {
-    let value = read_config_value(config_file)?;
-    use clickhouse_cloud_api::models::ClickStackWebhookInputService;
-    let request: ClickStackWebhookInput = deserialize_strict_config(value, config_file)?;
-    if let ClickStackWebhookInputService::Unknown(_) = &request.service {
-        return Err(invalid_clickstack_request(
-            config_file,
-            unknown_enum_value(&request.service, "service"),
-        ));
-    }
-    if request.service == ClickStackWebhookInputService::Slack && request.body.is_some() {
-        return Err(invalid_clickstack_request(
-            config_file,
-            "body is not supported for slack webhooks",
-        ));
-    }
-    Ok(request)
-}
-
-fn invalid_clickstack_request(source: &str, message: impl std::fmt::Display) -> CloudError {
-    CloudError::usage(format!(
-        "invalid request body in config {source}: {message}"
-    ))
-}
-
-fn validate_alert_channel(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    match field(value, "type").and_then(Value::as_str) {
-        Some("email") => {
-            let channel = strict_union_variant::<ClickStackAlertChannelEmail>(value, path, source)?;
-            if channel.r#type.to_string() != "email" {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("{path}.type must be email"),
-                ));
-            }
-        }
-        Some("webhook") => {
-            let channel =
-                strict_union_variant::<ClickStackAlertChannelWebhook>(value, path, source)?;
-            if channel.r#type.to_string() != "webhook" {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("{path}.type must be webhook"),
-                ));
-            }
-            if channel.severity.as_ref().is_some_and(|severity| {
-                matches!(
-                    severity,
-                    clickhouse_cloud_api::models::ClickStackAlertChannelWebhookSeverity::Unknown(_)
-                )
-            }) {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("unknown {path}.severity; expected critical, error, warning, or info"),
-                ));
-            }
-        }
-        Some(other) => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!("unknown {path}.type `{other}`; expected email or webhook"),
-            ));
-        }
-        None => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!("{path}.type must be email or webhook"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_alert_source_ids(
-    alert_source: Option<&str>,
-    dashboard_id: Option<&str>,
-    tile_id: Option<&str>,
-    saved_search_id: Option<&str>,
-    has_chart_config: bool,
-    source: &str,
-) -> CloudResult<()> {
-    let Some(alert_source) = alert_source else {
-        return Ok(());
-    };
-    match alert_source {
-        "tile" if dashboard_id.is_none() || tile_id.is_none() => {
-            return Err(invalid_clickstack_request(
-                source,
-                "source tile requires dashboardId and tileId",
-            ));
-        }
-        "tile" if saved_search_id.is_some() => {
-            return Err(invalid_clickstack_request(
-                source,
-                "source tile cannot include savedSearchId",
-            ));
-        }
-        "saved_search" if saved_search_id.is_none() => {
-            return Err(invalid_clickstack_request(
-                source,
-                "source saved_search requires savedSearchId",
-            ));
-        }
-        "saved_search" if dashboard_id.is_some() || tile_id.is_some() => {
-            return Err(invalid_clickstack_request(
-                source,
-                "source saved_search cannot include dashboardId or tileId",
-            ));
-        }
-        "inline" if !has_chart_config => {
-            return Err(invalid_clickstack_request(
-                source,
-                "source inline requires chartConfig",
-            ));
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn validate_alert_numeric_values(
-    threshold: f64,
-    threshold_max: Option<f64>,
-    threshold_type: &str,
-    num_consecutive_windows: Option<i64>,
-    schedule_offset_minutes: Option<i64>,
-    source: &str,
-) -> CloudResult<()> {
-    if !threshold.is_finite() || threshold_max.is_some_and(|number| !number.is_finite()) {
-        return Err(invalid_clickstack_request(
-            source,
-            "threshold values must be finite numbers",
-        ));
-    }
-    if matches!(threshold_type, "between" | "not_between") {
-        let Some(maximum) = threshold_max else {
-            return Err(invalid_clickstack_request(
-                source,
-                "thresholdMax is required for between and not_between",
-            ));
-        };
-        if maximum < threshold {
-            return Err(invalid_clickstack_request(
-                source,
-                "thresholdMax must be greater than or equal to threshold",
-            ));
-        }
-    }
-    if num_consecutive_windows.is_some_and(|windows| windows < 1) {
-        return Err(invalid_clickstack_request(
-            source,
-            "numConsecutiveWindows must be at least 1",
-        ));
-    }
-    if schedule_offset_minutes.is_some_and(|offset| offset < 0) {
-        return Err(invalid_clickstack_request(
-            source,
-            "scheduleOffsetMinutes cannot be negative",
-        ));
-    }
-
-    Ok(())
-}
-
-/// Strictly check the alert's raw-JSON unions: `channel`, each `channels`
-/// entry and `chartConfig`. All three are optional; each is checked when sent.
-fn validate_alert_unions(value: &Value, source: &str) -> CloudResult<()> {
-    if let Some(channel) = field(value, "channel") {
-        validate_alert_channel(channel, "channel", source)?;
-    }
-    if let Some(channels) = field(value, "channels") {
-        validate_alert_channel_list(channels, source)?;
-    }
-    if let Some(config) = field(value, "chartConfig") {
-        validate_alert_chart_config(config, "chartConfig", source)?;
-    }
-    Ok(())
-}
-
-fn validate_alert_channel_list(channels: &Value, source: &str) -> CloudResult<()> {
-    let channels = channels
-        .as_array()
-        .ok_or_else(|| invalid_clickstack_request(source, "channels must be an array"))?;
-    if !(1..=10).contains(&channels.len()) {
-        return Err(invalid_clickstack_request(
-            source,
-            "channels must contain between 1 and 10 entries",
-        ));
-    }
-    for (index, channel) in channels.iter().enumerate() {
-        validate_alert_channel(channel, &format!("channels[{index}]"), source)?;
-        if channels[..index].contains(channel) {
-            return Err(invalid_clickstack_request(
-                source,
-                format!("channels[{index}] duplicates an earlier channel"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_create_alert_request(
-    request: &ClickStackCreateAlertRequest,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackCreateAlertRequestInterval as Interval,
-        ClickStackCreateAlertRequestSource as AlertSource,
-        ClickStackCreateAlertRequestThresholdtype as ThresholdType,
-    };
-    let alert_source = match &request.source {
-        Some(AlertSource::Saved_search) => Some("saved_search"),
-        Some(AlertSource::Tile) => Some("tile"),
-        Some(AlertSource::Inline) => Some("inline"),
-        Some(unknown @ AlertSource::Unknown(_)) => {
-            return Err(invalid_clickstack_request(
-                source,
-                unknown_enum_value(unknown, "source"),
-            ));
-        }
-        None => None,
-    };
-    if let Interval::Unknown(_) = &request.interval {
-        return Err(invalid_clickstack_request(
-            source,
-            unknown_enum_value(&request.interval, "interval"),
-        ));
-    }
-    let threshold_type = match &request.threshold_type {
-        ThresholdType::Above => "above",
-        ThresholdType::Below => "below",
-        ThresholdType::Above_exclusive => "above_exclusive",
-        ThresholdType::Below_or_equal => "below_or_equal",
-        ThresholdType::Equal => "equal",
-        ThresholdType::Not_equal => "not_equal",
-        ThresholdType::Between => "between",
-        ThresholdType::Not_between => "not_between",
-        unknown @ ThresholdType::Unknown(_) => {
-            return Err(invalid_clickstack_request(
-                source,
-                unknown_enum_value(unknown, "thresholdType"),
-            ));
-        }
-    };
-    validate_alert_source_ids(
-        alert_source,
-        request.dashboard_id.as_deref(),
-        request.tile_id.as_deref(),
-        request.saved_search_id.as_deref(),
-        request.chart_config.is_some(),
-        source,
-    )?;
-    validate_alert_numeric_values(
-        request.threshold,
-        request.threshold_max,
-        threshold_type,
-        request.num_consecutive_windows,
-        request.schedule_offset_minutes,
-        source,
-    )
-}
-
-fn validate_update_alert_request(
-    request: &ClickStackUpdateAlertRequest,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackUpdateAlertRequestInterval as Interval,
-        ClickStackUpdateAlertRequestSource as AlertSource,
-        ClickStackUpdateAlertRequestThresholdtype as ThresholdType,
-    };
-    let alert_source = match &request.source {
-        Some(AlertSource::Saved_search) => Some("saved_search"),
-        Some(AlertSource::Tile) => Some("tile"),
-        Some(AlertSource::Inline) => Some("inline"),
-        Some(unknown @ AlertSource::Unknown(_)) => {
-            return Err(invalid_clickstack_request(
-                source,
-                unknown_enum_value(unknown, "source"),
-            ));
-        }
-        None => None,
-    };
-    if let Interval::Unknown(_) = &request.interval {
-        return Err(invalid_clickstack_request(
-            source,
-            unknown_enum_value(&request.interval, "interval"),
-        ));
-    }
-    let threshold_type = match &request.threshold_type {
-        ThresholdType::Above => "above",
-        ThresholdType::Below => "below",
-        ThresholdType::Above_exclusive => "above_exclusive",
-        ThresholdType::Below_or_equal => "below_or_equal",
-        ThresholdType::Equal => "equal",
-        ThresholdType::Not_equal => "not_equal",
-        ThresholdType::Between => "between",
-        ThresholdType::Not_between => "not_between",
-        unknown @ ThresholdType::Unknown(_) => {
-            return Err(invalid_clickstack_request(
-                source,
-                unknown_enum_value(unknown, "thresholdType"),
-            ));
-        }
-    };
-    validate_alert_source_ids(
-        alert_source,
-        request.dashboard_id.as_deref(),
-        request.tile_id.as_deref(),
-        request.saved_search_id.as_deref(),
-        request.chart_config.is_some(),
-        source,
-    )?;
-    validate_alert_numeric_values(
-        request.threshold,
-        request.threshold_max,
-        threshold_type,
-        request.num_consecutive_windows,
-        request.schedule_offset_minutes,
-        source,
-    )
-}
-
-fn require_discriminator<'a>(
-    value: &'a Value,
-    key: &str,
-    path: &str,
-    source: &str,
-) -> CloudResult<&'a str> {
-    field(value, key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_clickstack_request(source, format!("{path}.{key} must be a string")))
-}
-
-fn strict_union_variant<T>(value: &Value, path: &str, source: &str) -> CloudResult<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    deserialize_strict_value::<T>(value.clone(), path)
-        .map_err(|detail| invalid_clickstack_request(source, detail))
-}
-
-/// The wire values an open library enum accepts, read from its serde derive.
-///
-/// Every open enum's derive tries its named variants before falling back to
-/// `Unknown(String)`, and reports the names it expected through
-/// `de::Error::unknown_variant` on the way. Probing with a value no variant
-/// has captures that list, so an error can name the accepted values without
-/// the CLI keeping its own copy of the spec. `None` if the derive ever stops
-/// reporting them; the error then names only the rejected value.
-fn accepted_enum_values<T: DeserializeOwned>() -> Option<&'static [&'static str]> {
-    use serde::de::{self, Visitor};
-    use std::cell::Cell;
-
-    thread_local! {
-        static EXPECTED: Cell<Option<&'static [&'static str]>> = const { Cell::new(None) };
-    }
-
-    #[derive(Debug)]
-    struct Probe;
-
-    impl std::fmt::Display for Probe {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("enum value probe")
-        }
-    }
-
-    impl std::error::Error for Probe {}
-
-    impl de::Error for Probe {
-        fn custom<M: std::fmt::Display>(_: M) -> Self {
-            Probe
-        }
-
-        fn unknown_variant(_: &str, expected: &'static [&'static str]) -> Self {
-            EXPECTED.with(|cell| cell.set(Some(expected)));
-            Probe
-        }
-    }
-
-    impl<'de> de::Deserializer<'de> for Probe {
-        type Error = Probe;
-
-        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Probe> {
-            visitor.visit_str("\u{0}")
-        }
-
-        serde::forward_to_deserialize_any! {
-            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-            bytes byte_buf option unit unit_struct newtype_struct seq tuple
-            tuple_struct map struct enum identifier ignored_any
-        }
-    }
-
-    EXPECTED.with(|cell| cell.set(None));
-    let _ = T::deserialize(Probe);
-    EXPECTED
-        .with(Cell::take)
-        .filter(|values| !values.is_empty())
-}
-
-/// An unknown-enum-value error reason naming the value and, when the library
-/// enum reports them, the accepted values.
-fn unknown_enum_value<T>(value: &T, path: impl std::fmt::Display) -> String
-where
-    T: DeserializeOwned + std::fmt::Display,
-{
-    let mut message = format!("unknown {path} value `{value}`");
-    if let Some(values) = accepted_enum_values::<T>() {
-        message.push_str("; expected one of ");
-        message.push_str(&values.join(", "));
-    }
-    message
-}
-
-macro_rules! reject_unknown_enum {
-    ($value:expr, $variant:path, $path:expr, $source:expr) => {
-        let checked = $value;
-        #[allow(clippy::collapsible_match)]
-        match checked {
-            $variant(_) => {
-                return Err(invalid_clickstack_request(
-                    $source,
-                    unknown_enum_value(checked, $path),
-                ))
-            }
-            _ => {}
-        }
-    };
-}
-
-fn validate_number_format(
-    format: &clickhouse_cloud_api::models::ClickStackNumberFormat,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackNumberFormatNumericunit, ClickStackNumberFormatOutput,
-    };
-    reject_unknown_enum!(
-        &format.numeric_unit,
-        ClickStackNumberFormatNumericunit::Unknown,
-        format!("{path}.numericUnit"),
-        source
-    );
-    reject_unknown_enum!(
-        &format.output,
-        ClickStackNumberFormatOutput::Unknown,
-        format!("{path}.output"),
-        source
-    );
-    Ok(())
-}
-
-fn validate_formulas(
-    formulas: Option<&Vec<clickhouse_cloud_api::models::ClickStackFormula>>,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    for (index, formula) in formulas.into_iter().flatten().enumerate() {
-        if let Some(format) = &formula.number_format {
-            validate_number_format(format, &format!("{path}[{index}].numberFormat"), source)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_select_items(
-    items: &[clickhouse_cloud_api::models::ClickStackSelectItem],
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackSelectItemAggfn, ClickStackSelectItemLevel, ClickStackSelectItemMetrictype,
-        ClickStackSelectItemPeriodaggfn, ClickStackSelectItemWherelanguage,
-    };
-    for (index, item) in items.iter().enumerate() {
-        let item_path = format!("{path}[{index}]");
-        reject_unknown_enum!(
-            &item.agg_fn,
-            ClickStackSelectItemAggfn::Unknown,
-            format!("{item_path}.aggFn"),
-            source
-        );
-        if let Some(level) = &item.level {
-            reject_unknown_enum!(
-                level,
-                ClickStackSelectItemLevel::Unknown,
-                format!("{item_path}.level"),
-                source
-            );
-        }
-        if let Some(metric_type) = &item.metric_type {
-            reject_unknown_enum!(
-                metric_type,
-                ClickStackSelectItemMetrictype::Unknown,
-                format!("{item_path}.metricType"),
-                source
-            );
-        }
-        if let Some(period_agg_fn) = &item.period_agg_fn {
-            reject_unknown_enum!(
-                period_agg_fn,
-                ClickStackSelectItemPeriodaggfn::Unknown,
-                format!("{item_path}.periodAggFn"),
-                source
-            );
-        }
-        if let Some(where_language) = &item.where_language {
-            reject_unknown_enum!(
-                where_language,
-                ClickStackSelectItemWherelanguage::Unknown,
-                format!("{item_path}.whereLanguage"),
-                source
-            );
-        }
-        if let Some(format) = &item.number_format {
-            validate_number_format(format, &format!("{item_path}.numberFormat"), source)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_on_click_filters(
-    filters: Option<&Vec<clickhouse_cloud_api::models::ClickStackOnClickFilterTemplate>>,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::ClickStackOnClickFilterTemplateKind;
-    for (index, filter) in filters.into_iter().flatten().enumerate() {
-        reject_unknown_enum!(
-            &filter.kind,
-            ClickStackOnClickFilterTemplateKind::Unknown,
-            format!("{path}[{index}].kind"),
-            source
-        );
-    }
-    Ok(())
-}
-
-fn validate_on_click(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackOnClickDashboard, ClickStackOnClickDashboardType,
-        ClickStackOnClickDashboardWherelanguage, ClickStackOnClickExternal,
-        ClickStackOnClickExternalType, ClickStackOnClickSearch, ClickStackOnClickSearchType,
-        ClickStackOnClickSearchWherelanguage, ClickStackOnClickTargetIdVariant,
-        ClickStackOnClickTargetIdVariantMode, ClickStackOnClickTargetTemplateVariant,
-        ClickStackOnClickTargetTemplateVariantMode,
-    };
-
-    match require_discriminator(value, "type", path, source)? {
-        "search" => {
-            let on_click = strict_union_variant::<ClickStackOnClickSearch>(value, path, source)?;
-            reject_unknown_enum!(
-                &on_click.r#type,
-                ClickStackOnClickSearchType::Unknown,
-                format!("{path}.type"),
-                source
-            );
-            if let Some(language) = &on_click.where_language {
-                reject_unknown_enum!(
-                    language,
-                    ClickStackOnClickSearchWherelanguage::Unknown,
-                    format!("{path}.whereLanguage"),
-                    source
-                );
-            }
-            validate_on_click_filters(
-                on_click.filters.as_ref(),
-                &format!("{path}.filters"),
-                source,
-            )?;
-        }
-        "dashboard" => {
-            let on_click = strict_union_variant::<ClickStackOnClickDashboard>(value, path, source)?;
-            reject_unknown_enum!(
-                &on_click.r#type,
-                ClickStackOnClickDashboardType::Unknown,
-                format!("{path}.type"),
-                source
-            );
-            if let Some(language) = &on_click.where_language {
-                reject_unknown_enum!(
-                    language,
-                    ClickStackOnClickDashboardWherelanguage::Unknown,
-                    format!("{path}.whereLanguage"),
-                    source
-                );
-            }
-            validate_on_click_filters(
-                on_click.filters.as_ref(),
-                &format!("{path}.filters"),
-                source,
-            )?;
-        }
-        "external" => {
-            let on_click = strict_union_variant::<ClickStackOnClickExternal>(value, path, source)?;
-            reject_unknown_enum!(
-                &on_click.r#type,
-                ClickStackOnClickExternalType::Unknown,
-                format!("{path}.type"),
-                source
-            );
-        }
-        other => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!("unknown {path}.type `{other}`; expected search, dashboard, or external"),
-            ));
-        }
-    }
-
-    if let Some(target) = field(value, "target") {
-        let target_path = format!("{path}.target");
-        match require_discriminator(target, "mode", &target_path, source)? {
-            "id" => {
-                let target = strict_union_variant::<ClickStackOnClickTargetIdVariant>(
-                    target,
-                    &target_path,
-                    source,
-                )?;
-                reject_unknown_enum!(
-                    &target.mode,
-                    ClickStackOnClickTargetIdVariantMode::Unknown,
-                    format!("{target_path}.mode"),
-                    source
-                );
-            }
-            "template" => {
-                let target = strict_union_variant::<ClickStackOnClickTargetTemplateVariant>(
-                    target,
-                    &target_path,
-                    source,
-                )?;
-                reject_unknown_enum!(
-                    &target.mode,
-                    ClickStackOnClickTargetTemplateVariantMode::Unknown,
-                    format!("{target_path}.mode"),
-                    source
-                );
-            }
-            other => {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!("unknown {target_path}.mode `{other}`; expected id or template"),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_number_color_rules(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackBetweenColorCondition, ClickStackBetweenColorConditionOperator,
-        ClickStackChartColor, ClickStackEqualityColorCondition,
-        ClickStackEqualityColorConditionOperator, ClickStackNumericColorCondition,
-        ClickStackNumericColorConditionOperator,
-    };
-    let Some(rules) = field(value, "colorRules").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for (index, rule) in rules.iter().enumerate() {
-        let rule_path = format!("{path}.colorRules[{index}]");
-        match require_discriminator(rule, "operator", &rule_path, source)? {
-            "gt" | "gte" | "lt" | "lte" => {
-                let condition = strict_union_variant::<ClickStackNumericColorCondition>(
-                    rule, &rule_path, source,
-                )?;
-                reject_unknown_enum!(
-                    &condition.color,
-                    ClickStackChartColor::Unknown,
-                    format!("{rule_path}.color"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &condition.operator,
-                    ClickStackNumericColorConditionOperator::Unknown,
-                    format!("{rule_path}.operator"),
-                    source
-                );
-            }
-            "between" => {
-                let condition = strict_union_variant::<ClickStackBetweenColorCondition>(
-                    rule, &rule_path, source,
-                )?;
-                reject_unknown_enum!(
-                    &condition.color,
-                    ClickStackChartColor::Unknown,
-                    format!("{rule_path}.color"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &condition.operator,
-                    ClickStackBetweenColorConditionOperator::Unknown,
-                    format!("{rule_path}.operator"),
-                    source
-                );
-            }
-            "eq" | "neq" => {
-                let condition = strict_union_variant::<ClickStackEqualityColorCondition>(
-                    rule, &rule_path, source,
-                )?;
-                reject_unknown_enum!(
-                    &condition.color,
-                    ClickStackChartColor::Unknown,
-                    format!("{rule_path}.color"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &condition.operator,
-                    ClickStackEqualityColorConditionOperator::Unknown,
-                    format!("{rule_path}.operator"),
-                    source
-                );
-                let valid_value = condition.value.as_str().is_some()
-                    || condition.value.as_f64().is_some_and(f64::is_finite);
-                if !valid_value {
-                    return Err(invalid_clickstack_request(
-                        source,
-                        format!("{rule_path}.value must be a finite number or string"),
-                    ));
-                }
-            }
-            other => {
-                return Err(invalid_clickstack_request(
-                    source,
-                    format!(
-                        "unknown {rule_path}.operator `{other}`; expected gt, gte, lt, lte, between, eq, or neq"
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_optional_number_format(
-    format: Option<&clickhouse_cloud_api::models::ClickStackNumberFormat>,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    if let Some(format) = format {
-        validate_number_format(format, path, source)?;
-    }
-    Ok(())
-}
-
-fn validate_common_builder_fields(
-    formulas: Option<&Vec<clickhouse_cloud_api::models::ClickStackFormula>>,
-    select: &[clickhouse_cloud_api::models::ClickStackSelectItem],
-    number_format: Option<&clickhouse_cloud_api::models::ClickStackNumberFormat>,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    validate_formulas(formulas, &format!("{path}.formulas"), source)?;
-    validate_select_items(select, &format!("{path}.select"), source)?;
-    validate_optional_number_format(number_format, &format!("{path}.numberFormat"), source)
-}
-
-/// How a chart config queries its data, as its `configType` selects: absent
-/// for a builder chart, `sql` for raw SQL, `promql` for PromQL.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ChartQuery {
-    Builder,
-    RawSql,
-    Promql,
-}
-
-fn chart_query(value: &Value, path: &str, source: &str) -> CloudResult<ChartQuery> {
-    match field(value, "configType") {
-        None => Ok(ChartQuery::Builder),
-        Some(Value::String(kind)) if kind == "sql" => Ok(ChartQuery::RawSql),
-        Some(Value::String(kind)) if kind == "promql" => Ok(ChartQuery::Promql),
-        Some(other) => {
-            let rendered = other
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| other.to_string());
-            Err(invalid_clickstack_request(
-                source,
-                format!(
-                    "unknown {path}.configType `{rendered}`; expected sql, promql, or omission"
-                ),
-            ))
-        }
-    }
-}
-
-fn validate_promql_reducible_expressions(
-    expressions: &[clickhouse_cloud_api::models::ClickStackPromqlReducibleExpression],
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackPromqlReducibleExpressionQuerytype, ClickStackPromqlReducibleExpressionReducer,
-    };
-    for (index, expression) in expressions.iter().enumerate() {
-        if let Some(query_type) = &expression.query_type {
-            reject_unknown_enum!(
-                query_type,
-                ClickStackPromqlReducibleExpressionQuerytype::Unknown,
-                format!("{path}[{index}].queryType"),
-                source
-            );
-        }
-        if let Some(reducer) = &expression.reducer {
-            reject_unknown_enum!(
-                reducer,
-                ClickStackPromqlReducibleExpressionReducer::Unknown,
-                format!("{path}[{index}].reducer"),
-                source
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Strictly check a PromQL tile config against the variant its `displayType`
-/// selects. Dispatch fixed `configType` and `displayType`, so only the other
-/// enums are checked.
-fn validate_promql_chart_config(
-    value: &Value,
-    display_type: &str,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::*;
-
-    macro_rules! check_optional_enum {
-        ($value:expr, $variant:path, $name:literal) => {
-            if let Some(value) = &$value {
-                reject_unknown_enum!(value, $variant, format!("{path}.{}", $name), source);
-            }
-        };
-    }
-    let number_format_path = format!("{path}.numberFormat");
-    let expressions_path = format!("{path}.expressions");
-    match display_type {
-        "line" => {
-            let config =
-                strict_union_variant::<ClickStackLinePromqlChartConfig>(value, path, source)?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackLinePromqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "stacked_bar" => {
-            let config =
-                strict_union_variant::<ClickStackBarPromqlChartConfig>(value, path, source)?;
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "stacked_line" => {
-            let config = strict_union_variant::<ClickStackStackedLinePromqlChartConfig>(
-                value, path, source,
-            )?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackStackedLinePromqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "bar" => {
-            let config = strict_union_variant::<ClickStackCategoricalBarPromqlChartConfig>(
-                value, path, source,
-            )?;
-            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "table" => {
-            let config =
-                strict_union_variant::<ClickStackTablePromqlChartConfig>(value, path, source)?;
-            for (index, expression) in config.expressions.iter().enumerate() {
-                if let Some(query_type) = &expression.query_type {
-                    reject_unknown_enum!(
-                        query_type,
-                        ClickStackPromqlInstantExpressionQuerytype::Unknown,
-                        format!("{expressions_path}[{index}].queryType"),
-                        source
-                    );
-                }
-            }
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "number" => {
-            let config =
-                strict_union_variant::<ClickStackNumberPromqlChartConfig>(value, path, source)?;
-            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
-            if let Some(background) = &config.background_chart {
-                reject_unknown_enum!(
-                    &background.r#type,
-                    ClickStackBackgroundChartType::Unknown,
-                    format!("{path}.backgroundChart.type"),
-                    source
-                );
-                check_optional_enum!(
-                    background.color,
-                    ClickStackChartColor::Unknown,
-                    "backgroundChart.color"
-                );
-            }
-            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )?;
-            validate_number_color_rules(value, path, source)
-        }
-        "pie" => {
-            let config =
-                strict_union_variant::<ClickStackPiePromqlChartConfig>(value, path, source)?;
-            validate_promql_reducible_expressions(&config.expressions, &expressions_path, source)?;
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        "heatmap" => {
-            let config =
-                strict_union_variant::<ClickStackHeatmapPromqlChartConfig>(value, path, source)?;
-            check_optional_enum!(
-                config.heatmap_mode,
-                ClickStackHeatmapPromqlChartConfigHeatmapmode::Unknown,
-                "heatmapMode"
-            );
-            check_optional_enum!(
-                config.heatmap_scale_type,
-                ClickStackHeatmapPromqlChartConfigHeatmapscaletype::Unknown,
-                "heatmapScaleType"
-            );
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &number_format_path,
-                source,
-            )
-        }
-        other => Err(invalid_clickstack_request(
-            source,
-            format!(
-                "unknown {path}.displayType `{other}` for configType promql; expected line, stacked_bar, stacked_line, bar, table, number, pie, or heatmap"
-            ),
-        )),
-    }
-}
-
-fn validate_chart_config(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::*;
-
-    let display_type = require_discriminator(value, "displayType", path, source)?;
-    let query = chart_query(value, path, source)?;
-    if query == ChartQuery::Promql {
-        return validate_promql_chart_config(value, display_type, path, source);
-    }
-    let raw_sql = query == ChartQuery::RawSql;
-
-    match display_type {
-        "line" => {
-            if raw_sql {
-                let config =
-                    strict_union_variant::<ClickStackLineRawSqlChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackLineRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackLineRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(interpolation) = &config.line_interpolation {
-                    reject_unknown_enum!(
-                        interpolation,
-                        ClickStackLineRawSqlChartConfigLineinterpolation::Unknown,
-                        format!("{path}.lineInterpolation"),
-                        source
-                    );
-                }
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config =
-                    strict_union_variant::<ClickStackLineBuilderChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackLineBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(interpolation) = &config.line_interpolation {
-                    reject_unknown_enum!(
-                        interpolation,
-                        ClickStackLineBuilderChartConfigLineinterpolation::Unknown,
-                        format!("{path}.lineInterpolation"),
-                        source
-                    );
-                }
-                validate_common_builder_fields(
-                    config.formulas.as_ref(),
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-        }
-        "stacked_bar" => {
-            if raw_sql {
-                let config =
-                    strict_union_variant::<ClickStackBarRawSqlChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackBarRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackBarRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config =
-                    strict_union_variant::<ClickStackBarBuilderChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackBarBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_common_builder_fields(
-                    config.formulas.as_ref(),
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-        }
-        "stacked_line" => {
-            if raw_sql {
-                let config = strict_union_variant::<ClickStackStackedLineRawSqlChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackStackedLineRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(interpolation) = &config.line_interpolation {
-                    reject_unknown_enum!(
-                        interpolation,
-                        ClickStackStackedLineRawSqlChartConfigLineinterpolation::Unknown,
-                        format!("{path}.lineInterpolation"),
-                        source
-                    );
-                }
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config = strict_union_variant::<ClickStackStackedLineBuilderChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackStackedLineBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(interpolation) = &config.line_interpolation {
-                    reject_unknown_enum!(
-                        interpolation,
-                        ClickStackStackedLineBuilderChartConfigLineinterpolation::Unknown,
-                        format!("{path}.lineInterpolation"),
-                        source
-                    );
-                }
-                validate_common_builder_fields(
-                    config.formulas.as_ref(),
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-        }
-        "bar" => {
-            if raw_sql {
-                let config = strict_union_variant::<ClickStackCategoricalBarRawSqlChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackCategoricalBarRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackCategoricalBarRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config = strict_union_variant::<ClickStackCategoricalBarBuilderChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackCategoricalBarBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_common_builder_fields(
-                    None,
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-        }
-        "table" => {
-            if raw_sql {
-                let config =
-                    strict_union_variant::<ClickStackTableRawSqlChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackTableRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackTableRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config =
-                    strict_union_variant::<ClickStackTableBuilderChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackTableBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_common_builder_fields(
-                    config.formulas.as_ref(),
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-            if let Some(on_click) = field(value, "onClick") {
-                validate_on_click(on_click, &format!("{path}.onClick"), source)?;
-            }
-        }
-        "number" => {
-            if raw_sql {
-                let config =
-                    strict_union_variant::<ClickStackNumberRawSqlChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackNumberRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(color) = &config.color {
-                    reject_unknown_enum!(
-                        color,
-                        ClickStackChartColor::Unknown,
-                        format!("{path}.color"),
-                        source
-                    );
-                }
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config = strict_union_variant::<ClickStackNumberBuilderChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackNumberBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(color) = &config.color {
-                    reject_unknown_enum!(
-                        color,
-                        ClickStackChartColor::Unknown,
-                        format!("{path}.color"),
-                        source
-                    );
-                }
-                if let Some(background) = &config.background_chart {
-                    reject_unknown_enum!(
-                        &background.r#type,
-                        ClickStackBackgroundChartType::Unknown,
-                        format!("{path}.backgroundChart.type"),
-                        source
-                    );
-                    if let Some(color) = &background.color {
-                        reject_unknown_enum!(
-                            color,
-                            ClickStackChartColor::Unknown,
-                            format!("{path}.backgroundChart.color"),
-                            source
-                        );
-                    }
-                }
-                validate_common_builder_fields(
-                    config.formulas.as_ref(),
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-            validate_number_color_rules(value, path, source)?;
-        }
-        "pie" => {
-            if raw_sql {
-                let config =
-                    strict_union_variant::<ClickStackPieRawSqlChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.config_type,
-                    ClickStackPieRawSqlChartConfigConfigtype::Unknown,
-                    format!("{path}.configType"),
-                    source
-                );
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackPieRawSqlChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            } else {
-                let config =
-                    strict_union_variant::<ClickStackPieBuilderChartConfig>(value, path, source)?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackPieBuilderChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_common_builder_fields(
-                    None,
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            }
-        }
-        "heatmap" => {
-            // The heatmap union dispatches on `heatmapMode`; an omitted mode
-            // is the distribution heatmap, so a series-only field such as
-            // `groupBy` without `heatmapMode: "series"` is reported as unknown.
-            let series = match field(value, "heatmapMode") {
-                None => false,
-                Some(Value::String(mode)) if mode == "distribution" => false,
-                Some(Value::String(mode)) if mode == "series" => true,
-                Some(other) => {
-                    let rendered = other
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| other.to_string());
-                    return Err(invalid_clickstack_request(
-                        source,
-                        format!(
-                            "unknown {path}.heatmapMode `{rendered}`; expected distribution, series, or omission"
-                        ),
-                    ));
-                }
-            };
-            if series {
-                let config = strict_union_variant::<ClickStackHeatmapSeriesChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackHeatmapSeriesChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                validate_common_builder_fields(
-                    None,
-                    &config.select,
-                    config.number_format.as_ref(),
-                    path,
-                    source,
-                )?;
-            } else {
-                let config = strict_union_variant::<ClickStackHeatmapDistributionChartConfig>(
-                    value, path, source,
-                )?;
-                reject_unknown_enum!(
-                    &config.display_type,
-                    ClickStackHeatmapDistributionChartConfigDisplaytype::Unknown,
-                    format!("{path}.displayType"),
-                    source
-                );
-                if let Some(language) = &config.where_language {
-                    reject_unknown_enum!(
-                        language,
-                        ClickStackHeatmapDistributionChartConfigWherelanguage::Unknown,
-                        format!("{path}.whereLanguage"),
-                        source
-                    );
-                }
-                for (index, item) in config.select.iter().enumerate() {
-                    if let Some(scale) = &item.heatmap_scale_type {
-                        reject_unknown_enum!(
-                            scale,
-                            ClickStackHeatmapSelectItemHeatmapscaletype::Unknown,
-                            format!("{path}.select[{index}].heatmapScaleType"),
-                            source
-                        );
-                    }
-                }
-                validate_optional_number_format(
-                    config.number_format.as_ref(),
-                    &format!("{path}.numberFormat"),
-                    source,
-                )?;
-            }
-        }
-        "search" => {
-            let config = strict_union_variant::<ClickStackSearchChartConfig>(value, path, source)?;
-            reject_unknown_enum!(
-                &config.display_type,
-                ClickStackSearchChartConfigDisplaytype::Unknown,
-                format!("{path}.displayType"),
-                source
-            );
-            reject_unknown_enum!(
-                &config.where_language,
-                ClickStackSearchChartConfigWherelanguage::Unknown,
-                format!("{path}.whereLanguage"),
-                source
-            );
-        }
-        "event_patterns" => {
-            let config =
-                strict_union_variant::<ClickStackEventPatternsChartConfig>(value, path, source)?;
-            reject_unknown_enum!(
-                &config.display_type,
-                ClickStackEventPatternsChartConfigDisplaytype::Unknown,
-                format!("{path}.displayType"),
-                source
-            );
-            if let Some(language) = &config.where_language {
-                reject_unknown_enum!(
-                    language,
-                    ClickStackEventPatternsChartConfigWherelanguage::Unknown,
-                    format!("{path}.whereLanguage"),
-                    source
-                );
-            }
-        }
-        "markdown" => {
-            let config =
-                strict_union_variant::<ClickStackMarkdownChartConfig>(value, path, source)?;
-            reject_unknown_enum!(
-                &config.display_type,
-                ClickStackMarkdownChartConfigDisplaytype::Unknown,
-                format!("{path}.displayType"),
-                source
-            );
-        }
-        other => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!(
-                    "unknown {path}.displayType `{other}`; expected line, stacked_bar, stacked_line, bar, table, number, pie, heatmap, search, event_patterns, or markdown"
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Strictly check an inline alert's `chartConfig` against the variant its
-/// `displayType` and `configType` select. The library's alert chart union
-/// dispatches through raw JSON, so the strict request-body check cannot see
-/// unknown fields inside it.
-fn validate_alert_chart_config(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::*;
-
-    let display_type = require_discriminator(value, "displayType", path, source)?;
-    let query = chart_query(value, path, source)?;
-    // Every variant carries the alert overlay's `whereLanguage`.
-    macro_rules! check_where_language {
-        ($config:expr) => {
-            if let Some(language) = &$config.where_language {
-                reject_unknown_enum!(
-                    language,
-                    ClickStackAlertChartConfigOverlayWherelanguage::Unknown,
-                    format!("{path}.whereLanguage"),
-                    source
-                );
-            }
-        };
-    }
-    macro_rules! check_optional_enum {
-        ($value:expr, $variant:path, $name:literal) => {
-            if let Some(value) = &$value {
-                reject_unknown_enum!(value, $variant, format!("{path}.{}", $name), source);
-            }
-        };
-    }
-
-    match (display_type, query) {
-        ("line", ChartQuery::RawSql) => {
-            let config =
-                strict_union_variant::<ClickStackAlertLineRawSqlChartConfig>(value, path, source)?;
-            reject_unknown_enum!(
-                &config.config_type,
-                ClickStackLineRawSqlChartConfigConfigtype::Unknown,
-                format!("{path}.configType"),
-                source
-            );
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackLineRawSqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("line", ChartQuery::Builder) => {
-            let config =
-                strict_union_variant::<ClickStackAlertLineBuilderChartConfig>(value, path, source)?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackLineBuilderChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_common_builder_fields(
-                config.formulas.as_ref(),
-                &config.select,
-                config.number_format.as_ref(),
-                path,
-                source,
-            )?;
-        }
-        ("stacked_bar", ChartQuery::RawSql) => {
-            let config =
-                strict_union_variant::<ClickStackAlertBarRawSqlChartConfig>(value, path, source)?;
-            reject_unknown_enum!(
-                &config.config_type,
-                ClickStackBarRawSqlChartConfigConfigtype::Unknown,
-                format!("{path}.configType"),
-                source
-            );
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("stacked_bar", ChartQuery::Builder) => {
-            let config =
-                strict_union_variant::<ClickStackAlertBarBuilderChartConfig>(value, path, source)?;
-            check_where_language!(config);
-            validate_common_builder_fields(
-                config.formulas.as_ref(),
-                &config.select,
-                config.number_format.as_ref(),
-                path,
-                source,
-            )?;
-        }
-        ("stacked_line", ChartQuery::RawSql) => {
-            let config = strict_union_variant::<ClickStackAlertStackedLineRawSqlChartConfig>(
-                value, path, source,
-            )?;
-            reject_unknown_enum!(
-                &config.config_type,
-                ClickStackStackedLineRawSqlChartConfigConfigtype::Unknown,
-                format!("{path}.configType"),
-                source
-            );
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackStackedLineRawSqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("stacked_line", ChartQuery::Builder) => {
-            let config = strict_union_variant::<ClickStackAlertStackedLineBuilderChartConfig>(
-                value, path, source,
-            )?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackStackedLineBuilderChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_common_builder_fields(
-                config.formulas.as_ref(),
-                &config.select,
-                config.number_format.as_ref(),
-                path,
-                source,
-            )?;
-        }
-        ("number", ChartQuery::RawSql) => {
-            let config = strict_union_variant::<ClickStackAlertNumberRawSqlChartConfig>(
-                value, path, source,
-            )?;
-            reject_unknown_enum!(
-                &config.config_type,
-                ClickStackNumberRawSqlChartConfigConfigtype::Unknown,
-                format!("{path}.configType"),
-                source
-            );
-            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-            validate_number_color_rules(value, path, source)?;
-        }
-        ("number", ChartQuery::Builder) => {
-            let config = strict_union_variant::<ClickStackAlertNumberBuilderChartConfig>(
-                value, path, source,
-            )?;
-            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
-            if let Some(background) = &config.background_chart {
-                reject_unknown_enum!(
-                    &background.r#type,
-                    ClickStackBackgroundChartType::Unknown,
-                    format!("{path}.backgroundChart.type"),
-                    source
-                );
-                check_optional_enum!(
-                    background.color,
-                    ClickStackChartColor::Unknown,
-                    "backgroundChart.color"
-                );
-            }
-            check_where_language!(config);
-            validate_common_builder_fields(
-                config.formulas.as_ref(),
-                &config.select,
-                config.number_format.as_ref(),
-                path,
-                source,
-            )?;
-            validate_number_color_rules(value, path, source)?;
-        }
-        ("line", ChartQuery::Promql) => {
-            let config =
-                strict_union_variant::<ClickStackAlertLinePromqlChartConfig>(value, path, source)?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackLinePromqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("stacked_bar", ChartQuery::Promql) => {
-            let config =
-                strict_union_variant::<ClickStackAlertBarPromqlChartConfig>(value, path, source)?;
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("stacked_line", ChartQuery::Promql) => {
-            let config = strict_union_variant::<ClickStackAlertStackedLinePromqlChartConfig>(
-                value, path, source,
-            )?;
-            check_optional_enum!(
-                config.line_interpolation,
-                ClickStackStackedLinePromqlChartConfigLineinterpolation::Unknown,
-                "lineInterpolation"
-            );
-            check_where_language!(config);
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-        }
-        ("number", ChartQuery::Promql) => {
-            let config = strict_union_variant::<ClickStackAlertNumberPromqlChartConfig>(
-                value, path, source,
-            )?;
-            check_optional_enum!(config.color, ClickStackChartColor::Unknown, "color");
-            if let Some(background) = &config.background_chart {
-                reject_unknown_enum!(
-                    &background.r#type,
-                    ClickStackBackgroundChartType::Unknown,
-                    format!("{path}.backgroundChart.type"),
-                    source
-                );
-                check_optional_enum!(
-                    background.color,
-                    ClickStackChartColor::Unknown,
-                    "backgroundChart.color"
-                );
-            }
-            check_where_language!(config);
-            validate_promql_reducible_expressions(
-                &config.expressions,
-                &format!("{path}.expressions"),
-                source,
-            )?;
-            validate_optional_number_format(
-                config.number_format.as_ref(),
-                &format!("{path}.numberFormat"),
-                source,
-            )?;
-            validate_number_color_rules(value, path, source)?;
-        }
-        (other, _) => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!(
-                    "unknown {path}.displayType `{other}`; expected line, stacked_bar, stacked_line, or number"
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_saved_filter_value(value: &Value, path: &str, source: &str) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackSavedFilterValueType, ClickStackSqlSavedFilterValue,
-        ClickStackVariableSavedFilterValue, ClickStackVariableSavedFilterValueType,
-    };
-    match field(value, "type") {
-        None => {
-            let saved = strict_union_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
-            if let Some(kind) = &saved.r#type {
-                reject_unknown_enum!(
-                    kind,
-                    ClickStackSavedFilterValueType::Unknown,
-                    format!("{path}.type"),
-                    source
-                );
-            }
-            Ok(())
-        }
-        Some(Value::String(kind)) if kind == "sql" => {
-            let saved = strict_union_variant::<ClickStackSqlSavedFilterValue>(value, path, source)?;
-            if let Some(kind) = &saved.r#type {
-                reject_unknown_enum!(
-                    kind,
-                    ClickStackSavedFilterValueType::Unknown,
-                    format!("{path}.type"),
-                    source
-                );
-            }
-            Ok(())
-        }
-        Some(Value::String(kind)) if kind == "variable" => {
-            let saved =
-                strict_union_variant::<ClickStackVariableSavedFilterValue>(value, path, source)?;
-            reject_unknown_enum!(
-                &saved.r#type,
-                ClickStackVariableSavedFilterValueType::Unknown,
-                format!("{path}.type"),
-                source
-            );
-            Ok(())
-        }
-        Some(other) => Err(invalid_clickstack_request(
-            source,
-            format!("unknown {path}.type `{other}`; expected sql, variable, or omission"),
-        )),
-    }
-}
-
-/// Which dashboard filter schema a request body carries: create bodies send
-/// filters without an `id`, update bodies send them with one.
-#[derive(Clone, Copy)]
-enum DashboardFilterShape {
-    Input,
-    WithId,
-}
-
-/// Strictly check one dashboard filter against the variant its `type` selects.
-/// The library's filter unions dispatch through raw JSON, so the strict
-/// request-body check cannot see unknown fields inside one.
-fn validate_dashboard_filter(
-    value: &Value,
-    shape: DashboardFilterShape,
-    path: &str,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::{
-        ClickStackFilterMaxSelections, ClickStackFilterMinSelections,
-        ClickStackPrometheusLabelFilter, ClickStackPrometheusLabelFilterInput,
-        ClickStackQueryExpressionFilter, ClickStackQueryExpressionFilterInput,
-        ClickStackQueryExpressionFilterInputSourcemetrictype,
-        ClickStackQueryExpressionFilterInputWherelanguage, ClickStackSourceFilter,
-        ClickStackSourceFilterInput, ClickStackStaticListFilter, ClickStackStaticListFilterInput,
-    };
-    // Each kind's with-`id` schema is its input schema plus `id`, so the two
-    // shapes share every enum field; `$fields` extracts the ones to check.
-    macro_rules! strict_filter {
-        ($input:ty, $with_id:ty, |$filter:ident| $fields:expr) => {
-            match shape {
-                DashboardFilterShape::Input => {
-                    let $filter = strict_union_variant::<$input>(value, path, source)?;
-                    $fields
-                }
-                DashboardFilterShape::WithId => {
-                    let $filter = strict_union_variant::<$with_id>(value, path, source)?;
-                    $fields
-                }
-            }
-        };
-    }
-    let kind = require_discriminator(value, "type", path, source)?;
-    let (min_selections, max_selections) = match kind {
-        "QUERY_EXPRESSION" => {
-            let (source_metric_type, where_language, min_selections, max_selections) = strict_filter!(
-                ClickStackQueryExpressionFilterInput,
-                ClickStackQueryExpressionFilter,
-                |filter| (
-                    filter.source_metric_type,
-                    filter.where_language,
-                    filter.min_selections,
-                    filter.max_selections,
-                )
-            );
-            if let Some(metric_type) = &source_metric_type {
-                reject_unknown_enum!(
-                    metric_type,
-                    ClickStackQueryExpressionFilterInputSourcemetrictype::Unknown,
-                    format!("{path}.sourceMetricType"),
-                    source
-                );
-            }
-            if let Some(language) = &where_language {
-                reject_unknown_enum!(
-                    language,
-                    ClickStackQueryExpressionFilterInputWherelanguage::Unknown,
-                    format!("{path}.whereLanguage"),
-                    source
-                );
-            }
-            (min_selections, max_selections)
-        }
-        "STATIC_LIST" => strict_filter!(
-            ClickStackStaticListFilterInput,
-            ClickStackStaticListFilter,
-            |filter| (filter.min_selections, filter.max_selections)
-        ),
-        "PROMETHEUS_LABEL" => strict_filter!(
-            ClickStackPrometheusLabelFilterInput,
-            ClickStackPrometheusLabelFilter,
-            |filter| (filter.min_selections, filter.max_selections)
-        ),
-        "SOURCE_FILTER" => strict_filter!(
-            ClickStackSourceFilterInput,
-            ClickStackSourceFilter,
-            |filter| (filter.min_selections, filter.max_selections)
-        ),
-        other => {
-            return Err(invalid_clickstack_request(
-                source,
-                format!(
-                    "unknown {path}.type `{other}`; expected QUERY_EXPRESSION, STATIC_LIST, PROMETHEUS_LABEL, or SOURCE_FILTER"
-                ),
-            ));
-        }
-    };
-    if let Some(min_selections) = &min_selections {
-        reject_unknown_enum!(
-            min_selections,
-            ClickStackFilterMinSelections::Unknown,
-            format!("{path}.minSelections"),
-            source
-        );
-    }
-    if let Some(max_selections) = &max_selections {
-        reject_unknown_enum!(
-            max_selections,
-            ClickStackFilterMaxSelections::Unknown,
-            format!("{path}.maxSelections"),
-            source
-        );
-    }
-    Ok(())
-}
-
-fn validate_dashboard_unions(
-    value: &Value,
-    filter_shape: DashboardFilterShape,
-    source: &str,
-) -> CloudResult<()> {
-    if let Some(filters) = field(value, "filters").and_then(Value::as_array) {
-        for (index, filter) in filters.iter().enumerate() {
-            validate_dashboard_filter(filter, filter_shape, &format!("filters[{index}]"), source)?;
-        }
-    }
-    let Some(tiles) = field(value, "tiles").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for (index, tile) in tiles.iter().enumerate() {
-        if let Some(config) = field(tile, "config") {
-            validate_chart_config(config, &format!("tiles[{index}].config"), source)?;
-        }
-    }
-    if let Some(values) = field(value, "savedFilterValues").and_then(Value::as_array) {
-        for (index, saved) in values.iter().enumerate() {
-            validate_saved_filter_value(saved, &format!("savedFilterValues[{index}]"), source)?;
-        }
-    }
-    Ok(())
-}
-
-fn build_saved_search_request(config_file: &str) -> CloudResult<ClickStackSavedSearchInput> {
-    let request: ClickStackSavedSearchInput = read_typed_config(config_file)?;
-    validate_saved_search_closed_enums(&request, config_file)?;
-    Ok(request)
-}
-
-fn validate_saved_search_closed_enums(
-    request: &ClickStackSavedSearchInput,
-    source: &str,
-) -> CloudResult<()> {
-    if let Some(language @ ClickStackSavedSearchInputWherelanguage::Unknown(_)) =
-        &request.where_language
-    {
-        return Err(invalid_clickstack_request(
-            source,
-            unknown_enum_value(language, "whereLanguage"),
-        ));
-    }
-    if let Some((index, value)) = request.filters.as_ref().and_then(|filters| {
-        filters.iter().enumerate().find_map(|(index, filter)| {
-            if let Some(kind @ ClickStackSavedSearchFilterType::Unknown(_)) = &filter.r#type {
-                Some((index, kind))
-            } else {
-                None
-            }
-        })
-    }) {
-        return Err(invalid_clickstack_request(
-            source,
-            unknown_enum_value(value, format!("filters[{index}].type")),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_create_dashboard_enums(
-    request: &ClickStackCreateDashboardRequest,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::ClickStackCreateDashboardRequestSavedquerylanguage;
-    if let Some(language) = &request.saved_query_language {
-        reject_unknown_enum!(
-            language,
-            ClickStackCreateDashboardRequestSavedquerylanguage::Unknown,
-            "savedQueryLanguage",
-            source
-        );
-    }
-    Ok(())
-}
-
-fn validate_update_dashboard_enums(
-    request: &ClickStackUpdateDashboardRequest,
-    source: &str,
-) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::ClickStackUpdateDashboardRequestSavedquerylanguage;
-    if let Some(language) = &request.saved_query_language {
-        reject_unknown_enum!(
-            language,
-            ClickStackUpdateDashboardRequestSavedquerylanguage::Unknown,
-            "savedQueryLanguage",
-            source
-        );
-    }
-    Ok(())
-}
-
-fn parse_source_request(value: Value, source: &str) -> CloudResult<ClickStackSource> {
-    let kind = field(&value, "kind").and_then(Value::as_str);
-    let request = match kind {
-        Some("log") => ClickStackSource::ClickStackLogSource(deserialize_strict_config::<
-            ClickStackLogSource,
-        >(value, source)?),
-        Some("trace") => ClickStackSource::ClickStackTraceSource(deserialize_strict_config::<
-            ClickStackTraceSource,
-        >(value, source)?),
-        Some("metric") => ClickStackSource::ClickStackMetricSource(deserialize_strict_config::<
-            ClickStackMetricSource,
-        >(value, source)?),
-        Some("session") => ClickStackSource::ClickStackSessionSource(deserialize_strict_config::<
-            ClickStackSessionSource,
-        >(value, source)?),
-        Some("promql") => ClickStackSource::ClickStackPromqlSource(deserialize_strict_config::<
-            ClickStackPromqlSource,
-        >(value, source)?),
-        Some(other) => {
-            return Err(CloudError::usage(format!(
-                "invalid request body in config {source}: unknown source discriminator `{other}`; expected log, trace, metric, session, or promql"
-            )));
-        }
-        None => {
-            return Err(CloudError::usage(format!(
-                "invalid request body in config {source}: source `kind` must be one of log, trace, metric, session, or promql"
-            )));
-        }
-    };
-    validate_source_closed_enums(&request, source)?;
-    Ok(request)
-}
-
-fn validate_materialized_views(
-    views: Option<&Vec<ClickStackMaterializedView>>,
-    source: &str,
-) -> CloudResult<()> {
-    if let Some((index, value)) = views.and_then(|views| {
-        views.iter().enumerate().find_map(|(index, view)| {
-            if let ClickStackMaterializedViewMingranularity::Unknown(_) = &view.min_granularity {
-                Some((index, &view.min_granularity))
-            } else {
-                None
-            }
-        })
-    }) {
-        return Err(invalid_clickstack_request(
-            source,
-            unknown_enum_value(value, format!("materializedViews[{index}].minGranularity")),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_source_closed_enums(request: &ClickStackSource, source: &str) -> CloudResult<()> {
-    match request {
-        ClickStackSource::ClickStackLogSource(log) => {
-            if let Some(value @ ClickStackLogSourceUsetextindexforimplicitcolumn::Unknown(_)) =
-                &log.use_text_index_for_implicit_column
-            {
-                return Err(invalid_clickstack_request(
-                    source,
-                    unknown_enum_value(value, "useTextIndexForImplicitColumn"),
-                ));
-            }
-            validate_materialized_views(log.materialized_views.as_ref(), source)
-        }
-        ClickStackSource::ClickStackTraceSource(trace) => {
-            if let Some(value @ ClickStackTraceSourceUsetextindexforimplicitcolumn::Unknown(_)) =
-                &trace.use_text_index_for_implicit_column
-            {
-                return Err(invalid_clickstack_request(
-                    source,
-                    unknown_enum_value(value, "useTextIndexForImplicitColumn"),
-                ));
-            }
-            validate_materialized_views(trace.materialized_views.as_ref(), source)
-        }
-        ClickStackSource::ClickStackMetricSource(_)
-        | ClickStackSource::ClickStackSessionSource(_)
-        | ClickStackSource::ClickStackPromqlSource(_) => Ok(()),
-        ClickStackSource::Unknown(_) => unreachable!("source is built from a concrete variant"),
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ClickStackResource {
     Source,
@@ -3151,7 +969,7 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
             service_id,
             config_file,
         } => {
-            let request = build_create_alert_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let alert = client
                 .click_stack_create_alert(&org_id, &service_id, &request)
@@ -3163,7 +981,7 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
             target,
             config_file,
         } => {
-            let request = build_update_alert_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let alert_id = resolve_clickstack_target(
                 client,
@@ -3214,7 +1032,7 @@ async fn run_webhook(
             service_id,
             config_file,
         } => {
-            let request = build_webhook_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let webhook = client
                 .click_stack_create_webhook(&org_id, &service_id, &request)
@@ -3226,7 +1044,7 @@ async fn run_webhook(
             target,
             config_file,
         } => {
-            let request = build_webhook_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let webhook_id = resolve_clickstack_target(
                 client,
@@ -3261,7 +1079,7 @@ async fn run_webhook(
             service_id,
             config_file,
         } => {
-            let request = build_webhook_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let validation = client
                 .click_stack_validate_webhook(&org_id, &service_id, &request)
@@ -3303,7 +1121,7 @@ async fn run_dashboard(
             service_id,
             config_file,
         } => {
-            let request = build_create_dashboard_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let dashboard = client
                 .click_stack_create_dashboard(&org_id, &service_id, &request)
@@ -3315,7 +1133,7 @@ async fn run_dashboard(
             target,
             config_file,
         } => {
-            let request = build_update_dashboard_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let dashboard_id = resolve_clickstack_target(
                 client,
@@ -3350,7 +1168,7 @@ async fn run_dashboard(
             service_id,
             config_file,
         } => {
-            let request = build_create_dashboard_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let validation = client
                 .click_stack_validate_dashboard(&org_id, &service_id, &request)
@@ -3392,7 +1210,7 @@ async fn run_saved_search(
             service_id,
             config_file,
         } => {
-            let request = build_saved_search_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let search = client
                 .click_stack_create_saved_search(&org_id, &service_id, &request)
@@ -3404,7 +1222,7 @@ async fn run_saved_search(
             target,
             config_file,
         } => {
-            let request = build_saved_search_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let saved_search_id = resolve_clickstack_target(
                 client,
@@ -3466,7 +1284,7 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
             service_id,
             config_file,
         } => {
-            let request = build_source_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let source = client
                 .click_stack_create_source(&org_id, &service_id, &request)
@@ -3478,7 +1296,7 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
             target,
             config_file,
         } => {
-            let request = build_source_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let source_id = resolve_clickstack_target(
                 client,
@@ -3538,7 +1356,7 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
             service_id,
             config_file,
         } => {
-            let request = build_create_role_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let role = client
                 .click_stack_create_role(&org_id, &service_id, &request)
@@ -3550,7 +1368,7 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
             target,
             config_file,
         } => {
-            let request = build_update_role_request(&config_file)?;
+            let request = read_lossless_config(&config_file)?;
             let org_id = resolve_org_id(client).await?;
             let role_id = resolve_clickstack_target(
                 client,
@@ -4440,6 +2258,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Commands};
+    use crate::cloud::config::deserialize_lossless_config;
     use clap::Parser;
 
     fn parse_clickstack(args: &[&str]) -> ClickStackCommands {
@@ -4609,18 +2428,6 @@ mod tests {
     /// `expected` is a space-separated list of the identifiers (field paths,
     /// offending values, bounds) the message must name, each as a whole token
     /// so that `1` is not found inside `10`.
-    fn assert_names(error: &CloudError, expected: &str) {
-        let message = &error.message;
-        let is_word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        for id in expected.split_whitespace() {
-            let found = message.match_indices(id).any(|(at, _)| {
-                !is_word(message[..at].chars().next_back())
-                    && !is_word(message[at + id.len()..].chars().next())
-            });
-            assert!(found, "`{id}` missing from: {error}");
-        }
-    }
-
     fn digits(message: &str) -> String {
         message.chars().filter(char::is_ascii_digit).collect()
     }
@@ -4891,10 +2698,14 @@ mod tests {
             "channels":[{"type":"email","emailRecipients":["ops@example.com"]}]
         });
         std::fs::write(&config_file, minimal.to_string()).unwrap();
-        let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
+        let create =
+            read_lossless_config::<ClickStackCreateAlertRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(create.saved_search_id.as_deref(), Some("search-1"));
         assert_eq!(serde_json::to_value(&create).unwrap(), minimal);
-        let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
+        let update =
+            read_lossless_config::<ClickStackUpdateAlertRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(update.saved_search_id.as_deref(), Some("search-1"));
         assert_eq!(serde_json::to_value(&update).unwrap(), minimal);
 
@@ -4912,10 +2723,14 @@ mod tests {
             "message":"Too slow", "note":"See runbook", "numConsecutiveWindows":3
         });
         std::fs::write(&config_file, maximal.to_string()).unwrap();
-        let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
+        let create =
+            read_lossless_config::<ClickStackCreateAlertRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(create.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
-        let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
+        let update =
+            read_lossless_config::<ClickStackUpdateAlertRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(update.dashboard_id.as_deref(), Some("dash-1"));
         assert_eq!(update.channels.as_ref().map(Vec::len), Some(2));
         assert_eq!(serde_json::to_value(&update).unwrap(), maximal);
@@ -4971,7 +2786,7 @@ mod tests {
         let mut promql_charts = 0;
         for body in bodies {
             std::fs::write(&config_file, body.to_string()).unwrap();
-            let create = build_create_alert_request(path).unwrap();
+            let create = read_lossless_config::<ClickStackCreateAlertRequest>(path).unwrap();
             assert_eq!(serde_json::to_value(&create).unwrap(), body);
             // An `Unknown` chart also round-trips, so pin the typed variant.
             if body["chartConfig"]["configType"] == "promql" {
@@ -4984,7 +2799,7 @@ mod tests {
                 );
                 promql_charts += 1;
             }
-            let update = build_update_alert_request(path).unwrap();
+            let update = read_lossless_config::<ClickStackUpdateAlertRequest>(path).unwrap();
             assert_eq!(serde_json::to_value(&update).unwrap(), body);
         }
         assert_eq!(promql_charts, 4);
@@ -5012,74 +2827,6 @@ mod tests {
     }
 
     #[test]
-    fn alert_builders_strictly_check_inline_chart_configs() {
-        let directory = tempfile::tempdir().unwrap();
-        let config_file = directory.path().join("alert.json");
-        let path = config_file.to_str().unwrap();
-        for (config, expected) in [
-            (
-                serde_json::json!({"displayType":"table","sourceId":"s","select":[{"aggFn":"count"}]}),
-                "chartConfig.displayType `table`",
-            ),
-            (
-                serde_json::json!({"displayType":"line","sourceId":"s","select":[{"aggFn":"count"}],"colour":"red"}),
-                "colour",
-            ),
-            (
-                serde_json::json!({"configType":"logql","displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
-                "chartConfig.configType `logql`",
-            ),
-            (
-                // A PromQL chart queries `expressions`, not builder `select` items.
-                serde_json::json!({"configType":"promql","displayType":"line","sourceId":"s","expressions":[{"expression":"up"}],"select":[]}),
-                "select",
-            ),
-            (
-                serde_json::json!({"configType":"promql","displayType":"stacked_line","sourceId":"s","expressions":[{"expression":"up"}],"lineInterpolation":"curvy"}),
-                "chartConfig.lineInterpolation",
-            ),
-            (
-                serde_json::json!({"configType":"promql","displayType":"number","sourceId":"s","expressions":[{"expression":"up","reducer":"median"}]}),
-                "chartConfig.expressions[0].reducer",
-            ),
-            (
-                serde_json::json!({"configType":"promql","displayType":"stacked_bar","sourceId":"s","expressions":[{"expression":"up"}],"whereLanguage":"kql"}),
-                "chartConfig.whereLanguage",
-            ),
-            (
-                serde_json::json!({"displayType":"line","connectionId":"c","sqlTemplate":"SELECT 1"}),
-                "`select`",
-            ),
-            (
-                serde_json::json!({"displayType":"stacked_line","sourceId":"s","select":[{"aggFn":"count"}],"lineInterpolation":"curvy"}),
-                "chartConfig.lineInterpolation",
-            ),
-            (
-                serde_json::json!({"displayType":"number","sourceId":"s","select":[{"aggFn":"count"}],"whereLanguage":"kql"}),
-                "chartConfig.whereLanguage",
-            ),
-            (
-                serde_json::json!({"displayType":"number","sourceId":"s","select":[{"aggFn":"count"}],"color":"plaid"}),
-                "chartConfig.color",
-            ),
-            (
-                serde_json::json!({"sourceId":"s"}),
-                "chartConfig.displayType",
-            ),
-        ] {
-            let body = serde_json::json!({
-                "source":"inline", "chartConfig":config,
-                "threshold":1, "interval":"5m", "thresholdType":"above"
-            });
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            let error = build_create_alert_request(path).unwrap_err();
-            assert_names(&error, expected);
-            let error = build_update_alert_request(path).unwrap_err();
-            assert_names(&error, expected);
-        }
-    }
-
-    #[test]
     fn webhook_builder_covers_every_input_service_and_all_fields() {
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("webhook.json");
@@ -5093,111 +2840,15 @@ mod tests {
                 body["body"] = Value::String("{\"alert\":\"{{title}}\"}".into());
             }
             std::fs::write(&config_file, body.to_string()).unwrap();
-            let request = build_webhook_request(config_file.to_str().unwrap()).unwrap();
+            let request =
+                read_lossless_config::<ClickStackWebhookInput>(config_file.to_str().unwrap())
+                    .unwrap();
             assert_eq!(
                 request.headers.as_ref().unwrap()["Authorization"],
                 "Bearer secret"
             );
             assert_eq!(serde_json::to_value(request).unwrap(), body);
         }
-    }
-
-    #[test]
-    fn alert_and_webhook_builders_reject_invalid_nested_and_cross_field_values() {
-        let directory = tempfile::tempdir().unwrap();
-        let config_file = directory.path().join("body.json");
-        let base = serde_json::json!({
-            "source":"saved_search", "savedSearchId":"search-1", "threshold":10,
-            "interval":"1m", "thresholdType":"above",
-            "channel":{"type":"email","emailRecipients":["ops@example.com"]},
-            "channels":[{"type":"email","emailRecipients":["ops@example.com"]}]
-        });
-        let invalid = [
-            (
-                serde_json::json!({"source":"future","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "`future` saved_search tile inline",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"2m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "interval `2m` 1m 30s 1d",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"around","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "thresholdType `around` above not_between",
-            ),
-            (
-                serde_json::json!({"source":"tile","dashboardId":"d","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "tileId",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":2,"thresholdMax":1,"interval":"1m","thresholdType":"between","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "thresholdMax",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"webhook","webhookId":"h","severty":"warning"},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "severty",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"webhook","webhookId":"h","severity":"urgent"},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "severity",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[]}),
-                "channels 1 10",
-            ),
-            (
-                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","numConsecutiveWindows":0,"channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
-                "numConsecutiveWindows",
-            ),
-        ];
-        for (body, expected) in invalid {
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert_names(&error, expected);
-        }
-        // `source`, `channel` and `channels` are optional; only `source: inline`
-        // demands a `chartConfig`, on create and update alike.
-        let mut inline = base.clone();
-        inline["source"] = Value::String("inline".into());
-        inline.as_object_mut().unwrap().remove("savedSearchId");
-        let mut bad_channels = base.clone();
-        bad_channels["channels"] = serde_json::json!({"type":"email"});
-        for (body, expected) in [(inline, "inline chartConfig"), (bad_channels, "channels")] {
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert_names(&error, expected);
-            let error = build_update_alert_request(config_file.to_str().unwrap()).unwrap_err();
-            assert_names(&error, expected);
-        }
-        let mut duplicate = base.clone();
-        duplicate["channels"] = serde_json::json!([
-            {"type":"email","emailRecipients":["same@example.com"]},
-            {"type":"email","emailRecipients":["same@example.com"]}
-        ]);
-        std::fs::write(&config_file, duplicate.to_string()).unwrap();
-        assert!(
-            build_create_alert_request(config_file.to_str().unwrap())
-                .unwrap_err()
-                .message
-                .contains("channels[1]")
-        );
-
-        std::fs::write(
-            &config_file,
-            r#"{"name":"bad","service":"slack_api","url":"https://example.com"}"#,
-        )
-        .unwrap();
-        let error = build_webhook_request(config_file.to_str().unwrap()).unwrap_err();
-        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
-        assert_names(&error, "service `slack_api` slack incidentio generic");
-        std::fs::write(
-            &config_file,
-            r#"{"name":"bad","service":"slack","url":"https://example.com","body":"secret"}"#,
-        )
-        .unwrap();
-        let error = build_webhook_request(config_file.to_str().unwrap()).unwrap_err();
-        assert_names(&error, "body slack");
-        assert!(!error.message.contains("secret"), "{error}");
     }
 
     #[test]
@@ -5570,13 +3221,17 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("dashboard.json");
         std::fs::write(&config_file, r#"{"name":"empty","tiles":[]}"#).unwrap();
-        let minimal = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
+        let minimal =
+            read_lossless_config::<ClickStackCreateDashboardRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(minimal.name, "empty");
         assert!(minimal.tiles.is_empty());
 
         let create_body = complete_dashboard(false);
         std::fs::write(&config_file, create_body.to_string()).unwrap();
-        let create = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
+        let create =
+            read_lossless_config::<ClickStackCreateDashboardRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(create.tiles.len(), 28);
         // An `Unknown` tile config also round-trips, so pin the typed variants.
         assert!(
@@ -5617,7 +3272,9 @@ mod tests {
 
         let update_body = complete_dashboard(true);
         std::fs::write(&config_file, update_body.to_string()).unwrap();
-        let update = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap();
+        let update =
+            read_lossless_config::<ClickStackUpdateDashboardRequest>(config_file.to_str().unwrap())
+                .unwrap();
         let Some(
             [
                 ClickStackFilter::ClickStackQueryExpressionFilter(filter),
@@ -5645,165 +3302,6 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_builder_rejects_unknown_nested_union_enum_and_field() {
-        let directory = tempfile::tempdir().unwrap();
-        let config_file = directory.path().join("dashboard.json");
-        for (body, expected) in [
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"map"}}]}),
-                "displayType",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"table","sourceId":"s","select":[],"onClick":{"type":"popup","target":{"mode":"id","id":"x"}}}}]}),
-                "onClick.type",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","sourceId":"s","select":[{"valueExpression":"v","heatmapScaleType":"logg"}]}}]}),
-                "heatmapScaleType",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"numberFormat":{"output":"custom","mantissa":0,"thousandSeparated":false,"average":false,"decimalBytes":false,"factor":1.0,"currencySymbol":"","numericUnit":"bytes_iec","unit":""}}}]}),
-                "numberFormat.output `custom` currency duration",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"approx","value":1,"color":"chart-blue"}]}}]}),
-                "colorRules[0].operator `approx` gt between neq",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"eq","value":{"nested":true},"color":"chart-blue"}]}}]}),
-                "colorRules[0].value",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","sourceId":"s","select":[],"colorRules":[{"operator":"neq","value":true,"color":"chart-blue"}]}}]}),
-                "colorRules[0].value",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[{"aggFn":"count","aliass":"x"}]}}]}),
-                "aliass",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"savedFilterValues":[{"type":"variable","name":"v","values":[],"valuess":[]}]}),
-                "valuess",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"bands","sourceId":"s","select":[{"valueExpression":"v"}]}}]}),
-                "tiles[0].config.heatmapMode `bands`",
-            ),
-            (
-                // A series heatmap selects aggregates, not distribution items.
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","heatmapMode":"series","sourceId":"s","select":[{"aggFn":"count","heatmapScaleType":"log"}]}}]}),
-                "heatmapScaleType",
-            ),
-            (
-                // `groupBy` belongs to the series heatmap only.
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","sourceId":"s","groupBy":"g","select":[{"valueExpression":"v"}]}}]}),
-                "groupBy",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
-                "tiles[0].config.lineInterpolation `curvy`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"stacked_line","configType":"sql","connectionId":"c","sqlTemplate":"SELECT 1","seriesLimit":1}}]}),
-                "seriesLimit",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","sourceId":"s","select":[],"lineInterpolation":"curvy"}}]}),
-                "tiles[0].config.lineInterpolation `curvy`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","configType":"logql","sourceId":"s","expressions":[]}}]}),
-                "tiles[0].config.configType `logql`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"markdown","configType":"promql","markdown":"x"}}]}),
-                "tiles[0].config.displayType `markdown`",
-            ),
-            (
-                // A PromQL tile queries `expressions`, not builder `select` items.
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line","configType":"promql","sourceId":"s","expressions":[],"select":[]}}]}),
-                "select",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"heatmap","configType":"promql","sourceId":"s","expressions":[],"heatmapMode":"bands"}}]}),
-                "tiles[0].config.heatmapMode `bands`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"table","configType":"promql","sourceId":"s","expressions":[{"expression":"up","queryType":"vector"}]}}]}),
-                "tiles[0].config.expressions[0].queryType `vector`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"pie","configType":"promql","sourceId":"s","expressions":[{"expression":"up","queryType":"matrix"}]}}]}),
-                "tiles[0].config.expressions[0].queryType `matrix`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"number","configType":"promql","sourceId":"s","expressions":[],"color":"plaid"}}]}),
-                "tiles[0].config.color `plaid`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"name":"f","expression":"e","sourceId":"s"}]}),
-                "filters[0].type",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"SOURCE","name":"f","expression":"e","sourceId":"s"}]}),
-                "filters[0].type `SOURCE`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"expression":"e"}]}),
-                "expression",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"STATIC_LIST","name":"f","options":["a"],"maxSelections":3}]}),
-                "filters[0].maxSelections `3`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"PROMETHEUS_LABEL","name":"f","sourceId":"s","label":"pod","matcher":"up"}]}),
-                "matcher",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"SOURCE_FILTER","name":"f","sourceId":"s","expression":"cluster"}]}),
-                "variableName",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","expresion":"x"}]}),
-                "expresion",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","whereLanguage":"kql"}]}),
-                "filters[0].whereLanguage `kql`",
-            ),
-            (
-                serde_json::json!({"name":"bad","tiles":[],"filters":[{"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s","minSelections":2}]}),
-                "filters[0].minSelections `2`",
-            ),
-        ] {
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            let error = build_create_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
-            assert_names(&error, expected);
-        }
-
-        // Update bodies check each filter against the schema that carries `id`.
-        for filter in [
-            serde_json::json!({"type":"QUERY_EXPRESSION","name":"f","expression":"e","sourceId":"s"}),
-            serde_json::json!({"type":"STATIC_LIST","name":"f","options":["a"]}),
-            serde_json::json!({"type":"PROMETHEUS_LABEL","name":"f","sourceId":"s","label":"pod"}),
-            serde_json::json!({"type":"SOURCE_FILTER","name":"f","sourceId":"s","expression":"e","variableName":"v"}),
-        ] {
-            let body = serde_json::json!({"name":"bad","tiles":[],"filters":[filter]});
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            build_create_dashboard_request(config_file.to_str().unwrap()).unwrap();
-            let error = build_update_dashboard_request(config_file.to_str().unwrap()).unwrap_err();
-            assert_names(&error, "filters[0] `id`");
-            // The nested failure names the config once.
-            assert_eq!(
-                error.message.matches(config_file.to_str().unwrap()).count(),
-                1,
-                "{error}"
-            );
-        }
-    }
-
-    #[test]
     fn source_builders_accept_minimal_and_maximal_variants() {
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("source.json");
@@ -5812,7 +3310,8 @@ mod tests {
             r#"{"kind":"promql","name":"p","connection":"c","from":{"databaseName":"d","tableName":"t"},"timestampValueExpression":"ts"}"#,
         )
         .unwrap();
-        let minimal = build_source_request(config_file.to_str().unwrap()).unwrap();
+        let minimal =
+            read_lossless_config::<ClickStackSource>(config_file.to_str().unwrap()).unwrap();
         assert!(matches!(
             minimal,
             ClickStackSource::ClickStackPromqlSource(_)
@@ -5844,7 +3343,8 @@ mod tests {
         maximal["eventNameExpression"] = "EventName".into();
         maximal["severityNumberExpression"] = "SeverityNumber".into();
         std::fs::write(&config_file, maximal.to_string()).unwrap();
-        let source = build_source_request(config_file.to_str().unwrap()).unwrap();
+        let source =
+            read_lossless_config::<ClickStackSource>(config_file.to_str().unwrap()).unwrap();
         let ClickStackSource::ClickStackLogSource(source) = source else {
             panic!("expected log")
         };
@@ -5872,7 +3372,7 @@ mod tests {
             serde_json::json!({"kind":"promql","name":"p","connection":"c","from":{"databaseName":"d","tableName":"t"},"timestampValueExpression":"ts"}),
         ];
         for body in bodies {
-            let source = parse_source_request(body, "test").unwrap();
+            let source = deserialize_lossless_config::<ClickStackSource>(body, "test").unwrap();
             assert!(!matches!(source, ClickStackSource::Unknown(_)));
         }
     }
@@ -5903,7 +3403,8 @@ mod tests {
             serde_json::json!({"kind":"promql","name":"promql","connection":"c","from":{"databaseName":"d","tableName":"metrics"},"timestampValueExpression":"ts"}),
         ];
         for body in bodies {
-            let source = parse_source_request(body.clone(), "test").unwrap();
+            let source =
+                deserialize_lossless_config::<ClickStackSource>(body.clone(), "test").unwrap();
             assert_eq!(serde_json::to_value(source).unwrap(), body);
         }
     }
@@ -5915,7 +3416,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("role.json");
         std::fs::write(&config_file, r#"{"name":"reader","permissions":[]}"#).unwrap();
-        let minimal = build_create_role_request(config_file.to_str().unwrap()).unwrap();
+        let minimal =
+            read_lossless_config::<ClickStackCreateRoleRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(minimal.name, "reader");
 
         let maximal = serde_json::json!({"name":"ops","description":"operators","permissions":[
@@ -5923,7 +3426,9 @@ mod tests {
             {"action":"read","subject":"Source","inverted":false,"integration":"clickhouse","conditions":{"connection":"connection-1","from":{"databaseName":"default","tableName":"otel_logs"},"where":"ServiceName = 'checkout'","whereLanguage":"sql"}}
         ]});
         std::fs::write(&config_file, maximal.to_string()).unwrap();
-        let create = build_create_role_request(config_file.to_str().unwrap()).unwrap();
+        let create =
+            read_lossless_config::<ClickStackCreateRoleRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert!(matches!(
             create.permissions.as_slice(),
             [
@@ -5933,7 +3438,9 @@ mod tests {
         ));
         // The request body is sent exactly as written.
         assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
-        let update = build_update_role_request(config_file.to_str().unwrap()).unwrap();
+        let update =
+            read_lossless_config::<ClickStackUpdateRoleRequest>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(
             serde_json::to_value(&update).unwrap()["permissions"],
             maximal["permissions"]
@@ -5941,58 +3448,17 @@ mod tests {
     }
 
     #[test]
-    fn role_builders_check_each_permission_against_its_integration() {
-        let directory = tempfile::tempdir().unwrap();
-        let config_file = directory.path().join("role.json");
-        for (permission, expected) in [
-            (
-                serde_json::json!({"action":"read","subject":"Dashboard"}),
-                "permissions[0].integration clickhouse mongodb",
-            ),
-            (
-                serde_json::json!({"action":"read","subject":"Dashboard","integration":"slack"}),
-                "permissions[0].integration `slack`",
-            ),
-            (
-                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditons":{}}),
-                "conditons",
-            ),
-            (
-                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"connection":"c","from":{"databaseName":"d","tableName":"t","schema":"s"},"where":"x","whereLanguage":"sql"}}),
-                "conditions.from.schema",
-            ),
-            (
-                serde_json::json!({"action":"read","subject":"Source","integration":"clickhouse","conditions":{"team":"team-1"}}),
-                "permissions[0]",
-            ),
-            (
-                serde_json::json!({"action":"read","subject":"Dashboard","integration":"mongodb","conditions":{"name":{"$regex":"^a","$optons":"i"}}}),
-                "`permissions[0].conditions.name.$optons`",
-            ),
-        ] {
-            let body = serde_json::json!({"name":"r","permissions":[permission]});
-            std::fs::write(&config_file, body.to_string()).unwrap();
-            for error in [
-                build_create_role_request(config_file.to_str().unwrap()).unwrap_err(),
-                build_update_role_request(config_file.to_str().unwrap()).unwrap_err(),
-            ] {
-                assert_names(&error, expected);
-                // Each permission failure names the config exactly once.
-                assert_eq!(
-                    error.message.matches(config_file.to_str().unwrap()).count(),
-                    1,
-                    "{error}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn saved_search_builder_preserves_minimal_maximal_and_empty_fields() {
+        use clickhouse_cloud_api::models::{
+            ClickStackSavedSearchFilterType, ClickStackSavedSearchInputWherelanguage,
+        };
+
         let directory = tempfile::tempdir().unwrap();
         let config_file = directory.path().join("saved-search.json");
         std::fs::write(&config_file, r#"{"name":"errors","sourceId":"source-1"}"#).unwrap();
-        let minimal = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        let minimal =
+            read_lossless_config::<ClickStackSavedSearchInput>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(minimal.name, "errors");
         assert_eq!(minimal.source_id, "source-1");
         assert_eq!(minimal.select, None);
@@ -6017,7 +3483,9 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let maximal = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        let maximal =
+            read_lossless_config::<ClickStackSavedSearchInput>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(maximal.select.as_deref(), Some("Timestamp, Body"));
         assert_eq!(maximal.r#where.as_deref(), Some("SeverityText = 'ERROR'"));
         assert_eq!(
@@ -6038,7 +3506,9 @@ mod tests {
             r#"{"name":"","sourceId":"source-3","select":"","where":"","whereLanguage":"lucene","orderBy":"","tags":[],"filters":[]}"#,
         )
         .unwrap();
-        let empty = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        let empty =
+            read_lossless_config::<ClickStackSavedSearchInput>(config_file.to_str().unwrap())
+                .unwrap();
         assert_eq!(empty.name, "");
         assert_eq!(empty.select.as_deref(), Some(""));
         assert_eq!(empty.r#where.as_deref(), Some(""));
@@ -6051,65 +3521,96 @@ mod tests {
         assert_eq!(empty.filters, Some(vec![]));
     }
 
+    fn sent<T: serde::de::DeserializeOwned + serde::Serialize>(body: &Value) -> CloudResult<Value> {
+        deserialize_lossless_config::<T>(body.clone(), "test")
+            .map(|request| serde_json::to_value(request).unwrap())
+    }
+
+    /// Bodies are open-world: a value the library does not know (an enum
+    /// value, a union discriminator, a variant the rest of the body no longer
+    /// fits) is sent as written for the API to judge, while a key the typed
+    /// request would drop is still rejected locally.
     #[test]
-    fn input_validation_rejects_unknown_discriminator_and_nested_fields() {
-        let error = parse_source_request(serde_json::json!({"kind":"logs","naem":"bad"}), "test")
-            .unwrap_err();
-        assert_names(&error, "`logs`");
-
-        let error = validate_role_permissions(
-            &serde_json::json!({"name":"r","permissions":[{"action":"read","subject":"x","integration":"mongodb","conditons":{}}]}),
-            "test",
-        )
-        .unwrap_err();
-        assert!(error.message.contains("conditons"), "{error}");
-
-        for (body, expected) in [
+    fn bodies_send_unknown_values_as_written_and_reject_dropped_keys() {
+        let alert = serde_json::json!({
+            "source":"future", "savedSearchId":"s", "threshold":1.0, "interval":"2m",
+            "thresholdType":"around", "channel":{"type":"pager","to":"x"}, "channels":[],
+            "chartConfig":{"displayType":"table","sourceId":"s","select":[{"aggFn":"count"}]}
+        });
+        let dashboard = serde_json::json!({"name":"d",
+            "tiles":[{"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"map"}}],
+            "filters":[{"type":"SOURCE","name":"f","expression":"e","sourceId":"s"}]});
+        let role = serde_json::json!({"name":"r","permissions":[
+            {"action":"read","subject":"Dashboard","integration":"slack"}]});
+        for (body, sent) in [
+            (&alert, sent::<ClickStackCreateAlertRequest>(&alert)),
+            (&alert, sent::<ClickStackUpdateAlertRequest>(&alert)),
             (
-                serde_json::json!({"name":"bad","sourceId":"s","whereLanguage":"sqlish"}),
-                "whereLanguage `sqlish` sql lucene",
+                &dashboard,
+                sent::<ClickStackCreateDashboardRequest>(&dashboard),
             ),
-            (
-                serde_json::json!({"name":"bad","sourceId":"s","filters":[{"type":"lucene","condition":"x"}]}),
-                "filters[0].type `lucene` sql",
-            ),
+            (&role, sent::<ClickStackCreateRoleRequest>(&role)),
         ] {
-            let request: ClickStackSavedSearchInput =
-                deserialize_strict_config(body, "test").unwrap();
-            let error = validate_saved_search_closed_enums(&request, "test").unwrap_err();
-            assert_names(&error, expected);
+            assert_eq!(&sent.unwrap(), body);
+        }
+        for body in [
+            serde_json::json!({"name":"w","service":"slack_api","url":"https://example.com"}),
+            serde_json::json!({"name":"w","service":"slack","url":"https://example.com","body":"b"}),
+        ] {
+            assert_eq!(sent::<ClickStackWebhookInput>(&body).unwrap(), body);
+        }
+        for body in [
+            serde_json::json!({"kind":"logs","naem":"bad"}),
+            serde_json::json!({"kind":"log","name":"missing required fields"}),
+        ] {
+            assert_eq!(sent::<ClickStackSource>(&body).unwrap(), body);
         }
 
-        let error = deserialize_strict_config::<ClickStackSavedSearchInput>(
-            serde_json::json!({"name":"bad","sourceId":"s","orderByy":null}),
-            "test",
-        )
-        .unwrap_err();
-        assert!(error.message.contains("orderByy"), "{error}");
-        let error = deserialize_strict_config::<ClickStackSavedSearchInput>(
-            serde_json::json!({"name":"bad"}),
-            "test",
-        )
-        .unwrap_err();
-        assert!(error.message.contains("missing field"), "{error}");
-
-        for (body, expected) in [
+        let inline = |chart: Value| {
+            serde_json::json!({"source":"inline","threshold":1.0,"interval":"5m",
+                "thresholdType":"above","chartConfig":chart})
+        };
+        for (error, path) in [
             (
-                serde_json::json!({"kind":"promql","name":"p","connection":"c","from":{"databaseName":"d","tableName":"t","tableNaem":null},"timestampValueExpression":"ts"}),
-                "tableNaem",
+                sent::<ClickStackCreateAlertRequest>(&inline(serde_json::json!(
+                    {"displayType":"line","sourceId":"s","select":[{"aggFn":"count"}],"colour":"red"}
+                ))),
+                "chartConfig.colour",
             ),
             (
-                serde_json::json!({"kind":"log","name":"l"}),
-                "missing field",
+                sent::<ClickStackUpdateAlertRequest>(&serde_json::json!({
+                    "threshold":1.0, "interval":"5m", "thresholdType":"above",
+                    "channel":{"type":"webhook","webhookId":"h","severty":"warning"}
+                })),
+                "channel.severty",
             ),
             (
-                serde_json::json!({"kind":"log","name":"l","connection":"c","from":{"databaseName":"d","tableName":"t"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","useTextIndexForImplicitColumn":"enabledd"}),
-                "useTextIndexForImplicitColumn `enabledd` auto enabled disabled",
+                sent::<ClickStackCreateDashboardRequest>(&serde_json::json!({"name":"d","tiles":[
+                    {"name":"x","x":0,"y":0,"w":1,"h":1,"config":{"displayType":"line",
+                        "sourceId":"s","select":[{"aggFn":"count","aliass":"x"}]}}
+                ]})),
+                "tiles[0].config.select[0].aliass",
             ),
-            (serde_json::json!({"name":"no kind"}), "`kind`"),
+            (
+                sent::<ClickStackUpdateRoleRequest>(&serde_json::json!({"name":"r","permissions":[
+                    {"action":"read","subject":"Dashboard","integration":"mongodb",
+                        "conditions":{"name":{"$regex":"^a","$optons":"i"}}}
+                ]})),
+                "permissions[0].conditions.name.$optons",
+            ),
+            (
+                sent::<ClickStackSource>(&serde_json::json!({"kind":"promql","name":"p",
+                    "connection":"c","from":{"databaseName":"d","tableName":"t","tableNaem":"t"},
+                    "timestampValueExpression":"ts"})),
+                "from.tableNaem",
+            ),
         ] {
-            let error = parse_source_request(body, "test").unwrap_err();
-            assert_names(&error, expected);
+            let error = error.unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            assert!(
+                error.message.contains(&format!("`{path}`")),
+                "{path}: {error}"
+            );
         }
     }
 }

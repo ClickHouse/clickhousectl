@@ -1,5 +1,6 @@
 use crate::cloud::client::{CloudError, Result as CloudResult, read_flag_file};
 use crate::failure::{ApiFailure, FailureKind};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::Read as _;
@@ -65,7 +66,7 @@ fn push_path_index(path: &mut String, index: usize) {
     path.push_str(&format!("[{index}]"));
 }
 
-fn ignored_path(base: &str, path: &serde_ignored::Path<'_>) -> String {
+fn ignored_path(path: &serde_ignored::Path<'_>) -> String {
     fn collect(path: &serde_ignored::Path<'_>, rendered: &mut String) {
         match path {
             serde_ignored::Path::Root => {}
@@ -85,13 +86,13 @@ fn ignored_path(base: &str, path: &serde_ignored::Path<'_>) -> String {
         }
     }
 
-    let mut rendered = base.to_string();
+    let mut rendered = String::new();
     collect(path, &mut rendered);
     rendered
 }
 
-fn error_path(base: &str, path: &serde_path_to_error::Path) -> String {
-    let mut rendered = base.to_string();
+fn error_path(path: &serde_path_to_error::Path) -> String {
+    let mut rendered = String::new();
     for segment in path {
         match segment {
             serde_path_to_error::Segment::Seq { index } => push_path_index(&mut rendered, *index),
@@ -233,57 +234,120 @@ fn without_rust_type_names(reason: &str) -> String {
 /// Published response models intentionally ignore unknown fields. CLI request
 /// input needs the opposite policy, so this wrapper reports every field serde
 /// ignored, including nested fields, without changing the library's models.
+/// The value is deserialized directly rather than re-encoded, so no message
+/// carries a line or column that would point into text the user never wrote.
 pub(crate) fn deserialize_strict_config<T>(value: Value, source: &str) -> CloudResult<T>
 where
     T: DeserializeOwned,
 {
-    deserialize_strict_value(value, "").map_err(|detail| {
+    let invalid = |detail: String| {
         CloudError::usage(format!("invalid request body in config {source}: {detail}"))
-    })
-}
-
-/// The check behind [`deserialize_strict_config`], returning the bare reason
-/// on failure so a caller checking a nested value can report it under its own
-/// path without repeating the config prefix.
-///
-/// `base` is the JSON path of `value` within the request body (empty for the
-/// whole body); every reported location is a path below it. The value is
-/// deserialized directly rather than re-encoded, so no message carries a line
-/// or column that would point into text the user never wrote.
-pub(crate) fn deserialize_strict_value<T>(value: Value, base: &str) -> Result<T, String>
-where
-    T: DeserializeOwned,
-{
+    };
     let mut ignored = Vec::new();
     let mut record_ignored = |path: serde_ignored::Path<'_>| {
-        ignored.push(ignored_path(base, &path));
+        ignored.push(ignored_path(&path));
     };
     let request = serde_path_to_error::deserialize(serde_ignored::Deserializer::new(
         value,
         &mut record_ignored,
     ))
     .map_err(|error| {
-        let path = error_path(base, error.path());
+        let path = error_path(error.path());
         let reason = without_rust_type_names(&error.into_inner().to_string());
-        if path.is_empty() {
+        invalid(if path.is_empty() {
             reason
         } else {
             format!("`{path}`: {reason}")
-        }
+        })
     })?;
 
     if ignored.is_empty() {
         Ok(request)
     } else {
-        Err(format!(
-            "unknown field{} {}",
-            if ignored.len() == 1 { "" } else { "s" },
-            ignored
-                .iter()
-                .map(|path| format!("`{path}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+        Err(invalid(unknown_fields(&ignored)))
+    }
+}
+
+fn unknown_fields(paths: &[String]) -> String {
+    format!(
+        "unknown field{} {}",
+        if paths.len() == 1 { "" } else { "s" },
+        paths
+            .iter()
+            .map(|path| format!("`{path}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Read a `--file` body strictly, as [`read_typed_config`] does, and also
+/// reject any key the typed request would not send.
+///
+/// A library union (`discriminated_union!` or `#[serde(untagged)]`) buffers
+/// its part of the body and deserializes the chosen variant from that copy,
+/// out of the strict check's sight, so a key the variant lacks would be
+/// dropped silently. Serializing the request back and comparing keys with the
+/// body finds those structurally. Values are not checked: a value a union or
+/// open enum does not know is kept as written, for the API to accept or
+/// reject. A `null` the request omits is not reported; it reads as absent.
+pub(crate) fn read_lossless_config<T>(config_file: &str) -> CloudResult<T>
+where
+    T: DeserializeOwned + Serialize,
+{
+    deserialize_lossless_config(read_config_value(config_file)?, config_file)
+}
+
+/// The check behind [`read_lossless_config`], for an already-parsed body.
+pub(crate) fn deserialize_lossless_config<T>(value: Value, source: &str) -> CloudResult<T>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let request: T = deserialize_strict_config(value.clone(), source)?;
+    let sent = serde_json::to_value(&request).map_err(|error| {
+        CloudError::new(format!(
+            "failed to encode the request body from config {source}: {error}"
         ))
+    })?;
+    let mut dropped = Vec::new();
+    collect_dropped_keys(&value, &sent, &mut String::new(), &mut dropped);
+    if dropped.is_empty() {
+        Ok(request)
+    } else {
+        Err(CloudError::usage(format!(
+            "invalid request body in config {source}: {}",
+            unknown_fields(&dropped)
+        )))
+    }
+}
+
+/// Push the path of every non-null key in `written` that `sent` lacks.
+fn collect_dropped_keys(
+    written: &Value,
+    sent: &Value,
+    path: &mut String,
+    dropped: &mut Vec<String>,
+) {
+    let parent = path.len();
+    match (written, sent) {
+        (Value::Object(written), Value::Object(sent)) => {
+            for (key, value) in written {
+                push_path_key(path, key);
+                match sent.get(key) {
+                    Some(sent) => collect_dropped_keys(value, sent, path, dropped),
+                    None if !value.is_null() => dropped.push(path.clone()),
+                    None => {}
+                }
+                path.truncate(parent);
+            }
+        }
+        (Value::Array(written), Value::Array(sent)) => {
+            for (index, (value, sent)) in written.iter().zip(sent).enumerate() {
+                push_path_index(path, index);
+                collect_dropped_keys(value, sent, path, dropped);
+                path.truncate(parent);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -354,7 +418,7 @@ pub(crate) fn assert_primary_json_input(args: &[&str], id: &str, aliases: &[&str
 mod tests {
     use super::*;
     use crate::cloud::client::CloudErrorKind;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct Nested {
@@ -467,13 +531,6 @@ mod tests {
             assert!(!reason.contains(rust_type), "{rust_type} in {message}");
             assert!(!reason.contains("nonzero"), "{message}");
         }
-
-        // A nested number reports its full path, not just the field name.
-        let error =
-            deserialize_strict_value::<Numbers>(serde_json::json!({"ratio": "one"}), "tiles[0]")
-                .unwrap_err();
-        assert!(error.contains("`tiles[0].ratio`"), "{error}");
-        assert!(!error.contains("f64"), "{error}");
     }
 
     #[derive(Debug, Deserialize)]
@@ -522,30 +579,6 @@ mod tests {
     }
 
     #[test]
-    fn nested_strict_checks_report_paths_below_their_base() {
-        let error = deserialize_strict_value::<DistinctiveItem>(
-            serde_json::json!({"labels": [1]}),
-            "tiles[0].config",
-        )
-        .unwrap_err();
-        assert!(error.contains("`tiles[0].config.labels[0]`"), "{error}");
-
-        let error = deserialize_strict_value::<DistinctiveItem>(
-            serde_json::json!({"labels": [], "extra": true}),
-            "tiles[0].config",
-        )
-        .unwrap_err();
-        assert!(error.contains("`tiles[0].config.extra`"), "{error}");
-
-        let error = deserialize_strict_config::<DistinctiveBody>(
-            serde_json::json!({"name": "n", "items": [{"labels": [], "extra": true}]}),
-            "test",
-        )
-        .unwrap_err();
-        assert!(error.message.contains("`items[0].extra`"), "{error}");
-    }
-
-    #[test]
     fn strict_config_rejects_ignored_nested_fields_including_null() {
         let parsed: Example = deserialize_strict_config(
             serde_json::json!({"name": "ok", "nested": {"enabled": null}}),
@@ -567,6 +600,67 @@ mod tests {
         .unwrap_err();
         assert!(error.message.contains("`nested.enabeld`"), "{error}");
         assert_eq!(error.kind, CloudErrorKind::Usage);
+
+        let error = deserialize_strict_config::<DistinctiveBody>(
+            serde_json::json!({"name": "n", "items": [{"labels": [], "extra": true}]}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("`items[0].extra`"), "{error}");
+    }
+
+    /// A union the way the library models one: the variant deserializes from
+    /// a buffered copy, so serde_ignored never sees its fields.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(untagged)]
+    enum Buffered {
+        Item { labels: Vec<String> },
+        Raw(Value),
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct WithUnion {
+        name: String,
+        items: Vec<Buffered>,
+    }
+
+    #[test]
+    fn lossless_config_rejects_keys_a_union_variant_would_drop() {
+        let body = |item: Value| serde_json::json!({"name": "n", "items": [{"labels": []}, item]});
+        for (item, dropped) in [
+            (
+                serde_json::json!({"labels": [], "extra": 1}),
+                "`items[1].extra`",
+            ),
+            (
+                serde_json::json!({"labels": [], "a": {}, "b": []}),
+                "`items[1].a`, `items[1].b`",
+            ),
+        ] {
+            let value = body(item);
+            deserialize_strict_config::<WithUnion>(value.clone(), "test").unwrap();
+            let error = deserialize_lossless_config::<WithUnion>(value, "test").unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage);
+            assert!(error.message.contains(dropped), "{error}");
+        }
+
+        // A null reads as absent, and a body no variant fits is sent as written.
+        deserialize_lossless_config::<WithUnion>(
+            body(serde_json::json!({"labels": [], "extra": null})),
+            "test",
+        )
+        .unwrap();
+        let unfit = body(serde_json::json!({"labels": "not a list", "future": {"x": true}}));
+        let request = deserialize_lossless_config::<WithUnion>(unfit.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), unfit);
+
+        // Keys outside any union still fail the strict check first.
+        let error = deserialize_lossless_config::<WithUnion>(
+            serde_json::json!({"name": "n", "items": [], "itemz": []}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("`itemz`"), "{error}");
     }
 
     #[test]
