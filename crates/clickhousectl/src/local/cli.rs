@@ -51,7 +51,8 @@ fn parse_server_passthrough_arg(arg: &str) -> Result<String, String> {
 }
 
 /// `local remove` matches an installed directory name, so a channel can never
-/// name one; reject it here rather than report it as not installed.
+/// name one; reject it here rather than report it as not installed. A path-like
+/// value (`..`, `/abs`, `a/b`) would escape `~/.clickhouse/versions/` (#1291).
 fn parse_installed_version_arg(version: &str) -> Result<String, String> {
     if ["latest", "stable", "lts"]
         .iter()
@@ -62,6 +63,7 @@ fn parse_installed_version_arg(version: &str) -> Result<String, String> {
              from `clickhousectl local list`"
         ));
     }
+    crate::paths::validate_installed_version(version).map_err(|error| error.to_string())?;
     Ok(version.to_string())
 }
 
@@ -1980,6 +1982,11 @@ mod tests {
             ),
             (&["remove", "latest"], "latest"),
             (&["remove", "LTS"], "LTS"),
+            (&["remove", ".."], "'..'"),
+            (&["remove", "."], "'.'"),
+            (&["remove", "/tmp"], "/tmp"),
+            (&["remove", "25.12/../.."], "25.12/../.."),
+            (&["remove", ".staging-25.12"], ".staging-25.12"),
         ] {
             assert_version_rejected(args, &[identifier]);
         }
