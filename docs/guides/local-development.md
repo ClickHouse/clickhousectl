@@ -180,9 +180,17 @@ Create `pg-schema.sql` with your Postgres SQL before running the file example. F
 
 Starts wait for `pg_isready`, by default for 60 seconds; `--wait-timeout` accepts 1–600 seconds. `local postgres client` runs the `psql` that ships with the instance's PostgreSQL build. `--json` does not change psql output. When both are supplied, `--query` runs before `--queries-file`.
 
-An instance listens on `127.0.0.1` only, with password (SCRAM) authentication, UTF-8 encoding and the builtin `C.UTF-8` locale on every platform. Its data, log (`postgres.log`) and connection details live in `.clickhouse/servers/<name>-pg<major>/`. `local install postgres@18` downloads a build ahead of the first start. PostgreSQL does not run as root, so `local postgres start` refuses to as well; use a regular user, or `--docker`.
+An instance listens on `127.0.0.1` only, with password (SCRAM) authentication, UTF-8 encoding and the builtin `C.UTF-8` locale on every platform. Its data, log (`postgres.log`) and connection details live in `.clickhouse/servers/<name>-pg<major>/`. `local install postgres@18` downloads a build ahead of the first start. On Linux the server uses System V shared memory (`dynamic_shared_memory_type=sysv`), so parallel queries are not limited by a container's small `/dev/shm`.
 
 An instance is identified by name and major version; the name may use only letters, digits, `_`, `.`, and `-`. Pass `--version` when more than one major shares a name. Resuming an instance reuses its original port, user, password, and database; new creation flags do not reconfigure it. A resume uses the newest installed build of the instance's major, since a data directory works across minor versions. If another process now holds the stored port, the resume fails with `port_in_use` instead of starting without it; free the port and start again. To recreate, first back up any needed data, then remove the instance before starting again. Direct `--host`/`--port` client selectors cannot combine with managed name/version selectors.
+
+### Run as root
+
+PostgreSQL refuses to run as root, so when clickhousectl runs as root (in a container, or under `sudo`) it starts the server as an unprivileged user: `postgres` if that user exists, otherwise `nobody`. It creates no users. The instance's data directory belongs to that user, while the stored connection details stay readable by root only; `client`, `dotenv`, `stop`, `remove` and `list` work as root as usual.
+
+That user must be able to enter every directory on the way to the project and to `~/.clickhouse/postgres/`. Root's home directory is normally closed to other users, so with `HOME=/root` the start fails with `postgres_directory_not_searchable`, naming the directory, before anything is downloaded or started. Use a project directory and `HOME` outside it (for example `HOME=/srv/home` and a project in `/srv/app`), make the named directory searchable yourself with `chmod o+x`, or use `--docker`. clickhousectl does not change permissions on directories it did not create.
+
+An existing instance always runs as the owner of its data directory. Root can start, stop and remove an instance a regular user created, and it keeps running as, and belonging to, that user. An instance created as root is root's: other users cannot read its project metadata.
 
 ### Query local ClickHouse from Postgres
 

@@ -193,6 +193,7 @@ Every command except `update`, `--version` included, checks for a newer release 
 | `startup_timeout` | A managed server did not become ready before its deadline |
 | `download_failed` | An artifact or image download or extraction failed |
 | `postgres_bundle_unavailable` | No PostgreSQL build can be used for `local postgres`: none is published for the requested version on this platform, none is installed for an instance's major, or the build manifest is not readable by this version |
+| `postgres_directory_not_searchable` | Run as root, `local postgres` runs PostgreSQL as an unprivileged user, who cannot enter the directory the message names; nothing was started |
 | `checksum_mismatch` | A downloaded PostgreSQL build did not match its published SHA-256; nothing was installed |
 | `network_error` | An HTTP request failed |
 | `docker_unavailable` | Docker could not be reached (the message names the cause and the platform fix) |
