@@ -11,7 +11,6 @@ use crate::error::{
 use crate::init::{ProjectRoot, ProjectRootKind};
 use serde::Serialize;
 use std::fmt;
-use std::io::Write;
 use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
 
@@ -253,11 +252,6 @@ fn io_mapping(source: &dyn std::error::Error) -> Mapping {
         .details(source.to_string())
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct LocalProjectScope {
-    path: String,
-}
-
 /// How the project in `project_scope.path` was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -300,13 +294,6 @@ struct LocalManagedServer {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
-struct LocalGuidance {
-    message: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    command: Option<&'static str>,
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize)]
 struct ServerMetadataParseErrorDetail {
     code: LocalErrorCode,
     message: &'static str,
@@ -314,6 +301,9 @@ struct ServerMetadataParseErrorDetail {
     guidance: Vec<LocalGuidance>,
 }
 
+/// What one `guidance[]` step does: a stable, closed vocabulary that lets an
+/// agent act on a step without reading its `message`. New actions may be
+/// added; existing spellings are part of the machine-output contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LocalGuidanceAction {
@@ -321,10 +311,18 @@ enum LocalGuidanceAction {
     ListGlobalServers,
     ReturnToProjectRoot,
     StopGlobalProjectServer,
+    StartServer,
+    InstallVersion,
+    ConnectDirectly,
+    RepairProjectState,
+    RepairMetadata,
+    VerifyPostgresContainer,
 }
 
+/// One recovery step. Every local error and list output that carries
+/// `guidance` uses this one shape, so `action` is always present.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ProjectServerGuidance {
+pub(crate) struct LocalGuidance {
     action: LocalGuidanceAction,
     message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,7 +333,7 @@ pub(crate) struct ProjectServerGuidance {
 struct ManagedClientErrorDetail {
     code: LocalErrorCode,
     message: &'static str,
-    project_scope: LocalProjectScope,
+    project_scope: ServerProjectScope,
     server: LocalManagedServer,
     guidance: Vec<LocalGuidance>,
 }
@@ -346,7 +344,7 @@ struct ProjectServerErrorDetail {
     message: String,
     project_scope: ServerProjectScope,
     server: LocalProjectServer,
-    guidance: Vec<ProjectServerGuidance>,
+    guidance: Vec<LocalGuidance>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -354,7 +352,7 @@ struct ProjectServerStateMissingDetail {
     code: LocalErrorCode,
     message: &'static str,
     project_scope: ServerProjectScope,
-    guidance: Vec<ProjectServerGuidance>,
+    guidance: Vec<LocalGuidance>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -372,11 +370,6 @@ enum LocalErrorBody {
     ServerMetadataParse(ServerMetadataParseErrorDetail),
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
-struct LocalErrorOutput {
-    error: LocalErrorBody,
-}
-
 impl LocalErrorBody {
     fn code(&self) -> LocalErrorCode {
         match self {
@@ -387,9 +380,7 @@ impl LocalErrorBody {
             Self::ServerMetadataParse(detail) => detail.code,
         }
     }
-}
 
-impl LocalErrorOutput {
     /// Classify one local runtime failure.
     ///
     /// Two rules govern the `message` field, and every arm below picks one
@@ -416,32 +407,18 @@ impl LocalErrorOutput {
         let mapping = match error {
             // ── structured bodies (their own DTOs, not code/message/command) ─
             Error::ManagedClient(managed) => {
-                return Self {
-                    error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(
-                        managed,
-                    )),
-                };
+                return Self::ManagedClient(ManagedClientErrorDetail::from_error(managed));
             }
             Error::ProjectServerNotFound(not_found) => {
-                return Self {
-                    error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(
-                        not_found,
-                    )),
-                };
+                return Self::ProjectServer(ProjectServerErrorDetail::from_error(not_found));
             }
             Error::ProjectServerStateMissing(missing) => {
-                return Self {
-                    error: LocalErrorBody::ProjectServerStateMissing(
-                        ProjectServerStateMissingDetail::from_error(missing),
-                    ),
-                };
+                return Self::ProjectServerStateMissing(
+                    ProjectServerStateMissingDetail::from_error(missing),
+                );
             }
             Error::ServerMetadataParse { path, .. } => {
-                return Self {
-                    error: LocalErrorBody::ServerMetadataParse(
-                        ServerMetadataParseErrorDetail::from_path(path),
-                    ),
-                };
+                return Self::ServerMetadataParse(ServerMetadataParseErrorDetail::from_path(path));
             }
             // The rollback note is a cleanup detail on top of the failure that
             // actually stopped the command; classify by that primary failure.
@@ -793,9 +770,7 @@ impl LocalErrorOutput {
             }
             Error::Cancelled => Mapping::parity(LocalErrorCode::LocalError),
         };
-        Self {
-            error: LocalErrorBody::General(mapping.into_detail(error)),
-        }
+        Self::General(mapping.into_detail(error))
     }
 }
 
@@ -807,18 +782,22 @@ impl ServerMetadataParseErrorDetail {
             path: path.display().to_string(),
             guidance: vec![
                 LocalGuidance {
+                    action: LocalGuidanceAction::RepairMetadata,
                     message: "Repair the metadata file, then retry",
                     command: None,
                 },
                 LocalGuidance {
+                    action: LocalGuidanceAction::ListGlobalServers,
                     message: "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
                     command: Some("clickhousectl local clickhouse list --global"),
                 },
                 LocalGuidance {
+                    action: LocalGuidanceAction::VerifyPostgresContainer,
                     message: "For Postgres, verify the container state separately before moving the metadata file aside",
                     command: None,
                 },
                 LocalGuidance {
+                    action: LocalGuidanceAction::ListProjectServers,
                     message: "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
                     command: Some("clickhousectl local clickhouse list"),
                 },
@@ -852,6 +831,7 @@ impl ManagedClientErrorDetail {
             ManagedClientSelection::Named => LocalServerSelection::Named,
         };
         let mut guidance = vec![LocalGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
             message: "List managed servers in this project",
             command: Some("clickhousectl local clickhouse list"),
         }];
@@ -859,6 +839,7 @@ impl ManagedClientErrorDetail {
             ManagedClientErrorKind::ServerNotFound => {
                 if !error.project.is_marked() {
                     guidance.push(LocalGuidance {
+                        action: LocalGuidanceAction::ReturnToProjectRoot,
                         message: "No project was found; change to a directory inside the project that owns the managed server",
                         command: None,
                     });
@@ -870,6 +851,7 @@ impl ManagedClientErrorDetail {
             }
             ManagedClientErrorKind::BinaryNotFound => {
                 guidance.push(LocalGuidance {
+                    action: LocalGuidanceAction::InstallVersion,
                     message: "Install the version selected by the managed server metadata",
                     command: Some("clickhousectl local install <version>"),
                 });
@@ -878,6 +860,7 @@ impl ManagedClientErrorDetail {
                 guidance.insert(
                     0,
                     LocalGuidance {
+                        action: LocalGuidanceAction::RepairProjectState,
                         message: "Repair the reported project state error before retrying",
                         command: None,
                     },
@@ -885,6 +868,7 @@ impl ManagedClientErrorDetail {
             }
         }
         guidance.push(LocalGuidance {
+            action: LocalGuidanceAction::ConnectDirectly,
             message: "Bypass managed project lookup and connect directly",
             command: Some("clickhousectl local client --host <host> --port <port>"),
         });
@@ -892,9 +876,7 @@ impl ManagedClientErrorDetail {
         Self {
             code,
             message,
-            project_scope: LocalProjectScope {
-                path: error.project.dir.display().to_string(),
-            },
+            project_scope: server_project_scope(&error.project),
             server: LocalManagedServer {
                 selection,
                 name: error.server_name.clone(),
@@ -945,20 +927,20 @@ pub(crate) fn server_project_scope(project: &ProjectRoot) -> ServerProjectScope 
 
 /// Changing directory helps only when no project was found: inside one, the
 /// project's own list is the next step.
-fn project_list_guidance(kind: ProjectRootKind, list: &'static str) -> Vec<ProjectServerGuidance> {
+fn project_list_guidance(kind: ProjectRootKind, list: &'static str) -> Vec<LocalGuidance> {
     match kind {
-        ProjectRootKind::Marked => vec![ProjectServerGuidance {
+        ProjectRootKind::Marked => vec![LocalGuidance {
             action: LocalGuidanceAction::ListProjectServers,
             message: "List the servers in this project",
             command: Some(list),
         }],
         ProjectRootKind::Unmarked => vec![
-            ProjectServerGuidance {
+            LocalGuidance {
                 action: LocalGuidanceAction::ReturnToProjectRoot,
                 message: "Change to a directory inside the project where the server was started",
                 command: Some("cd <project-root>"),
             },
-            ProjectServerGuidance {
+            LocalGuidance {
                 action: LocalGuidanceAction::ListProjectServers,
                 message: "List servers after changing to that project",
                 command: Some(list),
@@ -970,15 +952,15 @@ fn project_list_guidance(kind: ProjectRootKind, list: &'static str) -> Vec<Proje
 pub(crate) fn project_scope_guidance(
     kind: ProjectRootKind,
     command: Option<ProjectServerCommand>,
-) -> Vec<ProjectServerGuidance> {
+) -> Vec<LocalGuidance> {
     let mut guidance = project_list_guidance(kind, "clickhousectl local clickhouse list");
-    guidance.push(ProjectServerGuidance {
+    guidance.push(LocalGuidance {
         action: LocalGuidanceAction::ListGlobalServers,
         message: "Locate running ClickHouse servers across projects",
         command: Some("clickhousectl local clickhouse list --global"),
     });
     if command == Some(ProjectServerCommand::Stop) {
-        guidance.push(ProjectServerGuidance {
+        guidance.push(LocalGuidance {
             action: LocalGuidanceAction::StopGlobalProjectServer,
             message: "After confirming the project, stop the server with explicit global project selection",
             command: Some(
@@ -992,10 +974,12 @@ pub(crate) fn project_scope_guidance(
 fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
     match selection {
         ManagedClientSelection::Default => LocalGuidance {
+            action: LocalGuidanceAction::StartServer,
             message: "Start the default managed server in this project",
             command: Some("clickhousectl local clickhouse start"),
         },
         ManagedClientSelection::Named => LocalGuidance {
+            action: LocalGuidanceAction::StartServer,
             message: "Start the selected named managed server in this project",
             command: Some("clickhousectl local clickhouse start <name>"),
         },
@@ -1006,19 +990,17 @@ fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
 /// records as `failure_kind` (#1063). Derived from the same classification, so
 /// an event and the command's `--json` error always agree.
 pub(crate) fn error_code(error: &Error) -> LocalErrorCode {
-    LocalErrorOutput::from_error(error).error.code()
+    LocalErrorBody::from_error(error).code()
 }
 
-/// Write exactly one local runtime error object to stderr. The serialized DTO
-/// is allowlisted above; foreign text appears only in `details`, for the
-/// variants that opt in.
-pub fn print_error(error: &Error) {
-    let output = LocalErrorOutput::from_error(error);
-    let stderr = std::io::stderr();
-    let mut stderr = stderr.lock();
-    if serde_json::to_writer_pretty(&mut stderr, &output).is_ok() {
-        let _ = writeln!(stderr);
-    }
+/// Write exactly one local runtime error object to stderr, and return its
+/// code so telemetry reuses this classification instead of building it again.
+/// The serialized DTO is allowlisted above; foreign text appears only in
+/// `details`, for the variants that opt in.
+pub(crate) fn print_error(error: &Error) -> LocalErrorCode {
+    let body = LocalErrorBody::from_error(error);
+    crate::stdout::eprint_error_envelope(&body);
+    body.code()
 }
 
 // ── list (installed) ────────────────────────────────────────────────────────
@@ -1521,10 +1503,20 @@ pub struct ServerListOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_scope: Option<ServerProjectScope>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) guidance: Vec<ProjectServerGuidance>,
-    /// The command that produced this list; selects the empty-list hint.
+    pub(crate) guidance: Vec<LocalGuidance>,
+    /// The command that produced this list; selects the table and the
+    /// empty-list hint.
     #[serde(skip)]
-    pub(crate) list: ProjectList,
+    pub(crate) list: ServerList,
+}
+
+/// Which list a [`ServerListOutput`] holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerList {
+    /// One project's servers.
+    Project(ProjectList),
+    /// Running ClickHouse servers discovered across projects (`--global`).
+    Global,
 }
 
 /// A project-scoped list command: one engine's `list`, or `local status`.
@@ -1559,10 +1551,7 @@ fn startup_list_command(kind: crate::error::StartupKind) -> &'static str {
 }
 
 /// Hints for an empty project-scoped list.
-pub(crate) fn empty_list_guidance(
-    list: ProjectList,
-    kind: ProjectRootKind,
-) -> Vec<ProjectServerGuidance> {
+pub(crate) fn empty_list_guidance(list: ProjectList, kind: ProjectRootKind) -> Vec<LocalGuidance> {
     // Inside a project an empty list is accurate: there is nowhere to change
     // to, only other projects to look in.
     let mut guidance = match kind {
@@ -1570,7 +1559,7 @@ pub(crate) fn empty_list_guidance(
         ProjectRootKind::Unmarked => project_list_guidance(kind, list.command()),
     };
     if list.covers_clickhouse() {
-        guidance.push(ProjectServerGuidance {
+        guidance.push(LocalGuidance {
             action: LocalGuidanceAction::ListGlobalServers,
             message: "Locate running ClickHouse servers across projects",
             command: Some("clickhousectl local clickhouse list --global"),
@@ -1634,16 +1623,16 @@ struct ServerListRowGlobal {
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
-            if let Some(scope) = &self.project_scope {
+            if let (Some(scope), ServerList::Project(list)) = (&self.project_scope, self.list) {
                 writeln!(f, "No servers found in project '{}'.", scope.path)?;
                 if scope.kind == LocalProjectScopeKind::CurrentDirectory {
                     writeln!(f, "{NO_PROJECT_FOUND}")?;
                     write!(
                         f,
                         "To reach an existing server, change to a directory inside its project and run `{}`",
-                        self.list.command()
+                        list.command()
                     )?;
-                    if self.list.covers_clickhouse() {
+                    if list.covers_clickhouse() {
                         write!(
                             f,
                             ", or use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects"
@@ -1651,7 +1640,7 @@ impl fmt::Display for ServerListOutput {
                     }
                     return write!(f, ".");
                 }
-                if self.list.covers_clickhouse() {
+                if list.covers_clickhouse() {
                     write!(
                         f,
                         "Use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects."
@@ -1663,16 +1652,35 @@ impl fmt::Display for ServerListOutput {
             return Ok(());
         }
 
-        let has_project = self.servers.iter().any(|e| e.project.is_some());
-        let has_postgres = self.servers.iter().any(|e| e.engine == "postgres");
-
-        if !has_project && has_postgres {
-            // Show an engine-aware table that combines PID (ClickHouse) and
-            // container short-id (Postgres) into a single "ID" column.
-            let rows: Vec<ServerListRowWithEngine> = self
-                .servers
-                .iter()
-                .map(|e| {
+        let status = |running: bool| if running { "running" } else { "stopped" }.to_string();
+        let mut table = match self.list {
+            ServerList::Global => {
+                let rows = self.servers.iter().map(|e| ServerListRowGlobal {
+                    name: e.name.clone(),
+                    status: status(e.running),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
+                    project: or_absent(e.project.as_deref()),
+                });
+                Table::new(rows)
+            }
+            ServerList::Project(ProjectList::Clickhouse) => {
+                let rows = self.servers.iter().map(|e| ServerListRow {
+                    name: e.name.clone(),
+                    status: status(e.running),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
+                });
+                Table::new(rows)
+            }
+            // Lists that can hold Postgres combine the ClickHouse PID and the
+            // Postgres container short ID into one "ID" column.
+            ServerList::Project(ProjectList::Postgres | ProjectList::Status) => {
+                let rows = self.servers.iter().map(|e| {
                     let id = if e.engine == "postgres" {
                         e.container_id
                             .as_deref()
@@ -1684,70 +1692,18 @@ impl fmt::Display for ServerListOutput {
                     ServerListRowWithEngine {
                         name: e.name.clone(),
                         engine: e.engine.clone(),
-                        status: if e.running {
-                            "running".into()
-                        } else {
-                            "stopped".into()
-                        },
+                        status: status(e.running),
                         pid_or_container: id,
                         version: or_absent(e.version.as_deref()),
                         http_port: or_absent(e.http_port),
                         tcp_port: or_absent(e.tcp_port),
                     }
-                })
-                .collect();
-            let table = Table::new(rows).with(Style::markdown()).to_string();
-            writeln!(f, "{table}")?;
-            return write!(
-                f,
-                "\n{} server{}, {} running",
-                self.total_servers,
-                if self.total_servers == 1 { "" } else { "s" },
-                self.total_running_servers
-            );
-        }
-
-        if has_project {
-            let rows: Vec<ServerListRowGlobal> = self
-                .servers
-                .iter()
-                .map(|e| ServerListRowGlobal {
-                    name: e.name.clone(),
-                    status: if e.running {
-                        "running".to_string()
-                    } else {
-                        "stopped".to_string()
-                    },
-                    pid: or_absent(e.pid),
-                    version: or_absent(e.version.as_deref()),
-                    http_port: or_absent(e.http_port),
-                    tcp_port: or_absent(e.tcp_port),
-                    project: or_absent(e.project.as_deref()),
-                })
-                .collect();
-            let table = Table::new(rows).with(Style::markdown()).to_string();
-            writeln!(f, "{table}")?;
-        } else {
-            let rows: Vec<ServerListRow> = self
-                .servers
-                .iter()
-                .map(|e| ServerListRow {
-                    name: e.name.clone(),
-                    status: if e.running {
-                        "running".to_string()
-                    } else {
-                        "stopped".to_string()
-                    },
-                    pid: or_absent(e.pid),
-                    version: or_absent(e.version.as_deref()),
-                    http_port: or_absent(e.http_port),
-                    tcp_port: or_absent(e.tcp_port),
-                })
-                .collect();
-            let table = Table::new(rows).with(Style::markdown()).to_string();
-            writeln!(f, "{table}")?;
-        }
-
+                });
+                Table::new(rows)
+            }
+        };
+        table.with(Style::markdown());
+        writeln!(f, "{table}")?;
         write!(
             f,
             "\n{} server{}, {} running",
@@ -1785,25 +1741,6 @@ impl fmt::Display for PostgresStartOutput {
             "  Connect:  clickhousectl local postgres client {}",
             self.name
         )
-    }
-}
-
-// ── postgres dotenv ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PostgresDotenvOutput {
-    pub file: String,
-    pub server: String,
-    pub vars: Vec<DotenvVar>,
-}
-
-impl fmt::Display for PostgresDotenvOutput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Wrote to {} (postgres '{}')", self.file, self.server)?;
-        for var in &self.vars {
-            writeln!(f, "  {}={}", var.key, var.value)?;
-        }
-        Ok(())
     }
 }
 
@@ -1847,7 +1784,7 @@ pub struct ServerStopNoopOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_scope: Option<ServerProjectScope>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) guidance: Vec<ProjectServerGuidance>,
+    pub(crate) guidance: Vec<LocalGuidance>,
 }
 
 impl fmt::Display for ServerStopNoopOutput {
@@ -1881,36 +1818,11 @@ pub struct ServerStopEntry {
     pub error: Option<String>,
 }
 
+/// JSON only: human mode prints each server's progress line as it stops, so
+/// this has no `Display`; print it with [`print_json`].
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopAllOutput {
     pub servers: Vec<ServerStopEntry>,
-}
-
-impl fmt::Display for ServerStopAllOutput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.servers.is_empty() {
-            write!(f, "No running servers")?;
-            return Ok(());
-        }
-        for s in &self.servers {
-            let engine = match s.version.as_deref() {
-                Some(version) => format!("{}, {}", s.engine, version),
-                None => s.engine.clone(),
-            };
-            if s.stopped {
-                writeln!(f, "Stopping '{}' ({})... stopped", s.name, engine)?;
-            } else {
-                writeln!(
-                    f,
-                    "Stopping '{}' ({})... error: {}",
-                    s.name,
-                    engine,
-                    s.error.as_deref().unwrap_or("unknown")
-                )?;
-            }
-        }
-        write!(f, "Done")
-    }
 }
 
 // ── server remove ───────────────────────────────────────────────────────────
@@ -1932,13 +1844,16 @@ impl fmt::Display for ServerRemoveOutput {
     }
 }
 
-// ── server dotenv ──────────────────────────────────────────────────────
+// ── dotenv (ClickHouse and Postgres) ───────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ServerDotenvOutput {
+pub struct DotenvOutput {
     pub file: String,
     pub server: String,
     pub vars: Vec<DotenvVar>,
+    /// Which `dotenv` wrote the file; selects the human label only.
+    #[serde(skip)]
+    pub engine: crate::local::server::Engine,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1947,9 +1862,13 @@ pub struct DotenvVar {
     pub value: String,
 }
 
-impl fmt::Display for ServerDotenvOutput {
+impl fmt::Display for DotenvOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Wrote to {} (server '{}')", self.file, self.server)?;
+        let label = match self.engine {
+            crate::local::server::Engine::Clickhouse => "server",
+            crate::local::server::Engine::Postgres => "postgres",
+        };
+        writeln!(f, "Wrote to {} ({label} '{}')", self.file, self.server)?;
         for var in &self.vars {
             writeln!(f, "  {}={}", var.key, var.value)?;
         }
@@ -1962,13 +1881,18 @@ impl fmt::Display for ServerDotenvOutput {
 /// Print output as JSON or human-readable text.
 pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(output).expect("JSON serialization failed")
-        );
+        print_json(output);
     } else {
         println!("{}", output);
     }
+}
+
+/// Print output that only has a JSON form.
+pub fn print_json(output: &impl Serialize) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(output).expect("JSON serialization failed")
+    );
 }
 
 #[cfg(test)]
@@ -1985,7 +1909,8 @@ mod tests {
     use crate::error::BinaryLaunchProblem;
 
     fn error_json(error: &Error) -> serde_json::Value {
-        serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
+        let body = LocalErrorBody::from_error(error);
+        serde_json::to_value(crate::stdout::ErrorEnvelope { error: &body }).unwrap()
     }
 
     /// Whether `text` names `word` as a whole token (an identifier, not part
@@ -2356,6 +2281,135 @@ mod tests {
             // Telemetry's `failure_kind` reads the same classification.
             assert_eq!(error_code(&error).as_str(), expected);
         }
+    }
+
+    /// Every structured body shares one `project_scope` shape (`kind` always
+    /// present) and one `guidance[]` shape (`action` always present) (#1314).
+    #[test]
+    fn structured_error_bodies_always_carry_scope_kind_and_guidance_action() {
+        let managed = |kind: ManagedClientErrorKind, root, selection| {
+            Error::ManagedClient(ManagedClientError {
+                kind,
+                project: project(root),
+                selection,
+                server_name: "dev".into(),
+                binary_version: None,
+            })
+        };
+        let lock_failure = || {
+            ManagedClientErrorKind::ProjectStateUnavailable(Box::new(Error::Io(
+                std::io::Error::other("lock failed"),
+            )))
+        };
+        let mut errors = Vec::new();
+        for root in [ProjectRootKind::Marked, ProjectRootKind::Unmarked] {
+            for selection in [
+                ManagedClientSelection::Default,
+                ManagedClientSelection::Named,
+            ] {
+                errors.push(managed(
+                    ManagedClientErrorKind::ServerNotFound,
+                    root,
+                    selection,
+                ));
+                errors.push(managed(
+                    ManagedClientErrorKind::ServerNotRunning,
+                    root,
+                    selection,
+                ));
+                errors.push(managed(
+                    ManagedClientErrorKind::BinaryNotFound,
+                    root,
+                    selection,
+                ));
+                errors.push(managed(lock_failure(), root, selection));
+            }
+            for command in [ProjectServerCommand::Stop, ProjectServerCommand::Remove] {
+                errors.push(Error::ProjectServerNotFound(ProjectServerNotFound {
+                    command,
+                    project: project(root),
+                    server_name: "dev".into(),
+                }));
+            }
+        }
+        errors.push(Error::ProjectServerStateMissing(
+            ProjectServerStateMissing {
+                command: ProjectServerCommand::Remove,
+                project_dir: "/project".into(),
+            },
+        ));
+        errors.push(Error::ServerMetadataParse {
+            path: "/project/.clickhouse/servers/dev.json".into(),
+            source: serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+        });
+
+        for error in &errors {
+            let json = error_json(error);
+            let body = &json["error"];
+            if let Some(scope) = body.get("project_scope") {
+                assert!(scope["kind"].is_string(), "{body}");
+                assert_eq!(scope["path"], "/project", "{body}");
+            }
+            let guidance = body["guidance"].as_array().expect("guidance list");
+            assert!(!guidance.is_empty(), "{body}");
+            assert!(
+                guidance.iter().all(|step| step["action"].is_string()),
+                "{body}"
+            );
+        }
+
+        // Managed-client scope and actions follow the project lookup and the
+        // failure, like the project-server errors.
+        let actions = |error: &Error| -> (serde_json::Value, Vec<String>) {
+            let json = error_json(error);
+            let actions = json["error"]["guidance"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|step| step["action"].as_str().unwrap().to_owned())
+                .collect();
+            (json["error"]["project_scope"]["kind"].clone(), actions)
+        };
+        let named = ManagedClientSelection::Named;
+        assert_eq!(
+            actions(&managed(
+                ManagedClientErrorKind::ServerNotFound,
+                ProjectRootKind::Unmarked,
+                named
+            )),
+            (
+                serde_json::json!("current_directory"),
+                vec![
+                    "list_project_servers".to_owned(),
+                    "return_to_project_root".to_owned(),
+                    "start_server".to_owned(),
+                    "connect_directly".to_owned(),
+                ]
+            )
+        );
+        assert_eq!(
+            actions(&managed(
+                ManagedClientErrorKind::BinaryNotFound,
+                ProjectRootKind::Marked,
+                named
+            )),
+            (
+                serde_json::json!("project_root"),
+                vec![
+                    "list_project_servers".to_owned(),
+                    "install_version".to_owned(),
+                    "connect_directly".to_owned(),
+                ]
+            )
+        );
+        assert_eq!(
+            actions(&managed(lock_failure(), ProjectRootKind::Marked, named)).1,
+            [
+                "repair_project_state",
+                "list_project_servers",
+                "connect_directly"
+            ]
+        );
     }
 
     #[test]
@@ -2939,7 +2993,7 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(LocalErrorOutput::from_error(&error)).unwrap(),
+            error_json(&error),
             serde_json::json!({
                 "error": {
                     "code": "config_not_found",
@@ -3442,7 +3496,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: Some(server_project_scope(&project(ProjectRootKind::Marked))),
             guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Project(ProjectList::Clickhouse),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3470,7 +3524,7 @@ mod tests {
             total_running_servers: 0,
             project_scope: Some(server_project_scope(&project(ProjectRootKind::Unmarked))),
             guidance: project_scope_guidance(ProjectRootKind::Unmarked, None),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Project(ProjectList::Clickhouse),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3928,7 +3982,7 @@ mod tests {
                 total_running_servers: 0,
                 project_scope: None,
                 guidance: Vec::new(),
-                list: ProjectList::Clickhouse,
+                list: ServerList::Project(ProjectList::Clickhouse),
             }
             .to_string(),
         ] {
@@ -3967,7 +4021,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Project(ProjectList::Clickhouse),
         };
         let text = output.to_string();
         assert_eq!(
@@ -4023,7 +4077,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Project(ProjectList::Postgres),
         }
         .to_string();
         let postgres_row = postgres
@@ -4066,7 +4120,7 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Global,
         }
         .to_string();
         let global_row = global
@@ -4131,7 +4185,7 @@ mod tests {
                     total_running_servers: 0,
                     project_scope: Some(server_project_scope(&project(kind))),
                     guidance,
-                    list,
+                    list: ServerList::Project(list),
                 };
                 let text = output.to_string();
                 assert!(text.contains("'/project'"), "{text}");
@@ -4163,51 +4217,11 @@ mod tests {
             total_running_servers: 1,
             project_scope: None,
             guidance: Vec::new(),
-            list: ProjectList::Clickhouse,
+            list: ServerList::Project(ProjectList::Clickhouse),
         };
         let text = output.to_string();
         let summary = text.lines().last().unwrap();
         assert!(!summary.contains('|'), "{text}");
         assert_eq!(numbers(summary), ["1", "1"], "{text}");
-    }
-
-    #[test]
-    fn server_stop_all_display() {
-        let clickhouse = |stopped| ServerStopEntry {
-            name: "default".to_string(),
-            engine: "clickhouse".to_string(),
-            version: None,
-            stopped,
-            error: None,
-        };
-        let render = |servers| ServerStopAllOutput { servers }.to_string();
-        let text = render(vec![
-            clickhouse(true),
-            ServerStopEntry {
-                name: "default".to_string(),
-                engine: "postgres".to_string(),
-                version: Some("postgres:18".to_string()),
-                stopped: false,
-                error: Some("container not found".to_string()),
-            },
-        ]);
-        // One line per server, in order, then a closing line.
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "{text}");
-        assert!(
-            lines[0].contains("'default'") && names(lines[0], "clickhouse"),
-            "{text}"
-        );
-        assert!(!lines[0].contains("postgres"), "{text}");
-        assert!(
-            lines[1].contains("'default'") && lines[1].contains("postgres:18"),
-            "{text}"
-        );
-        // The failure carries the daemon's text; the success does not.
-        assert!(lines[1].ends_with("container not found"), "{text}");
-        assert!(!lines[0].contains("container not found"), "{text}");
-        let failed = render(vec![clickhouse(false)]);
-        assert_ne!(failed.lines().next(), Some(lines[0]), "{failed}");
-        assert_eq!(failed.lines().last(), Some(lines[2]), "{failed}");
     }
 }

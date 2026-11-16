@@ -866,7 +866,7 @@ fn dotenv_server(
 
     crate::dotenv::write_vars(path, "CLICKHOUSE_", &vars)?;
 
-    let out = output::ServerDotenvOutput {
+    let out = output::DotenvOutput {
         file: filename.to_string(),
         server: server_name.to_string(),
         vars: vars
@@ -876,6 +876,7 @@ fn dotenv_server(
                 value: v,
             })
             .collect(),
+        engine: server::Engine::Clickhouse,
     };
     output::print_output(&out, json);
     Ok(())
@@ -1242,7 +1243,7 @@ pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Res
         } else {
             Vec::new()
         },
-        list,
+        list: output::ServerList::Project(list),
     };
     output::print_output(&out, json);
     Ok(())
@@ -1271,7 +1272,7 @@ fn list_servers_global(json: bool) -> Result<()> {
         total_running_servers: total,
         project_scope: None,
         guidance: Vec::new(),
-        list: output::ProjectList::Clickhouse,
+        list: output::ServerList::Global,
     };
     output::print_output(&out, json);
     Ok(())
@@ -1337,7 +1338,7 @@ fn stop_all_servers_local(json: bool) -> Result<()> {
         None => Err(Error::ServerNotRunning(name.to_string())),
     });
     if json {
-        output::print_output(&out, json);
+        output::print_json(&out);
     } else if servers.is_empty() {
         println!("No running ClickHouse servers");
     } else {
@@ -1436,7 +1437,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
         let out = output::ServerStopAllOutput {
             servers: stop_entries,
         };
-        output::print_output(&out, json);
+        output::print_json(&out);
     } else if servers.is_empty() {
         println!("No running servers");
     } else {

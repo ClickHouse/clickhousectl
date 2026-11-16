@@ -351,10 +351,11 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
             let is_usage_error = matches!(&e, Error::Usage(_));
             let structured_cloud_error =
                 (cloud_json || management_json) && !is_child_exit && !is_usage_error;
+            let mut printed_local_code = None;
             if !is_child_exit {
                 match &e {
                     Error::Usage(error) => stdout::record(error.print()),
-                    _ if local_json => local::output::print_error(&e),
+                    _ if local_json => printed_local_code = Some(local::output::print_error(&e)),
                     // `update` and `skills` share the Cloud envelope's generic
                     // codes (`transport`, `timeout`, `io`, `other`) (#1233).
                     _ if cloud_json || management_json => cloud::output::print_error(&e),
@@ -363,9 +364,12 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
             }
             // Recorded for exactly the failures that have a local error
             // object, whatever the output mode: usage errors keep clap's
-            // rendering and child exits have no object at all (#1063).
-            let local_failure = (is_local && !is_child_exit && !is_usage_error)
-                .then(|| local::output::error_code(&e));
+            // rendering and child exits have no object at all (#1063). A
+            // printed object's code is reused rather than classified again.
+            let local_failure = printed_local_code.or_else(|| {
+                (is_local && !is_child_exit && !is_usage_error)
+                    .then(|| local::output::error_code(&e))
+            });
             (
                 e.exit_code(),
                 is_child_exit,

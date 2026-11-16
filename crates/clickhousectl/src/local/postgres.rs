@@ -1102,7 +1102,7 @@ async fn stop_all(json: bool) -> Result<()> {
         None => Err(Error::ServerNotRunning(name.to_string())),
     });
     if json {
-        output::print_output(&out, json);
+        output::print_json(&out);
     } else {
         println!("Done");
     }
@@ -1364,7 +1364,7 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
 
     crate::dotenv::write_vars(path, "POSTGRES_", &vars)?;
 
-    let out = output::PostgresDotenvOutput {
+    let out = output::DotenvOutput {
         file: filename.to_string(),
         server: server_name.to_string(),
         vars: vars
@@ -1374,6 +1374,7 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
                 value: v,
             })
             .collect(),
+        engine: server::Engine::Postgres,
     };
     output::print_output(&out, json);
     Ok(())

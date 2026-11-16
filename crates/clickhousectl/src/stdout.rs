@@ -156,6 +156,23 @@ pub(crate) fn eprint(args: fmt::Arguments<'_>) {
     let _ = io::stderr().write_fmt(args);
 }
 
+/// The `{"error": {…}}` object every `--json` runtime failure prints, local
+/// and Cloud alike. Each surface owns its error body; this owns the wrapper.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct ErrorEnvelope<'a, T: serde::Serialize> {
+    pub(crate) error: &'a T,
+}
+
+/// Write exactly one [`ErrorEnvelope`] to stderr. A serialization or write
+/// failure is discarded like any other stderr write (see the module docs).
+pub(crate) fn eprint_error_envelope<T: serde::Serialize>(error: &T) {
+    let stderr = io::stderr();
+    let mut stderr = stderr.lock();
+    if serde_json::to_writer_pretty(&mut stderr, &ErrorEnvelope { error }).is_ok() {
+        let _ = writeln!(stderr);
+    }
+}
+
 /// Also used for clap, which owns its help/version output. Usage errors retain
 /// clap's exit status regardless of whether their diagnostic can be written.
 pub(crate) fn record(result: io::Result<()>) {

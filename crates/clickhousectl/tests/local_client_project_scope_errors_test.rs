@@ -141,7 +141,16 @@ fn assert_managed_error(
     let error = &error["error"];
     assert_eq!(error["code"], code, "{error}");
     assert!(error["message"].is_string(), "{error}");
-    assert_eq!(error["project_scope"], json!({ "path": project }));
+    let marked = Path::new(project).join(".clickhouse").is_dir();
+    let kind = if marked {
+        "project_root"
+    } else {
+        "current_directory"
+    };
+    assert_eq!(
+        error["project_scope"],
+        json!({ "kind": kind, "path": project })
+    );
     let mut server = json!({ "selection": selection, "name": name });
     if let Some(version) = binary_version {
         server["binary_version"] = json!(version);
@@ -153,7 +162,6 @@ fn assert_managed_error(
         .iter()
         .map(|item| item.get("command").map(|command| command.as_str().unwrap()))
         .collect();
-    let marked = Path::new(project).join(".clickhouse").is_dir();
     assert_eq!(commands, expected_commands(code, selection, marked));
 }
 
