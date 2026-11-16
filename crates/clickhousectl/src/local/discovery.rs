@@ -430,40 +430,52 @@ mod tests {
         assert_eq!(found[0].version, None);
     }
 
+    /// Set in the environment of the stand-in server, so the test binary it
+    /// re-executes runs [`stand_in_server_blocks_until_stdin_closes`] for real.
+    const STAND_IN_ENV: &str = "CLICKHOUSECTL_TEST_DISCOVERY_STAND_IN";
+
+    /// The body of the stand-in server: this test binary, copied as
+    /// `clickhouse`, blocks here until its parent closes stdin or kills it. In
+    /// an ordinary run the variable is unset and it returns at once.
+    #[test]
+    fn stand_in_server_blocks_until_stdin_closes() {
+        if std::env::var_os(STAND_IN_ENV).is_some() {
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new());
+        }
+    }
+
     /// The scan end to end over the real process table: a process named
     /// `clickhouse`, started from a managed data directory, is discovered with
     /// its project, name and version.
     #[test]
     fn the_native_scan_discovers_a_live_process_named_clickhouse() {
-        use std::os::unix::process::CommandExt;
-
         let root = tempfile::tempdir().unwrap();
         let version_dir = root.path().join(".clickhouse/versions/26.9.1.531");
         let data_dir = root.path().join("project/.clickhouse/servers/dev/data");
         std::fs::create_dir_all(&version_dir).unwrap();
         std::fs::create_dir_all(&data_dir).unwrap();
+        // The kernel name comes from the executed file, so a copy of this test
+        // binary runs as `clickhouse` on every OS. A copied system binary does
+        // not: a multicall coreutils (uutils on Ubuntu 26.04) exits at once
+        // when run under a name it does not know.
         let binary = version_dir.join("clickhouse");
-        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
-            .into_iter()
-            .find(|path| Path::new(path).exists())
-            .expect("a sleep binary");
-        std::fs::copy(sleep, &binary).unwrap();
-
-        // The kernel name comes from the executed file, so the copy runs as
-        // `clickhouse`. `argv[0]` still has to say `sleep`: a multicall
-        // coreutils (uutils on Ubuntu 26.04) picks the program from it and
-        // exits at once for `clickhouse`. It keeps the versions directory, so
-        // the version is still parsed from the command line.
-        let argv0 = version_dir.join("sleep");
+        std::fs::copy(std::env::current_exe().unwrap(), &binary).unwrap();
+        let stand_in = format!(
+            "{}::stand_in_server_blocks_until_stdin_closes",
+            module_path!().split_once("::").unwrap().1
+        );
 
         // Another test thread forking while the copy was open can hold the
         // file open for writing until its child execs (ETXTBSY), so retry.
         let mut attempts = 0;
         let mut child = loop {
             match std::process::Command::new(&binary)
-                .arg0(&argv0)
-                .arg("30")
+                .args([stand_in.as_str(), "--exact", "--test-threads=1"])
+                .env(STAND_IN_ENV, "1")
                 .current_dir(&data_dir)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
             {
                 Err(error)
