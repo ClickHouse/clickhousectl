@@ -3,7 +3,8 @@
 Read with the root `AGENTS.md` (commands, workspace rules, CI gates). This file covers the published API library
 and the private drift analyzer, which are always edited together.
 
-Document library capabilities, Rust caller migrations, and analyzer changes in this crate's `README.md`.
+Record every caller-facing change, with its Rust migration, under `## Unreleased` in this crate's `CHANGELOG.md`;
+`README.md` holds what the crate is and how to call it, and `docs/development.md` the contributor material.
 OpenAPI drift remediation alone does not require a root `README.md` update: its feature sections describe
 CLI capabilities and behaviour, so update them only when a change is exposed through `clickhousectl`.
 

@@ -18,6 +18,9 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
         cases = {
             "crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json": classifier.NO_SUITES,
             "crates/clickhouse-cloud-api/README.md": classifier.NO_SUITES,
+            "crates/clickhouse-cloud-api/CHANGELOG.md": classifier.NO_SUITES,
+            "crates/clickhouse-cloud-api/LICENSE": classifier.NO_SUITES,
+            "crates/clickhousectl/LICENSE": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/client.rs": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/permissions.rs": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/saved_queries.rs": classifier.NO_SUITES,

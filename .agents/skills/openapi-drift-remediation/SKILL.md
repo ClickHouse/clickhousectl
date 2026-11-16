@@ -73,8 +73,8 @@ the workflow; those files are the rules.
    paths for new exports. Add live integration steps for new operations to the owning suite.
 4. Map any added or renamed file in both classifiers (`scripts/classify-cloud-integration.py`,
    `scripts/classify-install-integration.py`) and their fixtures.
-5. Document the change, and any Rust caller migration, in `crates/clickhouse-cloud-api/README.md`. The root README
-   does not change in an API PR.
+5. Document the change, and any Rust caller migration, under `## Unreleased` in
+   `crates/clickhouse-cloud-api/CHANGELOG.md`. The root README does not change in an API PR.
 6. Run the library gates from the root `AGENTS.md`, plus `cargo check --workspace --all-features` and both
    `clickhousectl` clippy configurations (a library change can break the CLI build). Re-run the dry run: the last
    API PR must report no actionable drift.

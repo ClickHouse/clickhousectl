@@ -185,7 +185,7 @@ pub fn is_beta_operation(name: &str) -> bool {
 ///
 /// The shared OpenAPI analyzer reports drift if this list differs from the
 /// spec or if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
-/// marker in `models.rs` (or vice versa).
+/// marker in the model module tree under `src/models/` (or vice versa).
 pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
     ("ApiKey", "roles"),
     ("ApiKeyPatchRequest", "roles"),
@@ -216,7 +216,7 @@ pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
 ];
 
 /// Returns `true` if `(struct_name, field_name)` is a deprecated field that
-/// this crate removes from the generated struct by default.
+/// this crate removes from its model struct by default.
 ///
 /// `field_name` is the spec (camelCase) field name, e.g.
 /// `is_deprecated_field("Service", "tier")`.
