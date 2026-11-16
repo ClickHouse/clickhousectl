@@ -20,7 +20,7 @@ Each message is one request to `https://chctl.clickhouse.com/v1/feedback` carryi
 - the CLI version, operating system and architecture
 - whether the `CI` environment variable is set
 - whether a coding agent was detected, and which one
-- the request headers every clickhousectl request carries: the `clickhousectl/<version>` User-Agent and, when a coding agent exposes them, its `agent-session-id` and `traceparent`
+- the request headers clickhousectl sends to ClickHouse hosts (the Cloud API, OAuth and feedback): the `clickhousectl/<version>` User-Agent and, when a coding agent exposes them, its `agent-session-id` and `traceparent`. Requests to other hosts, such as GitHub during `update` or `local install`, carry only the User-Agent
 - `cloud_auth`, the kind of ClickHouse Cloud credential in use: `none`, `api_key`, or `oauth`
 - `org_ids`, the ClickHouse Cloud organization IDs those credentials belong to
 

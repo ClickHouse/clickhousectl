@@ -846,7 +846,7 @@ impl CloudClient {
     }
 
     fn from_resolved(resolved: ResolvedAuth, timeout: Option<std::time::Duration>) -> Result<Self> {
-        let mut builder = crate::http::client_builder();
+        let mut builder = crate::http::clickhouse_client_builder();
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
         }

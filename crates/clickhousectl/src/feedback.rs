@@ -8,10 +8,10 @@
 //! ingest worker sanitises it again on arrival; neither side relies on the
 //! other's checks.
 //!
-//! The send is a synchronous POST through [`crate::http::client_builder`], so
-//! the user learns whether it arrived and the request carries the same
-//! User-Agent and agent session/trace headers as every other request this CLI
-//! makes. Delivery is decided from the HTTP status alone, never from the
+//! The send is a synchronous POST through
+//! [`crate::http::clickhouse_client_builder`], so the user learns whether it
+//! arrived and the request carries the same User-Agent and agent session/trace
+//! headers as the CLI's other requests to ClickHouse hosts. Delivery is decided from the HTTP status alone, never from the
 //! response text.
 //!
 //! When Cloud credentials are active, the payload also names the kind of
@@ -279,7 +279,9 @@ pub async fn run(args: FeedbackArgs, json: bool) -> Result<()> {
 async fn send(url: &str, payload: &Payload<'_>) -> Result<()> {
     let timeout =
         crate::timing::duration_override(crate::timing::FEEDBACK_SEND_TIMEOUT_ENV, SEND_TIMEOUT);
-    let client = crate::http::client_builder().timeout(timeout).build()?;
+    let client = crate::http::clickhouse_client_builder()
+        .timeout(timeout)
+        .build()?;
     let response = client.post(url).json(payload).send().await.map_err(|e| {
         Error::Feedback(if e.is_timeout() {
             format!(
