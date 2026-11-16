@@ -550,6 +550,11 @@ async fn start_server(
 
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref())?;
+    // Fail before any download; re-checked under the lock below.
+    server::reject_postgres_instance_locked(
+        &server_name,
+        server::lock_existing_metadata()?.as_ref(),
+    )?;
 
     if name.is_some() && server::is_server_running(&server_name)? {
         return Err(Error::ServerAlreadyRunning(server_name));
@@ -596,6 +601,9 @@ async fn start_server(
     let metadata_lock = server::lock_metadata()?;
     server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = server::resolve_name_locked(name.as_deref(), &metadata_lock)?;
+    // Before anything is written: config, the data directory and the
+    // metadata file all live under the name a Postgres instance may own.
+    server::reject_postgres_instance_locked(&server_name, Some(&metadata_lock))?;
     if name.is_some() && server::is_server_running_locked(&server_name, &metadata_lock)? {
         return Err(Error::ServerAlreadyRunning(server_name));
     }
@@ -1104,6 +1112,8 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
             server_name,
         })
     };
+    // Removing the directory would delete a Postgres instance's PGDATA.
+    server::reject_postgres_instance_locked(&name, metadata_lock.as_ref())?;
     // Only reachable for an explicit name: an omitted one returned above.
     let Some(metadata_lock) = metadata_lock else {
         return Err(server_not_found(name));

@@ -916,12 +916,11 @@ fn server_naming_a_local_postgres_instance_is_rejected_before_anything_is_writte
                 "local", "udf", "remove", "my_fn", "--server", server, "--json",
             ],
         ] {
-            let error = error_json(&run(&env, &args));
-            assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
-            assert_eq!(
-                error["error"]["command"], "clickhousectl local clickhouse list",
-                "{args:?}"
-            );
+            // A usage error: clap's text, not the JSON envelope.
+            let output = run(&env, &args);
+            assert_eq!(output.status.code(), Some(2), "{args:?} {output:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(&format!("'{server}'")), "{args:?} {stderr}");
         }
         let entries: Vec<_> = std::fs::read_dir(servers.join(server).join("data"))
             .unwrap()

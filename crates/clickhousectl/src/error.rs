@@ -840,11 +840,6 @@ pub enum Error {
     )]
     UdfServerNotRunning(String),
 
-    /// `--server` names a local Postgres instance. `local udf` must never
-    /// write ClickHouse config into a Postgres data directory.
-    #[error("'{0}' is a local Postgres instance, not a ClickHouse server")]
-    UdfServerIsPostgres(String),
-
     /// Native UDFs are Linux amd64/arm64 binaries; this host cannot run them.
     #[error("{0}")]
     UdfRuntimeUnsupported(String),
