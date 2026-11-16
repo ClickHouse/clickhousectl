@@ -72,10 +72,11 @@ pub enum Commands {
     /// Manage local ClickHouse and Postgres
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Project-scoped commands use `.clickhouse` under the exact current directory; parent directories
-  are not searched. Run them from the project root.
+  Run `local init` once in the project directory; project-scoped commands then work from any
+  subdirectory (nearest `.clickhouse/` wins; `~/.clickhouse` is global, never a project).
+  Outside a project they use the current directory, and server starts create `.clickhouse/` there.
   `clickhousectl local clickhouse start` bootstraps from zero — installs `latest` if nothing is set up.
-  Typical flow: `local clickhouse start` -> `local client -q 'SELECT 1'`")]
+  Typical flow: `local init` -> `local clickhouse start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
     /// Manage ClickHouse and Postgres in ClickHouse Cloud

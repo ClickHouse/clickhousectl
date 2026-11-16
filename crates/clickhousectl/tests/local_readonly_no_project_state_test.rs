@@ -97,7 +97,7 @@ fn server_list_is_empty_without_creating_project_state() {
     let body = stdout_json(&output);
     assert_eq!(body["servers"], serde_json::json!([]));
     assert_eq!(body["total_servers"], 0);
-    assert_eq!(body["project_scope"]["kind"], "exact_current_project");
+    assert_eq!(body["project_scope"]["kind"], "current_directory");
 
     let args = ["local", "server", "list"];
     let output = run_in_empty_project(&args);
@@ -118,7 +118,7 @@ fn server_stop_reports_nothing_to_stop_without_creating_project_state() {
     let body = stdout_json(&output);
     assert_eq!(body["stopped"], false);
     assert_eq!(body["reason"], "no_clickhouse_servers");
-    assert_eq!(body["project_scope"]["kind"], "exact_current_project");
+    assert_eq!(body["project_scope"]["kind"], "current_directory");
 
     for args in [
         ["local", "--json", "server", "stop", "x"],

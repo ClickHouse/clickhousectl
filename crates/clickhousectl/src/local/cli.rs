@@ -250,6 +250,8 @@ CONTEXT FOR AGENTS:
   `.clickhouse/` holds runtime data and is git-ignored; the `clickhouse/` and `postgres/` SQL
   scaffolds are meant to be committed.
   Idempotent — re-running only creates what is missing.
+  Always initializes the current directory: inside another project it creates a nested one, which
+  then wins for this directory and below.
   Next: `clickhousectl local clickhouse start`")]
     Init,
 
@@ -264,7 +266,7 @@ CONTEXT FOR AGENTS:
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
   Custom configs inherit built-in defaults; find available names with `clickhouse configs`.
-  Typical flow: `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
+  Typical flow: `local init` -> `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
     )]
     Clickhouse {
         #[command(subcommand)]
@@ -279,7 +281,8 @@ CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
   Covers Postgres only; `local status` lists ClickHouse and Postgres together.
-  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`"
+  Typical flow: `local init` -> `postgres start` -> `postgres client`
+  -> `postgres dotenv --local` -> `postgres stop`"
     )]
     Postgres {
         #[command(subcommand)]
@@ -420,7 +423,7 @@ CONTEXT FOR AGENTS:
     /// Manage executable UDFs for local servers
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  A UDF is clickhouse/udfs/<NAME>/ holding udf.json (what `cloud udf create --file` accepts) and its entrypoint.
+  A UDF is <project root>/clickhouse/udfs/<NAME>/: udf.json (as `cloud udf create --file` takes) and its entrypoint.
   deploy needs an existing server, running or stopped; --server picks it and defaults to \"default\".
   reload needs the server running.
   Typical flow: `local udf init my_fn` -> edit -> `local udf deploy my_fn` -> `local client --query \"SELECT my_fn('x')\"`")]
@@ -1129,7 +1132,7 @@ mod tests {
             panic!("expected udf deploy");
         };
         assert_eq!(name, "my_fn");
-        assert_eq!(dir.dir, std::path::PathBuf::from("clickhouse/udfs"));
+        assert_eq!(dir.dir, None);
         assert!(python.is_none());
 
         let LocalCommands::Udf {
@@ -1146,7 +1149,7 @@ mod tests {
         else {
             panic!("expected udf deploy");
         };
-        assert_eq!(dir.dir, std::path::PathBuf::from("../shared/udfs"));
+        assert_eq!(dir.dir, Some(std::path::PathBuf::from("../shared/udfs")));
         assert_eq!(python, Some(std::path::PathBuf::from("/opt/python3.11")));
 
         for name in ["../x", "a/b", "1abc"] {

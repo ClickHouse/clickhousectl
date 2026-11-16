@@ -2,19 +2,28 @@
 
 [All documentation](../README.md)
 
-Run project-local commands from the directory that owns your `.clickhouse/`. The CLI uses the exact current directory; it does not search parents. Of the local commands, only `local init` and server starts create `.clickhouse/`; commands that list, stop, remove or connect to servers leave a directory without one unchanged, unless a server started from it is still running, which they recover as usual. ClickHouse binaries are shared globally in `~/.clickhouse/`, while each project's server data is isolated.
+A directory containing `.clickhouse/` is a project root, as a directory containing `.git/` is for Git. Run `clickhousectl local init` once in your project directory; project-local commands then work from that directory and any subdirectory below it, and act on the same servers, saved API keys and UDF sources.
+
+- The nearest `.clickhouse/` wins, so a project nested inside another is its own project. Equally, one in a shared parent directory (for example created by an earlier `cloud auth login --api-key` or server start in `~/code`) becomes the project for every directory beneath it that has none of its own. Run `clickhousectl local init` in the project directory to give it its own.
+- `.clickhouse/` is git-ignored, so it does not travel with a repository. After cloning a project, run `clickhousectl local init` in its root once; it only creates what is missing. Until then, a subdirectory of the clone is not inside a project.
+- `~/.clickhouse/` is the global directory for installed binaries, tokens and configs. It is never a project for the directories under your home directory, although running commands in your home directory itself still uses it.
+- A `.clickhouse/` in a parent directory counts only when it is a directory you own, not a symlink, so one created by another user (in `/tmp`, for example) is ignored.
+- Outside any project, commands use the current directory. Commands that list, stop, remove or connect to servers then report an empty project and create nothing, unless a server started from that directory is still running, which they recover as usual. Server starts create `.clickhouse/` in the current directory, so starting without `local init` still works.
+
+ClickHouse binaries are shared globally in `~/.clickhouse/`, while each project's server data is isolated.
 
 ## Start ClickHouse and run SQL
 
 ```bash
-clickhousectl local clickhouse start dev --version stable
+clickhousectl local init
+clickhousectl local clickhouse start dev --version latest
 clickhousectl local client dev --query "SELECT version()"
 clickhousectl local clickhouse list
 ```
 
 `local ch` is short for `local clickhouse`, and `local pg` for `local postgres`. The earlier name `local server` still works as an alias for `local clickhouse`.
 
-`local init` optionally scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, and [UDF sources](user-defined-functions.md#scaffold-a-function); it is not required to start a server.
+`local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, and [UDF sources](user-defined-functions.md#scaffold-a-function). It always initializes the current directory: run inside an existing project, it creates a nested project and names the enclosing one.
 
 Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
 
@@ -116,7 +125,7 @@ Edit the source file and restart with `--config` again to apply changes. The sel
 
 ## Test executable UDFs
 
-`local udf` deploys executable UDFs from `clickhouse/udfs/` to a local server, from the same directory `cloud udf` uploads. See [User-defined functions](user-defined-functions.md#test-on-a-local-server).
+`local udf` deploys executable UDFs from the project root's `clickhouse/udfs/` to a local server, from the same directory `cloud udf` uploads. See [User-defined functions](user-defined-functions.md#test-on-a-local-server).
 
 ## Add Postgres
 

@@ -77,9 +77,8 @@ fn expected_project_server_error(project: &Path, name: &str) -> Value {
             "code": "server_not_found",
             "message": ANY_MESSAGE,
             "project_scope": {
-                "kind": "exact_current_project",
-                "path": project.canonicalize().unwrap(),
-                "parent_projects_searched": false
+                "kind": "current_directory",
+                "path": project.canonicalize().unwrap()
             },
             "server": { "name": name },
             "guidance": [

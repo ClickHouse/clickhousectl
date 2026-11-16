@@ -45,10 +45,7 @@ impl DotenvVars {
 ///
 /// Errors are swallowed — missing files, unreadable files, and malformed
 /// lines all yield an empty result rather than failing the command. `.env`
-/// is strictly opportunistic. We deliberately do NOT walk up to parent
-/// directories: an ancestor `.env` could be in a directory the user can't
-/// read (or in someone else's home), and surprise credential pickup is
-/// worse than the marginal convenience of cross-directory discovery.
+/// is strictly opportunistic.
 pub fn load_from(dir: &Path) -> DotenvVars {
     let path = dir.join(".env");
     if !path.is_file() {
@@ -74,12 +71,35 @@ pub fn load_from(dir: &Path) -> DotenvVars {
     }
 }
 
-/// Convenience wrapper that reads `.env` from `std::env::current_dir()`.
-pub fn load() -> DotenvVars {
-    match std::env::current_dir() {
-        Ok(cwd) => load_from(&cwd),
-        Err(_) => DotenvVars::empty(),
+/// The `.env` of `cwd` when it has one, else that of `project_root`. One file
+/// wins; the two are never merged.
+///
+/// Arbitrary ancestors are never searched: surprise credential pickup from a
+/// directory the user does not own, or from above their home, is worse than
+/// the convenience. The project root is the exception because discovery
+/// already vouches for it: the nearest `.clickhouse/` owned by this user, never
+/// `~/.clickhouse` and never above home (`init::discover_project_root`).
+fn load_for(cwd: &Path, project_root: Option<&Path>) -> DotenvVars {
+    if cwd.join(".env").is_file() {
+        return load_from(cwd);
     }
+    match project_root {
+        Some(root) => load_from(root),
+        None => DotenvVars::empty(),
+    }
+}
+
+/// Read `.env` for this invocation: the current directory's, else the project
+/// root's. Silent on every failure, since it runs before every command,
+/// `--help` included.
+pub fn load() -> DotenvVars {
+    let Ok(cwd) = std::env::current_dir() else {
+        return DotenvVars::empty();
+    };
+    let root = crate::init::project_root()
+        .ok()
+        .map(|root| root.dir.as_path());
+    load_for(&cwd, root)
 }
 
 static DOTENV: OnceLock<DotenvVars> = OnceLock::new();
@@ -241,6 +261,36 @@ mod tests {
                 "{contents:?}"
             );
         }
+    }
+
+    /// The current directory's file wins; without one the project root's is
+    /// read; with neither nothing is.
+    #[test]
+    fn load_for_prefers_the_current_directory_then_the_project_root() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("sub");
+        fs::create_dir(&cwd).unwrap();
+        let key = |vars: &DotenvVars| vars.get("CLICKHOUSE_CLOUD_API_KEY").map(str::to_owned);
+
+        let none = load_for(&cwd, Some(root.path()));
+        assert_eq!((key(&none), none.source_path()), (None, None));
+
+        fs::write(root.path().join(".env"), "CLICKHOUSE_CLOUD_API_KEY=root\n").unwrap();
+        let from_root = load_for(&cwd, Some(root.path()));
+        assert_eq!(key(&from_root).as_deref(), Some("root"));
+        assert_eq!(
+            from_root.source_path(),
+            Some(root.path().join(".env").as_path())
+        );
+        assert!(load_for(&cwd, None).source_path().is_none());
+
+        // No merging: the root's key is not read once the current directory
+        // has a file of its own.
+        fs::write(cwd.join(".env"), "CLICKHOUSE_CLOUD_API_SECRET=here\n").unwrap();
+        let here = load_for(&cwd, Some(root.path()));
+        assert_eq!(key(&here), None);
+        assert_eq!(here.get("CLICKHOUSE_CLOUD_API_SECRET"), Some("here"));
+        assert_eq!(here.source_path(), Some(cwd.join(".env").as_path()));
     }
 
     #[test]

@@ -829,40 +829,55 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
     );
 }
 
-/// Local commands never search parent directories, so from a subdirectory
-/// the error names the directory searched and does not suggest starting a
-/// server there, which would begin a nested project.
+/// From a subdirectory, `local udf` acts on the enclosing project's server and
+/// deploys the project's default sources. Outside any project the error
+/// leads with the global list, since `clickhouse start` would begin a new
+/// project in that directory.
 #[test]
-fn a_server_missing_from_a_subdirectory_is_not_started_there() {
+fn a_subdirectory_uses_the_project_server_and_default_sources() {
     let env = setup();
     write_python_udf(&env, "my_fn", false);
     create_stopped_server(&env, "default");
     let sub = env.project.path().join("src/app");
     std::fs::create_dir_all(&sub).unwrap();
+    let in_sub = |args: &[&str]| command(&env).current_dir(&sub).args(args).output().unwrap();
 
-    for args in [
-        vec!["local", "udf", "list", "--json"],
-        vec!["local", "udf", "reload", "--json"],
-        vec!["local", "udf", "remove", "my_fn", "--json"],
-    ] {
-        let output = command(&env)
-            .current_dir(&sub)
-            .args(&args)
+    let deployed = success_json(&in_sub(&["local", "udf", "deploy", "my_fn", "--json"]));
+    assert_eq!(deployed["name"], "my_fn");
+    let listed = success_json(&in_sub(&["local", "udf", "list", "--json"]));
+    assert_eq!(listed["udfs"][0]["name"], "my_fn");
+    let reload = error_json(&in_sub(&["local", "udf", "reload", "--json"]));
+    assert_eq!(reload["error"]["code"], "server_not_running");
+    success_json(&in_sub(&["local", "udf", "remove", "my_fn", "--json"]));
+    success_json(&in_sub(&["local", "udf", "init", "other_fn", "--json"]));
+    assert!(
+        env.project
+            .path()
+            .join("clickhouse/udfs/other_fn/udf.json")
+            .is_file()
+    );
+    assert!(!sub.join(".clickhouse").exists());
+    assert!(!sub.join("clickhouse").exists());
+
+    let outside = tempfile::tempdir().unwrap();
+    let error = error_json(
+        &command(&env)
+            .current_dir(outside.path())
+            .args(["local", "udf", "list", "--json"])
             .output()
-            .unwrap();
-        let error = error_json(&output);
-        assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("'{}'", sub.canonicalize().unwrap().display())),
-            "{message}"
-        );
-        assert_eq!(
-            error["error"]["command"], "clickhousectl local clickhouse list --global",
-            "{args:?}"
-        );
-    }
-    assert!(!sub.join(".clickhouse/servers/default").exists());
+            .unwrap(),
+    );
+    assert_eq!(error["error"]["code"], "server_not_found");
+    let message = error["error"]["message"].as_str().unwrap();
+    let outside_path = outside.path().canonicalize().unwrap();
+    assert!(
+        message.contains(&format!("'{}'", outside_path.display())),
+        "{message}"
+    );
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local clickhouse list --global"
+    );
 }
 
 #[test]

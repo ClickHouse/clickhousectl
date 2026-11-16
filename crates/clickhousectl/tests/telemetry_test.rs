@@ -33,6 +33,9 @@ fn clickhousectl_binary() -> PathBuf {
 /// A sandboxed home directory plus the telemetry ingest mock.
 struct Sandbox {
     home: tempfile::TempDir,
+    /// The default working directory, so project discovery never reaches a
+    /// `.clickhouse/` above the checkout. Callers may override it.
+    cwd: tempfile::TempDir,
     mock: MockServer,
     endpoint_path: String,
 }
@@ -52,6 +55,7 @@ impl Sandbox {
             .await;
         Sandbox {
             home,
+            cwd: tempfile::tempdir().unwrap(),
             mock,
             endpoint_path,
         }
@@ -77,6 +81,7 @@ impl Sandbox {
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(clickhousectl_binary());
         cmd.args(args)
+            .current_dir(self.cwd.path())
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.home.path())

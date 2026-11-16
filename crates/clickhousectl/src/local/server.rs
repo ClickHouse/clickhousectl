@@ -1434,13 +1434,10 @@ fn lock_metadata_if_recoverable_at(
     MetadataLock::acquire_at(dir).map(Some)
 }
 
-/// The canonical current directory, as recorded in recovered metadata and in
-/// the Postgres containers' project label.
-fn current_project_dir() -> Result<String> {
-    Ok(std::env::current_dir()?
-        .canonicalize()?
-        .display()
-        .to_string())
+/// The canonical project root, as recorded in recovered metadata and in the
+/// Postgres containers' project label.
+pub(crate) fn current_project_dir() -> Result<String> {
+    Ok(init::project_root()?.dir.display().to_string())
 }
 
 /// The discovered ClickHouse processes started from `current_dir`.

@@ -22,7 +22,7 @@ Save the definition below as `udf.json` and prepare a [source ZIP archive](https
 
 ## Scaffold a function
 
-`local udf init` creates `clickhouse/udfs/<name>/` with a `udf.json` in the shape `--file` accepts, plus the function's sources:
+`local udf init` creates `clickhouse/udfs/<name>/` in the project root with a `udf.json` in the shape `--file` accepts, plus the function's sources:
 
 ```bash
 clickhousectl local udf init my_udf                    # udf.json and an executable main.py
@@ -41,7 +41,7 @@ clickhousectl local udf list
 clickhousectl local udf remove my_udf
 ```
 
-Every command except `init` takes `--server NAME` (default `default`). The server must already exist; `deploy`, `list` and `remove` work whether or not it is running, and `reload` needs it running. Like every local command, `local udf` looks for servers only in the current directory's project and never in parent directories, so run it from the project root. `deploy NAME` reads `clickhouse/udfs/NAME/` (`--dir PATH` selects another parent directory), and `functionName` must equal `NAME`. Local names are at most 235 characters, so every file named after the function fits the file-name limit. Redeploying replaces the function's files and definition.
+Every command except `init` takes `--server NAME` (default `default`). The server must already exist; `deploy`, `list` and `remove` work whether or not it is running, and `reload` needs it running. Like every local command, `local udf` acts on the project that contains the current directory, so it works from any subdirectory of the project (see [project roots](local-development.md)). `deploy NAME` reads `clickhouse/udfs/NAME/` in the project root (`--dir PATH` selects another parent directory, relative to the current directory), and `functionName` must equal `NAME`. Local names are at most 235 characters, so every file named after the function fits the file-name limit. Redeploying replaces the function's files and definition.
 
 `deploy` validates `udf.json` exactly as `cloud udf create --file` does and rejects symbolic links, as Cloud does. Runtime `python3.11` needs `main.py` at the root; runtime `native` runs only on Linux amd64/arm64 hosts and needs only the host's binary (`amd64/main` or `arm64/main`); the other architecture's directory is reported in `ignored_files` and not copied. `--python` with a native UDF is a usage error. Files are written under `.clickhouse/servers/<name>/data/`:
 

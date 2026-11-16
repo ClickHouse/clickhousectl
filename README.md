@@ -61,12 +61,13 @@ clickhousectl update
 Use the `latest` channel for the rolling master build of ClickHouse. A bare server start installs `latest` if no version or default is available.
 
 ```bash
+clickhousectl local init
 clickhousectl local clickhouse start dev --version latest
 clickhousectl local client dev --query "SELECT version()"
 clickhousectl local clickhouse stop dev
 ```
 
-Run these from the same project directory. Each named server has isolated data under `.clickhouse/`; stopping preserves it for the next start.
+`local init` marks the directory as a project; later commands work from it or any subdirectory, as Git does. Each named server has isolated data under the project's `.clickhouse/`; stopping preserves it for the next start.
 
 For local Postgres, start Docker first:
 
@@ -104,7 +105,7 @@ CLICKHOUSE_CLOUD_API_SECRET=your-api-secret
 
 Keep `.env` out of version control by adding it to `.gitignore`.
 
-OAuth tokens are global (`~/.clickhouse/tokens.json`); saved API keys are project-local (`.clickhouse/credentials.json`). For CI, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through your secret manager. See [authentication and permissions](docs/reference/authentication.md) for precedence, organization selection, and logout.
+OAuth tokens are global (`~/.clickhouse/tokens.json`); saved API keys belong to the project (`.clickhouse/credentials.json` in its root). For CI, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through your secret manager. See [authentication and permissions](docs/reference/authentication.md) for precedence, organization selection, and logout.
 
 ### Create and query ClickHouse
 

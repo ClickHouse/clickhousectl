@@ -1,3 +1,4 @@
+use crate::init::ProjectRoot;
 use std::path::{Path, PathBuf};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
@@ -235,7 +236,7 @@ impl ManagedClientSelection {
 #[derive(Debug)]
 pub struct ManagedClientError {
     pub kind: ManagedClientErrorKind,
-    pub project_dir: PathBuf,
+    pub project: ProjectRoot,
     pub selection: ManagedClientSelection,
     pub server_name: String,
     pub binary_version: Option<String>,
@@ -247,22 +248,25 @@ impl fmt::Display for ManagedClientError {
             ManagedClientErrorKind::ServerNotFound => {
                 writeln!(
                     f,
-                    "Managed client mode: server '{}' was not found in current project '{}'; parent projects are not searched.",
+                    "Managed client mode: server '{}' was not found in project '{}'.",
                     self.server_name,
-                    self.project_dir.display()
+                    self.project.dir.display()
                 )?;
+                if !self.project.is_marked() {
+                    writeln!(f, "{NO_PROJECT_FOUND}")?;
+                }
                 write!(
                     f,
-                    "Run `clickhousectl local clickhouse list`; return to the project root if needed; start it with `{}`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
+                    "Run `clickhousectl local clickhouse list`; start it with `{}`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
                     self.selection.start_command()
                 )
             }
             ManagedClientErrorKind::ServerNotRunning => {
                 writeln!(
                     f,
-                    "Managed client mode: server '{}' is not running in current project '{}'.",
+                    "Managed client mode: server '{}' is not running in project '{}'.",
                     self.server_name,
-                    self.project_dir.display()
+                    self.project.dir.display()
                 )?;
                 write!(
                     f,
@@ -274,9 +278,9 @@ impl fmt::Display for ManagedClientError {
                 let version = self.binary_version.as_deref().unwrap_or("unknown");
                 writeln!(
                     f,
-                    "Managed client mode: server '{}' in current project '{}' selected ClickHouse version '{}', but its client binary is missing.",
+                    "Managed client mode: server '{}' in project '{}' selected ClickHouse version '{}', but its client binary is missing.",
                     self.server_name,
-                    self.project_dir.display(),
+                    self.project.dir.display(),
                     version
                 )?;
                 write!(
@@ -287,9 +291,9 @@ impl fmt::Display for ManagedClientError {
             ManagedClientErrorKind::ProjectStateUnavailable(source) => {
                 writeln!(
                     f,
-                    "Managed client mode: server '{}' could not be resolved because state in current project '{}' is unavailable: {source}",
+                    "Managed client mode: server '{}' could not be resolved because state in project '{}' is unavailable: {source}",
                     self.server_name,
-                    self.project_dir.display()
+                    self.project.dir.display()
                 )?;
                 write!(
                     f,
@@ -327,7 +331,7 @@ impl fmt::Display for ProjectServerCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectServerNotFound {
     pub command: ProjectServerCommand,
-    pub project_dir: PathBuf,
+    pub project: ProjectRoot,
     pub server_name: String,
 }
 
@@ -337,17 +341,20 @@ impl fmt::Display for ProjectServerNotFound {
             f,
             "Server '{}' was not found in project '{}'.",
             self.server_name,
-            self.project_dir.display()
+            self.project.dir.display()
         )?;
-        writeln!(
-            f,
-            "Project-local clickhouse {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
-            self.command
-        )?;
-        write!(
-            f,
-            "Return to the local project root where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects"
-        )?;
+        if self.project.is_marked() {
+            write!(
+                f,
+                "Run `clickhousectl local clickhouse list` to see this project's servers; use `clickhousectl local clickhouse list --global` to locate running servers in other projects"
+            )?;
+        } else {
+            writeln!(f, "{NO_PROJECT_FOUND}")?;
+            write!(
+                f,
+                "Change to a directory inside the project where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects"
+            )?;
+        }
         if self.command == ProjectServerCommand::Stop {
             write!(
                 f,
@@ -370,22 +377,22 @@ impl fmt::Display for ProjectServerStateMissing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "No `.clickhouse` project state was found in '{}'.",
+            "No project-local server state to {} in '{}'.",
+            self.command,
             self.project_dir.display()
         )?;
-        writeln!(
-            f,
-            "Project-local clickhouse {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
-            self.command
-        )?;
+        writeln!(f, "{NO_PROJECT_FOUND}")?;
         write!(
             f,
-            "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
+            "Change to a directory inside the project where the server was started and run `clickhousectl local clickhouse list`; use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
         )
     }
 }
 
 impl std::error::Error for ProjectServerStateMissing {}
+
+/// Why an unmarked project root is the current directory.
+pub(crate) const NO_PROJECT_FOUND: &str = "No `.clickhouse` project directory was found here or in a parent directory (`~/.clickhouse` is global, not a project); `clickhousectl local init` creates one.";
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -813,12 +820,11 @@ pub enum Error {
     },
 
     /// The named server has neither metadata nor a data directory in the
-    /// current directory's project. `local udf` never creates servers, and
-    /// like every local command it never searches parent directories.
-    /// `project_has_state` is true when `project_dir` looks like a project
-    /// root (it has `clickhouse/` or other servers), so starting the server
-    /// there is the remedy; otherwise the command likely ran from a
-    /// subdirectory, where `clickhouse start` would begin a nested project.
+    /// project. `local udf` never creates servers. `project_has_state` is true
+    /// when `project_dir` is a project (a `.clickhouse/` marker was found) or
+    /// holds the `clickhouse/` scaffold, so starting the server there is the
+    /// remedy; otherwise no project was found from the current directory, and
+    /// `clickhouse start` would begin a new one there.
     #[error("{}", udf_server_not_found_message(name, project_dir, *project_has_state))]
     UdfServerNotFound {
         name: String,
@@ -935,9 +941,9 @@ fn udf_server_not_found_message(name: &str, project_dir: &Path, project_has_stat
         )
     } else {
         format!(
-            "No server '{name}' found in project '{}', which has no clickhouse/ directory or \
-             servers; parent directories are not searched, so run this from the project root \
-             where the server was started",
+            "No server '{name}' found: '{}' is not inside a project (no `.clickhouse` directory \
+             here or in a parent directory); run this from inside the project where the server \
+             was started",
             project_dir.display()
         )
     }

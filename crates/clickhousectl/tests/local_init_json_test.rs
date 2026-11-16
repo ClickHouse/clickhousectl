@@ -197,3 +197,41 @@ fn init_rejects_a_runtime_gitignore_directory() {
 
     assert_eq!(output.status.code(), Some(1));
 }
+
+/// Like `git init`, `local init` initializes the exact current directory: in a
+/// subdirectory of a project it creates a nested project and names the one it
+/// is nested in. Re-running there, or initializing a top-level project, names
+/// none.
+#[test]
+fn init_in_a_project_subdirectory_creates_a_nested_project_and_names_the_enclosing_one() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let top = stdout_json(&run(
+        project.path(),
+        home.path(),
+        &["local", "init", "--json"],
+    ));
+    assert!(top.get("enclosing_project").is_none(), "{top}");
+    let nested = project.path().join("services/api");
+    std::fs::create_dir_all(&nested).expect("create nested directory");
+    let enclosing = project.path().canonicalize().unwrap().display().to_string();
+
+    let json = stdout_json(&run(&nested, home.path(), &["local", "init", "--json"]));
+    assert_eq!(
+        json["paths"],
+        serde_json::json!([".clickhouse/", "clickhouse/", "postgres/"])
+    );
+    assert_eq!(json["enclosing_project"], enclosing.as_str());
+    assert!(nested.join(".clickhouse").is_dir());
+    assert!(nested.join("clickhouse/tables").is_dir());
+
+    let again = stdout_json(&run(&nested, home.path(), &["local", "init", "--json"]));
+    assert!(again.get("enclosing_project").is_none(), "{again}");
+
+    let human_dir = project.path().join("web");
+    std::fs::create_dir(&human_dir).expect("create second nested directory");
+    let human = run(&human_dir, home.path(), &["local", "init"]);
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains(&format!("'{enclosing}'")), "{stdout}");
+}

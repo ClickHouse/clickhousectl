@@ -5,9 +5,10 @@
 //! foreign text out of `message` and in `details`.
 
 use crate::error::{
-    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
-    PortKind, ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing,
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NO_PROJECT_FOUND,
+    NetworkStage, PortKind, ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing,
 };
+use crate::init::{ProjectRoot, ProjectRootKind};
 use serde::Serialize;
 use std::fmt;
 use std::io::Write;
@@ -259,17 +260,30 @@ struct LocalProjectScope {
     path: String,
 }
 
+/// How the project in `project_scope.path` was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LocalProjectScopeKind {
-    ExactCurrentProject,
+    /// A `.clickhouse/` directory marks `path` as the project root: the
+    /// current directory's own, or the nearest one in a parent directory.
+    ProjectRoot,
+    /// No project was found, so the current directory was used.
+    CurrentDirectory,
+}
+
+impl From<ProjectRootKind> for LocalProjectScopeKind {
+    fn from(kind: ProjectRootKind) -> Self {
+        match kind {
+            ProjectRootKind::Marked => Self::ProjectRoot,
+            ProjectRootKind::Unmarked => Self::CurrentDirectory,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ServerProjectScope {
     kind: LocalProjectScopeKind,
     path: String,
-    parent_projects_searched: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -539,8 +553,8 @@ impl LocalErrorOutput {
             .details(details.clone())
             .command("clickhousectl local clickhouse list"),
             // Same code as a missing server elsewhere; the remedy differs
-            // because `local udf` never creates one. Outside a project root,
-            // `clickhouse start` would begin a nested project, so the global list
+            // because `local udf` never creates one. Outside any project,
+            // `clickhouse start` would begin a new one here, so the global list
             // (which finds running servers in other projects) is the lead.
             Error::UdfServerNotFound {
                 name,
@@ -842,15 +856,17 @@ impl ManagedClientErrorDetail {
             ManagedClientSelection::Named => LocalServerSelection::Named,
         };
         let mut guidance = vec![LocalGuidance {
-            message: "List managed servers in this exact project",
+            message: "List managed servers in this project",
             command: Some("clickhousectl local clickhouse list"),
         }];
         match &error.kind {
             ManagedClientErrorKind::ServerNotFound => {
-                guidance.push(LocalGuidance {
-                    message: "Return to the project directory that owns the managed server",
-                    command: None,
-                });
+                if !error.project.is_marked() {
+                    guidance.push(LocalGuidance {
+                        message: "No project was found; change to a directory inside the project that owns the managed server",
+                        command: None,
+                    });
+                }
                 guidance.push(start_guidance(error.selection));
             }
             ManagedClientErrorKind::ServerNotRunning => {
@@ -881,7 +897,7 @@ impl ManagedClientErrorDetail {
             code,
             message,
             project_scope: LocalProjectScope {
-                path: error.project_dir.display().to_string(),
+                path: error.project.dir.display().to_string(),
             },
             server: LocalManagedServer {
                 selection,
@@ -901,11 +917,11 @@ impl ProjectServerErrorDetail {
                 "Server '{}' was not found in the current project",
                 error.server_name
             ),
-            project_scope: exact_current_project_scope(&error.project_dir),
+            project_scope: server_project_scope(&error.project),
             server: LocalProjectServer {
                 name: error.server_name.clone(),
             },
-            guidance: project_scope_guidance(Some(error.command)),
+            guidance: project_scope_guidance(error.project.kind, Some(error.command)),
         }
     }
 }
@@ -914,41 +930,57 @@ impl ProjectServerStateMissingDetail {
     fn from_error(error: &ProjectServerStateMissing) -> Self {
         Self {
             code: LocalErrorCode::ServerSelectionRequired,
-            message: "No project-local server state was found in the current directory; no server was removed",
-            project_scope: exact_current_project_scope(&error.project_dir),
-            guidance: project_scope_guidance(Some(error.command)),
+            message: "No project was found from the current directory; no server was removed",
+            project_scope: ServerProjectScope {
+                kind: LocalProjectScopeKind::CurrentDirectory,
+                path: error.project_dir.display().to_string(),
+            },
+            guidance: project_scope_guidance(ProjectRootKind::Unmarked, Some(error.command)),
         }
     }
 }
 
-pub(crate) fn exact_current_project_scope(project_dir: &Path) -> ServerProjectScope {
+pub(crate) fn server_project_scope(project: &ProjectRoot) -> ServerProjectScope {
     ServerProjectScope {
-        kind: LocalProjectScopeKind::ExactCurrentProject,
-        path: project_dir.display().to_string(),
-        parent_projects_searched: false,
+        kind: project.kind.into(),
+        path: project.dir.display().to_string(),
+    }
+}
+
+/// Changing directory helps only when no project was found: inside one, the
+/// project's own list is the next step.
+fn project_list_guidance(kind: ProjectRootKind, list: &'static str) -> Vec<ProjectServerGuidance> {
+    match kind {
+        ProjectRootKind::Marked => vec![ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List the servers in this project",
+            command: Some(list),
+        }],
+        ProjectRootKind::Unmarked => vec![
+            ProjectServerGuidance {
+                action: LocalGuidanceAction::ReturnToProjectRoot,
+                message: "Change to a directory inside the project where the server was started",
+                command: Some("cd <project-root>"),
+            },
+            ProjectServerGuidance {
+                action: LocalGuidanceAction::ListProjectServers,
+                message: "List servers after changing to that project",
+                command: Some(list),
+            },
+        ],
     }
 }
 
 pub(crate) fn project_scope_guidance(
+    kind: ProjectRootKind,
     command: Option<ProjectServerCommand>,
 ) -> Vec<ProjectServerGuidance> {
-    let mut guidance = vec![
-        ProjectServerGuidance {
-            action: LocalGuidanceAction::ReturnToProjectRoot,
-            message: "Change to the local project root where the server was started",
-            command: Some("cd <project-root>"),
-        },
-        ProjectServerGuidance {
-            action: LocalGuidanceAction::ListProjectServers,
-            message: "List servers after returning to that exact project",
-            command: Some("clickhousectl local clickhouse list"),
-        },
-        ProjectServerGuidance {
-            action: LocalGuidanceAction::ListGlobalServers,
-            message: "Locate running ClickHouse servers across projects",
-            command: Some("clickhousectl local clickhouse list --global"),
-        },
-    ];
+    let mut guidance = project_list_guidance(kind, "clickhousectl local clickhouse list");
+    guidance.push(ProjectServerGuidance {
+        action: LocalGuidanceAction::ListGlobalServers,
+        message: "Locate running ClickHouse servers across projects",
+        command: Some("clickhousectl local clickhouse list --global"),
+    });
     if command == Some(ProjectServerCommand::Stop) {
         guidance.push(ProjectServerGuidance {
             action: LocalGuidanceAction::StopGlobalProjectServer,
@@ -1172,6 +1204,11 @@ pub struct InitOutput {
     /// run. This affects human wording only, so it is not serialized.
     #[serde(skip)]
     pub already_initialized: bool,
+    /// The project this directory was nested inside: it had no `.clickhouse/`
+    /// and an ancestor project was found, so commands run here acted on that
+    /// one before this run and act on this new project after it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing_project: Option<String>,
 }
 
 impl fmt::Display for InitOutput {
@@ -1193,6 +1230,12 @@ impl fmt::Display for InitOutput {
             .filter(|path| !path.starts_with(".clickhouse/"))
         {
             write!(f, "\nCreated project scaffold in {path}")?;
+        }
+        if let Some(enclosing) = &self.enclosing_project {
+            write!(
+                f,
+                "\nNote: this directory is inside the project at '{enclosing}'; commands run here and below now use this new nested project."
+            )?;
         }
         Ok(())
     }
@@ -1520,19 +1563,16 @@ fn startup_list_command(kind: crate::error::StartupKind) -> &'static str {
 }
 
 /// Hints for an empty project-scoped list.
-pub(crate) fn empty_list_guidance(list: ProjectList) -> Vec<ProjectServerGuidance> {
-    let mut guidance = vec![
-        ProjectServerGuidance {
-            action: LocalGuidanceAction::ReturnToProjectRoot,
-            message: "Change to the local project root where the server was started",
-            command: Some("cd <project-root>"),
-        },
-        ProjectServerGuidance {
-            action: LocalGuidanceAction::ListProjectServers,
-            message: "List servers after returning to that exact project",
-            command: Some(list.command()),
-        },
-    ];
+pub(crate) fn empty_list_guidance(
+    list: ProjectList,
+    kind: ProjectRootKind,
+) -> Vec<ProjectServerGuidance> {
+    // Inside a project an empty list is accurate: there is nowhere to change
+    // to, only other projects to look in.
+    let mut guidance = match kind {
+        ProjectRootKind::Marked => Vec::new(),
+        ProjectRootKind::Unmarked => project_list_guidance(kind, list.command()),
+    };
     if list.covers_clickhouse() {
         guidance.push(ProjectServerGuidance {
             action: LocalGuidanceAction::ListGlobalServers,
@@ -1600,22 +1640,28 @@ impl fmt::Display for ServerListOutput {
         if self.servers.is_empty() {
             if let Some(scope) = &self.project_scope {
                 writeln!(f, "No servers found in project '{}'.", scope.path)?;
-                writeln!(
-                    f,
-                    "Project-local lists use the exact current working directory; parent `.clickhouse` directories are not searched."
-                )?;
-                write!(
-                    f,
-                    "Return to the local project root where the server was started and run `{}`",
-                    self.list.command()
-                )?;
+                if scope.kind == LocalProjectScopeKind::CurrentDirectory {
+                    writeln!(f, "{NO_PROJECT_FOUND}")?;
+                    write!(
+                        f,
+                        "To reach an existing server, change to a directory inside its project and run `{}`",
+                        self.list.command()
+                    )?;
+                    if self.list.covers_clickhouse() {
+                        write!(
+                            f,
+                            ", or use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects"
+                        )?;
+                    }
+                    return write!(f, ".");
+                }
                 if self.list.covers_clickhouse() {
                     write!(
                         f,
-                        ", or use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects"
+                        "Use `clickhousectl local clickhouse list --global` to locate running ClickHouse servers in other projects."
                     )?;
                 }
-                return write!(f, ".");
+                return Ok(());
             }
             write!(f, "No servers")?;
             return Ok(());
@@ -1813,18 +1859,11 @@ impl fmt::Display for ServerStopNoopOutput {
         write!(f, "No ClickHouse servers found; nothing to stop")?;
         if let Some(scope) = &self.project_scope {
             writeln!(f)?;
-            writeln!(
-                f,
-                "No `.clickhouse` directory existed under project '{}' when the command started.",
-                scope.path
-            )?;
-            writeln!(
-                f,
-                "Project-local clickhouse stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
-            )?;
+            writeln!(f, "Searched from '{}'.", scope.path)?;
+            writeln!(f, "{NO_PROJECT_FOUND}")?;
             write!(
                 f,
-                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
+                "Change to a directory inside the project where the server was started and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
             )?;
         }
         Ok(())
@@ -1939,6 +1978,14 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The project `/project`, found (`Marked`) or standing in (`Unmarked`).
+    fn project(kind: ProjectRootKind) -> ProjectRoot {
+        ProjectRoot {
+            dir: "/project".into(),
+            kind,
+        }
+    }
     use crate::error::BinaryLaunchProblem;
 
     fn error_json(error: &Error) -> serde_json::Value {
@@ -1966,7 +2013,7 @@ mod tests {
             (
                 Error::ManagedClient(ManagedClientError {
                     kind: ManagedClientErrorKind::ServerNotFound,
-                    project_dir: "/project".into(),
+                    project: project(ProjectRootKind::Marked),
                     selection: ManagedClientSelection::Default,
                     server_name: "default".into(),
                     binary_version: None,
@@ -1976,7 +2023,7 @@ mod tests {
             (
                 Error::ManagedClient(ManagedClientError {
                     kind: ManagedClientErrorKind::ServerNotRunning,
-                    project_dir: "/project".into(),
+                    project: project(ProjectRootKind::Marked),
                     selection: ManagedClientSelection::Named,
                     server_name: "dev".into(),
                     binary_version: None,
@@ -1986,7 +2033,7 @@ mod tests {
             (
                 Error::ManagedClient(ManagedClientError {
                     kind: ManagedClientErrorKind::BinaryNotFound,
-                    project_dir: "/project".into(),
+                    project: project(ProjectRootKind::Marked),
                     selection: ManagedClientSelection::Named,
                     server_name: "dev".into(),
                     binary_version: Some("25.12.9.61".into()),
@@ -2003,7 +2050,7 @@ mod tests {
                             source: std::io::Error::other("lock failed"),
                         },
                     )),
-                    project_dir: "/project".into(),
+                    project: project(ProjectRootKind::Marked),
                     selection: ManagedClientSelection::Default,
                     server_name: "default".into(),
                     binary_version: None,
@@ -2013,7 +2060,7 @@ mod tests {
             (
                 Error::ProjectServerNotFound(ProjectServerNotFound {
                     command: ProjectServerCommand::Stop,
-                    project_dir: "/project".into(),
+                    project: project(ProjectRootKind::Marked),
                     server_name: "default".into(),
                 }),
                 "server_not_found",
@@ -3351,6 +3398,7 @@ mod tests {
                 "postgres/".to_string(),
             ],
             already_initialized: false,
+            enclosing_project: None,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3368,6 +3416,7 @@ mod tests {
         let output = InitOutput {
             paths: vec![],
             already_initialized: true,
+            enclosing_project: None,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -3423,7 +3472,7 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
-            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            project_scope: Some(server_project_scope(&project(ProjectRootKind::Marked))),
             guidance: Vec::new(),
             list: ProjectList::Clickhouse,
         };
@@ -3442,7 +3491,7 @@ mod tests {
         assert_eq!(json["total_servers"], 2);
         assert_eq!(json["total_running_servers"], 1);
         assert_eq!(json["project_scope"]["path"], "/project");
-        assert_eq!(json["project_scope"]["parent_projects_searched"], false);
+        assert_eq!(json["project_scope"]["kind"], "project_root");
     }
 
     #[test]
@@ -3451,8 +3500,8 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
-            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
-            guidance: project_scope_guidance(None),
+            project_scope: Some(server_project_scope(&project(ProjectRootKind::Unmarked))),
+            guidance: project_scope_guidance(ProjectRootKind::Unmarked, None),
             list: ProjectList::Clickhouse,
         };
         let json: serde_json::Value =
@@ -3461,7 +3510,8 @@ mod tests {
         assert_eq!(json["servers"].as_array().unwrap().len(), 0);
         assert_eq!(json["total_servers"], 0);
         assert_eq!(json["total_running_servers"], 0);
-        assert_eq!(json["project_scope"]["kind"], "exact_current_project");
+        assert_eq!(json["project_scope"]["kind"], "current_directory");
+        assert_eq!(json["guidance"][0]["action"], "return_to_project_root");
         assert_eq!(json["guidance"][2]["action"], "list_global_servers");
     }
 
@@ -3676,6 +3726,7 @@ mod tests {
             InitOutput {
                 paths: paths.iter().map(|path| path.to_string()).collect(),
                 already_initialized,
+                enclosing_project: None,
             }
             .to_string()
         };
@@ -4071,6 +4122,8 @@ mod tests {
         );
     }
 
+    /// Without a project the hint is to change to one and list there; inside
+    /// one only the cross-project list remains. Postgres has no global list.
     #[test]
     fn empty_engine_lists_point_at_their_own_command() {
         for (list, command, global) in [
@@ -4086,28 +4139,41 @@ mod tests {
             ),
             (ProjectList::Status, "clickhousectl local status", true),
         ] {
-            let guidance = empty_list_guidance(list);
-            assert_eq!(guidance[1].action, LocalGuidanceAction::ListProjectServers);
-            assert_eq!(guidance[1].command, Some(command));
-            assert_eq!(
-                guidance
-                    .iter()
-                    .any(|hint| hint.action == LocalGuidanceAction::ListGlobalServers),
-                global,
-                "{list:?}"
-            );
+            for kind in [ProjectRootKind::Unmarked, ProjectRootKind::Marked] {
+                let guidance = empty_list_guidance(list, kind);
+                let actions: Vec<_> = guidance.iter().map(|hint| hint.action).collect();
+                let mut expected = match kind {
+                    ProjectRootKind::Unmarked => vec![
+                        LocalGuidanceAction::ReturnToProjectRoot,
+                        LocalGuidanceAction::ListProjectServers,
+                    ],
+                    ProjectRootKind::Marked => Vec::new(),
+                };
+                if global {
+                    expected.push(LocalGuidanceAction::ListGlobalServers);
+                }
+                assert_eq!(actions, expected, "{list:?} {kind:?}");
+                if kind == ProjectRootKind::Unmarked {
+                    assert_eq!(guidance[1].command, Some(command));
+                }
 
-            let output = ServerListOutput {
-                servers: vec![],
-                total_servers: 0,
-                total_running_servers: 0,
-                project_scope: Some(exact_current_project_scope(Path::new("/project"))),
-                guidance,
-                list,
-            };
-            let text = output.to_string();
-            assert!(text.contains(command), "{text}");
-            assert_eq!(text.contains("--global"), global, "{text}");
+                let output = ServerListOutput {
+                    servers: vec![],
+                    total_servers: 0,
+                    total_running_servers: 0,
+                    project_scope: Some(server_project_scope(&project(kind))),
+                    guidance,
+                    list,
+                };
+                let text = output.to_string();
+                assert!(text.contains("'/project'"), "{text}");
+                assert_eq!(
+                    text.contains(&format!("`{command}`")),
+                    kind == ProjectRootKind::Unmarked,
+                    "{text}"
+                );
+                assert_eq!(text.contains("--global"), global, "{text}");
+            }
         }
     }
 

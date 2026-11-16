@@ -1001,7 +1001,7 @@ pub fn tokens_path() -> Result<PathBuf, crate::error::Error> {
     Ok(crate::paths::base_dir()?.join("tokens.json"))
 }
 
-/// Legacy per-project token store: `<cwd>/.clickhouse/tokens.json`.
+/// Legacy per-project token store: `<project root>/.clickhouse/tokens.json`.
 ///
 /// Earlier versions wrote OAuth tokens here (per-project). `load_tokens`
 /// migrates a legacy file to the global path on first sight, and

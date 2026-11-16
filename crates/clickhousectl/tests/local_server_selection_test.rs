@@ -138,9 +138,8 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
             "selection": "implicit",
             "reason": "no_clickhouse_servers",
             "project_scope": {
-                "kind": "exact_current_project",
-                "path": project.path().canonicalize().unwrap(),
-                "parent_projects_searched": false
+                "kind": "current_directory",
+                "path": project.path().canonicalize().unwrap()
             },
             "guidance": [
                 {
