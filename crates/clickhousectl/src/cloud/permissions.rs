@@ -57,6 +57,9 @@ pub(super) struct Declaration {
     pub authorization: Option<&'static str>,
     /// Organization resolution is lazy and adds a list call without --org-id.
     pub organization: bool,
+    /// The handler rejects API keys before any call, so API-key permission
+    /// lines would never apply. Unlike `non_api`, operations stay declared.
+    pub oauth_only: bool,
 }
 
 impl Declaration {
@@ -67,9 +70,11 @@ impl Declaration {
             conditional: &[],
             authorization: None,
             organization: true,
+            oauth_only: false,
         }
     }
 
+    /// A command that makes no Cloud API call, so it has no operations.
     pub const fn non_api(path: &'static str, purpose: &'static str) -> Self {
         Self {
             path,
@@ -77,7 +82,17 @@ impl Declaration {
             conditional: &[],
             authorization: Some(purpose),
             organization: false,
+            oauth_only: false,
         }
+    }
+
+    /// For a command that refuses API keys before resolving anything: its
+    /// calls (including org and `--name` lookups) stay declared and validated,
+    /// but help renders only the authorization line, never `API key` lines.
+    pub const fn oauth_only(mut self, authorization: &'static str) -> Self {
+        self.authorization = Some(authorization);
+        self.oauth_only = true;
+        self
     }
 
     pub const fn when(mut self, conditional: &'static [Conditional]) -> Self {
@@ -136,6 +151,13 @@ fn permission_set(operations: Operations) -> BTreeSet<&'static str> {
 /// The renderer only prints additional permissions in conditional groups.
 /// Operations remain declared even when they require no named permissions.
 fn permission_lines(declaration: &Declaration) -> Vec<String> {
+    if declaration.oauth_only {
+        return declaration
+            .authorization
+            .map(|authorization| format!("  Authorization: {authorization}"))
+            .into_iter()
+            .collect();
+    }
     let required = permission_set(declaration.required);
     let mut lines: Vec<_> = required
         .iter()
@@ -500,5 +522,50 @@ mod tests {
         assert!(local.authorization.is_some());
         assert!(!permission_lines(&api).is_empty());
         assert!(!permission_lines(&local).is_empty());
+    }
+
+    fn is_api_key_line(line: &str) -> bool {
+        line.trim_start().starts_with("API key")
+    }
+
+    #[test]
+    fn oauth_only_declarations_keep_operations_but_render_no_api_key_lines() {
+        const DECLARATION: Declaration = Declaration::api("sample", &[&operations::INSTANCE_GET])
+            .when(&[Conditional::new(
+                "With --name",
+                &[&operations::INSTANCE_GET_LIST],
+            )])
+            .oauth_only("OAuth only.");
+        validate_declaration(&DECLARATION).unwrap();
+        assert!(!DECLARATION.required.is_empty());
+        assert!(DECLARATION.groups().count() > DECLARATION.conditional.len());
+        let lines = permission_lines(&DECLARATION);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].trim_start().starts_with("Authorization:"));
+        assert!(!lines.iter().any(|line| is_api_key_line(line)));
+    }
+
+    #[test]
+    fn postgres_query_help_has_authorization_but_no_api_key_lines() {
+        let mut command = Cli::command();
+        command.build();
+        let leaf = command
+            .find_subcommand_mut("cloud")
+            .unwrap()
+            .find_subcommand_mut("postgres")
+            .unwrap()
+            .find_subcommand_mut("query")
+            .unwrap();
+        for help in [
+            leaf.render_help().to_string(),
+            leaf.render_long_help().to_string(),
+        ] {
+            assert!(
+                help.lines()
+                    .any(|line| line.trim_start().starts_with("Authorization:")),
+                "{help}"
+            );
+            assert!(!help.lines().any(is_api_key_line), "{help}");
+        }
     }
 }
