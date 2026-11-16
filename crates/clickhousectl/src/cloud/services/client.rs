@@ -69,10 +69,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<ScalingSchedule> {
         let response = self
-            .api()
-            .scaling_schedule_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().scaling_schedule_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -83,10 +85,13 @@ impl CloudClient {
         request: &ScalingSchedulePostRequest,
     ) -> crate::cloud::client::Result<ScalingSchedule> {
         let response = self
-            .api()
-            .scaling_schedule_upsert(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .scaling_schedule_upsert(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -96,10 +101,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .scaling_schedule_delete(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().scaling_schedule_delete(org_id, service_id),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -270,10 +277,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<UpgradeWindow> {
         let response = self
-            .api()
-            .upgrade_window_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().upgrade_window_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -284,10 +293,13 @@ impl CloudClient {
         request: &UpgradeWindowPutRequest,
     ) -> crate::cloud::client::Result<UpgradeWindow> {
         let response = self
-            .api()
-            .upgrade_window_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .upgrade_window_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -297,10 +309,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<ReplicaAwareRouting> {
         let response = self
-            .api()
-            .replica_aware_routing_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().replica_aware_routing_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -311,10 +325,13 @@ impl CloudClient {
         request: &ReplicaAwareRoutingPatchRequest,
     ) -> crate::cloud::client::Result<ReplicaAwareRouting> {
         let response = self
-            .api()
-            .replica_aware_routing_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .replica_aware_routing_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -324,10 +341,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .upgrade_window_delete(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().upgrade_window_delete(org_id, service_id),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -589,24 +608,16 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        match self
-            .api()
-            .instance_query_endpoint_get(org_id, service_id)
-            .await
-        {
-            Ok(response) => Self::unwrap_response(response),
-            Err(error) => {
-                // A 404 can mean the endpoint is absent on an existing service.
-                // Only the service lookup can establish that its parent is missing.
-                let lookup = ResourceLookup::in_org(ResourceKind::Service, service_id, org_id);
-                if matches!(&error, clickhouse_cloud_api::Error::Api { status: 404, .. })
-                    && lookup.rejected_well_formed_ids(&error)
-                {
-                    self.get_service(org_id, service_id).await?;
-                }
-                Err(self.convert_error_for_organization(error, org_id))
-            }
-        }
+        // A 404 can mean the endpoint is absent on an existing service, so
+        // only a read of the service can say the service is missing.
+        let response = self
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().instance_query_endpoint_get(org_id, service_id),
+            )
+            .await?;
+        Self::unwrap_response(response)
     }
 
     pub async fn create_query_endpoint(
@@ -616,10 +627,13 @@ impl CloudClient {
         request: &InstanceServiceQueryApiEndpointsPostRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
         let response = self
-            .api()
-            .instance_query_endpoint_upsert(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_query_endpoint_upsert(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -667,10 +681,13 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .instance_query_endpoint_delete(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_query_endpoint_delete(org_id, service_id),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -700,10 +717,13 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::PrivateEndpointConfig> {
         let response = self
-            .api()
-            .instance_private_endpoint_config_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .instance_private_endpoint_config_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 

@@ -10,6 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) type Operations = &'static [&'static OperationMetadata];
 
+/// The GET that tells a missing service from a missing subresource when a
+/// request under a service answers 404 (see `CloudClient::request_on_service`
+/// and `CloudClient::request_in_service`).
+pub(super) const CONFIRM_SERVICE: Conditional =
+    Conditional::new("If the request answers 404", &[&operations::INSTANCE_GET]);
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Conditional {
     pub condition: &'static str,

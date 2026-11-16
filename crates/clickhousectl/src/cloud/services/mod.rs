@@ -9,7 +9,7 @@ mod scaling_schedule;
 mod settings;
 mod upgrade_window;
 
-use super::permissions::{Conditional, Declaration as Permission};
+use super::permissions::{CONFIRM_SERVICE, Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -45,18 +45,26 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::SERVICE_CLICKHOUSE_SETTING_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service scaling-schedule get", &[&op::SCALING_SCHEDULE_GET])
-        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service scaling-schedule get", &[&op::SCALING_SCHEDULE_GET]).when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service scaling-schedule set",
         &[&op::SCALING_SCHEDULE_UPSERT],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service scaling-schedule delete",
         &[&op::SCALING_SCHEDULE_DELETE],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api("service start", &[&op::INSTANCE_STATE_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service wake", &[&op::INSTANCE_STATE_UPDATE])
@@ -73,7 +81,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     )
     .when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
-        Conditional::new("If endpoint is absent", &[&op::INSTANCE_GET]),
+        CONFIRM_SERVICE,
     ]),
     Permission::api(
         "service query-endpoint create",
@@ -82,12 +90,18 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
         ],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service query-endpoint delete",
         &[&op::INSTANCE_QUERY_ENDPOINT_DELETE],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service private-endpoint create",
         &[&op::INSTANCE_PRIVATE_ENDPOINT_CREATE],
@@ -97,26 +111,42 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "service private-endpoint get-config",
         &[&op::INSTANCE_PRIVATE_ENDPOINT_CONFIG_GET],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service upgrade-window get", &[&op::UPGRADE_WINDOW_GET])
-        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service upgrade-window set", &[&op::UPGRADE_WINDOW_UPDATE])
-        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
+    Permission::api("service upgrade-window get", &[&op::UPGRADE_WINDOW_GET]).when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
+    Permission::api("service upgrade-window set", &[&op::UPGRADE_WINDOW_UPDATE]).when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service upgrade-window delete",
         &[&op::UPGRADE_WINDOW_DELETE],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service replica-aware-routing get",
         &[&op::REPLICA_AWARE_ROUTING_GET],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service replica-aware-routing update",
         &[&op::REPLICA_AWARE_ROUTING_UPDATE],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api("service jwt-provider list", &[&op::JWT_PROVIDER_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service jwt-provider get", &[&op::JWT_PROVIDER_GET])

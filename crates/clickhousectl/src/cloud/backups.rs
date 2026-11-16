@@ -1,4 +1,4 @@
-use super::permissions::{Conditional, Declaration as Permission};
+use super::permissions::{CONFIRM_SERVICE, Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -6,10 +6,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("backup list", &[&op::BACKUP_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("backup get", &[&op::BACKUP_GET]),
-    Permission::api("backup bucket get", &[&op::BACKUP_BUCKET_GET]),
-    Permission::api("backup bucket create", &[&op::BACKUP_BUCKET_CREATE]),
-    Permission::api("backup bucket update", &[&op::BACKUP_BUCKET_UPDATE]),
-    Permission::api("backup bucket delete", &[&op::BACKUP_BUCKET_DELETE]),
+    Permission::api("backup bucket get", &[&op::BACKUP_BUCKET_GET]).when(&[CONFIRM_SERVICE]),
+    Permission::api("backup bucket create", &[&op::BACKUP_BUCKET_CREATE]).when(&[CONFIRM_SERVICE]),
+    Permission::api("backup bucket update", &[&op::BACKUP_BUCKET_UPDATE]).when(&[CONFIRM_SERVICE]),
+    Permission::api("backup bucket delete", &[&op::BACKUP_BUCKET_DELETE]).when(&[CONFIRM_SERVICE]),
     Permission::api("service snapshot list", &[&op::SNAPSHOT_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service snapshot get", &[&op::SNAPSHOT_GET])
@@ -18,17 +18,26 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "service snapshot config get",
         &[&op::SNAPSHOT_CONFIGURATION_GET],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service snapshot config update",
         &[&op::SNAPSHOT_CONFIGURATION_UPDATE],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service backup-config get",
         &[&op::BACKUP_CONFIGURATION_GET],
     )
-    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        CONFIRM_SERVICE,
+    ]),
     Permission::api(
         "service backup-config update",
         &[&op::BACKUP_CONFIGURATION_UPDATE],
@@ -39,6 +48,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             "Start time without period",
             &[&op::BACKUP_CONFIGURATION_GET],
         ),
+        CONFIRM_SERVICE,
     ]),
 ];
 
@@ -839,10 +849,12 @@ impl CloudClient {
         service_id: &str,
     ) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfiguration> {
         let response = self
-            .api()
-            .snapshot_configuration_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().snapshot_configuration_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
     pub async fn update_snapshot_config(
@@ -852,10 +864,13 @@ impl CloudClient {
         request: &clickhouse_cloud_api::models::SnapshotConfigurationPatchRequest,
     ) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfiguration> {
         let response = self
-            .api()
-            .snapshot_configuration_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .snapshot_configuration_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -898,10 +913,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<BackupBucket> {
         let response = self
-            .api()
-            .backup_bucket_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().backup_bucket_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -912,10 +929,12 @@ impl CloudClient {
         request: &BackupBucketPostRequest,
     ) -> crate::cloud::client::Result<BackupBucket> {
         let response = self
-            .api()
-            .backup_bucket_create(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().backup_bucket_create(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -926,10 +945,12 @@ impl CloudClient {
         request: &BackupBucketPatchRequest,
     ) -> crate::cloud::client::Result<BackupBucket> {
         let response = self
-            .api()
-            .backup_bucket_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().backup_bucket_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -939,10 +960,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
-            .api()
-            .backup_bucket_delete(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().backup_bucket_delete(org_id, service_id),
+            )
+            .await?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -955,10 +978,12 @@ impl CloudClient {
         service_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::BackupConfiguration> {
         let response = self
-            .api()
-            .backup_configuration_get(org_id, service_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api().backup_configuration_get(org_id, service_id),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 
@@ -969,10 +994,13 @@ impl CloudClient {
         request: &BackupConfigurationPatchRequest,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::BackupConfiguration> {
         let response = self
-            .api()
-            .backup_configuration_update(org_id, service_id, request)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .request_on_service(
+                org_id,
+                service_id,
+                self.api()
+                    .backup_configuration_update(org_id, service_id, request),
+            )
+            .await?;
         Self::unwrap_response(response)
     }
 }

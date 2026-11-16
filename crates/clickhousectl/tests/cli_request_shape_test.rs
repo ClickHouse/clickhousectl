@@ -17338,6 +17338,56 @@ async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
             &["service"],
             in_service("query-api-endpoint list"),
         ),
+        // A service's singleton settings, and a Postgres service's
+        // observability, name the missing parent (#1315).
+        (
+            vec!["service", "upgrade-window", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["service", "replica-aware-routing", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["service", "scaling-schedule", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["service", "private-endpoint", "get-config", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["service", "snapshot", "config", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["backup", "bucket", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["service", "backup-config", "get", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec![
+                "postgres",
+                "metrics",
+                SERVICE,
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ],
+            &[],
+            format!("clickhousectl cloud postgres list --org-id {org}"),
+        ),
         (
             vec!["backup", "get", SERVICE, UNKNOWN_UUID],
             &["service"],
@@ -17410,6 +17460,62 @@ async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
         let error = cloud_runtime_error(&output);
         assert_eq!(error["code"], "resource_not_found", "{args:?}: {error}");
         assert_eq!(error["command"], expected_command, "{args:?}: {error}");
+    }
+}
+
+/// A 404 from a service singleton or a Postgres subresource whose parent
+/// exists is the subresource's own answer, so it is reported unchanged
+/// after the confirming read of the parent (#1315).
+#[tokio::test]
+async fn subresource_404_under_an_existing_parent_keeps_the_original_error() {
+    const SERVICE: &str = "11111111-2222-4333-8444-555555555555";
+    let org = LOOKUP_ORG_ID;
+    let service_path = format!("/v1/organizations/{org}/services/{SERVICE}");
+    let postgres_path = format!("/v1/organizations/{org}/postgres/{SERVICE}");
+    for (args, parent_path, leaf_path) in [
+        (
+            vec!["service", "upgrade-window", "get", SERVICE],
+            service_path.clone(),
+            format!("{service_path}/upgradeWindow"),
+        ),
+        (
+            vec![
+                "postgres",
+                "metrics",
+                SERVICE,
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ],
+            postgres_path.clone(),
+            format!("{postgres_path}/metrics"),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(parent_path.clone()))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"result": {"id": SERVICE, "name": "existing"}}),
+                ),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut cli_args = args.clone();
+        cli_args.extend(["--org-id", org]);
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &cli_args);
+
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], "http_4xx", "{args:?}: {error}");
+        let requests = received_request_shape(&mock).await;
+        assert_eq!(requests.len(), 2, "{args:?}: {requests:?}");
+        assert_eq!(requests[0].0, "GET");
+        assert!(requests[0].1.starts_with(&leaf_path), "{requests:?}");
+        assert_eq!(requests[1], ("GET".to_string(), parent_path), "{args:?}");
     }
 }
 

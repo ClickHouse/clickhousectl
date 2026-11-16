@@ -20,8 +20,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("postgres list", &[&op::POSTGRES_SERVICE_GET_LIST]),
     Permission::api("postgres get", &[&op::POSTGRES_SERVICE_GET])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres logs", &[&op::POSTGRES_LOGS_GET_LIST])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres logs", &[&op::POSTGRES_LOGS_GET_LIST]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres query", &[])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])])
         .authorization("OAuth only; SQL uses database privileges and must be read-only."),
@@ -71,19 +73,28 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         CONFIRM_POSTGRES_SERVICE,
     ]),
-    Permission::api("postgres metrics", &[&op::POSTGRES_INSTANCE_METRICS_GET])
-        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres metrics", &[&op::POSTGRES_INSTANCE_METRICS_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres slow-queries list",
         &[&op::SLOW_QUERY_PATTERNS_GET_LIST],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
-    Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET])
+        .when(&[CONFIRM_POSTGRES_SERVICE]),
     Permission::api(
         "postgres prometheus service",
         &[&op::POSTGRES_INSTANCE_PROMETHEUS_GET],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres prometheus org",
         &[&op::POSTGRES_ORG_PROMETHEUS_GET],
@@ -92,7 +103,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "postgres backup list",
         &[&op::POSTGRES_SERVICE_BACKUP_GET_LIST],
     )
-    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
