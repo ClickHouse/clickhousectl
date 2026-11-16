@@ -703,17 +703,13 @@ fn list_all_servers_locked_inner(
 
 /// List persisted ClickHouse identities, including legacy stopped servers that
 /// have a data directory but predate retained metadata.
+///
+/// Only ClickHouse entries are checked for liveness, and Postgres data
+/// directories are excluded by metadata alone, so this never contacts Docker.
 pub(crate) fn list_clickhouse_server_names_locked(lock: &MetadataLock) -> Result<Vec<String>> {
-    let entries = list_all_servers_locked(lock)?;
-    let mut names: Vec<_> = entries
-        .iter()
-        .filter(|entry| {
-            entry
-                .info
-                .as_ref()
-                .is_some_and(|info| info.engine == Engine::Clickhouse)
-        })
-        .map(|entry| entry.name.clone())
+    let mut names: Vec<_> = list_all_servers_locked_inner(lock, Some(Engine::Clickhouse), false)?
+        .into_iter()
+        .map(|entry| entry.name)
         .collect();
 
     for directory in std::fs::read_dir(&lock.dir)? {
@@ -726,13 +722,7 @@ pub(crate) fn list_clickhouse_server_names_locked(lock: &MetadataLock) -> Result
         };
         if validate_server_name(&name).is_err()
             || is_pg_instance_key(&name)
-            || entries.iter().any(|entry| {
-                entry.name == name
-                    && entry
-                        .info
-                        .as_ref()
-                        .is_some_and(|info| info.engine == Engine::Postgres)
-            })
+            || load_info_locked(&name, lock)?.is_some_and(|info| info.engine == Engine::Postgres)
         {
             continue;
         }
@@ -1645,8 +1635,10 @@ pub fn servers_using_version(version: &str) -> Result<VersionUsers> {
         |processes| {
             // Recover orphans first so a server whose metadata file is missing
             // is still counted as this project's.
-            match lock_recovered_metadata_from(processes, None)? {
-                Some(lock) => list_running_servers_locked(&lock),
+            // Only ClickHouse servers hold a version's binary open, so
+            // Postgres is never consulted and Docker never contacted.
+            match lock_recovered_metadata_from(processes, Some(Engine::Clickhouse))? {
+                Some(lock) => list_running_engine_servers_locked(&lock, Engine::Clickhouse),
                 None => Ok(Vec::new()),
             }
         },
