@@ -21416,21 +21416,17 @@ fn assert_missing_credentials_message(message: &str) {
 async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
     let mock = MockServer::start().await;
     // One run per distinct outcome: no login, and an unusable one in each
-    // output format and location. Which records are unusable is
+    // output format. Which records are unusable is
     // `auth::load_tokens_reports_unusable_files_without_modifying_them` and
     // `auth::token_deserialization_requires_complete_configuration`.
-    for (mode, format, location) in [
-        ("human", "absent", "global"),
-        ("explicit", "malformed", "legacy"),
-        ("human", "incomplete", "global"),
-        ("explicit", "old", "global"),
+    for (mode, format) in [
+        ("human", "absent"),
+        ("explicit", "malformed"),
+        ("human", "incomplete"),
+        ("explicit", "old"),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let token_path = dir.path().join(if location == "global" {
-            "home/.clickhouse/tokens.json"
-        } else {
-            ".clickhouse/tokens.json"
-        });
+        let token_path = dir.path().join("home/.clickhouse/tokens.json");
         let original = match format {
             "absent" => None,
             "old" => Some(
@@ -21532,9 +21528,6 @@ async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
         }
         if let Some(data) = original {
             assert_eq!(std::fs::read(&token_path).unwrap(), data);
-            if location == "legacy" {
-                assert!(!dir.path().join("home/.clickhouse/tokens.json").exists());
-            }
         }
     }
     assert!(mock.received_requests().await.unwrap().is_empty());

@@ -235,22 +235,6 @@ fn resolve_auth(
     )
 }
 
-/// [`resolve_auth`] without CLI flags or a URL override, reading the saved
-/// OAuth login from the global file only, so resolving never writes or
-/// removes a token file.
-#[cfg(feature = "feedback")]
-fn resolve_auth_read_only() -> Result<ResolvedAuth> {
-    resolve_auth_with_sources(
-        None,
-        None,
-        None,
-        crate::dotenv::get(),
-        &real_env_lookup,
-        &crate::cloud::credentials::load_credentials,
-        &crate::cloud::auth::load_global_tokens,
-    )
-}
-
 /// Walk the precedence ladder once. Order: CLI flags, credentials file, env
 /// vars (with `.env` fallback), OAuth tokens. Errors only when CLI flags
 /// are half-set (key without secret or vice versa) or when nothing usable
@@ -832,14 +816,6 @@ impl CloudClient {
     ) -> Result<Self> {
         let resolved = resolve_auth(api_key, api_secret, url_override)?;
         Self::from_resolved(resolved, Some(timeout))
-    }
-
-    /// Like [`CloudClient::new_with_timeout`] with no flags or URL override,
-    /// but resolving credentials without side effects: a legacy
-    /// project-local OAuth login is ignored rather than migrated.
-    #[cfg(feature = "feedback")]
-    pub(crate) fn new_read_only_with_timeout(timeout: std::time::Duration) -> Result<Self> {
-        Self::from_resolved(resolve_auth_read_only()?, Some(timeout))
     }
 
     /// A client for exactly this API key pair, bypassing the precedence

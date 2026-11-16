@@ -128,10 +128,9 @@ fn whoami_timeout() -> Duration {
 /// Cloud request. Otherwise one whoami call, bounded by [`whoami_timeout`];
 /// any failure keeps the kind and sends no organizations. This never logs
 /// in, refreshes tokens, retries or prints, and never writes or removes a
-/// token file: credentials resolve read-only, so a legacy project-local
-/// OAuth login is neither migrated nor used.
+/// token file: resolving credentials only reads them.
 async fn cloud_identity() -> CloudIdentity {
-    let Ok(client) = CloudClient::new_read_only_with_timeout(whoami_timeout()) else {
+    let Ok(client) = CloudClient::new_with_timeout(None, None, None, whoami_timeout()) else {
         return CloudIdentity::default();
     };
     let org_ids = match client.get_whoami().await {

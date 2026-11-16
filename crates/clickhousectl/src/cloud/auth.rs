@@ -1001,16 +1001,6 @@ pub fn tokens_path() -> Result<PathBuf, crate::error::Error> {
     Ok(crate::paths::base_dir()?.join("tokens.json"))
 }
 
-/// Legacy per-project token store: `<project root>/.clickhouse/tokens.json`.
-///
-/// Earlier versions wrote OAuth tokens here (per-project). `load_tokens`
-/// migrates a legacy file to the global path on first sight, and
-/// `clear_tokens` removes both so logging out from an old project dir doesn't
-/// leave a file that re-migrates.
-fn legacy_tokens_path() -> PathBuf {
-    crate::init::local_dir().join("tokens.json")
-}
-
 /// A saved login could not be read or decoded. Never reconstruct its issuer
 /// from the environment or built-in configuration; a new login is required.
 #[derive(Debug)]
@@ -1023,18 +1013,8 @@ pub(super) const OAUTH_LOGIN_REQUIRED: &str =
 /// (no refresh token, or the refresh failed). The file is kept.
 pub(super) const OAUTH_LOGIN_EXPIRED: &str = "Saved OAuth login has expired and could not be refreshed. Run `clickhousectl cloud auth login` to log in again.";
 
+/// The saved OAuth login. Reading never writes or removes a token file.
 pub fn load_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
-    let global = tokens_path().map_err(|_| UnusableTokens)?;
-    let legacy = legacy_tokens_path();
-    load_tokens_from(&global, &legacy)
-}
-
-/// The global saved login only, for a caller that must never write or remove
-/// a token file (`feedback`, which agents run unprompted in any directory).
-/// Unlike [`load_tokens`] it neither reads nor migrates the legacy
-/// project-local file.
-#[cfg(feature = "feedback")]
-pub(crate) fn load_global_tokens() -> Result<Option<TokenStore>, UnusableTokens> {
     read_tokens(&tokens_path().map_err(|_| UnusableTokens)?)
 }
 
@@ -1046,29 +1026,6 @@ fn read_tokens(path: &std::path::Path) -> Result<Option<TokenStore>, UnusableTok
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(UnusableTokens),
     }
-}
-
-/// Path-injected core of [`load_tokens`]. Only an absent global file permits
-/// migration from `legacy_path`. An unusable global file must not be silently
-/// replaced by a different saved login.
-fn load_tokens_from(
-    global_path: &std::path::Path,
-    legacy_path: &std::path::Path,
-) -> Result<Option<TokenStore>, UnusableTokens> {
-    if let Some(tokens) = read_tokens(global_path)? {
-        return Ok(Some(tokens));
-    }
-
-    // Best-effort migration: write the global copy, then delete the legacy
-    // file so it can't re-migrate on the next command.
-    if let Some(tokens) = read_tokens(legacy_path)? {
-        if save_tokens_to(global_path, &tokens).is_ok() {
-            let _ = std::fs::remove_file(legacy_path);
-        }
-        return Ok(Some(tokens));
-    }
-
-    Ok(None)
 }
 
 pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>> {
@@ -1100,7 +1057,6 @@ pub fn clear_tokens() {
     if let Ok(path) = tokens_path() {
         let _ = std::fs::remove_file(path);
     }
-    let _ = std::fs::remove_file(legacy_tokens_path());
 }
 
 pub fn is_token_valid(tokens: &TokenStore) -> bool {
@@ -1526,15 +1482,13 @@ mod tests {
     fn load_tokens_rejects_old_records_for_known_and_custom_hosts() {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("tokens.json");
-        let legacy = tmp.path().join("legacy.json");
         for api_url in [DEFAULT_API_URL, "https://custom.example.com/v1"] {
             let old = serde_json::json!({
                 "access_token": "a", "refresh_token": "r",
                 "expires_at": 4102444800_i64, "api_url": api_url
             });
             std::fs::write(&global, serde_json::to_vec(&old).unwrap()).unwrap();
-            std::fs::write(&legacy, serde_json::to_vec(&old).unwrap()).unwrap();
-            assert!(load_tokens_from(&global, &legacy).is_err());
+            assert!(read_tokens(&global).is_err());
         }
     }
 
@@ -1563,34 +1517,6 @@ mod tests {
         assert_eq!(refreshed.api_url, DEFAULT_API_URL);
         assert_eq!(refreshed.auth_config, tokens.auth_config);
         assert_eq!(refreshed.access_token, "refreshed");
-    }
-
-    #[test]
-    fn saved_auth_config_survives_legacy_path_migration_and_login_replacement() {
-        let tmp = tempfile::tempdir().unwrap();
-        let global = tmp.path().join("global/tokens.json");
-        let legacy = tmp.path().join("legacy/tokens.json");
-        let mut tokens = sample_tokens();
-        tokens.auth_config = AuthConfig {
-            auth_url: "https://auth-a.example.com".into(),
-            client_id: "client-a".into(),
-        };
-        save_tokens_to(&legacy, &tokens).unwrap();
-        let migrated = load_tokens_from(&global, &legacy).unwrap().unwrap();
-        assert_eq!(migrated.auth_config, tokens.auth_config);
-        assert!(!legacy.exists());
-
-        tokens.access_token = "new-access".into();
-        tokens.refresh_token = "new-refresh".into();
-        tokens.auth_config = AuthConfig {
-            auth_url: "https://auth-b.example.com".into(),
-            client_id: "client-b".into(),
-        };
-        save_tokens_to(&global, &tokens).unwrap();
-        let replaced = load_tokens_from(&global, &legacy).unwrap().unwrap();
-        assert_eq!(replaced.access_token, tokens.access_token);
-        assert_eq!(replaced.refresh_token, tokens.refresh_token);
-        assert_eq!(replaced.auth_config, tokens.auth_config);
     }
 
     #[test]
@@ -1663,110 +1589,30 @@ mod tests {
     }
 
     #[test]
-    fn load_tokens_migrates_legacy_file_when_global_absent() {
+    fn load_tokens_returns_none_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("global/.clickhouse/tokens.json");
-        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-
-        let tokens = sample_tokens();
-        std::fs::write(&legacy, serde_json::to_string_pretty(&tokens).unwrap()).unwrap();
-
-        let loaded = load_tokens_from(&global, &legacy)
-            .expect("legacy file should migrate")
-            .unwrap();
-        assert_eq!(loaded.access_token, "a");
-
-        // Migration writes the global copy and deletes the legacy file.
-        assert!(global.exists(), "global tokens file should be created");
-        assert!(
-            std::fs::read_to_string(&global)
-                .unwrap()
-                .contains("\"access_token\": \"a\""),
-            "global file should hold the migrated tokens"
-        );
-        assert!(!legacy.exists(), "legacy file should be deleted");
-    }
-
-    #[test]
-    fn load_tokens_prefers_global_over_legacy() {
-        let tmp = tempfile::tempdir().unwrap();
-        let global = tmp.path().join("global/.clickhouse/tokens.json");
-        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
-        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-
-        let mut global_tokens = sample_tokens();
-        global_tokens.access_token = "global-wins".into();
-        std::fs::write(
-            &global,
-            serde_json::to_string_pretty(&global_tokens).unwrap(),
-        )
-        .unwrap();
-
-        let mut legacy_tokens = sample_tokens();
-        legacy_tokens.access_token = "legacy-ignored".into();
-        std::fs::write(
-            &legacy,
-            serde_json::to_string_pretty(&legacy_tokens).unwrap(),
-        )
-        .unwrap();
-
-        let loaded = load_tokens_from(&global, &legacy)
-            .expect("global file should load")
-            .unwrap();
-        assert_eq!(loaded.access_token, "global-wins");
-        assert!(legacy.exists(), "legacy file must not be touched");
-    }
-
-    #[test]
-    fn load_tokens_returns_none_when_both_absent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let global = tmp.path().join("global/.clickhouse/tokens.json");
-        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
-        assert!(load_tokens_from(&global, &legacy).unwrap().is_none());
+        assert!(read_tokens(&global).unwrap().is_none());
     }
 
     #[test]
     fn load_tokens_reports_unusable_files_without_modifying_them() {
-        for location in ["global", "legacy"] {
-            for data in [b"not json".as_slice(), b"{}", b"\xff"] {
-                let tmp = tempfile::tempdir().unwrap();
-                let global = tmp.path().join("global.json");
-                let legacy = tmp.path().join("legacy.json");
-                let path = if location == "global" {
-                    &global
-                } else {
-                    &legacy
-                };
-                std::fs::write(path, data).unwrap();
-                assert!(load_tokens_from(&global, &legacy).is_err());
-                assert_eq!(std::fs::read(path).unwrap(), data);
-            }
+        for data in [b"not json".as_slice(), b"{}", b"\xff"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let global = tmp.path().join("global.json");
+            std::fs::write(&global, data).unwrap();
+            assert!(read_tokens(&global).is_err());
+            assert_eq!(std::fs::read(&global).unwrap(), data);
         }
-    }
-
-    #[test]
-    fn unusable_global_tokens_do_not_fall_back_to_valid_legacy_tokens() {
-        let tmp = tempfile::tempdir().unwrap();
-        let global = tmp.path().join("global.json");
-        let legacy = tmp.path().join("legacy.json");
-        std::fs::write(&global, b"not json").unwrap();
-        save_tokens_to(&legacy, &sample_tokens()).unwrap();
-        let original_legacy = std::fs::read(&legacy).unwrap();
-        assert!(load_tokens_from(&global, &legacy).is_err());
-        assert_eq!(std::fs::read(&global).unwrap(), b"not json");
-        assert_eq!(std::fs::read(&legacy).unwrap(), original_legacy);
     }
 
     #[test]
     fn unreadable_token_path_requires_login() {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("global.json");
-        let legacy = tmp.path().join("legacy.json");
         // A directory reliably fails read_to_string even when tests run as root.
         std::fs::create_dir(&global).unwrap();
-        assert!(load_tokens_from(&global, &legacy).is_err());
+        assert!(read_tokens(&global).is_err());
     }
 
     #[test]

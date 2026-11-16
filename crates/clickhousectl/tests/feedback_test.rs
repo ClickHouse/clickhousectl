@@ -89,12 +89,7 @@ impl Sandbox {
     /// Save an OAuth login for the mock API in `~/.clickhouse/tokens.json`,
     /// expiring at `expires_at` (Unix seconds).
     fn write_oauth_tokens(&self, expires_at: u64) -> PathBuf {
-        self.write_oauth_tokens_in(self.home.path(), expires_at)
-    }
-
-    /// Save an OAuth login in `<root>/.clickhouse/tokens.json`.
-    fn write_oauth_tokens_in(&self, root: &std::path::Path, expires_at: u64) -> PathBuf {
-        let dir = root.join(".clickhouse");
+        let dir = self.home.path().join(".clickhouse");
         std::fs::create_dir_all(&dir).unwrap();
         let tokens = serde_json::json!({
             "access_token": "test-bearer-token",
@@ -214,26 +209,6 @@ fn whoami_response(status: u16, identity: Value) -> ResponseTemplate {
         ResponseTemplate::new(status)
             .set_body_json(serde_json::json!({"status": status, "error": "refused"}))
     }
-}
-
-/// Every file under `root` with its contents, to show a run wrote or removed
-/// nothing.
-fn snapshot(root: &std::path::Path) -> Vec<(PathBuf, String)> {
-    let mut files = Vec::new();
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                let contents = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
-                files.push((path, contents));
-            }
-        }
-    }
-    files.sort();
-    files
 }
 
 fn body_of(request: &wiremock::Request) -> Value {
@@ -551,27 +526,6 @@ async fn a_failed_whoami_keeps_the_credential_kind_and_still_sends() {
         assert_eq!(body["cloud_auth"], kind);
         assert_eq!(body["org_ids"], serde_json::json!([]), "{kind}");
     }
-}
-
-/// Agents run feedback unprompted in any directory, so a login saved by an
-/// old version under `./.clickhouse/` is neither migrated to the global
-/// store, removed, nor used.
-#[tokio::test]
-async fn a_legacy_project_login_is_left_alone_and_unused() {
-    let sandbox = Sandbox::new().await;
-    sandbox.write_oauth_tokens_in(sandbox.project.path(), 4102444800);
-    sandbox.mount_whoami(200, user_identity()).await;
-    let home = snapshot(sandbox.home.path());
-    let project = snapshot(sandbox.project.path());
-    let output = sandbox.run(&["the gap"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(snapshot(sandbox.home.path()), home);
-    assert_eq!(snapshot(sandbox.project.path()), project);
-    // The feedback POST was the only request: no whoami.
-    let body = body_of(&sandbox.the_request().await);
-    assert_eq!(body["cloud_auth"], "none");
-    assert_eq!(body["org_ids"], serde_json::json!([]));
 }
 
 /// An expired login is not usable, so feedback treats it as no credentials:
