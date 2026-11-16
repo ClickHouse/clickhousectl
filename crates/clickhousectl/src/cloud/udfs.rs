@@ -193,7 +193,7 @@ pub struct UdfAttachmentArgs {
 #[derive(Args)]
 pub struct UdfPageArgs {
     /// Cursor from nextCursor
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     cursor: Option<String>,
     /// Maximum records per page (1–100)
     #[arg(long, value_parser = clap::value_parser!(i64).range(1..=100))]
@@ -3095,7 +3095,7 @@ mod tests {
     #[test]
     fn udf_clap_auth_classification_and_values() {
         for (args, write) in [
-            (vec!["list", "--cursor", "next", "--limit", "2"], false),
+            (vec!["list", "--cursor", "-next", "--limit", "2"], false),
             (vec!["get", "my_udf"], false),
             (vec!["delete", "my_udf"], true),
             (
@@ -3151,7 +3151,7 @@ mod tests {
 
             match udf.command {
                 UdfCommands::List(page) => {
-                    assert_eq!(page.cursor.as_deref(), Some("next"));
+                    assert_eq!(page.cursor.as_deref(), Some("-next"));
                     assert_eq!(page.limit, Some(2));
                 }
                 UdfCommands::Create(input) if input.name.is_none() => {

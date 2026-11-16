@@ -23,7 +23,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 use crate::cloud::client::{
-    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
+    CloudClient, CloudError, LookupPage, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
 };
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
@@ -32,7 +32,8 @@ use crate::cloud::types::DeleteResponse;
 use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    Pagination, PublicQueryApiEndpoint, PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
+    Pagination, PublicQueryApiEndpoint, PublicQueryApiEndpointListItem,
+    PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -63,7 +64,7 @@ pub enum QueryApiEndpointCommands {
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Cursor from pagination.nextCursor
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         cursor: Option<String>,
         /// Maximum records per page (1–100)
         #[arg(long, allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..=100))]
@@ -206,57 +207,31 @@ async fn resolve_endpoint_id(
         }
     };
     let org = resolve_org_id(client).await?;
-    let mut rows = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut seen = std::collections::HashSet::new();
-    let mut total_records = None;
-    let mut seen_ids = std::collections::HashSet::new();
-    loop {
-        let page = client
-            .list_query_api_endpoints(&org, &target.service_id, cursor.as_deref(), Some(100))
-            .await?;
-        let items = page
-            .items
-            .ok_or_else(|| CloudError::new("endpoint list response is missing items"))?;
-        for item in &items {
-            let id = item
-                .id
-                .ok_or_else(|| CloudError::new("endpoint list contains a missing ID"))?;
-            if !seen_ids.insert(id) {
-                return Err(CloudError::new(
-                    "endpoint pagination repeated a resource ID",
-                ));
+    let service_id = target.service_id.as_str();
+    let rows = CloudClient::collect_lookup_pages(
+        "endpoint",
+        |cursor| {
+            let org = org.as_str();
+            async move {
+                let page = client
+                    .list_query_api_endpoints(org, service_id, cursor.as_deref(), Some(100))
+                    .await?;
+                let items = page
+                    .items
+                    .ok_or_else(|| CloudError::new("endpoint list response is missing items"))?;
+                let pagination = page.pagination.ok_or_else(|| {
+                    CloudError::new("endpoint list response is missing pagination")
+                })?;
+                Ok(LookupPage {
+                    items,
+                    total_count: pagination.total_records,
+                    next_cursor: pagination.next_cursor,
+                })
             }
-        }
-        rows.extend(items);
-        let pagination = page
-            .pagination
-            .ok_or_else(|| CloudError::new("endpoint list response is missing pagination"))?;
-        if let Some(total) = pagination.total_records {
-            if total < 0 || total_records.is_some_and(|previous| previous != total) {
-                return Err(CloudError::new(
-                    "endpoint list returned inconsistent totalRecords",
-                ));
-            }
-            total_records = Some(total);
-        }
-        match pagination.next_cursor {
-            None => {
-                if total_records.is_some_and(|total| total as usize != rows.len()) {
-                    return Err(CloudError::new(
-                        "endpoint list ended before all records were received",
-                    ));
-                }
-                break;
-            }
-            Some(next) if next.is_empty() || !seen.insert(next.clone()) => {
-                return Err(CloudError::new(
-                    "endpoint list returned an empty or repeated cursor",
-                ));
-            }
-            Some(next) => cursor = Some(next),
-        }
-    }
+        },
+        |item: &PublicQueryApiEndpointListItem| item.id,
+    )
+    .await?;
     select_named_id(
         ResourceKind::QueryApiEndpoint,
         Scope::Service {
@@ -643,12 +618,19 @@ mod tests {
         assert!(cursor.is_none());
         assert!(limit.is_none());
         for limit_value in ["1", "100"] {
-            let QueryApiEndpointCommands::List { cursor, limit, .. } =
-                parse(&["list", "svc", "--cursor", "next+/=", "--limit", limit_value]).command
+            let QueryApiEndpointCommands::List { cursor, limit, .. } = parse(&[
+                "list",
+                "svc",
+                "--cursor",
+                "-next+/=",
+                "--limit",
+                limit_value,
+            ])
+            .command
             else {
                 panic!("list")
             };
-            assert_eq!(cursor.as_deref(), Some("next+/="));
+            assert_eq!(cursor.as_deref(), Some("-next+/="));
             assert_eq!(limit, Some(limit_value.parse().unwrap()));
         }
         for value in ["-1", "0", "101", "not-a-number"] {

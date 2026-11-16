@@ -14,8 +14,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 use crate::cloud::client::{
-    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, Scope,
-    read_flag_file_bytes,
+    CloudClient, CloudError, LookupPage, ResourceKind, ResourceLookup, Result as CloudResult,
+    Scope, read_flag_file_bytes,
 };
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
@@ -27,7 +27,7 @@ use clickhouse_cloud_api::models::{
     PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQueryRequest,
 };
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use tabled::{Table, Tabled, settings::Style};
 
 /// Upper bound the API enforces on `sql`, counted in characters.
@@ -47,7 +47,7 @@ pub enum SavedQueryCommands {
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Cursor from nextCursor
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         cursor: Option<String>,
         /// Maximum records per page (1–100)
         #[arg(long, allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..=100))]
@@ -282,51 +282,25 @@ async fn resolve_query_id(client: &CloudClient, target: &SavedQueryTarget) -> Cl
         }
     };
     let org = resolve_org_id(client).await?;
-    let mut rows = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut seen_cursors = HashSet::new();
-    let mut seen_ids = HashSet::new();
-    let mut total_count = None;
-    loop {
-        let page = client
-            .list_saved_queries_page(&org, &target.service_id, cursor.as_deref(), Some(100))
-            .await?;
-        for item in &page.result {
-            let id = item
-                .id
-                .ok_or_else(|| CloudError::new("saved query list contains a missing ID"))?;
-            if !seen_ids.insert(id) {
-                return Err(CloudError::new(
-                    "saved query pagination repeated a resource ID",
-                ));
+    let service_id = target.service_id.as_str();
+    let rows = CloudClient::collect_lookup_pages(
+        "saved query",
+        |cursor| {
+            let org = org.as_str();
+            async move {
+                let page = client
+                    .list_saved_queries_page(org, service_id, cursor.as_deref(), Some(100))
+                    .await?;
+                Ok(LookupPage {
+                    items: page.result,
+                    total_count: page.total_count,
+                    next_cursor: page.next_cursor,
+                })
             }
-        }
-        rows.extend(page.result);
-        if let Some(total) = page.total_count {
-            if total < 0 || total_count.is_some_and(|previous| previous != total) {
-                return Err(CloudError::new(
-                    "saved query list returned inconsistent totalCount",
-                ));
-            }
-            total_count = Some(total);
-        }
-        match page.next_cursor {
-            None => {
-                if total_count.is_some_and(|total| total as usize != rows.len()) {
-                    return Err(CloudError::new(
-                        "saved query list ended before all records were received",
-                    ));
-                }
-                break;
-            }
-            Some(next) if next.is_empty() || !seen_cursors.insert(next.clone()) => {
-                return Err(CloudError::new(
-                    "saved query list returned an empty or repeated cursor",
-                ));
-            }
-            Some(next) => cursor = Some(next),
-        }
-    }
+        },
+        |item: &PublicSavedQueryListItem| item.id,
+    )
+    .await?;
     select_named_id(
         ResourceKind::SavedQuery,
         Scope::Service {
@@ -782,12 +756,19 @@ mod tests {
         assert!(cursor.is_none());
         assert!(limit.is_none());
         for limit_value in ["1", "100"] {
-            let SavedQueryCommands::List { cursor, limit, .. } =
-                parse(&["list", "svc", "--cursor", "next+/=", "--limit", limit_value]).command
+            let SavedQueryCommands::List { cursor, limit, .. } = parse(&[
+                "list",
+                "svc",
+                "--cursor",
+                "-next+/=",
+                "--limit",
+                limit_value,
+            ])
+            .command
             else {
                 panic!("list")
             };
-            assert_eq!(cursor.as_deref(), Some("next+/="));
+            assert_eq!(cursor.as_deref(), Some("-next+/="));
             assert_eq!(limit, Some(limit_value.parse().unwrap()));
         }
         for value in ["-1", "0", "101", "not-a-number"] {

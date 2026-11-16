@@ -40,7 +40,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 
 Human detail views summarize PEM blocks; JSON returns their original contents. `postgres certs get` deliberately emits PEM. Treat JSON results and files as potentially sensitive.
 
-Paginated commands require command-specific handling. `cloud org list`, `cloud service snapshot list` and `cloud clickpipe list` read every page themselves, as do organization-name, auto-detected organization and ClickPipe `--name` lookups. For keys, an absent `nextCursor` ends pagination; an empty token is still valid. Other endpoints may return `pagination.nextCursor`. Use the specific guide/help and preserve opaque cursors unchanged.
+`cloud org list`, `cloud service snapshot list` and `cloud clickpipe list` read every page themselves, as do `--name` lookups and organization-name and auto-detected organization lookups. Other paginated lists return one page and take `--cursor`. The cursor is in `nextCursor`, or `pagination.nextCursor` for `cloud query-api-endpoint list`. Pass it unchanged, even when it is empty or starts with `-`. Only an absent cursor marks the last page.
 
 ## Check status and stderr
 
