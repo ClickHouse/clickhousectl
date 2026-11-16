@@ -45,7 +45,7 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 
 Add a new override to that module rather than parsing an environment variable at the call site. In `cli_request_shape_test.rs`, use `isolated_env()` in place of `env_clear()`: it clears the environment and turns the update check off.
 
-Structural help tests check the full command tree, descriptions, shared flags, and agent context limits in both feature configurations:
+Structural help tests check the full command tree, descriptions, shared flags, and agent context limits. CI runs them with default features only, so run the second command yourself when a change depends on telemetry or feedback being compiled out:
 
 ```bash
 cargo test -p clickhousectl --bin clickhousectl cli::tests::

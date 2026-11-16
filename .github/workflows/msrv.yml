@@ -15,6 +15,11 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
+# A new push to a PR supersedes its earlier run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   msrv:
     name: Check on declared rust-version
@@ -41,6 +46,9 @@ jobs:
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check all targets
         run: |

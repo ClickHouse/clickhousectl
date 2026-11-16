@@ -21,7 +21,7 @@ For CLI code changes, run the required checks:
 
 ```bash
 cargo fmt --all
-cargo clippy -p clickhousectl -- -D warnings
+cargo clippy -p clickhousectl --all-targets -- -D warnings
 cargo test -p clickhousectl
 cargo check -p clickhousectl --no-default-features
 cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings

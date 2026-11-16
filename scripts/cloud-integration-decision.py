@@ -253,12 +253,11 @@ def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
         else ""
     )
     summary = (
-        f"Head `{sha}` has no Cloud integration decision yet. The trusted "
-        "planner runs automatically on same-repository pushes; when it "
-        "selects no live suites this check turns green with no action "
-        "needed. When live suites are selected, apply the "
-        "`run-cloud-integration` label to authorize them for this exact "
-        f"head.{fork_note}\n\n"
+        f"Head `{sha}` has no Cloud integration decision yet: the trusted "
+        "classifier selected live suites, or could not select them safely. "
+        "The planner runs automatically on same-repository pushes and names "
+        "the suites. Apply the `run-cloud-integration` label to authorize "
+        f"them for this exact head.{fork_note}\n\n"
         "Maintainers may instead record a one-shot override by commenting:\n\n"
         f"`{OVERRIDE_COMMAND} {sha} <reason or successful stack-run URL>`\n\n"
         "A decision for another commit does not apply to this SHA."
@@ -592,13 +591,68 @@ def evaluate_workflow_run(
     return successful_live_decision(run, actual_suites)
 
 
+def touches_source_workflow(files: list[dict[str, Any]]) -> bool:
+    return any(
+        SOURCE_WORKFLOW_PATH in (changed.get("filename"), changed.get("previous_filename"))
+        for changed in files
+    )
+
+
+def initial_decision(
+    api: GitHubAPI, pull_request: dict[str, Any], repository: str
+) -> Decision:
+    """Decide a new head from trusted inputs only, before any planner runs.
+
+    The suites come from the default-branch classifier applied to GitHub's list
+    of changed file names, the same selection `reconcile` trusts; no PR code is
+    checked out or run. This is what lets Dependabot and fork PRs, which never
+    get a planner run, pass when they select no suites.
+    """
+    waiting = waiting_decision(pull_request, repository)
+    number = pull_request["number"]
+    sha = pull_request["head"]["sha"]
+    try:
+        before = api.get_pull(number)
+        files = api.list_pull_files(number)
+        after = api.get_pull(number)
+    except ControllerError as error:
+        print(f"Cannot select suites before the planner runs: {error}")
+        return waiting
+
+    # The file list is only evidence for this head if the head and base did
+    # not move while it was read.
+    revisions = {
+        (pull["head"]["sha"], pull["base"]["sha"]) for pull in (before, after)
+    }
+    if revisions != {(sha, before["base"]["sha"])}:
+        return waiting
+    if touches_source_workflow(files):
+        return waiting
+    selection = selection_from_pull_files(files)
+    if selection.failed_closed or selection.suites:
+        return waiting
+    return Decision(
+        conclusion="success",
+        title="No live Cloud integration suites selected",
+        summary=(
+            f"The trusted classifier selected no live suites for exact head "
+            f"`{sha}` from the PR's changed files, so no Cloud run is needed."
+        ),
+        details_url=pull_request["html_url"],
+    )
+
+
 def initialize(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:
     pull_request = event["pull_request"]
-    decision = waiting_decision(pull_request, repository)
-    check = api.upsert_decision(
-        pull_request["head"]["sha"], decision, create_only=True
+    sha = pull_request["head"]["sha"]
+    if api.find_decision_check(sha) is not None:
+        print(f"Decision check already exists for {sha}")
+        return
+    decision = initial_decision(api, pull_request, repository)
+    check = api.upsert_decision(sha, decision, create_only=True)
+    print(
+        f"Decision check {check['id']} initialized to {decision.conclusion} for {sha}"
     )
-    print(f"Decision check {check['id']} initialized for {pull_request['head']['sha']}")
 
 
 def reconcile(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:

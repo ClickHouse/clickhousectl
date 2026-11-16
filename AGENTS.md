@@ -10,12 +10,13 @@ Do not duplicate user-facing documentation here.
 ## Commands
 
 - `cargo fmt --all` before every commit (`fmt.yml` runs `cargo fmt --all --check`; bulk formatting commits are in `.git-blame-ignore-revs`; add the squash SHA on main in a follow-up, as branch SHAs don't survive squash).
-- `cargo clippy -p clickhousectl -- -D warnings` && `cargo test -p clickhousectl`.
+- `cargo clippy -p clickhousectl --all-targets -- -D warnings` && `cargo test -p clickhousectl`.
 - Keep telemetry-compiled-out building and linting, as CI does: `cargo check -p clickhousectl --no-default-features`
   && `cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings`.
 - Library crates: `cargo clippy -p clickhouse-cloud-api -p clickhouse-openapi-analyzer --all-targets -- -D warnings`
   && `cargo test -p clickhouse-cloud-api -p clickhouse-openapi-analyzer`; `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`.
-  If `deprecated-fields` changed, also `cargo check --workspace --all-features`.
+  CI also runs `cargo clippy --workspace --all-targets --all-features -- -D warnings` and
+  `cargo test -p clickhouse-cloud-api --features deprecated-fields`; run both if `deprecated-fields` changed.
 
 **Done** means: `cargo fmt --all`; both clippy configurations clean; tests pass for every crate touched;
 classifier mappings updated if a file was added or renamed; the relevant guide/reference updated for user-visible behaviour;

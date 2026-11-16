@@ -5,6 +5,9 @@ on:
   pull_request:
     paths:
       - "crates/clickhousectl/**"
+      # The CLI builds the API library by path.
+      - "crates/clickhouse-cloud-api/**"
+      - "Cargo.toml"
       - "Cargo.lock"
       - "scripts/classify-install-integration.py"
       - "scripts/tests/test_classify_install_integration.py"
@@ -17,6 +20,11 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
+# A new push to a PR supersedes its earlier run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test clickhousectl
@@ -26,14 +34,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify install workflow path mapping
+        run: python3 scripts/tests/test_classify_install_integration.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: cargo build -p clickhousectl
 
       - name: Clippy
-        run: cargo clippy -p clickhousectl -- -D warnings
+        run: cargo clippy -p clickhousectl --all-targets -- -D warnings
 
       # Telemetry must compile out entirely for distro packagers.
       - name: Check without default features (telemetry compiled out)
@@ -44,6 +58,3 @@ jobs:
 
       - name: Test
         run: cargo test -p clickhousectl
-
-      - name: Verify install workflow path mapping
-        run: python3 scripts/tests/test_classify_install_integration.py
