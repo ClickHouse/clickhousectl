@@ -122,10 +122,11 @@ async fn main() {
             // replacing an established usage-error status.
             stdout::record(e.print());
             match e.kind() {
-                // --version always hits the network to refresh the cache + timer,
-                // then prints the notice from the freshly-updated cache.
+                // --version does the same stale-gated refresh as any command,
+                // awaited so its notice reflects it; a fresh cache means no
+                // network at all.
                 ErrorKind::DisplayVersion => {
-                    update::force_refresh_update_cache().await;
+                    update::refresh_update_cache().await;
                     update::print_cached_update_notice();
                 }
                 // --help shows the notice from cache (no blocking network call).
@@ -307,8 +308,10 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     }
 
     // Spawn a background task to refresh the update cache for non-update
-    // commands. The refresh is gated to one network call per 24h; the notice
-    // below is driven off whatever the cache currently holds.
+    // commands. The refresh is gated to one completed network call per 24h
+    // (a failed one is retried after an hour) and is off entirely under
+    // CLICKHOUSECTL_NO_UPDATE_CHECK; the notice below is driven off whatever
+    // the cache currently holds.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
     let cache_refresh = if !is_update_cmd && !read_only_telemetry_status {
         Some(tokio::spawn(update::refresh_update_cache()))
@@ -333,10 +336,9 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     let result = stdout::finish(run(cli.command).await);
 
     // Give the cache refresh a brief window to finish so short-lived commands
-    // don't always drop it before the write completes. The background HTTP
-    // request itself has a 400ms timeout, so 500ms here is enough headroom.
+    // don't always drop it before the write completes.
     if let Some(handle) = cache_refresh {
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
+        let _ = tokio::time::timeout(update::BACKGROUND_JOIN_TIMEOUT, handle).await;
     }
 
     let (exit_code, is_child_exit, defer_telemetry_notice, local_failure) = match result {

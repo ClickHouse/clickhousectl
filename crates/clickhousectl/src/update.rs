@@ -23,7 +23,10 @@ const LATEST_RELEASE_PAGE_URL: &str = "https://github.com/ClickHouse/clickhousec
 const RELEASE_DOWNLOAD_BASE_URL: &str =
     "https://github.com/ClickHouse/clickhousectl/releases/download";
 const CHECKSUMS_FILE: &str = "SHA256SUMS";
-const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
+/// How long a completed update check holds before the next one.
+const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// How long a failed update check waits before it is retried (#1306).
+const FAILED_RETRY_INTERVAL_SECS: u64 = 60 * 60;
 
 /// Set to `npm` by the npm package's launcher (`npm/bin/cli.js`) on the
 /// binary it spawns, so `update` knows npm owns this install (#1305).
@@ -415,8 +418,14 @@ fn extract_binary_from_archive(archive_bytes: &[u8]) -> Result<Vec<u8>> {
 
 /// Timeout for explicit user-initiated commands (update, update --check).
 const EXPLICIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-/// Timeout for the implicit background cache refresh.
-const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+const BACKGROUND_TIMEOUT_MS: u64 = 400;
+/// Timeout for the implicit cache refresh (background and `--version`).
+const BACKGROUND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(BACKGROUND_TIMEOUT_MS);
+/// How long `main` waits for the background refresh after the command ends: the
+/// request timeout plus headroom for the cache write.
+pub const BACKGROUND_JOIN_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(BACKGROUND_TIMEOUT_MS + 100);
 
 /// Check for updates and retain both versions even when no update is available.
 /// Uses the explicit (longer) timeout since this is called from user-initiated commands.
@@ -644,6 +653,22 @@ fn spawn_retrying_busy(command: &mut tokio::process::Command) -> io::Result<toki
 
 // --- Background update check with caching ---
 
+/// Set to anything but empty, `0` or `false` to turn the implicit update check
+/// off: no background or `--version` request and no notice. The `update`
+/// command itself still goes to the network.
+const NO_UPDATE_CHECK_ENV: &str = "CLICKHOUSECTL_NO_UPDATE_CHECK";
+
+/// Whether the implicit update check is turned off, given the value of
+/// [`NO_UPDATE_CHECK_ENV`]. Same truthiness as `DO_NOT_TRACK`.
+fn update_check_disabled(value: Option<&str>) -> bool {
+    matches!(value, Some(v) if !v.is_empty() && v != "0" && v != "false")
+}
+
+fn update_check_disabled_by_env() -> bool {
+    let value = std::env::var_os(NO_UPDATE_CHECK_ENV).map(|v| v.to_string_lossy().into_owned());
+    update_check_disabled(value.as_deref())
+}
+
 fn update_check_path() -> Result<PathBuf> {
     Ok(paths::base_dir()?.join("last_update_check"))
 }
@@ -655,25 +680,80 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Save the update check result (timestamp + latest version).
-fn save_update_check(latest_version: &str) -> Result<()> {
+/// The cached result of the last update check.
+///
+/// On disk: the check's Unix timestamp, then the latest known version, each on
+/// its own line, then an optional `failed` line when that check did not reach
+/// the release server. Binaries before #1306 read only the first two lines, so
+/// the file stays readable in both directions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateCheck {
+    checked_at: u64,
+    latest_version: String,
+    failed: bool,
+}
+
+const FAILED_MARKER: &str = "failed";
+
+impl UpdateCheck {
+    fn parse(content: &str) -> Option<Self> {
+        let mut lines = content.lines();
+        let checked_at = lines.next()?.parse().ok()?;
+        let latest_version = lines.next()?.to_string();
+        let failed = lines
+            .next()
+            .is_some_and(|line| line.trim() == FAILED_MARKER);
+        Some(Self {
+            checked_at,
+            latest_version,
+            failed,
+        })
+    }
+
+    fn render(&self) -> String {
+        let mut content = format!("{}\n{}", self.checked_at, self.latest_version);
+        if self.failed {
+            content.push('\n');
+            content.push_str(FAILED_MARKER);
+        }
+        content
+    }
+
+    /// Whether this entry warrants a new network check at `now`. A completed
+    /// check holds for [`CHECK_INTERVAL_SECS`]; a failed one is retried after
+    /// [`FAILED_RETRY_INTERVAL_SECS`].
+    fn is_stale(&self, now: u64) -> bool {
+        let interval = if self.failed {
+            FAILED_RETRY_INTERVAL_SECS
+        } else {
+            CHECK_INTERVAL_SECS
+        };
+        now.saturating_sub(self.checked_at) >= interval
+    }
+}
+
+fn write_update_check(check: &UpdateCheck) -> Result<()> {
     let path = update_check_path()?;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let content = format!("{}\n{}", now_secs(), latest_version);
-    fs::write(&path, content)?;
+    fs::write(&path, check.render())?;
     Ok(())
 }
 
-/// Read the cached update check. Returns Some((timestamp, latest_version)) if valid.
-fn read_update_check() -> Option<(u64, String)> {
+/// Record a completed check: `latest_version` is what the release server said.
+fn save_update_check(latest_version: &str) -> Result<()> {
+    write_update_check(&UpdateCheck {
+        checked_at: now_secs(),
+        latest_version: latest_version.to_string(),
+        failed: false,
+    })
+}
+
+/// Read the cached update check, if there is a valid one.
+fn read_update_check() -> Option<UpdateCheck> {
     let path = update_check_path().ok()?;
-    let content = fs::read_to_string(path).ok()?;
-    let mut lines = content.lines();
-    let ts: u64 = lines.next()?.parse().ok()?;
-    let version = lines.next()?.to_string();
-    Some((ts, version))
+    UpdateCheck::parse(&fs::read_to_string(path).ok()?)
 }
 
 /// Remove the cached update check. Used after a successful self-update so the
@@ -688,21 +768,21 @@ fn clear_update_check() -> Result<()> {
 }
 
 /// Whether the cache is stale enough to warrant a network refresh. A missing
-/// cache is always stale; a present one is stale once it is older than the
-/// check interval.
-fn cache_is_stale(cache: Option<(u64, String)>, now: u64) -> bool {
-    match cache {
-        Some((ts, _)) => now.saturating_sub(ts) >= CHECK_INTERVAL_SECS,
-        None => true,
-    }
+/// cache is always stale.
+fn cache_is_stale(cache: Option<&UpdateCheck>, now: u64) -> bool {
+    cache.is_none_or(|check| check.is_stale(now))
 }
 
-/// Print an update notice from cached data only. No network, no async.
-/// Called synchronously before the command runs so output never interleaves.
+/// Print an update notice from cached data only. No network, no async. Called
+/// after the command's own output so the two never interleave. Silent when
+/// [`NO_UPDATE_CHECK_ENV`] turns the check off.
 pub fn print_cached_update_notice() {
-    if let Some((_, cached_version)) = read_update_check() {
+    if update_check_disabled_by_env() {
+        return;
+    }
+    if let Some(check) = read_update_check() {
         let current = env!("CARGO_PKG_VERSION");
-        if is_newer(current, &cached_version) {
+        if is_newer(current, &check.latest_version) {
             eprintln!(
                 "\nThere is a new version of clickhousectl. Update with `{}`.",
                 InstallChannel::current().upgrade_command()
@@ -711,10 +791,10 @@ pub fn print_cached_update_notice() {
     }
 }
 
-/// Hit the network, refresh the cache, and reset the staleness timer. Never
-/// prints. On any failure (timeout, network error, etc.) the timestamp is still
-/// reset so we back off for another 24h, but a previously-cached "update
-/// available" version is preserved so we don't hide a known update.
+/// Hit the network and refresh the cache. Never prints. A failure is recorded
+/// as such, so it is retried after [`FAILED_RETRY_INTERVAL_SECS`] rather than a
+/// full day, and a previously-cached "update available" version is kept so a
+/// known update is not hidden.
 async fn do_refresh_update_cache(timeout: std::time::Duration) {
     let current = env!("CARGO_PKG_VERSION");
     match fetch_latest_tag(timeout).await {
@@ -723,20 +803,24 @@ async fn do_refresh_update_cache(timeout: std::time::Duration) {
             let _ = save_update_check(display);
         }
         Err(_) => {
-            // Preserve any previously-cached latest version; fall back to the
-            // current version when there is nothing cached yet.
-            let version = read_update_check()
-                .map(|(_, v)| v)
+            // Fall back to the current version when nothing is cached yet.
+            let latest_version = read_update_check()
+                .map(|check| check.latest_version)
                 .unwrap_or_else(|| current.to_string());
-            let _ = save_update_check(&version);
+            let _ = write_update_check(&UpdateCheck {
+                checked_at: now_secs(),
+                latest_version,
+                failed: true,
+            });
         }
     }
 }
 
-/// Refresh the update cache in the background if stale. Never prints. Skips the
-/// network entirely when the cache is still fresh (within 24h).
+/// Refresh the update cache if stale. Never prints. Skips the network entirely
+/// when the cache is still fresh or [`NO_UPDATE_CHECK_ENV`] turns the check off.
+/// Used in the background by every command and, awaited, by `--version`.
 pub async fn refresh_update_cache() {
-    if !cache_is_stale(read_update_check(), now_secs()) {
+    if update_check_disabled_by_env() || !cache_is_stale(read_update_check().as_ref(), now_secs()) {
         return;
     }
     let timeout = crate::timing::duration_override(
@@ -745,19 +829,6 @@ pub async fn refresh_update_cache() {
     );
     // No time allowed means no request: subprocess tests turn the background
     // check off. The `update` command's explicit check is unaffected.
-    if timeout.is_zero() {
-        return;
-    }
-    do_refresh_update_cache(timeout).await;
-}
-
-/// Force a network check and refresh the cache + timer regardless of staleness.
-/// Used by `--version`, which should always reflect the freshest state. Uses the
-/// longer explicit timeout, which the update-check override also bounds so
-/// subprocess tests can turn the request off with `0`. Never prints.
-pub async fn force_refresh_update_cache() {
-    let timeout =
-        crate::timing::duration_override(crate::timing::UPDATE_CHECK_TIMEOUT_ENV, EXPLICIT_TIMEOUT);
     if timeout.is_zero() {
         return;
     }
@@ -911,28 +982,74 @@ mod tests {
         assert!(!is_newer("0.2.0", "0.1.99"));
     }
 
+    fn check(checked_at: u64, failed: bool) -> UpdateCheck {
+        UpdateCheck {
+            checked_at,
+            latest_version: "0.2.0".into(),
+            failed,
+        }
+    }
+
     #[test]
-    fn test_cache_is_stale() {
+    fn completed_checks_hold_for_a_day_and_failed_ones_for_an_hour() {
         let now = 1_000_000;
         // Missing cache is always stale.
         assert!(cache_is_stale(None, now));
-        // Fresh cache (just written) is not stale.
-        assert!(!cache_is_stale(Some((now, "0.2.0".into())), now));
-        // Cache one second short of the interval is not stale.
-        assert!(!cache_is_stale(
-            Some((now - (CHECK_INTERVAL_SECS - 1), "0.2.0".into())),
-            now
-        ));
-        // Cache exactly at the interval is stale.
-        assert!(cache_is_stale(
-            Some((now - CHECK_INTERVAL_SECS, "0.2.0".into())),
-            now
-        ));
-        // Older cache is stale.
-        assert!(cache_is_stale(
-            Some((now - 2 * CHECK_INTERVAL_SECS, "0.2.0".into())),
-            now
-        ));
+        for (failed, interval) in [
+            (false, CHECK_INTERVAL_SECS),
+            (true, FAILED_RETRY_INTERVAL_SECS),
+        ] {
+            assert!(!cache_is_stale(Some(&check(now, failed)), now));
+            assert!(!cache_is_stale(
+                Some(&check(now - (interval - 1), failed)),
+                now
+            ));
+            assert!(cache_is_stale(Some(&check(now - interval, failed)), now));
+        }
+        // A clock that went backwards does not make the cache stale.
+        assert!(!cache_is_stale(Some(&check(now + 10, true)), now));
+    }
+
+    #[test]
+    fn cache_file_reads_old_two_line_entries_and_round_trips_failures() {
+        // Written by binaries before #1306: a completed check.
+        assert_eq!(
+            UpdateCheck::parse("1700000000\n0.5.1"),
+            Some(check_v(false))
+        );
+        assert_eq!(
+            UpdateCheck::parse("1700000000\n0.5.1\nfailed"),
+            Some(check_v(true))
+        );
+        for entry in [check_v(false), check_v(true)] {
+            let rendered = entry.render();
+            assert_eq!(UpdateCheck::parse(&rendered), Some(entry));
+            // Old binaries read the first two lines only.
+            let mut lines = rendered.lines();
+            assert_eq!(lines.next(), Some("1700000000"));
+            assert_eq!(lines.next(), Some("0.5.1"));
+        }
+        for invalid in ["", "1700000000", "not-a-time\n0.5.1"] {
+            assert_eq!(UpdateCheck::parse(invalid), None, "{invalid:?}");
+        }
+    }
+
+    fn check_v(failed: bool) -> UpdateCheck {
+        UpdateCheck {
+            checked_at: 1_700_000_000,
+            latest_version: "0.5.1".into(),
+            failed,
+        }
+    }
+
+    #[test]
+    fn update_check_opt_out_follows_do_not_track_truthiness() {
+        for value in ["1", "true", "yes"] {
+            assert!(update_check_disabled(Some(value)), "{value:?}");
+        }
+        for value in [None, Some(""), Some("0"), Some("false")] {
+            assert!(!update_check_disabled(value), "{value:?}");
+        }
     }
 
     #[test]

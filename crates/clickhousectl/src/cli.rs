@@ -108,7 +108,9 @@ CONTEXT FOR AGENTS:
   npm, pip, uv and pipx installs are never replaced: `update` exits 1 naming that package manager's
   upgrade command (--json: error code `package_managed`, the command in `command`); --check still works.
   Otherwise nothing is replaced unless the GitHub release's SHA256SUMS lists the archive's digest
-  (--json: `verification_failed` if not) and the new binary passes `--version`.")]
+  (--json: `verification_failed` if not) and the new binary passes `--version`.
+  Other commands and --version check for a release at most daily (hourly after a failure) and print
+  a notice to stderr; CLICKHOUSECTL_NO_UPDATE_CHECK=1 turns that off. `update` itself always checks.")]
     Update(UpdateArgs),
 
     /// Manage anonymous usage telemetry
