@@ -116,22 +116,29 @@ pub fn get() -> &'static DotenvVars {
     DOTENV.get_or_init(load)
 }
 
-/// Format a dotenv line. Values that are plain alphanumeric tokens are written
-/// bare. A value containing `$`, which dotenvy, docker compose and shells
-/// substitute in bare and double-quoted values, is single-quoted so it reads
-/// literally, unless it also has a `'`, backslash or newline (dotenvy's line
-/// splitter treats `\'` as an escape even inside single quotes). Anything else
-/// containing spaces, `#`, quotes, backslashes, `$`, or newlines is
-/// double-quoted with inner `"`, `\`, `$`, and newlines escaped.
+/// Format a dotenv line, quoting the value by the least powerful form that
+/// keeps it literal:
+///
+/// - A non-empty token of `[A-Za-z0-9_./:@%+-]` is written bare.
+/// - Anything else without `'`, `\`, `\n` or `\r` is single-quoted, which
+///   dotenvy, python-dotenv, Node dotenv, Docker `--env-file` and POSIX shells
+///   all read literally (no `$` substitution, no escapes).
+/// - Otherwise it is double-quoted, escaping `\`, `"`, `$` and `\n`. dotenvy
+///   has no `\r` escape (`\r` is a parse error), so a carriage return is
+///   written raw; inside quotes its line splitter keeps it.
 fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
-    let needs_quoting = val.is_empty()
-        || val
-            .bytes()
-            .any(|b| matches!(b, b' ' | b'#' | b'"' | b'\'' | b'\\' | b'\n' | b'$'));
+    let is_token = !val.is_empty()
+        && val.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'_' | b'.' | b'/' | b':' | b'@' | b'%' | b'+' | b'-')
+        });
 
-    if !needs_quoting {
+    if is_token {
         format!("{}{}={}", prefix, key, val)
-    } else if val.contains('$') && !val.bytes().any(|b| matches!(b, b'\'' | b'\\' | b'\n')) {
+    } else if !val
+        .bytes()
+        .any(|b| matches!(b, b'\'' | b'\\' | b'\n' | b'\r'))
+    {
         format!("{}{}='{}'", prefix, key, val)
     } else {
         let escaped = val
@@ -338,13 +345,33 @@ mod tests {
         for (prefix, value, expected) in [
             ("", "value", "KEY=value"),
             ("export ", "value", "export KEY=value"),
-            ("", "my secret", r#"KEY="my secret""#),
-            ("", "pass#123", r#"KEY="pass#123""#),
+            // Plain ASCII tokens stay bare.
+            (
+                "",
+                "abc.us-east-1.aws.clickhouse.cloud",
+                "KEY=abc.us-east-1.aws.clickhouse.cloud",
+            ),
+            ("", "9440", "KEY=9440"),
+            ("", "https://h:8443/a_b", "KEY=https://h:8443/a_b"),
+            ("", "user@example.com", "KEY=user@example.com"),
+            ("", "a%2Bb+c-d", "KEY=a%2Bb+c-d"),
+            // Other values without ' \ \n \r are single-quoted.
+            ("", "", "KEY=''"),
+            ("", "my secret", "KEY='my secret'"),
+            ("", "pass#123", "KEY='pass#123'"),
+            ("", r#"a"b"#, r#"KEY='a"b'"#),
+            ("", "pa$$word", "KEY='pa$$word'"),
+            ("", "a\tb", "KEY='a\tb'"),
+            ("", "a;b&c|d", "KEY='a;b&c|d'"),
+            ("", "`cmd`", "KEY='`cmd`'"),
+            ("", "(x)<y>", "KEY='(x)<y>'"),
+            ("", "!~*?=", "KEY='!~*?='"),
+            ("", "café", "KEY='café'"),
+            // Values with ' \ \n or \r are double-quoted with escapes.
             ("", "it's", r#"KEY="it's""#),
             ("", r#"a"b\c"#, r#"KEY="a\"b\\c""#),
             ("", "line1\nline2", r#"KEY="line1\nline2""#),
-            ("", "", r#"KEY="""#),
-            ("", "pa$$word", "KEY='pa$$word'"),
+            ("", "a\rb", "KEY=\"a\rb\""),
             ("", "it's $HOME", r#"KEY="it's \$HOME""#),
         ] {
             assert_eq!(
@@ -355,24 +382,61 @@ mod tests {
         }
     }
 
-    /// Values containing `$` survive a write and a re-read through dotenvy,
-    /// which substitutes `$NAME` and `${NAME}` in bare and double-quoted values.
+    /// Every quoting tier survives a write and a re-read through dotenvy,
+    /// which substitutes `$NAME` in bare and double-quoted values, fails on a
+    /// bare tab, and has no `\r` escape.
     #[test]
-    fn values_with_dollar_signs_round_trip_through_dotenvy() {
+    fn values_round_trip_through_dotenvy() {
         for value in [
+            // Bare tokens.
+            "localhost",
+            "https://user@h:8443/db_1.x",
+            "a%2B+b-c",
+            // Single-quoted.
+            "",
+            " lead and trail ",
+            "a\tb",
+            "a;b",
+            "`whoami`",
             "pa$word",
             "${HOME}x",
             "$",
-            "it's $HOME",
             "a $b c",
+            r#"say "hi""#,
+            "#hash",
+            "&|()<>!~*?=",
+            "café",
+            // Double-quoted.
+            "it's",
+            r"back\slash",
+            "line1\nline2",
+            "a\rb",
+            "trailing\r",
+            "\r\n",
+            "it's $HOME",
             "$a\nb",
             r#"$"\"#,
+            "'\t;`\"\\$\r\n",
         ] {
             let line = format_dotenv_line("", "KEY", value);
             let parsed: Vec<(String, String)> = dotenvy::from_read_iter(line.as_bytes())
                 .collect::<Result<_, _>>()
                 .unwrap_or_else(|e| panic!("{line:?}: {e}"));
             assert_eq!(parsed, [("KEY".to_string(), value.to_string())], "{line:?}");
+
+            let file = format!("BEFORE=1\n{line}\nAFTER=2\n");
+            let parsed: Vec<(String, String)> = dotenvy::from_read_iter(file.as_bytes())
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|e| panic!("{file:?}: {e}"));
+            assert_eq!(
+                parsed,
+                [
+                    ("BEFORE".to_string(), "1".to_string()),
+                    ("KEY".to_string(), value.to_string()),
+                    ("AFTER".to_string(), "2".to_string()),
+                ],
+                "{file:?}"
+            );
         }
     }
 
@@ -389,11 +453,11 @@ mod tests {
         for (existing, expected) in [
             (
                 "",
-                "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\nCLICKHOUSE_PASSWORD=\"my secret#123\"\n",
+                "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\nCLICKHOUSE_PASSWORD='my secret#123'\n",
             ),
             (
                 "# keep\nexport CLICKHOUSE_HOST = oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_USER=kept\nCLICKHOUSE_PASSWORD=old\n",
-                "# keep\nexport CLICKHOUSE_HOST=localhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_USER=kept\nCLICKHOUSE_PASSWORD=\"my secret#123\"\nCLICKHOUSE_PORT=9000\n",
+                "# keep\nexport CLICKHOUSE_HOST=localhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_USER=kept\nCLICKHOUSE_PASSWORD='my secret#123'\nCLICKHOUSE_PORT=9000\n",
             ),
         ] {
             assert_eq!(update_dotenv(existing, "CLICKHOUSE_", &vars), expected);
