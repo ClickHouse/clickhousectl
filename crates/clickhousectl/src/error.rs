@@ -499,6 +499,16 @@ pub enum Error {
         failure: crate::failure::FailureKind,
     },
 
+    /// `update` refused to replace a binary that a package manager installed
+    /// and tracks; `command` is that manager's upgrade command (#1305).
+    #[error(
+        "clickhousectl was installed with {manager}, which manages its files, so `update` will not replace it.\nUpgrade with `{command}`."
+    )]
+    PackageManagedInstall {
+        manager: &'static str,
+        command: &'static str,
+    },
+
     #[error("{0}")]
     Network(#[from] NetworkFailure),
 

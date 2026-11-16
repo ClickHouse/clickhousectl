@@ -17,3 +17,5 @@ classifiers = [
 bindings = "bin"
 manifest-path = "../crates/clickhousectl/Cargo.toml"
 strip = true
+# Tells `clickhousectl update` that pip, uv or pipx owns this install.
+features = ["channel-pip"]

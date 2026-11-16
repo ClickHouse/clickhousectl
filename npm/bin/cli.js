@@ -25,7 +25,12 @@ if (!fs.existsSync(binaryPath)) {
   process.exit(1);
 }
 
-const child = spawn(binaryPath, process.argv.slice(2), { stdio: 'inherit' });
+// The install channel marker tells `clickhousectl update` that npm owns this
+// binary, so it prints npm's upgrade command instead of replacing the file.
+const child = spawn(binaryPath, process.argv.slice(2), {
+  stdio: 'inherit',
+  env: { ...process.env, CLICKHOUSECTL_INSTALL_CHANNEL: 'npm' },
+});
 
 const IGNORED_SIGNALS = ['SIGINT', 'SIGQUIT'];
 const FORWARDED_SIGNALS = ['SIGTERM', 'SIGHUP'];

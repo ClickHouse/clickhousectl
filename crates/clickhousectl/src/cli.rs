@@ -103,6 +103,11 @@ CONTEXT FOR AGENTS:
     Skills(SkillsArgs),
 
     /// Update clickhousectl to the latest version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  npm, pip, uv and pipx installs are never replaced: `update` exits 1 naming that package manager's
+  upgrade command (--json: error code `package_managed`, the command in `command`); --check still works.
+  Otherwise the new binary must pass `--version` before it replaces the running one.")]
     Update(UpdateArgs),
 
     /// Manage anonymous usage telemetry

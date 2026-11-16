@@ -56,6 +56,8 @@ clickhousectl update --check
 clickhousectl update
 ```
 
+`update` replaces binaries installed by the script, a download, or Cargo; npm, uv, pipx, and pip installs are upgraded with their package manager, and `update` prints that command.
+
 ## Start locally
 
 Use the `latest` channel for the rolling master build of ClickHouse. A bare server start installs `latest` if no version or default is available.

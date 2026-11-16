@@ -100,6 +100,9 @@ pub enum CloudErrorCode {
     /// (#1228). Wait a few seconds and rerun `command`, the same start.
     #[serde(rename = "clickpipe_start_not_applied")]
     ClickPipeStartNotApplied,
+    /// `update` found an npm or pip/uv/pipx install and replaced nothing:
+    /// `command` is the package manager's upgrade command (#1305).
+    PackageManaged,
 }
 
 impl CloudErrorCode {
@@ -142,6 +145,7 @@ impl CloudErrorCode {
         Self::ServiceNotRunning,
         Self::ClickPipeStillPausing,
         Self::ClickPipeStartNotApplied,
+        Self::PackageManaged,
     ];
 }
 
@@ -198,6 +202,11 @@ impl CloudErrorDetail {
             Error::Http(error) if error.is_timeout() => CloudErrorCode::Timeout,
             Error::Http(_) => CloudErrorCode::Transport,
             Error::UpdateCheck { failure, .. } => CloudErrorCode::from_failure(*failure),
+            Error::PackageManagedInstall { command, .. } => {
+                let mut detail = Self::new(CloudErrorCode::PackageManaged, error.to_string());
+                detail.command = Some((*command).to_owned());
+                return std::borrow::Cow::Owned(detail);
+            }
             _ => CloudErrorCode::Other,
         };
         std::borrow::Cow::Owned(Self::new(code, error.to_string()))
@@ -814,8 +823,28 @@ mod tests {
                 "service_not_running",
                 "clickpipe_still_pausing",
                 "clickpipe_start_not_applied",
+                "package_managed",
             ]
         );
+    }
+
+    #[test]
+    fn package_managed_update_names_the_upgrade_command() {
+        let error = crate::error::Error::PackageManagedInstall {
+            manager: "npm",
+            command: "npm install -g clickhousectl@latest",
+        };
+        let detail = CloudErrorDetail::from_error(&error);
+        let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
+        assert_eq!(
+            value,
+            json!({"error": {
+                "code": "package_managed",
+                "message": error.to_string(),
+                "command": "npm install -g clickhousectl@latest",
+            }})
+        );
+        assert_eq!(error.exit_code(), 1);
     }
 
     #[test]
