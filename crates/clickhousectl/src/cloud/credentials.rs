@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const QUERY_PROVISIONING_LOCK: &str = "query-provisioning.lock";
 const CREDENTIALS_LOCK: &str = "credentials.lock";
 const CREDENTIALS_FILE: &str = "credentials.json";
 
@@ -91,36 +90,6 @@ fn lock_credentials_mutation_in(dir: &Path) -> CloudResult<std::fs::File> {
         ))
         .with_failure(ApiFailure::new(FailureKind::Io))
     })
-}
-
-/// Holds the project-wide provisioning lock for its lifetime.
-///
-/// The lock is owned by the open file handle, not by lock-file contents. If a
-/// process exits midway through provisioning, the OS releases the lock; the
-/// leftover file is safely opened and locked by the next process.
-pub(crate) struct QueryProvisioningLock {
-    _file: std::fs::File,
-}
-
-pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLock> {
-    let lock_path = ensure_local_dir()?.join(QUERY_PROVISIONING_LOCK);
-    let display_path = lock_path.clone();
-    let file = tokio::task::spawn_blocking(move || open_lock_file(&lock_path))
-        .await
-        .map_err(|error| {
-            CloudError::new(format!(
-                "failed to wait for query provisioning lock {}: {error}",
-                display_path.display()
-            ))
-        })?
-        .map_err(|error| {
-            CloudError::new(format!(
-                "failed to lock query provisioning at {}: {error}",
-                display_path.display()
-            ))
-            .with_failure(ApiFailure::new(FailureKind::Io))
-        })?;
-    Ok(QueryProvisioningLock { _file: file })
 }
 
 /// Read the saved credentials, or `None` when no file exists. A file that

@@ -387,12 +387,18 @@ async fn dangling_bound_keys(
 
 /// Bind the caller's own API key to the service's query endpoint (#1043),
 /// creating the endpoint when absent. Identifies the key with `whoami`,
-/// refusing before any write unless it is an API key of `org_id`; then, under
-/// the project's provisioning lock, prunes bindings to deleted keys and merges
-/// the caller's UUID into the rest, keeping an existing endpoint's roles and
-/// allowed origins. Creates no key and writes no local credential, so a later
-/// failure has nothing to roll back. On success the run's provisioning state
-/// becomes [`ProvisioningState::BoundCallerKey`].
+/// refusing before any write unless it is an API key of `org_id`; then prunes
+/// bindings to deleted keys and merges the caller's UUID into the rest,
+/// keeping an existing endpoint's roles and allowed origins. Creates no key
+/// and writes nothing locally, so a first-use query works from any directory,
+/// read-only or not, and a later failure has nothing to roll back (#1450). On
+/// success the run's provisioning state becomes
+/// [`ProvisioningState::BoundCallerKey`].
+///
+/// The read-merge-upsert is not serialized across processes: concurrent binds
+/// of the same key write the same list, and a bind of a different key that
+/// lands in between can only drop a binding the next run of its owner
+/// restores.
 ///
 /// When the endpoint already lists the caller and nothing was pruned, an
 /// upsert would change nothing, so none is made and the result is
@@ -411,10 +417,6 @@ pub(crate) async fn bind_caller_query_key(
         .map_err(|error| error.at_stage(FailureStage::Whoami))?;
     let caller_uuid =
         caller_key_uuid(&identity, org_id).map_err(|error| error.at_stage(FailureStage::Whoami))?;
-
-    // Serialize the read-merge-upsert across CLI processes in this project, so
-    // two concurrent binds cannot each overwrite the other's merge.
-    let _provisioning_lock = credentials::lock_query_provisioning().await?;
 
     let existing = read_bind_endpoint(client, org_id, service_id).await?;
     let bound = existing
