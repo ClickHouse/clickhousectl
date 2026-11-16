@@ -8,11 +8,17 @@
 //!
 //! Every resource is created here and torn down here: the services, the keys
 //! the test creates, the query endpoints, and the caller's own binding.
+//!
+//! Whether a query bound a key is read from the endpoint through the API,
+//! never from the CLI's stderr notice. The live harness is the API library's
+//! own (`crates/clickhouse-cloud-api/tests/common/`); run this target with
+//! `cargo test -p clickhousectl --test live_service_query_bind_test -- --ignored`.
 
+#[path = "../../clickhouse-cloud-api/tests/common/mod.rs"]
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -21,12 +27,9 @@ use clickhouse_cloud_api::models::*;
 use common::support::*;
 use serde_json::Value;
 
-const CLICKHOUSECTL_BIN_ENV: &str = "CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN";
 /// How long a management-side change (an unbinding) may take before the
 /// Query API enforces it and the CLI sees the key refused.
 const DEFAULT_REJECTION_TIMEOUT_SECS: u64 = 300;
-/// The CLI's stderr notice when it binds the caller's own key (#1043).
-const BIND_NOTICE: &str = "Binding the authenticated API key to the Query API endpoint";
 /// How long the test's own endpoint upsert may retry a `400` while a key it
 /// created moments earlier propagates (#658).
 const SEED_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(90);
@@ -35,7 +38,7 @@ const SEED_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(90);
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
 async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestResult<()> {
     let ctx = TestContext::from_env()?;
-    let clickhousectl = clickhousectl_binary()?;
+    let clickhousectl = PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"));
     let cli_workspace = tempfile::tempdir()?;
     let cli_home = cli_workspace.path().join("home");
     std::fs::create_dir(&cli_home)?;
@@ -131,6 +134,8 @@ async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestRes
 
         log_phase("First query binds the caller's own key");
 
+        // The endpoint binds only `kept` (and the deleted key), so the
+        // caller's key in the binding afterwards is what shows the bind.
         let inventory_before = key_names(&client, &ctx.org_id).await?;
         let first_query = cli.query(&service_id, false)?;
         if !first_query.status.success() {
@@ -140,10 +145,6 @@ async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestRes
         if stdout.trim() != "1" {
             return Err(format!("expected `SELECT 1` to print 1, got {stdout:?}").into());
         }
-        assert!(
-            String::from_utf8_lossy(&first_query.stderr).contains(BIND_NOTICE),
-            "the first query must bind the caller's key"
-        );
         assert_no_key_minted(
             &client,
             &ctx.org_id,
@@ -185,10 +186,6 @@ async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestRes
         if !second_query.status.success() {
             return Err(cli_failure("service query (reuse)", &second_query).into());
         }
-        assert!(
-            !String::from_utf8_lossy(&second_query.stderr).contains(BIND_NOTICE),
-            "the second query must not bind again"
-        );
         assert_eq!(
             bound_key_set(&client, &ctx.org_id, &service_id).await?,
             bound,
@@ -214,15 +211,13 @@ async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestRes
         // it refuses the caller, so the next query must bind.
         cli.poll_for_refusal_without_auto_enable(&service_id, rejection_timeout, ctx.poll_interval)
             .await?;
+        // With no endpoint, the endpoint binding exactly the caller's key
+        // afterwards is what shows the bind created it.
         let inventory_before = key_names(&client, &ctx.org_id).await?;
         let created = cli.query(&service_id, false)?;
         if !created.status.success() {
             return Err(cli_failure("service query (no endpoint)", &created).into());
         }
-        assert!(
-            String::from_utf8_lossy(&created.stderr).contains(BIND_NOTICE),
-            "the query must bind the caller's key"
-        );
         assert_eq!(String::from_utf8_lossy(&created.stdout).trim(), "1");
         assert_no_key_minted(
             &client,
@@ -285,6 +280,7 @@ impl Cli {
             .current_dir(&self.workdir)
             .env("HOME", &self.home)
             .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSECTL_NO_UPDATE_CHECK", "1")
             .env(
                 "CLICKHOUSE_CLOUD_API_KEY",
                 required_env("CLICKHOUSE_CLOUD_API_KEY")?,
@@ -342,9 +338,13 @@ impl Cli {
         Ok(credentials["service_query_keys"].get(service_id).cloned())
     }
 
-    /// Run `--no-auto-enable` queries until the CLI refuses because the
-    /// caller's key would need binding. A success means the Query API still
-    /// honours a binding that was just removed.
+    /// Run `--no-auto-enable --json` queries until the CLI refuses because
+    /// the caller's key would need binding. A success means the Query API
+    /// still honours a binding that was just removed.
+    ///
+    /// The refusal is recognised structurally: exit 1 and a JSON error whose
+    /// code is the Query API's `http_4xx` rejection and whose message names
+    /// the service and the `--no-auto-enable` flag that forbade the bind.
     async fn poll_for_refusal_without_auto_enable(
         &self,
         service_id: &str,
@@ -359,13 +359,12 @@ impl Cli {
                 let cli = self.clone();
                 let service_id = service_id.to_string();
                 async move {
-                    let output = cli.query_with(&service_id, false, &["--no-auto-enable"])?;
+                    let output = cli.query_with(&service_id, true, &["--no-auto-enable"])?;
                     if output.status.success() {
                         eprintln!("  poll: the Query API still accepts the caller key");
                         return Ok(None);
                     }
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("--no-auto-enable") {
+                    if is_no_auto_enable_refusal(&output, &service_id) {
                         Ok(Some(()))
                     } else {
                         Err(cli_failure("service query --no-auto-enable", &output).into())
@@ -718,18 +717,22 @@ fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
     }
 }
 
-fn clickhousectl_binary() -> TestResult<PathBuf> {
-    let path = std::env::var_os(CLICKHOUSECTL_BIN_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{CLICKHOUSECTL_BIN_ENV} must point to the built clickhousectl"))?;
-    if !path.is_file() {
-        return Err(format!(
-            "{CLICKHOUSECTL_BIN_ENV} does not point to a file: {}",
-            path.display()
-        )
-        .into());
+/// The `--json` refusal `--no-auto-enable` produces when the caller's key
+/// would need binding: exit 1, one `{"error": {...}}` object on stderr with
+/// the `http_4xx` code (the Query API's 401/403/404 rejection, carried
+/// across), and a message carrying the service ID and the flag.
+fn is_no_auto_enable_refusal(output: &Output, service_id: &str) -> bool {
+    if output.status.code() != Some(1) {
+        return false;
     }
-    Ok(path)
+    let Ok(envelope) = serde_json::from_slice::<Value>(&output.stderr) else {
+        return false;
+    };
+    let error = &envelope["error"];
+    let message = error["message"].as_str().unwrap_or_default();
+    error["code"] == "http_4xx"
+        && message.contains(service_id)
+        && message.contains("--no-auto-enable")
 }
 
 fn clickhouse_cloud_api_url() -> String {
@@ -746,6 +749,3 @@ fn cli_failure(action: &str, output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     )
 }
-
-#[allow(dead_code)]
-fn _path_helpers_are_used(_: &Path) {}

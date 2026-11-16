@@ -99,6 +99,9 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
 - **Local subprocess** — one `local_*` binary per concern under `crates/clickhousectl/tests/`, for what needs the
   real binary: files, processes, locks, signals, exit codes, JSON on stdout/stderr. Add a new file rather than
   growing `cli_request_shape_test.rs`, which is Cloud-only.
+- **Live Cloud** — `#[ignore]`d `live_*_test.rs` under `crates/clickhousectl/tests/`, for CLI behaviour only real
+  Cloud shows. They reuse the library's harness via `#[path]` and run in `cloud-integration.yml`
+  (`docs/development.md`).
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
 - **No wording pins** — anywhere: help, README, error messages or human output. Assert the exit code, error code

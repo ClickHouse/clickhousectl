@@ -176,7 +176,6 @@ cargo test --test clickpipe_kinesis_test -- --ignored --nocapture        # per-s
 cargo test --test clickpipe_mongo_test -- --ignored --nocapture          # per-source: MongoDB
 cargo test --test clickpipe_mysql_test -- --ignored --nocapture          # per-source: MySQL
 cargo test --test clickpipe_postgres_ec2_test -- --ignored --nocapture   # per-source: Postgres-on-EC2
-cargo test --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture # CHC-managed Postgres CDC via CLI
 cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
 ```
 
@@ -184,13 +183,14 @@ The suites load AWS credentials through the default provider chain: environment 
 
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
-The managed-Postgres target uses the CLI's default table mapping and compares exact source and destination IDs and values after snapshot, INSERT, UPDATE, and DELETE. Destination reads use `FINAL WHERE _peerdb_is_deleted = 0`. It requires `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN` to point to a built `clickhousectl` binary. From the workspace root, build and run it with:
+Two live tests drive the real `clickhousectl` binary, so they live in the CLI crate as `crates/clickhousectl/tests/live_*_test.rs`. Cargo builds the binary for them, and they share the library's harness in `crates/clickhouse-cloud-api/tests/common/` through `#[path]`. They need the same Cloud environment variables, are `#[ignore]`d, and assert JSON error codes, exit codes and Cloud API state rather than CLI wording:
 
 ```bash
-cargo build -p clickhousectl
-CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN=target/debug/clickhousectl \
-  cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture
+cargo test -p clickhousectl --test live_service_query_bind_test -- --ignored --nocapture     # service query first-use bind
+cargo test -p clickhousectl --test live_clickpipe_postgres_cdc_test -- --ignored --nocapture # CHC-managed Postgres CDC via CLI
 ```
+
+The managed-Postgres target uses the CLI's default table mapping and compares exact source and destination IDs and values after snapshot, INSERT, UPDATE, and DELETE. Destination reads use `FINAL WHERE _peerdb_is_deleted = 0`.
 
 The trusted planner runs automatically on every same-repository PR push and selects suites from that PR's merge-base-to-head diff; it is read-only and never receives Cloud secrets. When it selects no live suites, the `Cloud integration decision` check turns green with no action needed. When live suites are selected, the decision check names them and stays `action_required` until `run-cloud-integration` is applied — the labeled event is the one-shot, exact-SHA authorization that admits the environment-bearing job, so re-apply the label after any push. Unknown API source or test paths select all suites, and changes to the classifier, its tests, or the workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
 

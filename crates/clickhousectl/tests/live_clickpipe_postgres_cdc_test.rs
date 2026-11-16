@@ -3,10 +3,13 @@
 //! The managed source uses a private CA, so this test cannot cover successful
 //! creation without `--ca-certificate`. Success against a publicly trusted
 //! PostgreSQL source remains a residual gap until CI provides such a fixture.
+//!
+//! The live harness is the API library's own
+//! (`crates/clickhouse-cloud-api/tests/common/`); run this target with
+//! `cargo test -p clickhousectl --test live_clickpipe_postgres_cdc_test -- --ignored`.
 
-#[path = "../common/mod.rs"]
+#[path = "../../clickhouse-cloud-api/tests/common/mod.rs"]
 mod common;
-mod support;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -15,10 +18,11 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
+use common::support::*;
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
-use support::*;
+use serde_json::Value;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const SOURCE_SCHEMA: &str = "public";
@@ -28,7 +32,8 @@ const PUBLICATION: &str = "clickpipe_pub";
 
 const DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_CDC_LAG_TIMEOUT_SECS: u64 = 300;
-const CLICKHOUSECTL_BIN_ENV: &str = "CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN";
+/// The Cloud API's own rejection of a source signed by a private CA. It is
+/// the API's text, not the CLI's: it identifies which rejection came back.
 const PRIVATE_CA_API_ERROR: &str = "x509: certificate signed by unknown authority";
 
 #[tokio::test]
@@ -37,10 +42,11 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
     // rustls 0.23 requires a default CryptoProvider be installed before any
     // ClientConfig is constructed. install_default returns an Err if one was
     // already set by another test in the same process, which is harmless here.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // aws-lc-rs is the provider the CLI's own HTTP client already builds.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let ctx = TestContext::from_env()?;
-    let clickhousectl = clickhousectl_binary()?;
+    let clickhousectl = PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"));
     let cli_workspace = tempfile::tempdir()?;
     let cli_home = cli_workspace.path().join("home");
     std::fs::create_dir(&cli_home)?;
@@ -346,32 +352,39 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             }
             return Err("clickpipe creation without the private CA unexpectedly succeeded".into());
         }
+        // The rejection is read structurally from the `--json` error: exit 1,
+        // the API's 4xx carried across as `http_4xx`, the API's own x509
+        // detail preserved, and the flag that fixes it named.
         if no_ca_output.status.code() != Some(1) {
             return Err(cli_failure("private-CA rejection", &no_ca_output).into());
         }
-        let no_ca_stderr = String::from_utf8_lossy(&no_ca_output.stderr);
-        let api_error_position = no_ca_stderr.find(PRIVATE_CA_API_ERROR).ok_or_else(|| {
+        let no_ca_error: Value = serde_json::from_slice(&no_ca_output.stderr).map_err(|error| {
             cli_failure(
-                "private-CA rejection did not preserve the API x509 error",
+                &format!("private-CA rejection was not a JSON error ({error})"),
                 &no_ca_output,
             )
         })?;
-        let hint_position = no_ca_stderr
-            .find("Hint: The source certificate chain is not publicly trusted")
-            .ok_or_else(|| {
-                cli_failure(
-                    "private-CA rejection did not include the CLI guidance",
-                    &no_ca_output,
-                )
-            })?;
-        assert!(
-            api_error_position < hint_position,
-            "the original API error must be preserved before the CLI hint"
-        );
-        assert!(
-            no_ca_stderr.contains("--ca-certificate <PATH>"),
-            "private-CA guidance omitted the required flag: {no_ca_stderr}"
-        );
+        let no_ca_error = &no_ca_error["error"];
+        let no_ca_message = no_ca_error["message"].as_str().unwrap_or_default();
+        if no_ca_error["code"] != "http_4xx" {
+            return Err(
+                cli_failure("private-CA rejection was not an http_4xx", &no_ca_output).into(),
+            );
+        }
+        if !no_ca_message.contains(PRIVATE_CA_API_ERROR) {
+            return Err(cli_failure(
+                "private-CA rejection did not preserve the API x509 error",
+                &no_ca_output,
+            )
+            .into());
+        }
+        if !no_ca_message.contains("--ca-certificate") {
+            return Err(cli_failure(
+                "private-CA rejection did not name --ca-certificate",
+                &no_ca_output,
+            )
+            .into());
+        }
 
         let pipe_name = format!("cdc-{}", ctx.run_id);
         let create_output = invoke_postgres_cli(
@@ -519,18 +532,14 @@ fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
     }
 }
 
-fn clickhousectl_binary() -> TestResult<PathBuf> {
-    let path = std::env::var_os(CLICKHOUSECTL_BIN_ENV)
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{CLICKHOUSECTL_BIN_ENV} must point to the built clickhousectl"))?;
-    if !path.is_file() {
-        return Err(format!(
-            "{CLICKHOUSECTL_BIN_ENV} does not point to a file: {}",
-            path.display()
-        )
-        .into());
-    }
-    Ok(path)
+/// A pipe's id as a string — every follow-up call needs it.
+fn clickpipe_id(pipe: &ClickPipe) -> TestResult<String> {
+    Ok(require_field(pipe.id.as_ref(), "id")?.to_string())
+}
+
+/// A pipe's state as a string, or an empty string when the API omitted it.
+fn clickpipe_state(pipe: &ClickPipe) -> String {
+    field_string(pipe.state.as_ref())
 }
 
 fn clickhouse_cloud_api_url() -> String {
@@ -604,6 +613,7 @@ fn invoke_postgres_cli(
         .current_dir(workdir)
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSECTL_NO_UPDATE_CHECK", "1")
         .args(create.args(name, ca_certificate))
         .output()?)
 }

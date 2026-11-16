@@ -25,6 +25,19 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhousectl/src/cloud/permissions.rs": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/saved_queries.rs": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/services/jwt_provider.rs": classifier.NO_SUITES,
+            "crates/clickhousectl/src/cloud/services/query.rs": frozenset({"service"}),
+            "crates/clickhousectl/src/cloud/services/query_key.rs": frozenset(
+                {"service"}
+            ),
+            "crates/clickhousectl/tests/live_service_query_bind_test.rs": frozenset(
+                {"service"}
+            ),
+            "crates/clickhousectl/tests/live_clickpipe_postgres_cdc_test.rs": frozenset(
+                {"clickpipes"}
+            ),
+            "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs": frozenset(
+                {"service"}
+            ),
             "Cargo.lock": classifier.ALL_SUITES,
             "crates/clickhousectl/Cargo.toml": classifier.ALL_SUITES,
             ".cargo/config.toml": classifier.ALL_SUITES,
@@ -198,7 +211,6 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/integration_udf_test.rs",
                 "crates/clickhouse-cloud-api/tests/fixtures/udf_source.zip",
                 "crates/clickhouse-cloud-api/tests/integration_test.rs",
-                "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs",
             },
             frozenset({"postgres"}): {
                 "crates/clickhouse-cloud-api/tests/integration_postgres_test.rs"
@@ -207,7 +219,6 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/integration_org_test.rs"
             },
             frozenset({"clickpipes"}): {
-                "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cli_cdc_test.rs",
                 "crates/clickhouse-cloud-api/tests/clickpipes/smoke_test.rs",
                 "crates/clickhouse-cloud-api/tests/clickpipes/support.rs",
             },
@@ -348,6 +359,26 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                     selection = classifier.select_records(records)
                     self.assertEqual(selection.suites, ())
                     self.assertFalse(selection.failed_closed)
+
+    def test_live_cli_tests_moved_out_of_the_library_keep_their_suites(self):
+        for old_path, new_path, expected in (
+            (
+                "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs",
+                "crates/clickhousectl/tests/live_service_query_bind_test.rs",
+                ("service",),
+            ),
+            (
+                "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cli_cdc_test.rs",
+                "crates/clickhousectl/tests/live_clickpipe_postgres_cdc_test.rs",
+                ("clickpipes",),
+            ),
+        ):
+            with self.subTest(path=new_path):
+                selection = classifier.select_records(
+                    [("R090", (old_path, new_path))]
+                )
+                self.assertEqual(selection.suites, expected)
+                self.assertFalse(selection.failed_closed)
 
     def test_known_none_is_distinct_from_unknown(self):
         known = classifier.select_records(
