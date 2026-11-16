@@ -786,7 +786,7 @@ const INLINE_QUERY_WITH_STDIN_ERROR: &str = "--query cannot be combined with SQL
      The Query API sends one request body, so redirected data is never read. Pipe the statement \
      and its data together on stdin instead: \
      printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud service query \
-     --id <id>. Or read a whole statement from stdin with --queries-file -.";
+     <service-id>. Or read a whole statement from stdin with --queries-file -.";
 
 /// Whether `--query` conflicts with what is on stdin. Pure, so the decision is
 /// unit-tested without a real file descriptor. Only bytes that are actually

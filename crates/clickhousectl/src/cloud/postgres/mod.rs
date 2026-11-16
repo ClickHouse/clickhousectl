@@ -76,7 +76,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api(
         "postgres slow-queries list",
         &[&op::SLOW_QUERY_PATTERNS_GET_LIST],
-    ),
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET]),
     Permission::api(
         "postgres prometheus service",
@@ -90,7 +91,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api(
         "postgres backup list",
         &[&op::POSTGRES_SERVICE_BACKUP_GET_LIST],
-    ),
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
@@ -376,6 +378,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             };
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
             postgres_slow_queries_list(client, &postgres_id, input, json).await
         }
         PostgresCommands::SlowQueries(SlowQueryCommands::Get {
@@ -411,7 +414,10 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_id,
             cursor,
             limit,
-        }) => postgres_backup_list(client, &postgres_id, cursor.as_deref(), limit, json).await,
+        }) => {
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            postgres_backup_list(client, &postgres_id, cursor.as_deref(), limit, json).await
+        }
         PostgresCommands::Restore {
             postgres_id,
             name,
