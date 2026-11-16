@@ -105,53 +105,7 @@ pub(super) fn build_create_request_args(
             "--object-storage-* settings can only be used with clickpipe create object-storage",
         ));
     }
-    let settings =
-        args.settings
-            .has_any()
-            .then(|| clickhouse_cloud_api::models::ClickPipeSettings {
-                streaming_max_insert_wait_ms: args
-                    .settings
-                    .streaming_max_insert_wait_ms
-                    .map(i64::from),
-                object_storage_concurrency: args.settings.object_storage_concurrency.map(i64::from),
-                object_storage_polling_interval_ms: args
-                    .settings
-                    .object_storage_polling_interval_ms
-                    .map(i64::from),
-                object_storage_max_insert_bytes: args
-                    .settings
-                    .object_storage_max_insert_bytes
-                    .map(|value| value as i64),
-                object_storage_max_file_count: args
-                    .settings
-                    .object_storage_max_file_count
-                    .map(i64::from),
-                object_storage_max_file_size: args.settings.object_storage_max_file_size,
-                clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
-                clickhouse_max_insert_threads: args
-                    .settings
-                    .clickhouse_max_insert_threads
-                    .map(i64::from),
-                clickhouse_max_download_threads: args
-                    .settings
-                    .clickhouse_max_download_threads
-                    .map(i64::from),
-                clickhouse_min_insert_block_size_bytes: args
-                    .settings
-                    .clickhouse_min_insert_block_size_bytes
-                    .map(|value| value as i64),
-                clickhouse_parallel_distributed_insert_select: args
-                    .settings
-                    .clickhouse_parallel_distributed_insert_select
-                    .map(i64::from),
-                kafka_read_committed: args.settings.kafka_read_committed,
-                object_storage_use_cluster_function: args
-                    .settings
-                    .object_storage_use_cluster_function,
-                clickhouse_parallel_view_processing: args
-                    .settings
-                    .clickhouse_parallel_view_processing,
-            });
+    let settings = args.settings.to_create_settings();
 
     Ok(BuiltCreateRequestArgs {
         start_paused: args.start_paused,

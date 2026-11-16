@@ -10,8 +10,8 @@ use crate::cloud::clickpipes::sources::{
     AuthenticationValueParser, GcpAuthentication, read_gcp_service_account_file,
 };
 use crate::cloud::clickpipes::table_mapping::{
-    parse_bigquery_table_mapping_json, parse_postgres_table_mapping,
-    parse_postgres_table_mapping_parts,
+    parse_bigquery_table_mapping, parse_bigquery_table_mapping_json,
+    parse_bigquery_table_mapping_parts,
 };
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::shared::resolve_org_id;
@@ -98,7 +98,7 @@ pub struct BigQueryCreateArgs {
     #[arg(
         long = "table-mapping",
         value_name = "DATASET.TABLE:TARGET_TABLE",
-        value_parser = parse_postgres_table_mapping
+        value_parser = parse_bigquery_table_mapping
     )]
     pub table_mappings: Vec<String>,
 
@@ -309,7 +309,7 @@ fn resolve_bigquery_table_mappings(
         Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
     for mapping in &args.table_mappings {
         let (source_dataset_name, source_table, target_table) =
-            parse_postgres_table_mapping_parts(mapping)?;
+            parse_bigquery_table_mapping_parts(mapping)?;
         mappings.push(ClickPipeBigQueryPipeTableMapping {
             source_dataset_name,
             source_table,
@@ -539,6 +539,28 @@ mod tests {
         assert_eq!(args.snapshot_rows_per_partition, None);
         assert_eq!(args.snapshot_parallel_tables, None);
         assert_eq!(args.destination.destination_database, "default");
+    }
+
+    #[test]
+    fn bigquery_table_mapping_errors_name_the_dataset_format() {
+        let error = clickpipe_parse_error(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "events:events",
+        ]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_names(
+            &error.to_string(),
+            &["'events:events'", "dataset.table:target_table"],
+        );
     }
 
     #[test]

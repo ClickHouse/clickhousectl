@@ -31,21 +31,93 @@ pub(super) async fn clickpipe_settings_get(
 }
 
 impl ClickPipeSettingsValues {
-    pub(super) fn has_any(&self) -> bool {
-        self.streaming_max_insert_wait_ms.is_some()
-            || self.object_storage_concurrency.is_some()
-            || self.object_storage_polling_interval_ms.is_some()
-            || self.object_storage_max_insert_bytes.is_some()
-            || self.object_storage_max_file_count.is_some()
-            || self.object_storage_max_file_size.is_some()
-            || self.clickhouse_max_threads.is_some()
-            || self.clickhouse_max_insert_threads.is_some()
-            || self.clickhouse_max_download_threads.is_some()
-            || self.clickhouse_min_insert_block_size_bytes.is_some()
-            || self.clickhouse_parallel_distributed_insert_select.is_some()
-            || self.kafka_read_committed.is_some()
-            || self.object_storage_use_cluster_function.is_some()
-            || self.clickhouse_parallel_view_processing.is_some()
+    /// The API settings these flags select, with every omitted flag omitted.
+    ///
+    /// The single field-by-field conversion: the create builder (including its
+    /// "any setting given?" check) and the `settings update` builder both go
+    /// through it, and the exhaustive destructure makes a new flag a compile
+    /// error here instead of a value one of them silently drops.
+    fn to_put_request(&self) -> clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+        let Self {
+            streaming_max_insert_wait_ms,
+            object_storage_concurrency,
+            object_storage_polling_interval_ms,
+            object_storage_max_insert_bytes,
+            object_storage_max_file_count,
+            object_storage_max_file_size,
+            clickhouse_max_threads,
+            clickhouse_max_insert_threads,
+            clickhouse_max_download_threads,
+            clickhouse_min_insert_block_size_bytes,
+            clickhouse_parallel_distributed_insert_select,
+            kafka_read_committed,
+            object_storage_use_cluster_function,
+            clickhouse_parallel_view_processing,
+        } = *self;
+        clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+            streaming_max_insert_wait_ms: streaming_max_insert_wait_ms.map(i64::from),
+            object_storage_concurrency: object_storage_concurrency.map(i64::from),
+            object_storage_polling_interval_ms: object_storage_polling_interval_ms.map(i64::from),
+            object_storage_max_insert_bytes: object_storage_max_insert_bytes
+                .map(|value| value as i64),
+            object_storage_max_file_count: object_storage_max_file_count.map(i64::from),
+            object_storage_max_file_size,
+            clickhouse_max_threads: clickhouse_max_threads.map(i64::from),
+            clickhouse_max_insert_threads: clickhouse_max_insert_threads.map(i64::from),
+            clickhouse_max_download_threads: clickhouse_max_download_threads.map(i64::from),
+            clickhouse_min_insert_block_size_bytes: clickhouse_min_insert_block_size_bytes
+                .map(|value| value as i64),
+            clickhouse_parallel_distributed_insert_select:
+                clickhouse_parallel_distributed_insert_select.map(i64::from),
+            kafka_read_committed,
+            object_storage_use_cluster_function,
+            clickhouse_parallel_view_processing,
+        }
+    }
+
+    /// The create-time `settings` block, or `None` when no setting flag was
+    /// passed so the request omits the key.
+    pub(super) fn to_create_settings(
+        &self,
+    ) -> Option<clickhouse_cloud_api::models::ClickPipeSettings> {
+        // The create and update bodies are distinct library types with the
+        // same fields; destructuring without `..` keeps them in step.
+        let request = self.to_put_request();
+        if request == clickhouse_cloud_api::models::ClickPipeSettingsPutRequest::default() {
+            return None;
+        }
+        let clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+            clickhouse_max_download_threads,
+            clickhouse_max_insert_threads,
+            clickhouse_max_threads,
+            clickhouse_min_insert_block_size_bytes,
+            clickhouse_parallel_distributed_insert_select,
+            clickhouse_parallel_view_processing,
+            kafka_read_committed,
+            object_storage_concurrency,
+            object_storage_max_file_count,
+            object_storage_max_file_size,
+            object_storage_max_insert_bytes,
+            object_storage_polling_interval_ms,
+            object_storage_use_cluster_function,
+            streaming_max_insert_wait_ms,
+        } = request;
+        Some(clickhouse_cloud_api::models::ClickPipeSettings {
+            clickhouse_max_download_threads,
+            clickhouse_max_insert_threads,
+            clickhouse_max_threads,
+            clickhouse_min_insert_block_size_bytes,
+            clickhouse_parallel_distributed_insert_select,
+            clickhouse_parallel_view_processing,
+            kafka_read_committed,
+            object_storage_concurrency,
+            object_storage_max_file_count,
+            object_storage_max_file_size,
+            object_storage_max_insert_bytes,
+            object_storage_polling_interval_ms,
+            object_storage_use_cluster_function,
+            streaming_max_insert_wait_ms,
+        })
     }
 
     pub(super) fn has_object_storage_setting(&self) -> bool {
@@ -90,30 +162,9 @@ fn build_clickpipe_settings_request(
     values: &ClickPipeSettingsValues,
     kafka_read_committed: Option<bool>,
 ) -> clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
-    clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
-        streaming_max_insert_wait_ms: values.streaming_max_insert_wait_ms.map(i64::from),
-        object_storage_concurrency: values.object_storage_concurrency.map(i64::from),
-        object_storage_polling_interval_ms: values
-            .object_storage_polling_interval_ms
-            .map(i64::from),
-        object_storage_max_insert_bytes: values
-            .object_storage_max_insert_bytes
-            .map(|value| value as i64),
-        object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
-        object_storage_max_file_size: values.object_storage_max_file_size,
-        clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
-        clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
-        object_storage_use_cluster_function: values.object_storage_use_cluster_function,
-        clickhouse_parallel_view_processing: values.clickhouse_parallel_view_processing,
-        kafka_read_committed: values.kafka_read_committed.or(kafka_read_committed),
-        clickhouse_max_download_threads: values.clickhouse_max_download_threads.map(i64::from),
-        clickhouse_min_insert_block_size_bytes: values
-            .clickhouse_min_insert_block_size_bytes
-            .map(|value| value as i64),
-        clickhouse_parallel_distributed_insert_select: values
-            .clickhouse_parallel_distributed_insert_select
-            .map(i64::from),
-    }
+    let mut request = values.to_put_request();
+    request.kafka_read_committed = request.kafka_read_committed.or(kafka_read_committed);
+    request
 }
 
 pub(super) async fn clickpipe_settings_update(
@@ -177,6 +228,33 @@ mod tests {
     };
     use crate::cloud::clickpipes::test_support::{assert_names, parse_clickpipe};
     use clap::Parser;
+
+    #[test]
+    fn settings_update_requires_one_of_every_settings_flag() {
+        use clap::{Args, CommandFactory};
+        use std::collections::BTreeSet;
+
+        let flags: BTreeSet<String> =
+            ClickPipeSettingsValues::augment_args(clap::Command::new("settings"))
+                .get_arguments()
+                .map(|argument| argument.get_id().to_string())
+                .collect();
+        let command = Cli::command();
+        let update = command
+            .find_subcommand("cloud")
+            .and_then(|cloud| cloud.find_subcommand("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand("settings"))
+            .and_then(|settings| settings.find_subcommand("update"))
+            .expect("clickpipe settings update command");
+        let group: BTreeSet<String> = update
+            .get_groups()
+            .find(|group| group.get_id() == "settings")
+            .expect("settings group")
+            .get_args()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(group, flags);
+    }
 
     #[test]
     fn object_storage_insert_size_boundaries_match_create_and_settings_update() {

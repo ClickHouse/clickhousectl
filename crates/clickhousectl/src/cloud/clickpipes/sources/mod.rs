@@ -15,6 +15,62 @@ use clap::builder::{PossibleValue, TypedValueParser};
 pub(super) const DB_AUTHS: &[&str] = &["basic", "IAM_ROLE"];
 pub(super) const REPLICATION_MODES: &[&str] = &["cdc", "snapshot", "cdc_only"];
 
+/// Check the `--auth` (one of [`DB_AUTHS`]) rules shared by the Postgres and
+/// MySQL creates, which clap cannot express because they depend on the value
+/// of `--auth` rather than its presence. One copy, because the same bug was
+/// filed and fixed twice when each source kept its own (#662, #670).
+pub(super) fn validate_db_auth_args(
+    auth: &str,
+    iam_role: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> CloudResult<()> {
+    // Clap enforces this for parsed input via `required_if_eq`; hand-built
+    // args reach it here.
+    if auth == "IAM_ROLE" && iam_role.is_none() {
+        return Err(CloudError::usage(
+            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
+        ));
+    }
+    if auth == "basic" && iam_role.is_some() {
+        return Err(CloudError::usage(
+            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
+        ));
+    }
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential. Reject the pair rather than silently dropping it, the
+    // same way basic auth rejects --iam-role.
+    if auth == "IAM_ROLE" && (username.is_some() || password.is_some()) {
+        return Err(CloudError::usage(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
+        ));
+    }
+    // clap joins --username and --password with `requires`, so half a pair is
+    // already a usage error; this owns the "basic auth needs the pair at all"
+    // rule, which clap cannot express because it depends on --auth's value.
+    if auth == "basic" && (username.is_none() || password.is_none()) {
+        return Err(CloudError::usage(
+            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+        ));
+    }
+    Ok(())
+}
+
+/// The `PLAIN` credentials for basic auth. `validate_db_auth_args` has already
+/// required the pair, so `zip` yields `Some` for every invocation that
+/// reaches a builder.
+pub(super) fn basic_auth_credentials(
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Option<clickhouse_cloud_api::models::PLAIN> {
+    username
+        .zip(password)
+        .map(|(username, password)| clickhouse_cloud_api::models::PLAIN {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum GcpAuthentication {
     ServiceAccount,

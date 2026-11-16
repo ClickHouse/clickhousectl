@@ -99,23 +99,23 @@ pub struct MongoDbCreateArgs {
     pub skip_cert_verification: bool,
 
     /// Interval in seconds to sync data during CDC replication
-    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "SECONDS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub sync_interval_seconds: Option<i64>,
 
     /// Number of rows to pull in each CDC batch
-    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub pull_batch_size: Option<i64>,
 
     /// Parallel workers per collection during the initial snapshot
-    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "WORKERS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub initial_load_parallelism: Option<i64>,
 
     /// Number of rows per partition during the snapshot phase
-    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1000..))]
     pub snapshot_rows_per_partition: Option<i64>,
 
     /// Collections to snapshot in parallel during the initial load phase
-    #[arg(long, value_name = "COLLECTIONS", value_parser = clap::value_parser!(i64).range(1..))]
+    #[arg(long, value_name = "COLLECTIONS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub snapshot_parallel_collections: Option<i64>,
 
     /// Enable hard deletes in ReplacingMergeTree for MongoDB DELETEs
@@ -309,8 +309,8 @@ mod tests {
     use super::*;
     use crate::cloud::clickpipes::cli::{ClickPipeCommands, ClickPipeCreateCommands};
     use crate::cloud::clickpipes::test_support::{
-        MAXIMAL_MONGODB_TABLE_MAPPING_JSON, assert_names, assert_rejected, names_word,
-        parse_clickpipe,
+        MAXIMAL_MONGODB_TABLE_MAPPING_JSON, assert_names, assert_rejected, clickpipe_parse_error,
+        names_word, parse_clickpipe,
     };
     use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMappingTableengine;
 
@@ -445,6 +445,37 @@ mod tests {
                 flag,
                 invalid,
             ]);
+        }
+    }
+
+    #[test]
+    fn mongodb_cdc_tuning_reports_negative_values_as_out_of_range() {
+        for flag in [
+            "--sync-interval-seconds",
+            "--pull-batch-size",
+            "--initial-load-parallelism",
+            "--snapshot-rows-per-partition",
+            "--snapshot-parallel-collections",
+        ] {
+            let error = clickpipe_parse_error(&[
+                "create",
+                "mongodb",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--table-mapping",
+                "source.events:events",
+                flag,
+                "-1",
+            ]);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_names(&error.to_string(), &[flag]);
         }
     }
 
