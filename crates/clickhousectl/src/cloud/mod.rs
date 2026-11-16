@@ -298,7 +298,6 @@ mod runtime_tests {
             port: Some(9440),
             command: Some("clickhouse client".into()),
             api_key_id: None,
-            ip_access_list: None,
         };
         let error = cloud_error_to_top_level(CloudError::new("timed out").with_details(detail));
         match &error {
@@ -327,7 +326,6 @@ mod runtime_tests {
             port: None,
             command: None,
             api_key_id: None,
-            ip_access_list: None,
         };
         let error = cloud_error_to_top_level(CloudError::auth("nope").with_details(detail));
         assert!(matches!(&error, Error::AuthRequired(message) if message == "nope"));

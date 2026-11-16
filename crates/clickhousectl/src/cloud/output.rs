@@ -78,35 +78,16 @@ pub enum CloudErrorCode {
     Other,
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,
-    /// The stored Query API key no longer exists in the organization; the
-    /// record was kept and `repair-query-key` replaces it (#528).
-    QueryKeyDeleted,
-    /// The stored Query API key exists but an administrator disabled it; it
-    /// was neither replaced nor removed (#528).
-    QueryKeyDisabled,
-    /// The stored Query API key exists but its `expireAt` has passed; it was
-    /// neither replaced nor removed (#528).
-    QueryKeyExpired,
-    /// The stored Query API key is enabled but no longer bound to the
-    /// service's Query API endpoint; it was neither replaced nor removed
-    /// (#528).
-    QueryKeyUnbound,
-    /// The stored Query API key is enabled, unexpired and bound, yet the
-    /// Query API still rejects it: its IP access list or the local secret is
-    /// the likely cause; nothing was changed (#528).
-    QueryKeyRejected,
-    /// The stored Query API key's management record could not be read, so
-    /// the rejection could not be classified; nothing was changed (#528).
-    QueryKeyUnverified,
-    /// `repair-query-key` replaced and stored the key, but the Query API kept
-    /// rejecting the replacement for the whole readiness window. The repair
-    /// is committed; rerunning it would rotate a key that may be fine (#658).
-    QueryKeyRepairUnverified,
     /// `cloud service query` found the authenticated API key already bound to
     /// the service's Query API endpoint, yet the Query API kept rejecting it
     /// for the whole readiness window; no upsert was made, since rebinding
     /// cannot help (#1043).
     QueryKeyBoundRejected,
+    /// `cloud service query` had to bind the authenticated API key to the
+    /// service's Query API endpoint, and the Cloud API refused the write
+    /// (`403`), typically because the key is read-only. Nothing was changed;
+    /// `command` inspects the endpoint and `api_key_id` names the key (#1325).
+    QueryKeyBindForbidden,
     /// A by-identifier request named a resource that does not exist: the API
     /// answered 404, or rejected a well-formed UUID on a get or delete
     /// (#666), or a `--name`/`--email` matched nothing (#1237). `command`
@@ -169,14 +150,8 @@ impl CloudErrorCode {
         Self::RateLimited,
         Self::Other,
         Self::QueryTimeout,
-        Self::QueryKeyDeleted,
-        Self::QueryKeyDisabled,
-        Self::QueryKeyExpired,
-        Self::QueryKeyUnbound,
-        Self::QueryKeyRejected,
-        Self::QueryKeyUnverified,
-        Self::QueryKeyRepairUnverified,
         Self::QueryKeyBoundRejected,
+        Self::QueryKeyBindForbidden,
         Self::ResourceNotFound,
         Self::UdfDefinitionInvalid,
         Self::UdfSourceInvalid,
@@ -207,14 +182,10 @@ pub struct CloudErrorDetail {
     /// any credential: both are placeholders.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// Management resource ID of the stored Query API key a `query_key_*`
-    /// failure is about (#528). A resource ID, never the credential pair.
+    /// Management resource ID of the API key a `query_key_*` failure is
+    /// about. A resource ID, never the credential pair.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_id: Option<String>,
-    /// The key's IP access list (CIDRs only), when the rejection may be an
-    /// allowlist miss (#528).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_access_list: Option<Vec<String>>,
 }
 
 impl CloudErrorDetail {
@@ -226,7 +197,6 @@ impl CloudErrorDetail {
             port: None,
             command: None,
             api_key_id: None,
-            ip_access_list: None,
         }
     }
 
@@ -851,14 +821,8 @@ mod tests {
                 "rate_limited",
                 "other",
                 "query_timeout",
-                "query_key_deleted",
-                "query_key_disabled",
-                "query_key_expired",
-                "query_key_unbound",
-                "query_key_rejected",
-                "query_key_unverified",
-                "query_key_repair_unverified",
                 "query_key_bound_rejected",
+                "query_key_bind_forbidden",
                 "resource_not_found",
                 "udf_definition_invalid",
                 "udf_source_invalid",
@@ -896,22 +860,21 @@ mod tests {
     #[test]
     fn cloud_error_detail_omits_absent_fields() {
         let detail = CloudErrorDetail {
-            code: CloudErrorCode::QueryKeyDisabled,
-            message: "disabled".into(),
+            code: CloudErrorCode::QueryKeyBoundRejected,
+            message: "rejected".into(),
             host: None,
             port: None,
-            command: Some("clickhousectl cloud service repair-query-key svc-1".into()),
+            command: Some("clickhousectl cloud service query-endpoint get svc-1".into()),
             api_key_id: Some("key-1".into()),
-            ip_access_list: None,
         };
         let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
         assert_eq!(
             value,
             json!({
                 "error": {
-                    "code": "query_key_disabled",
-                    "message": "disabled",
-                    "command": "clickhousectl cloud service repair-query-key svc-1",
+                    "code": "query_key_bound_rejected",
+                    "message": "rejected",
+                    "command": "clickhousectl cloud service query-endpoint get svc-1",
                     "api_key_id": "key-1",
                 }
             })

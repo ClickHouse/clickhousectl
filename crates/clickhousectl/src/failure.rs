@@ -57,19 +57,10 @@ pub enum FailureStage {
     /// the query endpoint, including rejecting a caller that is not an API
     /// key of the resolved organization (#1043).
     Whoami,
-    /// Creating the replacement Query API key during `repair-query-key`.
-    KeyCreate,
-    /// Reading the management record of the stored Query API key, to tell a
-    /// stale local credential from an intentional revocation (#528).
-    KeyGet,
     /// Reading the service's existing query-endpoint configuration.
     EndpointGet,
     /// Writing (upserting) the query-endpoint configuration.
     EndpointUpsert,
-    /// Deleting a superseded or no-longer-needed stored per-service Query API
-    /// key: the retired key after a repair, a pending retirement retried on a
-    /// later run, or the stored keys of a service being deleted (#527).
-    KeyDelete,
     /// Streaming a statement's response body to stdout.
     ResponseStream,
 }
@@ -84,11 +75,8 @@ impl FailureStage {
             Self::ServiceResolution => "service_resolution",
             Self::QueryRequest => "query_request",
             Self::Whoami => "whoami",
-            Self::KeyCreate => "key_create",
-            Self::KeyGet => "key_get",
             Self::EndpointGet => "endpoint_get",
             Self::EndpointUpsert => "endpoint_upsert",
-            Self::KeyDelete => "key_delete",
             Self::ResponseStream => "response_stream",
         }
     }
@@ -101,11 +89,8 @@ impl FailureStage {
         Self::ServiceResolution,
         Self::QueryRequest,
         Self::Whoami,
-        Self::KeyCreate,
-        Self::KeyGet,
         Self::EndpointGet,
         Self::EndpointUpsert,
-        Self::KeyDelete,
         Self::ResponseStream,
     ];
 }
@@ -176,8 +161,6 @@ pub enum ProvisioningState {
     /// The caller's own OAuth bearer token was used; no key provisioning is
     /// possible on this path.
     Bearer,
-    /// The per-service key from `.clickhouse/credentials.json` was used.
-    StoredKey,
     /// The authenticated management API key was used directly.
     ManagementKey,
     /// Provisioning was in flight: the caller's own API key was being bound
@@ -195,7 +178,6 @@ impl ProvisioningState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bearer => "bearer",
-            Self::StoredKey => "stored_key",
             Self::ManagementKey => "management_key",
             Self::Provisioning => "provisioning",
             Self::BoundCallerKey => "bound_caller_key",
@@ -206,7 +188,6 @@ impl ProvisioningState {
     #[cfg(test)]
     const ALL: &'static [Self] = &[
         Self::Bearer,
-        Self::StoredKey,
         Self::ManagementKey,
         Self::Provisioning,
         Self::BoundCallerKey,
@@ -465,11 +446,8 @@ mod tests {
                 "service_resolution",
                 "query_request",
                 "whoami",
-                "key_create",
-                "key_get",
                 "endpoint_get",
                 "endpoint_upsert",
-                "key_delete",
                 "response_stream",
             ]
         );
@@ -493,7 +471,6 @@ mod tests {
             provisioning,
             [
                 "bearer",
-                "stored_key",
                 "management_key",
                 "provisioning",
                 "bound_caller_key",
@@ -697,7 +674,7 @@ mod tests {
         let now = Instant::now();
         state.start_span(now);
         state.note_retry();
-        state.set_provisioning(ProvisioningState::StoredKey);
+        state.set_provisioning(ProvisioningState::ManagementKey);
         assert_eq!(
             state.snapshot(now),
             None,
@@ -734,7 +711,7 @@ mod tests {
             state.note_retry();
         }
         state.record(
-            FailureStage::KeyCreate,
+            FailureStage::EndpointUpsert,
             ApiFailure::with_status(FailureKind::RateLimited, 429),
         );
 
@@ -744,7 +721,7 @@ mod tests {
         assert_eq!(
             snapshot,
             Snapshot {
-                failure_stage: "key_create",
+                failure_stage: "endpoint_upsert",
                 failure_kind: "rate_limited",
                 http_status: Some(429),
                 retry_bucket: "3_5",

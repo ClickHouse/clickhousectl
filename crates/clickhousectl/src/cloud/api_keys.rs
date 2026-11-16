@@ -16,12 +16,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
-use crate::cloud::credentials;
 use crate::cloud::output::{eprint_line, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
-use crate::failure::FailureStage;
 use clap::{Subcommand, builder::PossibleValuesParser};
 #[cfg(test)]
 use clickhouse_cloud_api::models::IpAccessListEntry;
@@ -640,93 +638,6 @@ async fn key_delete(client: &CloudClient, key_id: &str, json: bool) -> CloudResu
     Ok(())
 }
 
-/// Return query API keys only when their exact resource and organization IDs
-/// were saved during provisioning or repair. The boolean indicates that
-/// partial cleanup metadata must remain on disk because discarding it would
-/// lose the key ID.
-pub(crate) fn service_query_key_cleanup(
-    org_id: &str,
-    service_id: &str,
-) -> CloudResult<(Vec<String>, bool)> {
-    let Some(key) = credentials::try_get_service_query_key(service_id)? else {
-        return Ok((vec![], false));
-    };
-    let Some(api_key_id) = key.api_key_id else {
-        // `eprint_line`, not `eprintln!`: a warning on the way to deleting a
-        // service must not panic on a closed stderr (#598).
-        eprint_line(format!(
-            "Warning: the stored query key for service {service_id} predates exact management \
-             API key IDs; service deletion will continue without unsafe cloud key cleanup."
-        ));
-        return Ok((vec![], false));
-    };
-    let Some(key_org_id) = key.organization_id else {
-        eprint_line(format!(
-            "Warning: the stored query key for service {service_id} has a management API key ID \
-             but no provisioning organization; cloud key cleanup was skipped and the local \
-             record was retained."
-        ));
-        return Ok((vec![], true));
-    };
-    if key_org_id != org_id {
-        return Err(CloudError::new(format!(
-            "the stored query key for service {service_id} belongs to organization {key_org_id}, \
-             not {org_id}; refusing to delete either resource"
-        )));
-    }
-    let mut api_key_ids = key.pending_cleanup_api_key_ids;
-    if !api_key_ids.iter().any(|key_id| key_id == &api_key_id) {
-        api_key_ids.push(api_key_id);
-    }
-    Ok((api_key_ids, false))
-}
-
-/// Delete every owned query API key of a deleted service: the current key and
-/// any retired key whose deletion is still pending (#527). Every key is
-/// attempted, so one failure does not leave the others behind; the failures
-/// are then reported together. The caller keeps the local record on failure,
-/// so the exact IDs remain available for manual deletion.
-pub(crate) async fn cleanup_service_query_key(
-    client: &CloudClient,
-    org_id: &str,
-    service_id: &str,
-    api_key_ids: &[String],
-) -> CloudResult<()> {
-    let mut failures: Vec<(String, CloudError)> = vec![];
-    for api_key_id in api_key_ids {
-        if let Err(error) = client
-            .delete_api_key_if_exists(org_id, api_key_id)
-            .await
-            .map_err(|error| error.at_stage(FailureStage::KeyDelete))
-        {
-            failures.push((api_key_id.clone(), error));
-        }
-    }
-    if failures.is_empty() {
-        return Ok(());
-    }
-    let detail = failures
-        .iter()
-        .map(|(api_key_id, error)| format!("{api_key_id}: {}", error.message))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let noun = if failures.len() == 1 {
-        "query API key"
-    } else {
-        "query API keys"
-    };
-    // The first failure's classification stands for the whole cleanup.
-    let (_, first) = failures.swap_remove(0);
-    Err(CloudError {
-        message: format!(
-            "failed to delete the auto-provisioned {noun} for service {service_id} ({detail}). The \
-             local record was kept so the exact IDs are not lost; delete each key with \
-             `clickhousectl cloud key delete <key-id> --org-id {org_id}`"
-        ),
-        ..first
-    })
-}
-
 impl CloudClient {
     async fn list_api_keys_page(
         &self,
@@ -840,16 +751,16 @@ impl CloudClient {
         })
     }
 
-    pub async fn delete_api_key_if_exists(
+    /// The management record of one API key, or `None` when the organization
+    /// no longer has it. Only a 404 means "gone": any other failure is
+    /// reported, because it says nothing about the key.
+    pub(crate) async fn get_api_key_if_exists(
         &self,
         org_id: &str,
-        key_id: &str,
-    ) -> crate::cloud::client::Result<Option<DeleteResponse>> {
-        match self.api().openapi_key_delete(org_id, key_id).await {
-            Ok(response) => Ok(Some(DeleteResponse {
-                status: response.status,
-                request_id: response.request_id,
-            })),
+        api_key_id: &str,
+    ) -> CloudResult<Option<ApiKey>> {
+        match self.api().openapi_key_get(org_id, api_key_id).await {
+            Ok(response) => Self::unwrap_response(response).map(Some),
             Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
             Err(error) => Err(self.convert_error_for_organization(error, org_id)),
         }

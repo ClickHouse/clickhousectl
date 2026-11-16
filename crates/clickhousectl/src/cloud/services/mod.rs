@@ -136,7 +136,6 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
-        Conditional::new("Owned query-key cleanup", &[&op::OPENAPI_KEY_DELETE]),
         Conditional::new("Diagnosing a rejected delete", &[&op::INSTANCE_GET]),
     ]),
     Permission::api("service update", &[&op::INSTANCE_UPDATE]).when(&[
@@ -156,30 +155,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
                     &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
                 ],
             ),
-            Conditional::new(
-                "key diagnosis",
-                &[&op::OPENAPI_KEY_GET, &op::INSTANCE_QUERY_ENDPOINT_GET],
-            ),
-            Conditional::new("key cleanup", &[&op::OPENAPI_KEY_DELETE]),
         ])
         .authorization("SQL uses database privileges; OAuth permits read-only SELECT."),
-    Permission::api(
-        "service repair-query-key",
-        &[
-            &op::INSTANCE_QUERY_ENDPOINT_GET,
-            &op::OPENAPI_KEY_CREATE,
-            &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
-            &op::OPENAPI_KEY_DELETE,
-        ],
-    )
-    .when(&[
-        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
-        Conditional::new("Verifying the repaired key", &[&op::INSTANCE_GET]),
-        Conditional::new(
-            "Rollback of a new endpoint",
-            &[&op::INSTANCE_QUERY_ENDPOINT_DELETE],
-        ),
-    ]),
 ];
 
 pub use cli::{
@@ -204,7 +181,7 @@ use lifecycle::{
     service_list, service_prometheus, service_reset_password, service_scale, service_start,
     service_stop, service_update, service_wake,
 };
-use query::{ServiceQueryOptions, service_query, service_query_key_repair};
+use query::{ServiceQueryOptions, service_query};
 use scaling_schedule::{scaling_schedule_delete, scaling_schedule_get, scaling_schedule_set};
 use settings::{
     service_setting_get, service_setting_unset, service_settings_list, service_settings_schema,
@@ -730,14 +707,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 no_auto_enable,
             };
             service_query(client, options).await
-        }
-        ServiceCommands::RepairQueryKey { service_id } => {
-            service_query_key_repair(
-                client,
-                &service_id.resolve(client, NamedResource::Service).await?,
-                json,
-            )
-            .await
         }
     }
 }

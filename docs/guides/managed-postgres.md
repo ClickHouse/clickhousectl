@@ -48,7 +48,7 @@ A rule update can partially succeed. After a failure, run `get` and compare the 
 
 ## Run read-only SQL with OAuth
 
-This route needs no database password or local `psql`, but accepts **only OAuth**. Remove higher-priority key flags, project credentials, environment variables, and `.env` key values before logging in. Review stored Query API key cleanup before clearing the credentials file; see [authentication](../reference/authentication.md).
+This route needs no database password or local `psql`, but accepts **only OAuth**. Remove higher-priority key flags, project credentials, environment variables, and `.env` key values before logging in. Clearing the credentials file does not delete keys in the organization; see [authentication](../reference/authentication.md).
 
 ```bash
 clickhousectl cloud auth login

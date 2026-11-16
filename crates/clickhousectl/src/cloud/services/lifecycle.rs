@@ -1,9 +1,7 @@
-use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult, is_not_found,
     read_flag_file,
 };
-use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, NextStep, eprint_line, json_with_next, or_absent, print_human,
     print_line,
@@ -1023,7 +1021,6 @@ pub(super) async fn service_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let (query_key_ids, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
     if force {
         let service = client.get_service_if_exists(&org_id, service_id).await?;
@@ -1067,10 +1064,9 @@ pub(super) async fn service_delete(
     }
 
     let response = client.delete_service(&org_id, service_id, force).await?;
-    cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
-    if !retain_query_key {
-        credentials::remove_service_query_key(service_id)?;
-    }
+    // A Query API key an earlier version stored for the service outlives it in
+    // the organization; drop the record and name the key (#1325).
+    crate::cloud::services::query_key::retire_legacy_query_key_record(service_id, &org_id);
     // The service is already gone by here, so a closed stdout must not turn a
     // completed deletion into a panic — see `print_line` and #598.
     if json {
@@ -1557,7 +1553,6 @@ mod tests {
             port: None,
             command: Some("cloud service list".into()),
             api_key_id: None,
-            ip_access_list: None,
         };
         let error = CloudError::auth("opaque conflict response")
             .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 409))

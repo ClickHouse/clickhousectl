@@ -261,7 +261,7 @@ jobs:
               needs.plan.outputs.service == 'true' }}
         run: cargo test -p clickhouse-cloud-api --test integration_test --test integration_udf_test -- --ignored --nocapture
 
-      - name: Run Query API key classification CLI integration test
+      - name: Run Query API first-use bind CLI integration test
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.service == 'true' }}

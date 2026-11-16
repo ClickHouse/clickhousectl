@@ -8,7 +8,13 @@
 
 OAuth queries run as your identity with read-only SQL access. They do not bind a key or need a configured service Query API endpoint.
 
-With API-key authentication and no stored per-service key, the CLI uses the active API key. If needed, it adds that key to the service's Query API endpoint, creating an endpoint with `sql_console_admin` roles when none exists. Existing endpoint roles and allowed origins are preserved, and other live key bindings remain. No new key is created or saved locally. Use `--no-auto-enable` to fail instead of making this change.
+With API-key authentication, the CLI uses the active API key. If needed, it adds that key to the service's Query API endpoint, creating an endpoint with `sql_console_admin` roles when none exists. Existing endpoint roles and allowed origins are preserved, and other live key bindings remain. No new key is created or saved locally. Use `--no-auto-enable` to fail instead of making this change.
+
+Binding is a write. A read-only API key cannot bind itself: the query exits 1 with `query_key_bind_forbidden`, whose `api_key_id` names the key, and nothing is changed. Bind the read-only key once with a key that has write access, adding `--allowed-origins '*'` when the service has no endpoint yet:
+
+```bash
+clickhousectl cloud service query-endpoint create <service-id> --role <role> --open-api-key <key-id>
+```
 
 Endpoint roles apply to every bound key. Inspect the endpoint's roles and use appropriate key permissions before allowing a first-use bind. The command's help lists the conditional permissions it requires. A key already listed in the endpoint is not rebound: the CLI waits for acceptance, then reports `query_key_bound_rejected` if still refused. When the endpoint refuses a statement with HTTP 403 but answers a `SELECT 1` probe with the same key, the endpoint role lacks a grant for that statement. The CLI reports the refusal as a query failure (exit 1) without binding or re-running the statement, with or without `--no-auto-enable`.
 
@@ -19,7 +25,7 @@ clickhousectl cloud service query <service-id> --no-auto-enable --query "SELECT 
 
 The Query API proxies requests from inside Cloud. The service's IP allowlist restricts direct connections, not that proxied route. API-key queries still enforce the key's own IP allowlist, endpoint binding, and database role; OAuth remains read-only.
 
-`query-endpoint create` merges and deduplicates key bindings while preserving existing browser origins. Its required `--role` replaces the roles for **all** bound keys. `--replace-open-api-keys` deliberately replaces the complete key list. Avoid concurrent endpoint updates, repairs, or binds across projects: they can overwrite each other's changes. Removing a binding does not prevent the next query from restoring it unless `--no-auto-enable` is used.
+`query-endpoint create` merges and deduplicates key bindings while preserving existing browser origins. Its required `--role` replaces the roles for **all** bound keys. `--replace-open-api-keys` deliberately replaces the complete key list. Avoid concurrent endpoint updates or binds across projects: they can overwrite each other's changes. Removing a binding does not prevent the next query from restoring it unless `--no-auto-enable` is used.
 
 ## SQL input and output
 
@@ -58,27 +64,16 @@ Use the `nativesecure` host and port from `get`; `--password` prompts for the da
 
 In JSON mode a timeout reports `error.code: query_timeout` on stderr. Optional `command`, `host`, and `port` fields suggest recovery; SQL and password placeholders are never filled with your input. A possible wake delay instead suggests a service-state check. Always check the exit status even if stdout already contains rows.
 
-## Stored keys and deliberate repair
+## Keys stored by earlier versions
 
-Earlier CLI versions created per-service keys in `.clickhouse/credentials.json` under `service_query_keys`. Such a record still takes precedence over the active API key for that service. A rejected stored key is diagnosed without rotating, enabling, or rebinding it automatically.
-
-| JSON error code | Next step |
-| --- | --- |
-| `query_key_deleted` | Review and deliberately replace the deleted key |
-| `query_key_disabled` / `query_key_expired` | Check the administrator's intent before enabling or replacing it |
-| `query_key_unbound` | Review the endpoint's access policy before replacement |
-| `query_key_rejected` | Check the reported IP allowlist and stored secret |
-| `query_key_unverified` | Restore management-key read access or resolve the failed lookup |
-
-When replacement is intended:
+Earlier versions created a per-service key and stored it in `.clickhouse/credentials.json` under `service_query_keys`. The CLI no longer uses such a record; queries always bind the active API key. The first `cloud service query` or `cloud service delete` of that service removes the record and prints a notice to stderr that names the stored key's management ID. The key itself still exists in the organization, enabled and bound to the service's endpoint. Delete it when nothing else uses it:
 
 ```bash
-clickhousectl cloud service repair-query-key <service-id>
+clickhousectl cloud key list
+clickhousectl cloud key delete <key-id>
 ```
 
-This requires API-key authentication and a stored record with exact ownership metadata. It creates and saves a replacement, preserves other bindings and credentials, then retires the old key. Legacy or incomplete records are refused. Failed old-key deletions are reported under `pendingCleanupApiKeyIds` and retried by a later query; only exactly identified CLI-created keys are eligible for cleanup.
-
-Repair reports `verification` as `verified`, `skipped`, or `failed`. A skipped probe or failure unrelated to readiness can exit 0 with a notice. If acceptance still fails after the readiness window (about two minutes), repair exits 1 with `query_key_repair_unverified`, **but the replacement remains in place**. Do not rerun repair just for slow propagation: check the key and endpoint, then try the query when safe. Do not delete the credentials file while cleanup IDs are still needed.
+Those keys are named `clickhousectl-query-<service-name>`. Once a key is deleted, the next first-use bind removes its stale binding from the endpoint.
 
 ## Named SQL endpoints and saved queries
 
