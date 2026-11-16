@@ -1,14 +1,15 @@
-//! Resolution and listing of custom server config files.
+//! Resolution, listing and staging of custom server config files.
 //!
-//! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
-//! reference them by name with `clickhousectl local clickhouse start --config
-//! <NAME>`. The file is staged into the server's `config.d/` directory, so it
-//! is merged as an overlay on ClickHouse's built-in defaults. The launcher
-//! writes the data path and ports to its own `config.d/` file, named to merge
-//! after every other file there, so the managed server lifecycle is preserved
-//! regardless of what the config file contains. That file, unlike command-line
-//! overrides, survives the config reloads ClickHouse runs whenever `config.d/`
-//! changes on a running server.
+//! A server start merges three sources over ClickHouse's built-in defaults,
+//! later winning: every file in the global `~/.clickhouse/config.d/`, every
+//! file in the project's `clickhouse/config.d/`, then the one file `--config
+//! <NAME>` selects from `~/.clickhouse/configs/`. Each is copied into the
+//! server's own `config.d/` directory under a name that sorts in that order.
+//! The launcher writes the data path and ports to its own `config.d/` file,
+//! named to merge after every other file there, so the managed server
+//! lifecycle is preserved regardless of what the config files contain. That
+//! file, unlike command-line overrides, survives the config reloads ClickHouse
+//! runs whenever `config.d/` changes on a running server.
 
 use crate::error::{Error, Result};
 use crate::paths;
@@ -144,38 +145,203 @@ pub fn list_configs() -> Result<Vec<String>> {
     Ok(list_configs_in(&paths::configs_dir()?))
 }
 
-/// Stages (or clears) the chctl-managed config overlay in `<data_dir>/config.d/`.
-///
-/// ClickHouse merges files in the `config.d/` directory next to its working
-/// directory with its built-in defaults, so a partial override file takes
-/// effect without replacing the whole config. We own a single file there named
-/// `chctl-config.<ext>`; any previously staged overlay (in any recognized
-/// extension) is removed first, so restarting a server without `--config`
-/// reverts cleanly to plain defaults.
-pub fn apply_config_overlay(data_dir: &Path, source: Option<&Path>) -> Result<()> {
-    let config_d = data_dir.join("config.d");
+/// Prefix of the files staged from the global `~/.clickhouse/config.d/`.
+const GLOBAL_PREFIX: &str = "chctl-0-global-";
 
-    // Drop any overlay we previously staged before applying the new state.
-    for ext in CONFIG_EXTS {
-        let stale = config_d.join(format!("{OVERLAY_STEM}.{ext}"));
-        if stale.exists() {
-            std::fs::remove_file(&stale)?;
+/// Prefix of the files staged from the project's `clickhouse/config.d/`.
+const PROJECT_PREFIX: &str = "chctl-1-project-";
+
+/// Prefixes of every file [`apply_config_overlay`] stages from a layer. The
+/// cleanup removes exactly these, so a file anyone else put in the server's
+/// `config.d/` survives.
+const LAYER_PREFIXES: [&str; 2] = ["chctl-0-", "chctl-1-"];
+
+/// The project's always-applied config directory, relative to its root.
+pub const PROJECT_CONFIG_D: &str = "clickhouse/config.d";
+
+/// The project's always-applied config directory under this invocation's
+/// project root.
+pub fn project_config_d_dir() -> std::io::Result<PathBuf> {
+    Ok(crate::init::project_root()?.dir.join(PROJECT_CONFIG_D))
+}
+
+/// The config sources a server start merges, from first to last applied. The
+/// managed file ([`MANAGED_CONFIG_FILE`]) merges after all of them.
+#[derive(Debug, Clone, Copy)]
+pub struct ConfigLayers<'a> {
+    /// Applied to every server on this machine (`~/.clickhouse/config.d/`).
+    pub global_dir: &'a Path,
+    /// Applied to every server in this project (`clickhouse/config.d/`).
+    pub project_dir: &'a Path,
+    /// The file `--config NAME` selected, if any.
+    pub named: Option<&'a Path>,
+}
+
+/// One file [`apply_config_overlay`] copied into the server's `config.d/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedConfig {
+    /// File name inside the server's `config.d/`.
+    pub staged: String,
+    /// The file it was copied from.
+    pub source: PathBuf,
+}
+
+/// Lists the files a `config.d` layer contributes, sorted by name: regular
+/// files (or links to them) with a recognized extension, skipping hidden
+/// entries and subdirectories as ClickHouse does. A missing directory has
+/// none; any other read failure is returned.
+pub fn layer_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || !has_config_ext(name) || !path.is_file() {
+            continue;
+        }
+        files.push((name.to_string(), path));
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Stages every config source in `layers` into `<data_dir>/config.d/` and
+/// returns what it staged, in merge order.
+///
+/// ClickHouse merges the files in the `config.d/` directory next to its
+/// working directory with its built-in defaults, in byte order of their names
+/// with later files winning, so a partial override file takes effect without
+/// replacing the whole config. The staged names keep that order: global
+/// files as `chctl-0-global-<name>`, then project files as
+/// `chctl-1-project-<name>`, then the named config as `chctl-config.<ext>`.
+/// A file with the same name in both layers is staged twice, so both apply.
+///
+/// Everything staged by an earlier start is removed first, so a deleted
+/// source or a start without `--config` stops applying. Only entries with
+/// those names directly inside `config.d/` are removed; a symlink is removed
+/// as a link, never followed, and a symlinked `config.d/` is refused.
+pub fn apply_config_overlay(
+    data_dir: &Path,
+    layers: ConfigLayers<'_>,
+) -> Result<Vec<StagedConfig>> {
+    let config_d = data_dir.join("config.d");
+    clear_staged(&config_d)?;
+
+    let mut staged = Vec::new();
+    for (prefix, dir) in [
+        (GLOBAL_PREFIX, layers.global_dir),
+        (PROJECT_PREFIX, layers.project_dir),
+    ] {
+        for (name, source) in layer_files(dir)? {
+            staged.push(StagedConfig {
+                staged: format!("{prefix}{name}"),
+                source,
+            });
         }
     }
+    if let Some(source) = layers.named {
+        // Preserve the source extension so ClickHouse parses XML vs YAML correctly.
+        let ext = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| CONFIG_EXTS.contains(e))
+            .unwrap_or("xml");
+        staged.push(StagedConfig {
+            staged: format!("{OVERLAY_STEM}.{ext}"),
+            source: source.to_path_buf(),
+        });
+    }
 
-    let Some(source) = source else {
-        return Ok(());
-    };
-
-    // Preserve the source extension so ClickHouse parses XML vs YAML correctly.
-    let ext = source
-        .extension()
-        .and_then(|e| e.to_str())
-        .filter(|e| CONFIG_EXTS.contains(e))
-        .unwrap_or("xml");
+    if staged.is_empty() {
+        return Ok(staged);
+    }
     std::fs::create_dir_all(&config_d)?;
-    std::fs::copy(source, config_d.join(format!("{OVERLAY_STEM}.{ext}")))?;
+    for file in &staged {
+        std::fs::copy(&file.source, config_d.join(&file.staged))?;
+    }
+    Ok(staged)
+}
+
+/// Removes every file an earlier [`apply_config_overlay`] staged in
+/// `config_d`, and nothing else.
+fn clear_staged(config_d: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(config_d) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(Error::Io(std::io::Error::other(format!(
+                "{} is not a directory; refusing to stage config files through it",
+                config_d.display()
+            ))));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    for entry in std::fs::read_dir(config_d)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let ours = LAYER_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+            || CONFIG_EXTS
+                .iter()
+                .any(|ext| name == format!("{OVERLAY_STEM}.{ext}"));
+        // `file_type` does not follow symlinks, so a link is removed as a link.
+        if ours && !entry.file_type()?.is_dir() {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
     Ok(())
+}
+
+/// Adds the files a failed start staged, with their sources, to a startup
+/// error's details, so a broken file is traceable to where it came from.
+pub fn with_staged_files(error: Error, staged: &[StagedConfig]) -> Error {
+    match error {
+        Error::StartupExit {
+            kind,
+            name,
+            mut details,
+        } if !staged.is_empty() => {
+            append_staged(&mut details, staged);
+            Error::StartupExit {
+                kind,
+                name,
+                details,
+            }
+        }
+        Error::StartupTimeout {
+            kind,
+            name,
+            seconds,
+            mut details,
+        } if !staged.is_empty() => {
+            append_staged(&mut details, staged);
+            Error::StartupTimeout {
+                kind,
+                name,
+                seconds,
+                details,
+            }
+        }
+        other => other,
+    }
+}
+
+fn append_staged(details: &mut String, staged: &[StagedConfig]) {
+    details.push_str("\nStaged config files (config.d/, merged in this order):");
+    for file in staged {
+        details.push_str(&format!(
+            "\n  {} (from {})",
+            file.staged,
+            file.source.display()
+        ));
+    }
 }
 
 /// Renders the managed config file for a server listening on these ports.
@@ -376,6 +542,72 @@ mod tests {
         assert!(list_configs_in(&missing).is_empty());
     }
 
+    /// Applies only a named config, with both layer directories absent.
+    fn apply_named(data_dir: &Path, named: Option<&Path>) -> Vec<StagedConfig> {
+        let missing = data_dir.join("no-such-layer");
+        apply_config_overlay(
+            data_dir,
+            ConfigLayers {
+                global_dir: &missing,
+                project_dir: &missing,
+                named,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The file names in `<data_dir>/config.d/`, sorted as ClickHouse merges them.
+    fn staged_names(data_dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(data_dir.join("config.d"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A temp tree with global and project layer directories and a data dir.
+    struct Layers {
+        _tmp: tempfile::TempDir,
+        global: PathBuf,
+        project: PathBuf,
+        data: PathBuf,
+    }
+
+    impl Layers {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let global = tmp.path().join("home/.clickhouse/config.d");
+            let project = tmp.path().join("app/clickhouse/config.d");
+            let data = tmp.path().join("app/.clickhouse/servers/default/data");
+            for dir in [&global, &project, &data] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            Self {
+                _tmp: tmp,
+                global,
+                project,
+                data,
+            }
+        }
+
+        fn apply(&self, named: Option<&Path>) -> Vec<StagedConfig> {
+            apply_config_overlay(
+                &self.data,
+                ConfigLayers {
+                    global_dir: &self.global,
+                    project_dir: &self.project,
+                    named,
+                },
+            )
+            .unwrap()
+        }
+
+        fn staged(&self, name: &str) -> String {
+            std::fs::read_to_string(self.data.join("config.d").join(name)).unwrap()
+        }
+    }
+
     #[test]
     fn overlay_stages_file_with_extension() {
         let tmp = tempfile::tempdir().unwrap();
@@ -384,7 +616,7 @@ mod tests {
         let data_dir = tmp.path().join("data");
         std::fs::create_dir(&data_dir).unwrap();
 
-        apply_config_overlay(&data_dir, Some(&src)).unwrap();
+        apply_named(&data_dir, Some(&src));
 
         let staged = data_dir.join("config.d").join("chctl-config.xml");
         assert!(staged.is_file());
@@ -401,7 +633,7 @@ mod tests {
         std::fs::write(&src, "a: 1").unwrap();
         let data_dir = tmp.path().join("data");
 
-        apply_config_overlay(&data_dir, Some(&src)).unwrap();
+        apply_named(&data_dir, Some(&src));
 
         assert!(
             data_dir
@@ -418,10 +650,10 @@ mod tests {
         std::fs::write(&src, "<clickhouse/>").unwrap();
         let data_dir = tmp.path().join("data");
 
-        apply_config_overlay(&data_dir, Some(&src)).unwrap();
+        apply_named(&data_dir, Some(&src));
         assert!(data_dir.join("config.d").join("chctl-config.xml").is_file());
 
-        apply_config_overlay(&data_dir, None).unwrap();
+        apply_named(&data_dir, None);
         assert!(!data_dir.join("config.d").join("chctl-config.xml").exists());
     }
 
@@ -434,8 +666,8 @@ mod tests {
         std::fs::write(&yaml, "a: 1").unwrap();
         let data_dir = tmp.path().join("data");
 
-        apply_config_overlay(&data_dir, Some(&xml)).unwrap();
-        apply_config_overlay(&data_dir, Some(&yaml)).unwrap();
+        apply_named(&data_dir, Some(&xml));
+        apply_named(&data_dir, Some(&yaml));
 
         let config_d = data_dir.join("config.d");
         assert!(!config_d.join("chctl-config.xml").exists());
@@ -443,11 +675,219 @@ mod tests {
     }
 
     #[test]
-    fn overlay_none_on_empty_is_noop() {
+    fn overlay_with_no_sources_is_a_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path().join("data");
-        // Should not error even though config.d does not exist.
-        apply_config_overlay(&data_dir, None).unwrap();
+        // Neither layer directory exists and config.d is not created.
+        assert!(apply_named(&data_dir, None).is_empty());
+        assert!(!data_dir.join("config.d").exists());
+
+        // Empty layer directories stage nothing either.
+        let layers = Layers::new();
+        assert!(layers.apply(None).is_empty());
+    }
+
+    #[test]
+    fn layers_merge_global_then_project_then_named_before_the_managed_files() {
+        let layers = Layers::new();
+        std::fs::write(layers.global.join("b.xml"), "global b").unwrap();
+        std::fs::write(layers.global.join("a.yaml"), "global a").unwrap();
+        std::fs::write(layers.project.join("c.yml"), "project c").unwrap();
+        let named = layers.data.join("../named.xml");
+        std::fs::write(&named, "named").unwrap();
+
+        let staged = layers.apply(Some(&named));
+
+        let order = [
+            "chctl-0-global-a.yaml",
+            "chctl-0-global-b.xml",
+            "chctl-1-project-c.yml",
+            "chctl-config.xml",
+        ];
+        // Byte order, which ClickHouse merges in, is the layer order.
+        assert_eq!(staged_names(&layers.data), order);
+        assert_eq!(
+            staged.iter().map(|f| f.staged.as_str()).collect::<Vec<_>>(),
+            order
+        );
+        assert_eq!(staged[0].source, layers.global.join("a.yaml"));
+        assert_eq!(staged[2].source, layers.project.join("c.yml"));
+        assert_eq!(staged[3].source, named);
+        assert_eq!(layers.staged("chctl-0-global-b.xml"), "global b");
+        assert_eq!(layers.staged("chctl-1-project-c.yml"), "project c");
+    }
+
+    #[test]
+    fn a_file_name_in_both_layers_stages_both_with_the_project_last() {
+        let layers = Layers::new();
+        std::fs::write(layers.global.join("logging.xml"), "global").unwrap();
+        std::fs::write(layers.project.join("logging.xml"), "project").unwrap();
+
+        layers.apply(None);
+
+        assert_eq!(
+            staged_names(&layers.data),
+            ["chctl-0-global-logging.xml", "chctl-1-project-logging.xml"]
+        );
+        assert_eq!(layers.staged("chctl-0-global-logging.xml"), "global");
+        assert_eq!(layers.staged("chctl-1-project-logging.xml"), "project");
+    }
+
+    #[test]
+    fn a_deleted_source_stops_applying_on_the_next_start() {
+        let layers = Layers::new();
+        std::fs::write(layers.global.join("g.xml"), "g").unwrap();
+        std::fs::write(layers.project.join("keep.xml"), "keep").unwrap();
+        std::fs::write(layers.project.join("drop.xml"), "drop").unwrap();
+        layers.apply(None);
+
+        std::fs::remove_file(layers.project.join("drop.xml")).unwrap();
+        std::fs::remove_file(layers.global.join("g.xml")).unwrap();
+        layers.apply(None);
+
+        assert_eq!(staged_names(&layers.data), ["chctl-1-project-keep.xml"]);
+    }
+
+    #[test]
+    fn hidden_files_other_extensions_and_subdirectories_are_skipped() {
+        let layers = Layers::new();
+        for name in [
+            ".hidden.xml",
+            "notes.txt",
+            "README.md",
+            "x.xml.bak",
+            ".gitkeep",
+        ] {
+            std::fs::write(layers.project.join(name), "skip").unwrap();
+        }
+        std::fs::create_dir(layers.project.join("nested.xml")).unwrap();
+        std::fs::write(layers.project.join("nested.xml/inner.xml"), "skip").unwrap();
+        std::fs::write(layers.project.join("real.xml"), "real").unwrap();
+
+        layers.apply(None);
+
+        assert_eq!(staged_names(&layers.data), ["chctl-1-project-real.xml"]);
+    }
+
+    #[test]
+    fn restaging_removes_only_chctl_files_and_never_follows_links() {
+        let layers = Layers::new();
+        let config_d = layers.data.join("config.d");
+        std::fs::create_dir_all(&config_d).unwrap();
+        // Files chctl does not own, including ones that look nearly like it.
+        for name in [
+            "user.xml",
+            "chctl-2-other.xml",
+            "chctl-udf.xml",
+            MANAGED_CONFIG_FILE,
+        ] {
+            std::fs::write(config_d.join(name), "keep").unwrap();
+        }
+        // A stale staged link pointing outside config.d, and a directory with
+        // a staged-looking name.
+        let outside = layers.data.join("../outside.xml");
+        std::fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, config_d.join("chctl-1-project-link.xml")).unwrap();
+        std::fs::create_dir(config_d.join("chctl-0-global-dir")).unwrap();
+        std::fs::write(config_d.join("chctl-0-global-stale.xml"), "stale").unwrap();
+
+        layers.apply(None);
+
+        assert_eq!(
+            staged_names(&layers.data),
+            [
+                "chctl-0-global-dir",
+                "chctl-2-other.xml",
+                "chctl-udf.xml",
+                "user.xml",
+                MANAGED_CONFIG_FILE,
+            ]
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside");
+        assert_eq!(
+            std::fs::read_to_string(config_d.join("user.xml")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn a_symlinked_config_d_is_refused_without_touching_its_target() {
+        let layers = Layers::new();
+        let elsewhere = layers.data.join("../elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("chctl-0-global-x.xml"), "theirs").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, layers.data.join("config.d")).unwrap();
+        std::fs::write(layers.global.join("x.xml"), "ours").unwrap();
+
+        let error = apply_config_overlay(
+            &layers.data,
+            ConfigLayers {
+                global_dir: &layers.global,
+                project_dir: &layers.project,
+                named: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::Io(_)), "{error:?}");
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join("chctl-0-global-x.xml")).unwrap(),
+            "theirs"
+        );
+    }
+
+    #[test]
+    fn startup_errors_name_each_staged_file_and_its_source() {
+        let staged = vec![StagedConfig {
+            staged: "chctl-1-project-bad.xml".to_string(),
+            source: PathBuf::from("/app/clickhouse/config.d/bad.xml"),
+        }];
+        let exit = Error::StartupExit {
+            kind: crate::error::StartupKind::ClickHouse,
+            name: "dev".to_string(),
+            details: "exited".to_string(),
+        };
+        let timeout = Error::StartupTimeout {
+            kind: crate::error::StartupKind::ClickHouse,
+            name: "dev".to_string(),
+            seconds: 30,
+            details: "timed out".to_string(),
+        };
+        for error in [exit, timeout] {
+            let details = match with_staged_files(error, &staged) {
+                Error::StartupExit { details, .. } | Error::StartupTimeout { details, .. } => {
+                    details
+                }
+                other => panic!("unexpected {other:?}"),
+            };
+            assert!(details.contains("chctl-1-project-bad.xml"), "{details}");
+            assert!(
+                details.contains("/app/clickhouse/config.d/bad.xml"),
+                "{details}"
+            );
+        }
+
+        // Nothing staged, or another error, is unchanged.
+        let plain = with_staged_files(
+            Error::StartupExit {
+                kind: crate::error::StartupKind::ClickHouse,
+                name: "dev".to_string(),
+                details: "exited".to_string(),
+            },
+            &[],
+        );
+        assert!(matches!(plain, Error::StartupExit { ref details, .. } if details == "exited"));
+        assert!(matches!(
+            with_staged_files(Error::NoDefaultVersion, &staged),
+            Error::NoDefaultVersion
+        ));
+    }
+
+    #[test]
+    fn project_config_d_is_in_the_init_scaffold() {
+        let (parent, leaf) = PROJECT_CONFIG_D.split_once('/').unwrap();
+        assert_eq!(parent, "clickhouse");
+        assert!(crate::init::CLICKHOUSE_SCAFFOLD.contains(&leaf));
     }
 
     #[test]
@@ -496,6 +936,15 @@ mod tests {
                 "{other} would merge after {MANAGED_CONFIG_FILE}"
             );
         }
+        // Both always-applied layers merge before the named config and the
+        // UDF overlay, whatever the source file is called.
+        for layer in [GLOBAL_PREFIX, PROJECT_PREFIX] {
+            let last = format!("{layer}zzzz.yml");
+            for later in ["chctl-config.xml", "chctl-udf.xml"] {
+                assert!(last.as_str() < later, "{last} would merge after {later}");
+            }
+        }
+        assert!(format!("{GLOBAL_PREFIX}zzzz.yml") < format!("{PROJECT_PREFIX}0.xml"));
     }
 
     #[test]

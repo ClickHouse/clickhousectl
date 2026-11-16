@@ -23,7 +23,7 @@ clickhousectl local clickhouse list
 
 `local ch` is short for `local clickhouse`, and `local pg` for `local postgres`. The earlier name `local server` still works as an alias for `local clickhouse`.
 
-`local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, and [UDF sources](user-defined-functions.md#scaffold-a-function). It always initializes the current directory: run inside an existing project, it creates a nested project and names the enclosing one.
+`local init` marks the current directory as the project root and scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, [UDF sources](user-defined-functions.md#scaffold-a-function), and [server config](#apply-a-custom-clickhouse-configuration) applied on every start. It always initializes the current directory: run inside an existing project, it creates a nested project and names the enclosing one.
 
 Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
 
@@ -103,10 +103,22 @@ Run `local use latest` again to check for a newer master build, or select `stabl
 
 ## Apply a custom ClickHouse configuration
 
-Managed servers use embedded defaults. Put a partial XML, YAML, or YML configuration in `~/.clickhouse/configs/` and select its filename or unambiguous stem:
+Managed servers use embedded defaults. Partial XML, YAML, or YML configuration files override them from three locations:
+
+| Location | Applies to | When |
+| --- | --- | --- |
+| `~/.clickhouse/config.d/` | every server on this machine | every start |
+| `clickhouse/config.d/` in the project root | every server in this project; check it in to share it | every start |
+| `~/.clickhouse/configs/` | the server you name it for | only with `--config NAME` |
+
+Every `local clickhouse start` merges them in that order, later files winning: built-in defaults, then every file in `~/.clickhouse/config.d/`, then every file in the project's `clickhouse/config.d/`, then the `--config` file, then the data path and ports the CLI manages. Files within a directory merge in name order. A file with the same name in both `config.d` directories applies twice, the project's last. Hidden files, other extensions and subdirectories are skipped. The CLI creates `~/.clickhouse/configs/` and `~/.clickhouse/config.d/`, and `local init` creates `clickhouse/config.d/`.
 
 ```bash
-mkdir -p ~/.clickhouse/configs
+cat > clickhouse/config.d/logging.xml <<'XML'
+<clickhouse>
+    <logger><level>debug</level></logger>
+</clickhouse>
+XML
 cat > ~/.clickhouse/configs/analytics.xml <<'XML'
 <clickhouse>
     <profiles>
@@ -119,9 +131,9 @@ clickhousectl local clickhouse stop dev
 clickhousectl local clickhouse start dev --config analytics
 ```
 
-The file must be directly inside the configs directory, not an arbitrary path. Use a `<clickhouse>` root in XML; user profiles and query settings can be included there. The server does not automatically load `/etc/clickhouse-server/config.xml` or a separate `users.xml`.
+`local clickhouse configs` lists both `config.d` directories with their files, and the named configs. A named config must be directly inside `~/.clickhouse/configs/`, not an arbitrary path; select its filename or unambiguous stem. Use a `<clickhouse>` root in XML; user profiles and query settings can be included there. The server does not automatically load `/etc/clickhouse-server/config.xml` or a separate `users.xml`.
 
-Edit the source file and restart with `--config` again to apply changes. The selection is not remembered: starting without the flag removes the previously copied overlay. Managed data paths and ports override config values, including after ClickHouse reloads its config. Referenced files must be accessible from the server's working directory, `.clickhouse/servers/<name>/data/`. Inspect the merged `preprocessed_configs/config.xml` there, but edit the source overlay rather than that generated file.
+Each start copies the files into `.clickhouse/servers/<name>/data/config.d/` (as `chctl-0-global-<file>`, `chctl-1-project-<file>` and `chctl-config.<ext>`) after removing the copies from the previous start, so edits, deleted files and a dropped `--config` take effect on the next start. A file in `~/.clickhouse/config.d/` applies to every project, so a broken one breaks every start: a failed start lists each copied file and its source next to the server log path. Managed data paths and ports override config values, including after ClickHouse reloads its config. Referenced files, such as dictionaries or scripts, are not copied: give their paths as absolute paths or relative to the server's working directory, `.clickhouse/servers/<name>/data/`. Inspect the merged `preprocessed_configs/config.xml` there, but edit the source files rather than that generated file.
 
 ## Test executable UDFs
 

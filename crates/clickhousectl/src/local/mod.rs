@@ -19,7 +19,7 @@ use crate::{init, paths, version_manager};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
@@ -695,15 +695,26 @@ async fn start_server(
     server::ensure_server_data_dir(&server_name)?;
     let data_dir = server::server_data_dir(&server_name)?;
 
-    // Stage the named config as a config.d overlay inside the data dir. With no
-    // --config-file, ClickHouse uses its built-in defaults and merges any
-    // config.d/ next to its working directory, so a partial override file (e.g.
-    // just <query_log>) takes effect without replacing the whole config.
-    // Passing it as --config-file instead would replace the embedded defaults
-    // and a partial file would fail to start.
-    config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
+    // Stage the global and project config.d layers and the named config as
+    // config.d overlays inside the data dir. With no --config-file, ClickHouse
+    // uses its built-in defaults and merges any config.d/ next to its working
+    // directory, so a partial override file (e.g. just <query_log>) takes
+    // effect without replacing the whole config. Passing it as --config-file
+    // instead would replace the embedded defaults and a partial file would
+    // fail to start.
+    paths::ensure_dirs()?;
+    let global_config_d = paths::global_config_d_dir()?;
+    let project_config_d = config::project_config_d_dir()?;
+    let staged = config::apply_config_overlay(
+        &data_dir,
+        config::ConfigLayers {
+            global_dir: &global_config_d,
+            project_dir: &project_config_d,
+            named: resolved_config.as_deref(),
+        },
+    )?;
     // Point the embedded config at this server's executable UDF directories.
-    // Sorted after `chctl-config.*`, so the managed paths win if a named
+    // Sorted after every staged `chctl-*` file, so the managed paths win if a
     // config also sets them; deploy/remove rewrite the same file.
     udf::write_overlay(&data_dir)?;
     // The data path and ports go in a config.d file that merges after both
@@ -752,8 +763,8 @@ async fn start_server(
         }
         drop(metadata_lock);
 
-        if no_wait {
-            server::check_spawn_health(&mut child, &server_name, &log_path).await?;
+        let started = if no_wait {
+            server::check_spawn_health(&mut child, &server_name, &log_path).await
         } else {
             server::wait_for_server_ready(
                 &mut child,
@@ -763,8 +774,9 @@ async fn start_server(
                 &log_path,
                 server::STARTUP_TIMEOUT,
             )
-            .await?;
-        }
+            .await
+        };
+        started.map_err(|error| config::with_staged_files(error, &staged))?;
 
         let out = output::ServerStartOutput {
             name: server_name,
@@ -815,10 +827,22 @@ async fn start_server(
 }
 
 fn list_configs(json: bool) -> Result<()> {
+    paths::ensure_dirs()?;
     let dir = paths::configs_dir()?;
+    let layer = |dir: PathBuf| -> Result<output::ConfigLayerOutput> {
+        Ok(output::ConfigLayerOutput {
+            files: config::layer_files(&dir)?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+            dir: dir.display().to_string(),
+        })
+    };
     let out = output::ServerConfigsOutput {
         dir: dir.display().to_string(),
         configs: config::list_configs()?,
+        global_config_d: layer(paths::global_config_d_dir()?)?,
+        project_config_d: layer(config::project_config_d_dir()?)?,
     };
     output::print_output(&out, json);
     Ok(())

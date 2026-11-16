@@ -1,5 +1,6 @@
-//! Coverage for the managed `config.d` file that carries a local server's data
-//! path and ports (issue #1066).
+//! Coverage for the `config.d` files a local server start stages: the
+//! always-applied global and project layers (issue #1062), and the managed
+//! file that carries the server's data path and ports (issue #1066).
 //!
 //! The ports used to be command-line overrides, which ClickHouse 26.1 and
 //! earlier drop on the first config reload, rebinding to 8123/9000. They now
@@ -122,6 +123,12 @@ fn start_writes_ports_to_a_config_file_that_merges_after_the_user_overlay() {
         "<clickhouse><http_port>8123</http_port><tcp_port>9000</tcp_port></clickhouse>",
     )
     .unwrap();
+    let global = home.path().join(".clickhouse/config.d");
+    std::fs::create_dir_all(&global).unwrap();
+    std::fs::write(global.join("memory.xml"), "<clickhouse/>").unwrap();
+    let project_layer = project.path().join("clickhouse/config.d");
+    std::fs::create_dir_all(&project_layer).unwrap();
+    std::fs::write(project_layer.join("logging.yaml"), "logger: {}").unwrap();
     let (http, tcp) = (unused_port().to_string(), unused_port().to_string());
 
     let output = run(
@@ -168,18 +175,71 @@ fn start_writes_ports_to_a_config_file_that_merges_after_the_user_overlay() {
         "got: {managed}"
     );
 
-    // The user and UDF overlays are staged, and ClickHouse merges them first,
-    // so the assigned ports win over the ones they set.
+    // Both config.d layers, the named config and the UDF overlay are staged,
+    // and ClickHouse merges them in this order, so the assigned ports win
+    // over the ones they set.
     let mut staged: Vec<String> = std::fs::read_dir(&config_d)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     staged.sort();
-    assert_eq!(staged, ["chctl-config.xml", "chctl-udf.xml", MANAGED_FILE]);
+    assert_eq!(
+        staged,
+        [
+            "chctl-0-global-memory.xml",
+            "chctl-1-project-logging.yaml",
+            "chctl-config.xml",
+            "chctl-udf.xml",
+            MANAGED_FILE
+        ]
+    );
 
     // Server metadata records the same assigned ports.
     assert_eq!(body["http_port"].as_u64().unwrap().to_string(), http);
     assert_eq!(body["tcp_port"].as_u64().unwrap().to_string(), tcp);
+}
+
+#[test]
+fn configs_json_lists_both_config_d_layers_and_creates_the_global_layout() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    // A marked project, run from a subdirectory: the project layer is the
+    // project root's, not the current directory's.
+    std::fs::create_dir(project.path().join(".clickhouse")).unwrap();
+    let project_layer = project.path().join("clickhouse/config.d");
+    std::fs::create_dir_all(&project_layer).unwrap();
+    for name in ["b.yaml", "a.xml", ".hidden.xml", "notes.txt"] {
+        std::fs::write(project_layer.join(name), "<clickhouse/>").unwrap();
+    }
+    let subdir = project.path().join("src");
+    std::fs::create_dir(&subdir).unwrap();
+
+    let output = run(
+        &subdir,
+        home.path(),
+        &["local", "clickhouse", "configs", "--json"],
+    );
+    assert_success(&output);
+    let body: Value = serde_json::from_slice(&output.stdout).expect("parse configs JSON");
+
+    let base = home.path().join(".clickhouse");
+    for dir in ["versions", "configs", "config.d"] {
+        assert!(base.join(dir).is_dir(), "{dir} not created");
+    }
+    assert_eq!(body["dir"], base.join("configs").display().to_string());
+    assert_eq!(body["configs"], serde_json::json!([]));
+    assert_eq!(
+        body["global_config_d"],
+        serde_json::json!({ "dir": base.join("config.d").display().to_string(), "files": [] })
+    );
+    let project_root = project.path().canonicalize().unwrap();
+    assert_eq!(
+        body["project_config_d"],
+        serde_json::json!({
+            "dir": project_root.join("clickhouse/config.d").display().to_string(),
+            "files": ["a.xml", "b.yaml"],
+        })
+    );
 }
 
 /// The ports a real ClickHouse logged it is listening on over HTTP.

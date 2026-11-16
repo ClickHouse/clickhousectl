@@ -1419,32 +1419,63 @@ impl fmt::Display for UdfReloadOutput {
 
 // ── server configs ──────────────────────────────────────────────────────────
 
+/// One always-applied `config.d` layer: its directory and the files it
+/// contributes, in merge order.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigLayerOutput {
+    pub dir: String,
+    pub files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerConfigsOutput {
+    /// The named-config store `--config` selects from.
     pub dir: String,
     pub configs: Vec<String>,
+    /// Applied to every server on this machine, first.
+    pub global_config_d: ConfigLayerOutput,
+    /// Applied to every server in this project, after the global layer.
+    pub project_config_d: ConfigLayerOutput,
 }
 
 impl fmt::Display for ServerConfigsOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "Applied on every start, in merge order (later files win):"
+        )?;
+        for (label, layer) in [
+            ("Global", &self.global_config_d),
+            ("Project", &self.project_config_d),
+        ] {
+            if layer.files.is_empty() {
+                writeln!(f, "  {label} {}: no files", layer.dir)?;
+            } else {
+                writeln!(f, "  {label} {}:", layer.dir)?;
+                for name in &layer.files {
+                    writeln!(f, "    {name}")?;
+                }
+            }
+        }
+        writeln!(f)?;
         if self.configs.is_empty() {
-            writeln!(f, "No config files in {}", self.dir)?;
+            writeln!(f, "No named config files in {}", self.dir)?;
             write!(
                 f,
-                "Create an XML or YAML file there with only the settings you want to change.\n\
-                 Other settings inherit ClickHouse's built-in defaults.\n\
-                 Start with: \
+                "Create an XML or YAML file in any of these directories with only the settings\n\
+                 you want to change. Other settings inherit ClickHouse's built-in defaults.\n\
+                 Apply a named config, after both layers, with: \
                  clickhousectl local clickhouse start --config <NAME>"
             )?;
             return Ok(());
         }
-        writeln!(f, "Config files in {}:", self.dir)?;
+        writeln!(f, "Named config files in {}:", self.dir)?;
         for name in &self.configs {
             writeln!(f, "  {name}")?;
         }
         write!(
             f,
-            "Use with: clickhousectl local clickhouse start --config <NAME>"
+            "Apply one, after both layers, with: clickhousectl local clickhouse start --config <NAME>"
         )
     }
 }
@@ -3625,20 +3656,6 @@ mod tests {
     }
 
     #[test]
-    fn server_configs_json() {
-        let output = ServerConfigsOutput {
-            dir: "/home/user/.clickhouse/configs".to_string(),
-            configs: vec!["dev.xml".to_string(), "prod.yaml".to_string()],
-        };
-        let json: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
-        assert_eq!(json["dir"], "/home/user/.clickhouse/configs");
-        assert_eq!(json["configs"][0], "dev.xml");
-        assert_eq!(json["configs"][1], "prod.yaml");
-        assert_eq!(json["configs"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
     fn server_remove_json() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
@@ -3912,6 +3929,24 @@ mod tests {
     #[test]
     fn human_outputs_show_every_value_they_carry() {
         let configs_dir = "/home/user/.clickhouse/configs";
+        let global_dir = "/home/user/.clickhouse/config.d";
+        let project_dir = "/home/user/app/clickhouse/config.d";
+        let strings = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let configs_output = |configs: &[&str], global: &[&str], project: &[&str]| {
+            ServerConfigsOutput {
+                dir: configs_dir.to_string(),
+                configs: strings(configs),
+                global_config_d: ConfigLayerOutput {
+                    dir: global_dir.to_string(),
+                    files: strings(global),
+                },
+                project_config_d: ConfigLayerOutput {
+                    dir: project_dir.to_string(),
+                    files: strings(project),
+                },
+            }
+            .to_string()
+        };
         for (text, values) in [
             (
                 ServerStartOutput {
@@ -3952,20 +3987,25 @@ mod tests {
                 &["25.12.5.44"],
             ),
             (
-                ServerConfigsOutput {
-                    dir: configs_dir.to_string(),
-                    configs: vec!["dev.xml".to_string(), "prod.yaml".to_string()],
-                }
-                .to_string(),
-                &[configs_dir, "dev.xml", "prod.yaml"],
+                configs_output(
+                    &["dev.xml", "prod.yaml"],
+                    &["memory.xml"],
+                    &["logging.yaml", "users.xml"],
+                ),
+                &[
+                    configs_dir,
+                    "dev.xml",
+                    "prod.yaml",
+                    global_dir,
+                    "memory.xml",
+                    project_dir,
+                    "logging.yaml",
+                    "users.xml",
+                ][..],
             ),
             (
-                ServerConfigsOutput {
-                    dir: configs_dir.to_string(),
-                    configs: vec![],
-                }
-                .to_string(),
-                &[configs_dir],
+                configs_output(&[], &[], &[]),
+                &[configs_dir, global_dir, project_dir][..],
             ),
         ] {
             for value in values {
