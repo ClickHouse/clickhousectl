@@ -10,6 +10,9 @@ homepage.workspace = true
 keywords = ["clickhouse", "cli", "database", "cloud"]
 categories = ["command-line-utilities", "database"]
 readme = "../../README.md"
+# Ship the CLI sources only: the tests stay in the repository, and the live
+# tests reach into the API library's test harness, outside this crate.
+include = ["src/**", "LICENSE"]
 
 [package.metadata.binstall]
 pkg-url = "https://builds.clickhouse.com/clickhousectl/{ name }-{ target }-v{ version }{ archive-suffix }"

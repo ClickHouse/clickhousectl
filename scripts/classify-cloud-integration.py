@@ -24,6 +24,22 @@ SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/saved_queries.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/services/jwt_provider.rs": NO_SUITES,
+    # `live_clickpipe_postgres_cdc_test` drives `cloud clickpipe create
+    # postgres` live: the Postgres source, its shared auth helpers, and the
+    # create, destination and table-mapping builders that request uses.
+    "crates/clickhousectl/src/cloud/clickpipes/create.rs": frozenset({"clickpipes"}),
+    "crates/clickhousectl/src/cloud/clickpipes/destination.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhousectl/src/cloud/clickpipes/sources/mod.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhousectl/src/cloud/clickpipes/sources/postgres.rs": frozenset(
+        {"clickpipes"}
+    ),
+    "crates/clickhousectl/src/cloud/clickpipes/table_mapping.rs": frozenset(
+        {"clickpipes"}
+    ),
     # `live_service_query_bind_test` drives `cloud service query` live.
     "crates/clickhousectl/src/cloud/services/query.rs": frozenset({"service"}),
     "crates/clickhousectl/src/cloud/services/query_key.rs": frozenset({"service"}),
