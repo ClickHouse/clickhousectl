@@ -2423,6 +2423,51 @@ async fn service_client_execs_the_installed_client_against_the_native_endpoint()
     assert_observed_permissions_advertised(&control, &help).await;
 }
 
+/// #1443: a local build too old for `--login` fails before any API call with
+/// the typed code and the install command in the Cloud JSON envelope.
+#[tokio::test]
+async fn service_client_too_old_build_reports_a_typed_json_error() {
+    let control = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let client = home.join(".clickhouse/versions/25.11.1.1/clickhouse");
+    std::fs::create_dir_all(client.parent().unwrap()).unwrap();
+    std::fs::write(&client, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&client, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "--org-id",
+            "org-1",
+            "--json",
+        ])
+        .args(["service", "client", TEST_SERVICE_ID])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
+    assert_eq!(error["error"]["code"], "unsupported_client_version");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local install latest"
+    );
+    assert!(control.received_requests().await.unwrap().is_empty());
+}
+
 // ── Query timeout diagnosis after an idle/wake observation (#826) ─────────
 
 async fn invoke_service_query_for_timeout_test(

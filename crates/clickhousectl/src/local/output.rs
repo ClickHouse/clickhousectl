@@ -1025,6 +1025,33 @@ pub(crate) fn error_code(error: &Error) -> LocalErrorCode {
     LocalErrorBody::from_error(error).code()
 }
 
+/// The code and recovery command this module reports for a failure to select
+/// or launch an installed ClickHouse client, or `None` for any other error.
+/// `cloud service client` runs the same pre-flight as `local client`, and
+/// reuses this classification so the two report a broken local install
+/// alike (#1443). Every variant here maps at parity: the message is the
+/// error's own text.
+pub(crate) fn installed_client_error(error: &Error) -> Option<(LocalErrorCode, Option<String>)> {
+    if !matches!(
+        error,
+        Error::InvalidVersion(_)
+            | Error::VersionNotFound(_)
+            | Error::StaleDefaultVersion(_)
+            | Error::NoClientVersionInstalled
+            | Error::ClientVersionNotInstalled(_)
+            | Error::NoDefaultVersion
+            | Error::AmbiguousClientVersion
+            | Error::BinaryNotLaunchable { .. }
+            | Error::ClientLoginUnsupported { .. }
+    ) {
+        return None;
+    }
+    match LocalErrorBody::from_error(error) {
+        LocalErrorBody::General(detail) => Some((detail.code, detail.command)),
+        _ => None,
+    }
+}
+
 /// Write exactly one local runtime error object to stderr, and return its
 /// code so telemetry reuses this classification instead of building it again.
 /// The serialized DTO is allowlisted above; foreign text appears only in

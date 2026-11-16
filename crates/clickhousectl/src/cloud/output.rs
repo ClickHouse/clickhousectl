@@ -102,6 +102,23 @@ pub enum CloudErrorCode {
     /// `update` downloaded an archive that the release's `SHA256SUMS` does
     /// not list or whose digest differs, and replaced nothing (#1307).
     VerificationFailed,
+    /// `cloud service client` was pointed at a ClickHouse build whose version
+    /// is malformed; the same code `local client` reports (#1443).
+    InvalidVersion,
+    /// `cloud service client` found no installed local build to run, or not
+    /// the requested one; `command` lists or installs one. The same code
+    /// `local client` reports (#1443).
+    VersionNotInstalled,
+    /// `cloud service client` found several installed builds and no default;
+    /// pass `--version` or set a default. The same code `local client`
+    /// reports (#1443).
+    VersionSelectionRequired,
+    /// The selected local build is installed but cannot be launched;
+    /// `command` reinstalls it. The same code `local client` reports (#1443).
+    BinaryNotLaunchable,
+    /// The selected local build's client predates `--login`, which
+    /// `cloud service client` needs; `command` installs a newer one (#1443).
+    UnsupportedClientVersion,
 }
 
 impl CloudErrorCode {
@@ -117,6 +134,20 @@ impl CloudErrorCode {
             FailureKind::Timeout => Self::Timeout,
             FailureKind::RateLimited => Self::RateLimited,
             FailureKind::Other => Self::Other,
+        }
+    }
+
+    /// The Cloud code for a local client pre-flight failure that
+    /// `cloud service client` shares with `local client` (#1443).
+    fn from_local(code: crate::local::output::LocalErrorCode) -> Self {
+        use crate::local::output::LocalErrorCode;
+        match code {
+            LocalErrorCode::InvalidVersion => Self::InvalidVersion,
+            LocalErrorCode::VersionNotInstalled => Self::VersionNotInstalled,
+            LocalErrorCode::VersionSelectionRequired => Self::VersionSelectionRequired,
+            LocalErrorCode::BinaryNotLaunchable => Self::BinaryNotLaunchable,
+            LocalErrorCode::UnsupportedClientVersion => Self::UnsupportedClientVersion,
+            _ => Self::Other,
         }
     }
 
@@ -147,6 +178,11 @@ impl CloudErrorCode {
         Self::ClickPipeStartNoEffect,
         Self::PackageManaged,
         Self::VerificationFailed,
+        Self::InvalidVersion,
+        Self::VersionNotInstalled,
+        Self::VersionSelectionRequired,
+        Self::BinaryNotLaunchable,
+        Self::UnsupportedClientVersion,
     ];
 }
 
@@ -209,7 +245,14 @@ impl CloudErrorDetail {
                 return std::borrow::Cow::Owned(detail);
             }
             Error::ArchiveVerification(_) => CloudErrorCode::VerificationFailed,
-            _ => CloudErrorCode::Other,
+            _ => match crate::local::output::installed_client_error(error) {
+                Some((code, command)) => {
+                    let mut detail = Self::new(CloudErrorCode::from_local(code), error.to_string());
+                    detail.command = command;
+                    return std::borrow::Cow::Owned(detail);
+                }
+                None => CloudErrorCode::Other,
+            },
         };
         std::borrow::Cow::Owned(Self::new(code, error.to_string()))
     }
@@ -821,6 +864,11 @@ mod tests {
                 "clickpipe_start_no_effect",
                 "package_managed",
                 "verification_failed",
+                "invalid_version",
+                "version_not_installed",
+                "version_selection_required",
+                "binary_not_launchable",
+                "unsupported_client_version",
             ]
         );
     }
@@ -885,6 +933,97 @@ mod tests {
                 json!({"error": {"code": code, "message": error.to_string()}})
             );
             assert_eq!(error.exit_code(), exit_code);
+        }
+    }
+
+    /// `cloud service client` runs the local client pre-flight, so a missing,
+    /// ambiguous, broken or too-old build gets the same typed code and
+    /// runnable repair `local client` reports, not `other` (#1443).
+    #[test]
+    fn local_client_preflight_errors_carry_a_typed_code_and_runnable_command() {
+        use crate::error::{BinaryLaunchProblem, Error};
+        let not_launchable = |problem| Error::BinaryNotLaunchable {
+            version: "25.12.1.1".into(),
+            problem,
+            path: "/home/u/.clickhouse/versions/25.12.1.1/clickhouse".into(),
+        };
+        for (error, code, command) in [
+            (
+                Error::InvalidVersion("bad".into()),
+                "invalid_version",
+                "clickhousectl local install --help",
+            ),
+            (
+                Error::VersionNotFound("25.12.1.1".into()),
+                "version_not_installed",
+                "clickhousectl local list",
+            ),
+            (
+                Error::StaleDefaultVersion("25.12.1.1".into()),
+                "version_not_installed",
+                "clickhousectl local list",
+            ),
+            (
+                Error::NoClientVersionInstalled,
+                "version_not_installed",
+                "clickhousectl local install latest",
+            ),
+            (
+                Error::ClientVersionNotInstalled("25.12".into()),
+                "version_not_installed",
+                "clickhousectl local install 25.12",
+            ),
+            (
+                Error::NoDefaultVersion,
+                "version_selection_required",
+                "clickhousectl local list",
+            ),
+            (
+                Error::AmbiguousClientVersion,
+                "version_selection_required",
+                "clickhousectl local list",
+            ),
+            (
+                not_launchable(BinaryLaunchProblem::NotExecutable),
+                "binary_not_launchable",
+                "clickhousectl local install --force 25.12.1.1",
+            ),
+            (
+                not_launchable(BinaryLaunchProblem::NotAFile),
+                "binary_not_launchable",
+                "clickhousectl local remove 25.12.1.1 && clickhousectl local install 25.12.1.1",
+            ),
+            (
+                Error::ClientLoginUnsupported {
+                    version: "25.11.1.1".into(),
+                    minimum: "25.12",
+                },
+                "unsupported_client_version",
+                "clickhousectl local install latest",
+            ),
+        ] {
+            let detail = CloudErrorDetail::from_error(&error);
+            let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
+            assert_eq!(
+                value,
+                json!({"error": {
+                    "code": code,
+                    "message": error.to_string(),
+                    "command": command,
+                }}),
+                "{error:?}"
+            );
+            assert_eq!(error.exit_code(), 1);
+            for step in command.split(" && ") {
+                let argv = shlex::split(step).expect("shell-quoted command");
+                match <crate::cli::Cli as clap::Parser>::try_parse_from(&argv) {
+                    Ok(cli) => assert!(
+                        matches!(cli.command, crate::cli::Commands::Local(_)),
+                        "{step}"
+                    ),
+                    Err(e) => assert_eq!(e.kind(), clap::error::ErrorKind::DisplayHelp, "{step}"),
+                }
+            }
         }
     }
 
