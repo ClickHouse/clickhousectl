@@ -43,6 +43,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhousectl/tests/local_install_binary_test.rs": True,
             "Cargo.lock": True,
             "scripts/classify-install-integration.py": True,
+            "scripts/check-release-versions.py": False,
+            "scripts/tests/test_check_release_versions.py": False,
             "crates/clickhousectl/src/local/postgres.rs": False,
             "crates/clickhousectl/src/local/docker.rs": False,
             "crates/clickhousectl/tests/local_client_selectors_test.rs": False,
@@ -203,6 +205,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_stdout_test.rs",
                     "crates/clickhousectl/tests/skills_usage_test.rs",
                     "crates/clickhousectl/tests/management_json_errors_test.rs",
+                    "scripts/check-release-versions.py",
+                    "scripts/tests/test_check_release_versions.py",
                 }
             ),
         )

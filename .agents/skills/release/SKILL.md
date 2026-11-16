@@ -5,7 +5,8 @@ description: Releases a new `clickhousectl` and `clickhouse-cloud-api` version �
 
 # Release
 
-One tag publishes everything. `.github/workflows/release.yml` runs on a `v*` tag push: build → smoke tests →
+One tag publishes everything. `.github/workflows/release.yml` runs on a `v*` tag push: **Check release versions**
+→ build → smoke tests →
 **Upload to builds.clickhouse.com** (also writes `SHA256SUMS` and the provenance attestation) → **Create Release**
 (the GitHub release with its `.tar.gz` assets and `SHA256SUMS`) → **Publish latest.txt**, plus crates.io, npm and
 PyPI in separate jobs. crates.io uses a token; npm, PyPI and the S3 upload use OIDC.
@@ -37,7 +38,13 @@ In `crates/clickhouse-cloud-api/CHANGELOG.md`, rename `## Unreleased` to `## X.Y
 `## Unreleased` above it.
 
 `pypi/pyproject.toml` takes its version from `crates/clickhousectl/Cargo.toml` (`dynamic = ["version"]`).
-Land the bump on `main` through a PR like any other change.
+Run `cargo check` so `Cargo.lock` picks up the new versions: release builds use `--locked`. Then
+`python3 scripts/check-release-versions.py --tag vX.Y.Z` must pass. Land the bump on `main` through a PR like any
+other change; the same check (without the tag) runs on pull requests.
+
+The release workflow does not rewrite any version. Its first job, **Check release versions**, runs that script
+against the pushed tag and fails unless the tag is `vX.Y.Z` and every file above and `Cargo.lock` says `X.Y.Z`.
+Nothing is built or published until it passes. If it fails, delete the tag, land the missing bump and tag again.
 
 ## 2. Tag and push
 
@@ -89,7 +96,7 @@ and PyPI pages show the new version.
 ## Checklist
 
 ```
-- [ ] Versions bumped in lockstep and merged to main
+- [ ] Versions bumped in lockstep (`check-release-versions.py --tag vX.Y.Z` passes) and merged to main
 - [ ] Tag pushed on the merge commit
 - [ ] release.yml fully green
 - [ ] All four builds.clickhouse.com archives return 200
