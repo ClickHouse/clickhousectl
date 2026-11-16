@@ -1,3 +1,7 @@
+// The crate's print macros (src/stdout.rs) shadow std's; these lints catch a
+// path-qualified `std::println!`/`std::eprintln!` that would bypass them.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 #[macro_use]
 mod stdout;
 
@@ -148,8 +152,7 @@ async fn main() {
     // too, preserving any established usage/command/child status.
     let exit_code = match stdout::finish(Ok(())) {
         Err(error) if exit_code == 0 => {
-            use std::io::Write;
-            let _ = writeln!(std::io::stderr(), "Error: {error}");
+            eprintln!("Error: {error}");
             error.exit_code()
         }
         _ => exit_code,
@@ -353,12 +356,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
                     // `update` and `skills` share the Cloud envelope's generic
                     // codes (`transport`, `timeout`, `io`, `other`) (#1233).
                     _ if cloud_json || management_json => cloud::output::print_error(&e),
-                    _ => {
-                        use std::io::Write;
-                        // Not `eprintln!`, which panics on a closed stderr — see
-                        // `telemetry::print_first_run_notice`.
-                        let _ = writeln!(std::io::stderr(), "Error: {}", e);
-                    }
+                    _ => eprintln!("Error: {e}"),
                 }
             }
             // Recorded for exactly the failures that have a local error

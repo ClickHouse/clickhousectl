@@ -1,6 +1,11 @@
 //! CLI-owned stdout treats a reader closing its pipe as successful delivery.
 //! Keep running the command so a later API/child failure still wins. Other I/O
 //! errors remain errors; infallible print macros defer them to the command tail.
+//!
+//! Stderr carries diagnostics, progress and notices, never a result, so its
+//! macros discard every write failure: a closed stderr must not turn a command
+//! into a panic and exit 101 (#598, #1302), and a stderr failure has nowhere
+//! to be reported. The exit code still reports the outcome.
 
 use std::fmt;
 use std::io::{self, Write};
@@ -14,6 +19,15 @@ macro_rules! print {
 macro_rules! println {
     () => { $crate::stdout::print(format_args!("\n")) };
     ($($arg:tt)*) => { $crate::stdout::print(format_args!("{}\n", format_args!($($arg)*))) };
+}
+// Unused today; shadowed so a future `eprint!` cannot reach std's panicking one.
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => { $crate::stdout::eprint(format_args!($($arg)*)) };
+}
+macro_rules! eprintln {
+    () => { $crate::stdout::eprint(format_args!("\n")) };
+    ($($arg:tt)*) => { $crate::stdout::eprint(format_args!("{}\n", format_args!($($arg)*))) };
 }
 
 struct PipeWriter<W> {
@@ -135,6 +149,11 @@ impl Write for Stdout {
 
 pub(crate) fn print(args: fmt::Arguments<'_>) {
     record(stdout().write_fmt(args));
+}
+
+/// Write to stderr, discarding any failure (see the module docs).
+pub(crate) fn eprint(args: fmt::Arguments<'_>) {
+    let _ = io::stderr().write_fmt(args);
 }
 
 /// Also used for clap, which owns its help/version output. Usage errors retain

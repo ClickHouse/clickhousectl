@@ -312,8 +312,7 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
     };
     if !json {
         for warning in &warnings {
-            // Not `eprintln!`, which panics on a closed stderr.
-            let _ = writeln!(std::io::stderr(), "Warning: {warning}");
+            eprintln!("Warning: {warning}");
         }
     }
 
@@ -571,12 +570,11 @@ async fn deploy(
     };
 
     if !json {
-        // Not `eprintln!`, which panics on a closed stderr.
         for warning in &warnings {
-            let _ = writeln!(std::io::stderr(), "Warning: {warning}");
+            eprintln!("Warning: {warning}");
         }
         if ignored_files.iter().any(|file| file == REQUIREMENTS_FILE) {
-            let _ = writeln!(std::io::stderr(), "{REQUIREMENTS_NOTICE}");
+            eprintln!("{REQUIREMENTS_NOTICE}");
         }
     }
     let out = UdfDeployOutput {

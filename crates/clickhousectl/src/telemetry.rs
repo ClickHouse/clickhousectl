@@ -923,25 +923,15 @@ fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notic
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
         Action::Debug(_) if defer_first_run_notice => {}
-        Action::Debug(json) => {
-            use std::io::Write;
-            // Not `eprintln!`, which panics on a closed stderr — see
-            // `print_first_run_notice`.
-            let _ = writeln!(std::io::stderr(), "{json}");
-        }
+        Action::Debug(json) => eprintln!("{json}"),
         Action::Send(json) => spawn_send_child(&json),
     }
 }
 
 /// Printed to stderr regardless of TTY so agent/non-interactive usage still
-/// sees it exactly once (stdout stays machine-parseable). Write failures are
-/// ignored, not `eprintln!`-panicked: this hook runs on every invocation —
-/// including ones whose stderr is a closed pipe — and must never turn an
-/// exit code into a panic.
+/// sees it exactly once (stdout stays machine-parseable).
 fn print_first_run_notice() {
-    use std::io::Write;
-    let _ = writeln!(
-        std::io::stderr(),
+    eprintln!(
         "\nNote: clickhousectl collects anonymous usage data to help improve the CLI:\n\
          command name, flag and argument names (never their values), success/failure\n\
          with bounded failure categories, version, OS/arch, and CI/agent detection.\n\
@@ -1096,11 +1086,7 @@ pub fn run_command(cmd: crate::cli::TelemetryCommands, json: bool) -> Result<()>
             // (see `decide`): without this note the user would see success
             // while telemetry stays fully silent.
             if env_truthy(real_env_lookup(DNT_ENV)) {
-                use std::io::Write;
-                // Not `eprintln!`, which panics on a closed stderr — see
-                // `print_first_run_notice`.
-                let _ = writeln!(
-                    std::io::stderr(),
+                eprintln!(
                     "Note: the DO_NOT_TRACK environment variable is set; telemetry will remain silent while it is set."
                 );
             }

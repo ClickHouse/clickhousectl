@@ -3,8 +3,7 @@ use crate::cloud::client::{
     read_flag_file,
 };
 use crate::cloud::output::{
-    ABSENT, CloudErrorCode, NextStep, eprint_line, json_with_next, or_absent, print_human,
-    print_line,
+    ABSENT, CloudErrorCode, NextStep, json_with_next, or_absent, print_human, print_line,
 };
 use crate::cloud::shared::PollProgress;
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
@@ -26,8 +25,7 @@ use tabled::{Table, Tabled, settings::Style};
 
 /// Gap between `GET service` calls while `service delete --force` waits for a
 /// stop to finish. A real stop takes minutes, so the loop can emit dozens of
-/// progress lines — see [`crate::cloud::output::eprint_line`] for why none of
-/// them may panic.
+/// progress lines — see `crate::stdout` for why none of them may panic.
 const STOP_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// `host:port` of a service's first endpoint, for list tables.
@@ -776,12 +774,12 @@ pub(super) async fn service_create(
                 });
             }
             if !vars.iter().any(|(key, _)| *key == "CLICKHOUSE_HOST") {
-                eprint_line(format!(
+                eprintln!(
                     "Warning: the API response had no endpoints, so {} has no host or ports. \
                      Add them later with `clickhousectl cloud service dotenv {}`.",
                     path.display(),
                     service_id.map_or_else(|| "<service-id>".to_string(), |id| id.to_string())
-                ));
+                );
             }
             Some(DotenvWritten {
                 file: path.display().to_string(),
@@ -1029,15 +1027,11 @@ pub(super) async fn service_delete(
             .map(|service| or_absent(service.state.as_ref()))
             .unwrap_or_default();
         if matches!(state.as_str(), "running" | "idle" | "starting") {
-            // Every write below goes through `eprint_line`/`print_line`, never
-            // `eprintln!`/`println!`: this loop streams progress for as long as
-            // the stop takes (minutes), so it routinely outlives whatever was
-            // reading its output, and a panicking write turned a successful
-            // delete into exit 101 (#598).
-            eprint_line(format!(
-                "Stopping service {} before deletion...",
-                service_id
-            ));
+            // This loop streams progress for as long as the stop takes
+            // (minutes), so it routinely outlives whatever was reading its
+            // output; a panicking write once turned a successful delete into
+            // exit 101 (#598). The crate's print macros never panic.
+            eprintln!("Stopping service {} before deletion...", service_id);
             client
                 .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
                 .await?;
@@ -1054,7 +1048,7 @@ pub(super) async fn service_delete(
                 let service = client.get_service(&org_id, service_id).await?;
                 let state = or_absent(service.state.as_ref());
                 if let Some(line) = progress.render(&state, verbose_polling) {
-                    eprint_line(line);
+                    eprintln!("{line}");
                 }
                 if classify_stop_poll_state(service.state.as_ref())? {
                     break;
@@ -1158,7 +1152,7 @@ pub(super) async fn service_update(
     if has_removals(&options) {
         let current = client.get_service(&org_id, service_id).await?;
         for warning in unmatched_removal_warnings(&options, &request, &current) {
-            eprint_line(format!("Warning: {warning}"));
+            eprintln!("Warning: {warning}");
         }
     }
 

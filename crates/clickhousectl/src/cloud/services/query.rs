@@ -1,5 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file_bytes};
-use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, eprint_line, or_absent};
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, or_absent};
 use crate::cloud::services::query_key::CallerKeyBinding;
 use crate::cloud::shared::resolve_org_id;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
@@ -206,7 +206,7 @@ where
             return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
         if !waiting {
-            eprint_line("Waiting for the Query API endpoint to become ready...");
+            eprintln!("Waiting for the Query API endpoint to become ready...");
             waiting = true;
         }
         // One more probe is about to be sent: the retry bucket is how a
@@ -478,11 +478,11 @@ pub(super) async fn service_query(
                         return Err(refused_query_provisioning_error(&service_id, &error.error)
                             .at_stage(FailureStage::QueryRequest));
                     }
-                    eprint_line(format!(
+                    eprintln!(
                         "Binding the authenticated API key to the Query API endpoint for \
                          service '{}'...",
                         service_name
-                    ));
+                    );
                     // No key is created: the caller's own key is bound to the
                     // endpoint and the query re-runs with it (#1043). The bind
                     // records `BoundCallerKey` itself once it succeeds.
@@ -574,7 +574,7 @@ pub(super) async fn service_query(
         QueryOutputCompletion::Newline => handle
             .write_all(b"\n")
             .map_err(|error| stream_failure(CloudError::from(error)))?,
-        QueryOutputCompletion::Acknowledge => eprint_line("OK"),
+        QueryOutputCompletion::Acknowledge => eprintln!("OK"),
     }
     handle
         .flush()
@@ -612,9 +612,7 @@ fn query_format_uses_text_lines(format: &str) -> bool {
 }
 
 fn eprint_waking_service(service_name: &str) {
-    eprint_line(format!(
-        "Service '{service_name}' is idle; waking it (this may take a minute)..."
-    ));
+    eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
 }
 
 /// A service's native-protocol (`nativesecure`) endpoint.

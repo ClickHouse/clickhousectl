@@ -31,7 +31,7 @@ pub use client::{
 
 use crate::error::{Error, Result};
 use cli::{CloudArgs, CloudCommands};
-use output::{CloudErrorCode, CloudErrorDetail, eprint_line};
+use output::{CloudErrorCode, CloudErrorDetail};
 
 /// Explain when a configured environment credential cannot participate in
 /// authentication because a higher-precedence source won. Keep this notice on
@@ -105,21 +105,18 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         && let Some(notice) =
             ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
     {
-        eprint_line(notice);
+        eprintln!("{notice}");
     }
     if !json
         && let Some(notice) =
             stored_api_url_notice(client.auth_source(), args.url.as_deref(), client.base_url())
     {
-        eprint_line(notice);
+        eprintln!("{notice}");
     }
 
     if args.debug {
-        eprint_line(format!(
-            "[debug] auth source: {}",
-            client.auth_source().describe()
-        ));
-        eprint_line(format!("[debug] api url: {}", client.base_url()));
+        eprintln!("[debug] auth source: {}", client.auth_source().describe());
+        eprintln!("[debug] api url: {}", client.base_url());
     }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early

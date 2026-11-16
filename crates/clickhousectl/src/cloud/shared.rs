@@ -13,7 +13,7 @@ pub(super) async fn resolve_org_id(client: &CloudClient) -> CloudResult<String> 
 
 /// Collapses repeated states while a command polls, so a long wait prints
 /// one line per transition (or every probe when `verbose`). The lines go to
-/// stderr through [`crate::cloud::output::eprint_line`].
+/// stderr through the crate's non-panicking `eprintln!` (see `crate::stdout`).
 #[derive(Default)]
 pub(super) struct PollProgress {
     previous_state: Option<String>,

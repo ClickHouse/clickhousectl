@@ -7,7 +7,7 @@ use super::lifecycle::{
     render_postgres_service,
 };
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{eprint_line, json_with_next, print_line};
+use crate::cloud::output::{json_with_next, print_line};
 use crate::cloud::shared::{parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PgBouncerConfig, PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse,
@@ -335,7 +335,7 @@ pub async fn postgres_role_change(
         .await?;
 
     for note in role_change_notes(cmd, postgres_id) {
-        eprint_line(note);
+        eprintln!("{note}");
     }
 
     // `print_line`, not `println!`: a closed pipe must not turn an accepted

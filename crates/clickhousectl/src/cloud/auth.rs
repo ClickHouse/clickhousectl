@@ -15,7 +15,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::{eprint_line, print_human};
+use crate::cloud::output::print_human;
 use crate::cloud::{
     AuthSource, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
 };
@@ -458,7 +458,7 @@ pub async fn run(
             if debug {
                 match active {
                     Some(source) => {
-                        eprint_line(format!("[debug] auth source: {}", source.describe()))
+                        eprintln!("[debug] auth source: {}", source.describe())
                     }
                     None if api_key.is_some() != api_secret.is_some() => {
                         let missing = if api_key.is_some() {
@@ -466,14 +466,14 @@ pub async fn run(
                         } else {
                             "--api-key"
                         };
-                        eprint_line(format!(
+                        eprintln!(
                             "[debug] auth source: none (incomplete CLI flags: missing {missing})"
-                        ));
+                        );
                     }
                     None if oauth_warning.is_some() => {
-                        eprint_line("[debug] auth source: none (saved OAuth login unusable)");
+                        eprintln!("[debug] auth source: none (saved OAuth login unusable)");
                     }
-                    None => eprint_line("[debug] auth source: none (no credentials configured)"),
+                    None => eprintln!("[debug] auth source: none (no credentials configured)"),
                 }
             }
 
@@ -748,7 +748,7 @@ fn print_login_report(report: &LoginReport, json: bool) -> crate::error::Result<
         print_human(identity)?;
     }
     if let Some(warning) = &report.warning {
-        eprint_line(format!("warning: {warning}"));
+        eprintln!("warning: {warning}");
     }
     Ok(())
 }
@@ -1120,7 +1120,7 @@ pub async fn device_auth_login(
 
     let say = |line: &str| {
         if json {
-            eprint_line(line);
+            eprintln!("{line}");
         } else {
             println!("{line}");
         }
@@ -1290,7 +1290,7 @@ async fn refresh_saved_tokens(
         // JSON mode keeps stderr to the single error envelope; the resolver's
         // expired-login error carries the action in both modes.
         Err(_) if !json => {
-            eprint_line("Warning: OAuth token refresh failed. The saved login was kept.");
+            eprintln!("Warning: OAuth token refresh failed. The saved login was kept.");
         }
         Err(_) => {}
     }

@@ -16,7 +16,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
-use crate::cloud::output::{eprint_line, or_absent, print_human};
+use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -586,8 +586,8 @@ async fn key_create(
     } else {
         print!("{}", render_key_created(name, resource_id, &material));
         if deny_all {
-            eprint_line(
-                "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`.",
+            eprintln!(
+                "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`."
             );
         }
     }

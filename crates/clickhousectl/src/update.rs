@@ -404,11 +404,7 @@ pub fn print_cached_update_notice() {
     if let Some((_, cached_version)) = read_update_check() {
         let current = env!("CARGO_PKG_VERSION");
         if is_newer(current, &cached_version) {
-            use std::io::Write;
-            // Not `eprintln!`, which panics on a closed stderr — see
-            // `telemetry::print_first_run_notice`.
-            let _ = writeln!(
-                std::io::stderr(),
+            eprintln!(
                 "\nThere is a new version of clickhousectl. Update with `clickhousectl update`."
             );
         }
