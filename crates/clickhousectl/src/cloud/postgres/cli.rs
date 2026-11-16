@@ -412,7 +412,7 @@ pub enum ConfigCommands {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
         postgres_id: NameSelector,
-        /// JSON file with a complete PostgresInstanceConfig object
+        /// Complete PostgresInstanceConfig JSON file, or - for stdin
         ///
         /// Not a fragment: use a document obtained from `config get --json`.
         #[arg(long, value_name = "PATH")]
@@ -432,7 +432,7 @@ pub enum ConfigCommands {
         /// (statement_timeout=5s). Last value wins on a duplicate key.
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
-        /// JSON file with explicit pgConfig and pgBouncerConfig objects
+        /// JSON file with both pgConfig and pgBouncerConfig, or - for stdin
         #[arg(long, value_name = "PATH", conflicts_with = "sets")]
         file: Option<PathBuf>,
     },

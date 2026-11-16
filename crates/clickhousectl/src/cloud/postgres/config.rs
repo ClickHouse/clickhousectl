@@ -1,4 +1,5 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult, read_flag_file};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::config::read_flag_text;
 use crate::cloud::output::print_human;
 use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
@@ -9,12 +10,18 @@ use clickhouse_cloud_api::models::{
 use serde::de::DeserializeOwned;
 use std::path::Path;
 
-/// Read and parse the JSON file `flag` names. A file that cannot be read is an
-/// `Io` failure naming the flag; one that does not parse is a usage error.
+/// Read and parse the JSON document `flag` names, from stdin when `path` is
+/// `-`. Input that cannot be read is an `Io` failure naming the flag; input
+/// that does not parse is a usage error.
 pub(super) fn load_json_file<T: DeserializeOwned>(flag: &str, path: &Path) -> CloudResult<T> {
-    let contents = read_flag_file(flag, path)?;
+    let contents = read_flag_text(flag, path)?;
     serde_json::from_str(&contents).map_err(|e| {
-        CloudError::usage(format!("failed to parse {} as JSON: {}", path.display(), e))
+        let source = if path == Path::new("-") {
+            "stdin".into()
+        } else {
+            path.display().to_string()
+        };
+        CloudError::usage(format!("failed to parse {source} as JSON: {e}"))
     })
 }
 

@@ -3,6 +3,7 @@ use crate::failure::{ApiFailure, FailureKind};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::Read as _;
+use std::path::Path;
 
 /// User-facing label for a file-or-stdin configuration source.
 pub(crate) fn config_source_label(config_file: &str) -> &str {
@@ -25,18 +26,7 @@ pub(crate) fn read_config_value(config_file: &str) -> CloudResult<Value> {
 /// Read the JSON document `flag` names from a file or stdin; see
 /// [`read_config_value`] for how each failure is reported.
 pub(crate) fn read_flag_config_value(flag: &str, config_file: &str) -> CloudResult<Value> {
-    let contents = if config_file == "-" {
-        let mut contents = String::new();
-        std::io::stdin()
-            .read_to_string(&mut contents)
-            .map_err(|error| {
-                CloudError::new(format!("failed to read {flag} from stdin: {error}"))
-                    .with_failure(ApiFailure::new(FailureKind::Io))
-            })?;
-        contents
-    } else {
-        read_flag_file(flag, config_file)?
-    };
+    let contents = read_flag_text(flag, Path::new(config_file))?;
 
     serde_json::from_str(&contents).map_err(|error| {
         CloudError::usage(format!(
@@ -44,6 +34,22 @@ pub(crate) fn read_flag_config_value(flag: &str, config_file: &str) -> CloudResu
             config_source_label(config_file)
         ))
     })
+}
+
+/// Read the text `flag` names, from stdin when `source` is `-` and from that
+/// file otherwise. Either read failure is a runtime I/O failure naming `flag`.
+pub(crate) fn read_flag_text(flag: &str, source: &Path) -> CloudResult<String> {
+    if source != Path::new("-") {
+        return read_flag_file(flag, source);
+    }
+    let mut contents = String::new();
+    std::io::stdin()
+        .read_to_string(&mut contents)
+        .map_err(|error| {
+            CloudError::new(format!("failed to read {flag} from stdin: {error}"))
+                .with_failure(ApiFailure::new(FailureKind::Io))
+        })?;
+    Ok(contents)
 }
 
 /// Append one object key to a JSON path, in the `tiles[0].config` form the
