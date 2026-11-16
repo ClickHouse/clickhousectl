@@ -49,7 +49,7 @@ Paginated commands require command-specific handling. `cloud org list`, `cloud s
 | `0` | Success (which may mean an asynchronous request was accepted) |
 | `1` | Runtime error |
 | `2` | Usage error, including invalid command-line values such as an empty Cloud resource ID (often an unset shell variable); nothing is sent |
-| `3` | Cancellation |
+| `3` | An interactive prompt was cancelled (the `skills` agent or scope picker); Ctrl-C elsewhere ends the process by signal |
 | `4` | Authentication required/rejected (HTTP 401, missing credentials), including OAuth-only writes |
 
 An HTTP 403 is a runtime error (`1`, code `http_4xx`), not `4`: it refuses the request, for example a quota, a precondition such as ClickStack not being set up, an organization policy or a missing grant, and logging in again does not fix it. The exception is a credential check backed by the identity (whoami) endpoint: `cloud auth login`, `cloud auth whoami`, and the key bind in `cloud service query`. There a 403 rejects the credentials themselves and exits `4`.

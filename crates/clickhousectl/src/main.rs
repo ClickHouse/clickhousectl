@@ -438,7 +438,13 @@ fn management_error_json(cmd: &Commands) -> bool {
     match cmd {
         Commands::Update(args) => json_output(args.json),
         Commands::Skills(args) => json_output(args.json),
-        _ => false,
+        // Local and Cloud print their own envelopes; `telemetry` and
+        // `feedback` keep their text diagnostics deliberately.
+        Commands::Local(_) | Commands::Cloud(_) => false,
+        #[cfg(feature = "telemetry")]
+        Commands::Telemetry(_) => false,
+        #[cfg(feature = "feedback")]
+        Commands::Feedback(_) => false,
     }
 }
 
