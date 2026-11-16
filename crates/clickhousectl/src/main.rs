@@ -467,12 +467,31 @@ fn should_show_update_notice(cmd: &Commands) -> bool {
     }
 }
 
+/// Turns agent-detected JSON off when set to `0`, `false`, `no` or `off`.
+const AUTO_JSON_ENV: &str = "CLICKHOUSECTL_AUTO_JSON";
+
 /// Resolve whether to emit machine-readable JSON. True when `--json` was passed
 /// or we're running under a known coding agent (same detection as the outbound
-/// User-Agent in `user_agent.rs`). Pipes/redirects stay human-readable unless
-/// `--json` is passed, matching `gh`/`kubectl` norms.
+/// User-Agent in `user_agent.rs`), unless [`AUTO_JSON_ENV`] opts out of the
+/// latter. Pipes/redirects stay human-readable unless `--json` is passed,
+/// matching `gh`/`kubectl` norms. Every output-format decision goes through
+/// here; the User-Agent and telemetry keep reading agent detection directly.
 fn json_output(flag: bool) -> bool {
-    flag || is_ai_agent::detect().is_some()
+    let auto_json = std::env::var_os(AUTO_JSON_ENV).map(|v| v.to_string_lossy().into_owned());
+    resolve_json(flag, auto_json.as_deref(), is_ai_agent::detect().is_some())
+}
+
+/// The pure output-mode rule: an explicit `--json` always wins; otherwise a
+/// detected agent selects JSON unless `auto_json_env` is an off value
+/// (case-insensitive `0`, `false`, `no`, `off`). Unset or any other value keeps
+/// detection.
+fn resolve_json(flag: bool, auto_json_env: Option<&str>, agent_detected: bool) -> bool {
+    let opted_out = auto_json_env.is_some_and(|value| {
+        ["0", "false", "no", "off"]
+            .iter()
+            .any(|off| value.eq_ignore_ascii_case(off))
+    });
+    flag || (agent_detected && !opted_out)
 }
 
 async fn run(cmd: Commands) -> Result<()> {
@@ -1043,6 +1062,32 @@ mod tests {
             command_json_flag(&parse(&["clickhousectl", "feedback", "--json", "hi"])),
             Some(true)
         );
+    }
+
+    #[test]
+    fn resolve_json_flag_wins_and_env_only_disables_detection() {
+        // An explicit --json always wins, whatever the env and detection say.
+        for env in [None, Some("0"), Some("off"), Some("1")] {
+            for detected in [false, true] {
+                assert!(resolve_json(true, env, detected), "{env:?} {detected}");
+            }
+        }
+        // Each off value, in any case, turns agent-detected JSON off.
+        for off in ["0", "false", "FALSE", "no", "No", "off", "OFF"] {
+            assert!(!resolve_json(false, Some(off), true), "{off}");
+        }
+        // Unset or any other value keeps detection.
+        for env in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("true"),
+            Some("yes"),
+            Some(" 0"),
+        ] {
+            assert!(resolve_json(false, env, true), "{env:?}");
+            assert!(!resolve_json(false, env, false), "{env:?}");
+        }
     }
 
     #[test]

@@ -6,6 +6,8 @@
 
 Use `--json` for commands that return structured data. Detected coding agents select JSON automatically. Use explicit flags in scripts rather than depending on detection.
 
+To keep human output under a detected agent, set `CLICKHOUSECTL_AUTO_JSON=0` (also `false`, `no` or `off`, in any case). An explicit `--json` still selects JSON; an unset variable or any other value leaves detection on. The setting changes only the output format and the update notice; the `User-Agent`, agent correlation headers and telemetry still report the detected agent.
+
 ```bash
 clickhousectl cloud service list --json
 clickhousectl cloud key list --all --json
@@ -147,7 +149,7 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 
 ## Update check
 
-Every command except `update`, `--version` included, checks for a newer release when its cached result is stale, then prints a one-line notice to stderr after the command's output if one exists. The notice is suppressed in JSON mode (`--json` or a detected coding agent). The check reads `https://builds.clickhouse.com/clickhousectl/latest.txt`, falling back to the GitHub latest-release redirect, with a 400 ms budget, sending only the `User-Agent`, never the agent correlation headers. A completed check holds for 24 hours and a failed one is retried after an hour; the result is cached in `~/.clickhouse/last_update_check`. Set `CLICKHOUSECTL_NO_UPDATE_CHECK=1` (any value other than empty, `0`, or `false`) to turn off both the check and the notice. `update` and `update --check` always contact the release server.
+Every command except `update`, `--version` included, checks for a newer release when its cached result is stale, then prints a one-line notice to stderr after the command's output if one exists. The notice is suppressed in JSON mode (`--json`, or a detected coding agent unless `CLICKHOUSECTL_AUTO_JSON=0`). The check reads `https://builds.clickhouse.com/clickhousectl/latest.txt`, falling back to the GitHub latest-release redirect, with a 400 ms budget, sending only the `User-Agent`, never the agent correlation headers. A completed check holds for 24 hours and a failed one is retried after an hour; the result is cached in `~/.clickhouse/last_update_check`. Set `CLICKHOUSECTL_NO_UPDATE_CHECK=1` (any value other than empty, `0`, or `false`) to turn off both the check and the notice. `update` and `update --check` always contact the release server.
 
 ## Local error codes
 
