@@ -640,6 +640,38 @@ pub(crate) fn list_postgres_instance_names_locked(lock: &MetadataLock) -> Result
     Ok(names)
 }
 
+/// The user-facing names of this project's servers of one engine, for shell
+/// completion. Reads metadata without the lock (taking it creates a lock file)
+/// and without liveness checks, so it never writes, scans processes or
+/// contacts Docker. Best effort: an unreadable entry is skipped.
+pub(crate) fn completion_server_names(engine: Engine) -> Vec<String> {
+    servers_dir()
+        .map(|dir| server_names_in(&dir, engine))
+        .unwrap_or_default()
+}
+
+fn server_names_in(dir: &Path, engine: Engine) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name().into_string().ok()?;
+            let stem = file_name.strip_suffix(".json")?;
+            validate_server_name(stem).ok()?;
+            let info = load_info_at(&entry.path()).ok()??;
+            (info.engine == engine).then(|| match engine {
+                Engine::Clickhouse => stem.to_string(),
+                Engine::Postgres => crate::local::postgres::user_name_from_key(stem).to_string(),
+            })
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Load server metadata only if the underlying process/container is alive.
 /// Does not update stale metadata. `list_all_servers` is the single place that
 /// marks ClickHouse entries stopped when their PID is gone, so callers like
@@ -1803,6 +1835,37 @@ mod tests {
             engine: Engine::Clickhouse,
             container_id: None,
         }
+    }
+
+    #[test]
+    fn completion_names_split_by_engine_and_skip_unreadable_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |key: &str, info: &ServerInfo| {
+            std::fs::write(
+                dir.path().join(format!("{key}.json")),
+                serde_json::to_vec(info).unwrap(),
+            )
+            .unwrap();
+        };
+        write("default", &test_info(0, "26.8.1.922"));
+        write("analytics", &test_info(0, "26.8.1.922"));
+        let postgres = ServerInfo {
+            engine: Engine::Postgres,
+            ..test_info(0, "postgres:17")
+        };
+        write("dev-pg17", &postgres);
+        write("dev-pg16", &postgres);
+        std::fs::write(dir.path().join("broken.json"), b"{").unwrap();
+        std::fs::create_dir(dir.path().join("default")).unwrap();
+
+        assert_eq!(
+            server_names_in(dir.path(), Engine::Clickhouse),
+            ["analytics", "default"]
+        );
+        assert_eq!(server_names_in(dir.path(), Engine::Postgres), ["dev"]);
+        assert!(server_names_in(&dir.path().join("missing"), Engine::Clickhouse).is_empty());
+        // Reading names never creates the lock file.
+        assert!(!dir.path().join(METADATA_LOCK_FILE).exists());
     }
 
     #[test]

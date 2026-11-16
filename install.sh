@@ -95,6 +95,7 @@ echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
 # Create chctl alias (symlink)
 ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/chctl"
 echo "Created alias: chctl -> ${BINARY_NAME}"
+echo "Tab completion: run 'clickhousectl completions --help' for the line to add to your shell startup"
 
 # Check if install dir is in PATH
 case ":$PATH:" in

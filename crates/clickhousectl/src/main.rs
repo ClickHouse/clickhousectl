@@ -9,6 +9,7 @@ mod cli;
 #[cfg(any(feature = "telemetry", feature = "feedback"))]
 mod client_facts;
 mod cloud;
+mod completions;
 mod dotenv;
 mod error;
 mod failure;
@@ -34,8 +35,17 @@ use cli::{Cli, Commands, SkillsArgs, UpdateArgs};
 
 use error::{Error, Result};
 
+fn main() {
+    // A Tab press from the shell completion hook is answered here, before
+    // `.env` loading, telemetry and the async runtime, and exits: it records
+    // no telemetry event, refreshes no update cache and makes no network call.
+    // It is one of the two sanctioned exemptions from the single exit below.
+    completions::complete_if_requested();
+    run_main();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_main() {
     // Snapshot any project-local `.env` before anything else so credential
     // resolution can use it. Safe to call here even though tokio has worker
     // threads — we populate an in-process `OnceLock` rather than touching
@@ -59,10 +69,11 @@ async fn main() {
     // Single-exit invariant (#320): every invocation — bare, help, version,
     // typo, dispatched command — falls through to the common telemetry tail
     // below.
-    // The sole intended exemption is the hidden `telemetry send` child inside
-    // `run_parsed`; the `exec()` handoffs (`local client`, host psql) record
-    // their event via `telemetry::finalize_before_exec` just before the
-    // process image is replaced. Child-process exit codes are returned as
+    // The two intended exemptions are the shell completion path in `main` and
+    // the hidden `telemetry send` child inside `run_parsed`; the `exec()`
+    // handoffs (`local client`, host psql) record their event via
+    // `telemetry::finalize_before_exec` just before the process image is
+    // replaced. Child-process exit codes are returned as
     // `Error::ChildExit` so they also flow through this tail. Do not add exit
     // paths.
     let outcome = match cmd.try_get_matches_from_mut(argv.iter()) {
@@ -292,9 +303,10 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
 /// Run a successfully parsed invocation to completion and report the exit
 /// code for `main`'s single exit, whether it came from a child process, and
 /// whether a structured error requires deferring the first-run telemetry notice.
-/// The hidden `telemetry send` child is the one deliberate early exit in the
-/// binary: it does exactly one POST — no update-cache refresh, no dispatch,
-/// and no telemetry hook of its own, so a send can never trigger another send.
+/// The hidden `telemetry send` child is the one deliberate early exit after
+/// parsing (shell completion exits earlier, in `main`): it does exactly one
+/// POST — no update-cache refresh, no dispatch, and no telemetry hook of its
+/// own, so a send can never trigger another send.
 async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     #[cfg(feature = "telemetry")]
     if matches!(
@@ -313,8 +325,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     // (a failed one is retried after an hour) and is off entirely under
     // CLICKHOUSECTL_NO_UPDATE_CHECK; the notice below is driven off whatever
     // the cache currently holds.
-    let is_update_cmd = matches!(cli.command, Commands::Update(_));
-    let cache_refresh = if !is_update_cmd && !read_only_telemetry_status {
+    let cache_refresh = if !skips_update_check(&cli.command) && !read_only_telemetry_status {
         Some(tokio::spawn(update::refresh_update_cache()))
     } else {
         None
@@ -423,12 +434,20 @@ fn is_read_only_telemetry_status(_command: &Commands) -> bool {
     false
 }
 
+/// Commands that never refresh the update cache: `update` checks for itself,
+/// and `completions` runs from shell startup, where a network call would slow
+/// every new shell.
+fn skips_update_check(cmd: &Commands) -> bool {
+    matches!(cmd, Commands::Update(_) | Commands::Completions(_))
+}
+
 /// The explicit `--json` flag for a command, or `None` for commands that never
-/// surface the update notice (the `update` command itself). Kept separate from
+/// surface the update notice: `update` itself, and `completions`, whose output
+/// is evaluated by the shell on every startup. Kept separate from
 /// agent detection so the mapping is deterministic and unit-testable.
 fn command_json_flag(cmd: &Commands) -> Option<bool> {
     match cmd {
-        Commands::Update(_) => None,
+        Commands::Update(_) | Commands::Completions(_) => None,
         Commands::Local(args) => Some(args.json),
         Commands::Cloud(args) => Some(args.json),
         Commands::Skills(args) => Some(args.json),
@@ -449,7 +468,7 @@ fn management_error_json(cmd: &Commands) -> bool {
         Commands::Search(args) => json_output(args.json),
         // Local and Cloud print their own envelopes; `telemetry` and
         // `feedback` keep their text diagnostics deliberately.
-        Commands::Local(_) | Commands::Cloud(_) => false,
+        Commands::Local(_) | Commands::Cloud(_) | Commands::Completions(_) => false,
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(_) => false,
         #[cfg(feature = "feedback")]
@@ -507,6 +526,7 @@ async fn run(cmd: Commands) -> Result<()> {
             cloud::run(*args, json).await
         }
         Commands::Update(args) => run_update(args).await,
+        Commands::Completions(args) => completions::run(args),
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(args) => telemetry::run_command(args.command, json_output(args.json)),
         #[cfg(feature = "feedback")]
@@ -1041,6 +1061,23 @@ mod tests {
             command_json_flag(&parse(&["clickhousectl", "update"])),
             None
         );
+        // Nor does `completions`, which shell startup evaluates.
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "completions", "zsh"])),
+            None
+        );
+        // Neither refreshes the update cache; every other command may.
+        assert!(skips_update_check(&parse(&["clickhousectl", "update"])));
+        assert!(skips_update_check(&parse(&[
+            "clickhousectl",
+            "completions",
+            "zsh"
+        ])));
+        assert!(!skips_update_check(&parse(&[
+            "clickhousectl",
+            "local",
+            "list"
+        ])));
         // Telemetry inherits --json on its subcommands.
         #[cfg(feature = "telemetry")]
         assert_eq!(

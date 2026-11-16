@@ -129,6 +129,7 @@ async function main() {
   const binaryPath = path.join(vendorDir, 'clickhousectl');
   fs.chmodSync(binaryPath, 0o755);
   console.log(`clickhousectl: installed ${binaryPath}`);
+  console.log("clickhousectl: for Tab completion, see 'clickhousectl completions --help'");
 }
 
 main().catch((err) => {
