@@ -119,14 +119,16 @@ impl OrgCommands {
         match self {
             OrgCommands::List => false,
             OrgCommands::Get => false,
-            OrgCommands::Quota { .. } => false,
+            OrgCommands::Quota { command } => command.is_write(),
             OrgCommands::Balance => false,
             OrgCommands::Notifications(_) => false,
             OrgCommands::NotificationTypes => false,
             OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
             OrgCommands::Preview { command } => command.is_write(),
-            OrgCommands::Prometheus { .. } => false,
+            OrgCommands::Prometheus { command, .. } => {
+                command.as_ref().is_some_and(PrometheusCommands::is_write)
+            }
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
         }
@@ -547,6 +549,22 @@ pub enum QuotaCommands {
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         quota_code: String,
     },
+}
+
+impl PrometheusCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Discovery => false,
+        }
+    }
+}
+
+impl QuotaCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List | Self::Get { .. } => false,
+        }
+    }
 }
 
 #[derive(Subcommand)]
