@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const VERSION: &str = "latest";
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -75,7 +75,6 @@ impl Fixture {
             .expect("make fake ClickHouse wrapper executable");
         std::fs::write(home.join(".clickhouse/default"), VERSION)
             .expect("select fake latest version");
-        seed_update_cache(&home);
 
         // Process discovery is part of the shipped lifecycle. Deterministic
         // stand-ins expose only this fixture's live fake processes, avoiding
@@ -151,6 +150,8 @@ exit "$found"
         command
             .env_clear()
             .env("DO_NOT_TRACK", "1")
+            // No update-check network request.
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
             .env("HOME", &self.home)
             .env("PATH", &self.path)
             .env("FAKE_CLICKHOUSE_PID_FILE", &self.pid_file)
@@ -575,18 +576,6 @@ fn write_executable(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write fake process tool");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .expect("make fake process tool executable");
-}
-
-fn seed_update_cache(home: &Path) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time after epoch")
-        .as_secs();
-    std::fs::write(
-        home.join(".clickhouse/last_update_check"),
-        format!("{now}\n{}", env!("CARGO_PKG_VERSION")),
-    )
-    .expect("seed fresh update cache");
 }
 
 fn canonical(path: &Path) -> String {
