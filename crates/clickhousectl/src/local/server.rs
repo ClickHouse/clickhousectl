@@ -853,8 +853,9 @@ pub(crate) fn list_running_servers_locked(lock: &MetadataLock) -> Result<Vec<Ser
 }
 
 /// Best-effort count used only for the informational notice during start.
+/// Counts ClickHouse servers only, so Postgres metadata never contacts Docker.
 pub(crate) fn advisory_running_server_count_locked(lock: &MetadataLock) -> usize {
-    list_all_servers_locked_inner(lock, None, true)
+    list_all_servers_locked_inner(lock, Some(Engine::Clickhouse), true)
         .map(|entries| entries.iter().filter(|entry| entry.running).count())
         .unwrap_or_default()
 }
@@ -1382,9 +1383,29 @@ fn is_loopback_listener(ip: std::net::IpAddr, port: u16) -> bool {
     }
 }
 
-/// Find a free port starting from `start`, incrementing by 1.
-fn find_free_port(start: u16) -> Option<u16> {
-    (start..=start.saturating_add(100)).find(|&p| is_port_available(p))
+/// Refuse one port for both listeners. Only one of them can bind it, and the
+/// readiness probe would then pass against the HTTP listener alone (#1452).
+pub(crate) fn reject_equal_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<()> {
+    match (http_port, tcp_port) {
+        (Some(http), Some(tcp)) if http == tcp => Err(Error::usage(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!(
+                "--http-port and --tcp-port must be different ports; both are {http}. \
+                 Omit one to have a free port assigned"
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// `default` if usable, else the first usable port in the 100 above it. A port
+/// the other listener has claimed is never usable.
+fn pick_port(default: u16, claimed: Option<u16>, available: &impl Fn(u16) -> bool) -> Option<u16> {
+    let usable = |port: u16| Some(port) != claimed && available(port);
+    if usable(default) {
+        return Some(default);
+    }
+    (default.saturating_add(1)..=default.saturating_add(101)).find(|&port| usable(port))
 }
 
 /// Resolve the HTTP and TCP ports to use.
@@ -1393,39 +1414,33 @@ fn find_free_port(start: u16) -> Option<u16> {
 /// Returns (http_port, tcp_port, auto_assigned) where auto_assigned is true if
 /// we picked non-default ports.
 pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u16, u16, bool)> {
-    let http = match http_port {
-        Some(p) if is_port_available(p) => p,
-        Some(p) => {
-            return Err(Error::PortInUse {
-                kind: PortKind::Http,
-                port: p,
-            });
-        }
-        None => {
-            if is_port_available(DEFAULT_HTTP_PORT) {
-                DEFAULT_HTTP_PORT
-            } else {
-                find_free_port(DEFAULT_HTTP_PORT + 1)
-                    .ok_or(Error::PortUnavailable(PortKind::Http))?
-            }
-        }
-    };
+    resolve_ports_with(http_port, tcp_port, is_port_available)
+}
 
+fn resolve_ports_with(
+    http_port: Option<u16>,
+    tcp_port: Option<u16>,
+    available: impl Fn(u16) -> bool,
+) -> Result<(u16, u16, bool)> {
+    reject_equal_ports(http_port, tcp_port)?;
+    for (kind, port) in [(PortKind::Http, http_port), (PortKind::Tcp, tcp_port)] {
+        if let Some(port) = port
+            && !available(port)
+        {
+            return Err(Error::PortInUse { kind, port });
+        }
+    }
+
+    // An omitted port skips the one the other listener uses, explicit or not.
+    let http = match http_port {
+        Some(port) => port,
+        None => pick_port(DEFAULT_HTTP_PORT, tcp_port, &available)
+            .ok_or(Error::PortUnavailable(PortKind::Http))?,
+    };
     let tcp = match tcp_port {
-        Some(p) if is_port_available(p) => p,
-        Some(p) => {
-            return Err(Error::PortInUse {
-                kind: PortKind::Tcp,
-                port: p,
-            });
-        }
-        None => {
-            if is_port_available(DEFAULT_TCP_PORT) {
-                DEFAULT_TCP_PORT
-            } else {
-                find_free_port(DEFAULT_TCP_PORT + 1).ok_or(Error::PortUnavailable(PortKind::Tcp))?
-            }
-        }
+        Some(port) => port,
+        None => pick_port(DEFAULT_TCP_PORT, Some(http), &available)
+            .ok_or(Error::PortUnavailable(PortKind::Tcp))?,
     };
 
     let auto_assigned = http_port.is_none() && http != DEFAULT_HTTP_PORT
@@ -2629,6 +2644,53 @@ mod tests {
         );
         assert!(error.to_string().contains("server.log"), "{error}");
         assert!(!is_process_alive(pid));
+    }
+
+    #[test]
+    fn identical_explicit_ports_are_a_usage_conflict() {
+        let error = resolve_ports_with(Some(18130), Some(18130), |_| true).unwrap_err();
+        let Error::Usage(clap_error) = &error else {
+            panic!("expected a usage error, got {error}");
+        };
+        assert_eq!(clap_error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(error.exit_code(), 2);
+        let message = clap_error.to_string();
+        for needle in ["--http-port", "--tcp-port", "18130"] {
+            assert!(message.contains(needle), "{needle}: {message}");
+        }
+
+        assert!(reject_equal_ports(Some(8123), Some(9000)).is_ok());
+        assert!(reject_equal_ports(Some(9000), None).is_ok());
+        assert!(reject_equal_ports(None, None).is_ok());
+    }
+
+    #[test]
+    fn an_omitted_port_skips_the_port_the_other_listener_claims() {
+        let all_free = |_| true;
+        assert_eq!(
+            resolve_ports_with(None, None, all_free).unwrap(),
+            (DEFAULT_HTTP_PORT, DEFAULT_TCP_PORT, false)
+        );
+
+        let (http, tcp, auto_assigned) =
+            resolve_ports_with(Some(DEFAULT_TCP_PORT), None, all_free).unwrap();
+        assert_eq!(http, DEFAULT_TCP_PORT);
+        assert_ne!(tcp, http);
+        assert!(auto_assigned);
+
+        let (http, tcp, auto_assigned) =
+            resolve_ports_with(None, Some(DEFAULT_HTTP_PORT), all_free).unwrap();
+        assert_eq!(tcp, DEFAULT_HTTP_PORT);
+        assert_ne!(http, tcp);
+        assert!(auto_assigned);
+
+        // The search past a busy default skips the claimed port too.
+        let (http, tcp, _) = resolve_ports_with(None, Some(DEFAULT_HTTP_PORT + 1), |port| {
+            port != DEFAULT_HTTP_PORT
+        })
+        .unwrap();
+        assert_eq!(tcp, DEFAULT_HTTP_PORT + 1);
+        assert_eq!(http, DEFAULT_HTTP_PORT + 2);
     }
 
     #[test]

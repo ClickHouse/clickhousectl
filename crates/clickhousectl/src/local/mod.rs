@@ -639,6 +639,9 @@ async fn start_server(
     // `--foreground` streams the server's stdout/stderr and never emits a JSON
     // summary, so it simply ignores `json` rather than erroring on `--json`.
 
+    // A usage error, so it comes before any process scan, lock or download.
+    server::reject_equal_ports(http_port, tcp_port)?;
+
     // Recover any orphaned servers so name resolution and collision checks
     // see processes that lost their metadata files.
     server::recover_current_project_servers()?;
