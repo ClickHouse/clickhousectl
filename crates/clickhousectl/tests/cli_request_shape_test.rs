@@ -235,7 +235,10 @@ fn take_next(stdout: &[u8]) -> (Value, Option<Value>) {
 const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
 
 /// `env_clear`, keeping only what every spawned CLI needs: no background
-/// update check (see [`UPDATE_CHECK_TIMEOUT_ENV`]).
+/// update check (see [`UPDATE_CHECK_TIMEOUT_ENV`]). Every spawn in this file
+/// starts from it and sets `HOME` to a directory the test owns, so a
+/// developer's credentials, proxies and coding-agent variables never reach the
+/// child.
 trait IsolatedEnv {
     fn isolated_env(&mut self) -> &mut Self;
 }
@@ -250,10 +253,6 @@ impl IsolatedEnv for tokio::process::Command {
     fn isolated_env(&mut self) -> &mut Self {
         self.env_clear().env(UPDATE_CHECK_TIMEOUT_ENV, "0")
     }
-}
-
-fn clear_inherited_env(command: &mut Command) {
-    command.isolated_env();
 }
 
 /// Run the clickhousectl binary against the mock, returning the JSON body
@@ -274,8 +273,9 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
     // the checkout.
     let cwd = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", cwd.path())
         .current_dir(cwd.path())
         .args(&full_args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
@@ -319,8 +319,9 @@ async fn invoke_cli_capture_body_with_stdin(
 
     let cwd = tempfile::tempdir().unwrap();
     let mut child = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", cwd.path())
         .current_dir(cwd.path())
         .args(&full_args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
@@ -399,8 +400,8 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
     let mut args = vec!["cloud", "--url", &url, "--json"];
     args.extend(cli_args);
     Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .env("HOME", home)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -923,7 +924,7 @@ fn invoke_cli_without_cloud_credentials(
     let mut args = vec!["cloud".to_string(), "--url".to_string(), mock.uri()];
     args.extend_from_slice(cli_args);
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -951,7 +952,7 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str, api_url: 
 
 fn invoke_api_key_login(project_dir: &Path, url: &str) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", project_dir.join("home"))
@@ -1221,7 +1222,7 @@ fn logout_does_not_report_success_when_credentials_removal_fails() {
     std::fs::create_dir(credentials_dir.join("credentials.json")).unwrap();
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -1314,7 +1315,7 @@ async fn backup_bucket_get_uses_oauth_and_preserves_sparse_output() {
     std::fs::create_dir_all(&cloud_dir).unwrap();
     write_oauth_tokens(&cloud_dir, &mock.uri());
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -1895,7 +1896,7 @@ fn invoke_service_wake(mock: &MockServer, json: bool) -> std::process::Output {
         args.push("--json");
     }
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -2382,7 +2383,7 @@ async fn cloud_command_survives_closed_stderr_with_credential_notice_and_debug()
     let dir = tempfile::tempdir().unwrap();
     write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     let mut child = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -2690,8 +2691,8 @@ async fn auth_status_marks_outranked_environment_credentials_inactive() {
     let dir = tempfile::tempdir().unwrap();
     write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .env("HOME", dir.path().join("home"))
         .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
@@ -2959,7 +2960,7 @@ fn invoke_postgres_logs(
     args: &[&str],
 ) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -4625,7 +4626,7 @@ async fn postgres_role_changes_issue_only_the_expected_state_patch() {
 /// close its stdout first (see the #598 tests).
 fn spawn_postgres_switchover_human(mock: &MockServer, project_dir: &Path) -> std::process::Child {
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", project_dir.join("home"))
@@ -4819,8 +4820,8 @@ fn spawn_service_delete_with_env(
         args.push("--force");
     }
     Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .env("HOME", project_dir.join("home"))
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -5626,7 +5627,7 @@ fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
         "2025-01-31",
     ]);
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -6544,9 +6545,9 @@ async fn dotenv_creds_produce_basic_auth_request() {
 
     // Put `.env` in the working directory and run the binary cd'd into it,
     // because the loader reads `cwd/.env` first (the project root's only when
-    // `cwd` has none). The parent process's env vars are cleared in the child so
-    // the .env is the only source of credentials — otherwise the test could
-    // silently pass for the wrong reason.
+    // `cwd` has none). The child's environment is cleared and its HOME is
+    // empty, so the .env is the only source of credentials — otherwise the
+    // test could silently pass for the wrong reason.
     let dir = tempfile::tempdir().unwrap();
     let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
     env_file
@@ -6557,13 +6558,13 @@ async fn dotenv_creds_produce_basic_auth_request() {
     drop(env_file);
 
     let url = mock.uri();
+    let home = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", home.path())
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .current_dir(dir.path())
-        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
-        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -6684,7 +6685,7 @@ async fn invoke_oauth_service_query_response(
     args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     if agent {
         command.env("AGENT", "opencode");
     }
@@ -6772,7 +6773,7 @@ async fn invoke_oauth_service_query_with_stdin(
     };
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     let mut child = command
         .env("DO_NOT_TRACK", "1")
         .args(args)
@@ -7080,7 +7081,7 @@ async fn service_query_runs_with_each_selector_form() {
         ];
         args.extend_from_slice(&selector);
         let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
+        command.isolated_env();
         let output = command
             .env("DO_NOT_TRACK", "1")
             .env("HOME", &home_dir)
@@ -7111,9 +7112,10 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
 
     let command = || {
         let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
+        command.isolated_env();
         command
             .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path())
             .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
             .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
@@ -7204,8 +7206,8 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .args([
             "cloud",
             "--url",
@@ -7273,8 +7275,9 @@ async fn service_query_uses_an_already_authorized_api_key_without_provisioning()
     let dir = tempfile::tempdir().unwrap();
 
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", dir.path())
         .args([
             "cloud",
             "--url",
@@ -8784,8 +8787,8 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .args([
             "cloud",
             "--url",
@@ -8938,9 +8941,11 @@ async fn shell_env_overrides_dotenv_creds_in_request() {
     drop(env_file);
 
     let url = mock.uri();
+    let home = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", home.path())
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .current_dir(dir.path())
         .env("CLICKHOUSE_CLOUD_API_KEY", "shell-key")
@@ -8998,8 +9003,9 @@ async fn agent_session_and_trace_headers_are_forwarded() {
     let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
     let cwd = tempfile::tempdir().unwrap();
     let output = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
+        .env("HOME", cwd.path())
         .current_dir(cwd.path())
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
@@ -10015,8 +10021,8 @@ fn invoke_cli_with_piped_stdin(
     ];
     args.extend_from_slice(cli_args);
     let mut child = Command::new(clickhousectl_binary())
+        .isolated_env()
         .env("DO_NOT_TRACK", "1")
-        .env(UPDATE_CHECK_TIMEOUT_ENV, "0")
         .env("HOME", &home)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -10822,7 +10828,7 @@ async fn clickpipe_cdc_scaling_get_supports_oauth_and_preserves_sparse_json() {
     std::fs::create_dir_all(&cloud_dir).unwrap();
     write_oauth_tokens(&cloud_dir, &mock.uri());
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -11554,7 +11560,7 @@ fn invoke_cli_human(mock: &MockServer, cli_args: &[&str]) -> std::process::Outpu
     let mut command = Command::new(clickhousectl_binary());
     // Agent detection turns on `--json` on its own, so the inherited
     // environment has to go for human output to be observable at all.
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -12522,7 +12528,7 @@ fn restored_service_response(endpoint: &str, result: &Value) -> Value {
 fn invoke_pgbouncer_cli(mock: &MockServer, args: &[&str]) -> std::process::Output {
     let directory = tempfile::tempdir().unwrap();
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("HOME", directory.path())
         .env("DO_NOT_TRACK", "1")
@@ -12790,7 +12796,7 @@ async fn api_key_create_and_update_pass_every_flag_and_allowlist_description() {
 async fn invoke_key_update(server: &MockServer, flags: &[&str]) -> std::process::Output {
     let project = tempfile::tempdir().unwrap();
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", project.path())
@@ -12935,7 +12941,7 @@ fn invoke_clickstack_cli(
     }
     args.extend_from_slice(cli_args);
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -13351,7 +13357,7 @@ fn udf_test_command(
         write_oauth_tokens(&cloud_dir, &server.uri());
     }
     let mut cmd = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut cmd);
+    cmd.isolated_env();
     cmd.env("HOME", home)
         .env("DO_NOT_TRACK", "1")
         // Waits poll the service; skip the shipped 5 s gap between polls.
@@ -15341,7 +15347,7 @@ fn invoke_org_with_oauth(mock: &MockServer, cli_args: &[&str]) -> std::process::
     let mut args = vec!["cloud", "--url", &url, "--json", "org"];
     args.extend(cli_args);
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -15741,7 +15747,7 @@ fn invoke_service_settings_with_oauth(
     let mut args = vec!["cloud", "--url", &url, "--json", "service", "settings"];
     args.extend(cli_args);
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
@@ -15973,6 +15979,7 @@ async fn service_settings_set_reads_a_map_from_stdin() {
     let mut child = Command::new(clickhousectl_binary())
         .isolated_env()
         .env("DO_NOT_TRACK", "1")
+        .env("HOME", cwd.path())
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(cwd.path())
@@ -16469,7 +16476,7 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
             // The update with an explicit selector also covers the human branch.
             let human = subcommand == "update" && !selector.is_empty();
             let mut cmd = Command::new(clickhousectl_binary());
-            clear_inherited_env(&mut cmd);
+            cmd.isolated_env();
             cmd.current_dir(home.path())
                 .env("HOME", home.path())
                 .env("DO_NOT_TRACK", "1")
@@ -16547,7 +16554,7 @@ async fn org_get_and_update_require_one_organization_for_autodetection() {
             .mount(&mock)
             .await;
         let mut cmd = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut cmd);
+        cmd.isolated_env();
         let output = cmd
             .current_dir(home.path())
             .env("HOME", home.path())
@@ -16673,7 +16680,7 @@ fn invoke_query_api_endpoint(
         write_oauth_tokens(&cloud_dir, &server.uri());
     }
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")
@@ -20657,7 +20664,7 @@ fn invoke_saved_query(
         write_oauth_tokens(&cloud_dir, &server.uri());
     }
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")
@@ -21062,7 +21069,7 @@ fn invoke_cloud_as(
         write_oauth_tokens(&cloud_dir, &server.uri());
     }
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")
@@ -21303,7 +21310,7 @@ fn unreachable_url() -> String {
 
 fn invoke_auth(project: &Path, url: &str, json: bool, args: &[&str]) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut command);
+    command.isolated_env();
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", project.join("home"))
@@ -22535,7 +22542,7 @@ async fn udf_deploy_rejects_an_unknown_service_before_publishing() {
     let home = project.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let mut cmd = Command::new(clickhousectl_binary());
-    clear_inherited_env(&mut cmd);
+    cmd.isolated_env();
     let output = cmd
         .env("HOME", home)
         .env("DO_NOT_TRACK", "1")

@@ -395,9 +395,11 @@ fn a_server_started_from_a_subdirectory_joins_the_enclosing_project() {
 
     let mut command = Command::new(clickhousectl_binary());
     let output = command
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
         .current_dir(&child)
         .args(["local", "--json", "server", "start", "dev", "--no-wait"])
         .args(["--version", VERSION])
