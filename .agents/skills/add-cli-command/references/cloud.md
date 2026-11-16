@@ -5,9 +5,10 @@ its own PR (see `crates/clickhouse-cloud-api/AGENTS.md`).
 
 Everything for a command lives in its domain module, `src/cloud/<domain>.rs`: the clap definition, permissions,
 dispatch, the `CloudClient` wrapper, the request builder, the handler and the tests. A large domain is a
-directory, `src/cloud/<domain>/`: `PERMISSIONS`, `run()` and re-exports in `mod.rs`, clap definitions in
-`cli.rs`, `CloudClient` wrappers in `client.rs`, and one file per command family, with tests beside the code
-they test. Copy the pattern from `src/cloud/services/` or `src/cloud/postgres/`. Handlers never call
+directory, `src/cloud/<domain>/`: `PERMISSIONS`, `run()` and re-exports in `mod.rs`, command enums and shared
+arg groups in `cli.rs`, `CloudClient` wrappers in `client.rs`, and one file per command family, with tests
+beside the code they test. A source-specific arg struct may sit with its validation and builder, as in
+`src/cloud/clickpipes/sources/<kind>.rs`. Copy the pattern from `src/cloud/services/` or `src/cloud/postgres/`. Handlers never call
 `client.api()`. The one wrapper that returns the raw library error is `run_service_query{,_bearer}` in
 `services/client.rs`: query paths stream the response and classify the error themselves. Don't copy that for
 other endpoints.

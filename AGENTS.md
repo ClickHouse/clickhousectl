@@ -71,8 +71,8 @@ work on a branch, with an associated issue and a PR.
 To add or change a local or Cloud command or flag, use the `add-cli-command` skill
 (`.agents/skills/add-cli-command/SKILL.md`). Local clap definitions live in `src/local/cli.rs`. Each Cloud
 domain keeps its definitions, handlers and tests together in `src/cloud/<domain>.rs`, or `src/cloud/<domain>/` for
-large domains (clap definitions in `cli.rs`, `CloudClient` wrappers in `client.rs`, one file per command family,
-tests beside the code they test).
+large domains (command enums and shared arg groups in `cli.rs`, `CloudClient` wrappers in `client.rs`, one file
+per command family, tests beside the code they test; a source-specific arg struct may sit with its builder).
 
 ## Writing help text
 
