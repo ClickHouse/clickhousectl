@@ -274,13 +274,67 @@ pub(super) async fn service_dotenv(
     Ok(())
 }
 
-/// `--custom-region` skips the known-region check; Cloud validates the value.
-fn parse_custom_region(region: &str) -> CloudResult<ServicePostRequestRegion> {
+/// The region for a create, from `--region` or its deprecated alias
+/// `--custom-region` (`flag` names the one that was passed).
+///
+/// Region is a deliberate exception to client-side validation (#1383): Cloud
+/// has private regions the spec does not list, so Cloud validates the value.
+/// A listed region becomes its variant and anything else `Unknown`; both
+/// serialize as the bare string.
+fn parse_region(region: &str, flag: &str) -> CloudResult<ServicePostRequestRegion> {
     let region = region.trim();
     if region.is_empty() {
-        return Err(CloudError::usage("--custom-region cannot be empty"));
+        return Err(CloudError::usage(format!("{flag} cannot be empty")));
     }
-    Ok(ServicePostRequestRegion::Unknown(region.to_string()))
+    serde_json::from_value(serde_json::Value::String(region.to_string()))
+        .map_err(|error| CloudError::usage(format!("invalid {flag}: {error}")))
+}
+
+/// Furthest edit distance at which a known region still reads as a typo.
+const REGION_TYPO_DISTANCE: usize = 2;
+
+/// The known regions closest to `region`: every one at the smallest edit
+/// distance, when that distance is small enough to be a typo.
+fn closest_known_regions(region: &str) -> Vec<&'static str> {
+    let known = ServicePostRequestRegion::VALUES;
+    // Known regions are all lowercase, so case alone never counts as a typo.
+    let region = region.to_ascii_lowercase();
+    let distance = |known: &str| strsim::damerau_levenshtein(&region, known);
+    let closest = known.iter().map(|known| distance(known)).min();
+    match closest {
+        Some(closest) if closest <= REGION_TYPO_DISTANCE => known
+            .iter()
+            .copied()
+            .filter(|known| distance(known) == closest)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Point a rejected create at the closest known regions when the region sent
+/// is not a known one, e.g. a typo such as `us-esat-1`.
+///
+/// Both conditions are structural: the API answered 400 (the typed status on
+/// `failure`, never the response text) and the region is the `Unknown`
+/// variant. A known region, or one with no close match, leaves the error as
+/// it is; the kind, failure and details are always carried across.
+fn with_region_hint(error: CloudError, region: &ServicePostRequestRegion) -> CloudError {
+    let ServicePostRequestRegion::Unknown(region) = region else {
+        return error;
+    };
+    if error.failure.and_then(|failure| failure.http_status) != Some(400) {
+        return error;
+    }
+    let closest = closest_known_regions(region);
+    if closest.is_empty() {
+        return error;
+    }
+    let message = format!(
+        "{} (region '{region}' is not one this version of clickhousectl knows; closest known: {})",
+        error.message,
+        closest.join(", ")
+    );
+    CloudError { message, ..error }
 }
 
 #[derive(Default)]
@@ -441,12 +495,8 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             ServicePostRequestProvider::VALUES,
         )?,
         region: match options.custom_region.as_deref() {
-            Some(region) => parse_custom_region(region)?,
-            None => parse_serde_enum::<ServicePostRequestRegion>(
-                &options.region,
-                "region",
-                ServicePostRequestRegion::VALUES,
-            )?,
+            Some(region) => parse_region(region, "--custom-region")?,
+            None => parse_region(&options.region, "--region")?,
         },
         ip_access_list,
         min_replica_memory_gb: options.min_replica_memory_gb.map(f64::from),
@@ -750,7 +800,10 @@ pub(super) async fn service_create(
     let request = build_create_service_request(&options)?;
     let org_id = resolve_org_id(client).await?;
     validate_dynamic_byoc_profile(client, &org_id, &request).await?;
-    let response = client.create_service(&org_id, &request).await?;
+    let response = client
+        .create_service(&org_id, &request)
+        .await
+        .map_err(|error| with_region_hint(error, &request.region))?;
     let service_id = response.service.as_ref().and_then(|service| service.id);
     let next =
         service_id.map(|id| service_next(&org_id, &id.to_string(), ServiceOperation::Create));
@@ -2158,42 +2211,112 @@ mod tests {
     }
 
     #[test]
-    fn build_create_service_request_rejects_invalid_region() {
-        let error = build_create_service_request(&CreateServiceOptions {
-            region: "us-east-99".to_string(),
-            ..minimal_create_options()
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("us-east-99"));
-    }
-
-    #[test]
-    fn build_create_service_request_sends_custom_region_unchecked() {
+    fn build_create_service_request_maps_a_known_region_to_its_variant() {
         let request = build_create_service_request(&CreateServiceOptions {
-            region: "us-east-1".to_string(),
-            custom_region: Some("sa-east-1".to_string()),
+            region: "eu-west-1".to_string(),
             ..minimal_create_options()
         })
         .unwrap();
-        assert_eq!(
-            request.region,
-            ServicePostRequestRegion::Unknown("sa-east-1".to_string())
-        );
+        assert_eq!(request.region, ServicePostRequestRegion::Eu_west_1);
         assert_eq!(
             serde_json::to_value(&request).unwrap()["region"],
-            "sa-east-1"
+            "eu-west-1"
         );
     }
 
     #[test]
-    fn build_create_service_request_rejects_empty_custom_region() {
-        let error = build_create_service_request(&CreateServiceOptions {
-            custom_region: Some("  ".to_string()),
-            ..minimal_create_options()
-        })
-        .unwrap_err();
-        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
-        assert!(error.to_string().contains("--custom-region"));
+    fn build_create_service_request_sends_an_unlisted_region_as_is() {
+        for options in [
+            CreateServiceOptions {
+                region: "sa-east-1".to_string(),
+                ..minimal_create_options()
+            },
+            // The deprecated alias takes the same path.
+            CreateServiceOptions {
+                custom_region: Some("sa-east-1".to_string()),
+                ..minimal_create_options()
+            },
+        ] {
+            let request = build_create_service_request(&options).unwrap();
+            assert_eq!(
+                request.region,
+                ServicePostRequestRegion::Unknown("sa-east-1".to_string())
+            );
+            assert_eq!(
+                serde_json::to_value(&request).unwrap()["region"],
+                "sa-east-1"
+            );
+        }
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_a_blank_region() {
+        for (options, flag) in [
+            (
+                CreateServiceOptions {
+                    region: "  ".to_string(),
+                    ..minimal_create_options()
+                },
+                "--region",
+            ),
+            (
+                CreateServiceOptions {
+                    custom_region: Some("  ".to_string()),
+                    ..minimal_create_options()
+                },
+                "--custom-region",
+            ),
+        ] {
+            let error = build_create_service_request(&options).unwrap_err();
+            assert_eq!(error.kind, CloudErrorKind::Usage);
+            assert!(error.to_string().contains(flag), "{error}");
+        }
+    }
+
+    fn rejected_create(status: u16) -> CloudError {
+        CloudError::new("api said no")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, status))
+    }
+
+    #[test]
+    fn region_hint_names_the_closest_known_region_for_a_rejected_typo() {
+        let region = ServicePostRequestRegion::Unknown("us-esat-1".to_string());
+        let error = with_region_hint(rejected_create(400), &region);
+
+        assert!(error.message.contains("us-east-1"), "{error}");
+        assert!(error.message.contains("api said no"), "{error}");
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 400))
+        );
+    }
+
+    #[test]
+    fn closest_known_regions_ignores_case_and_keeps_every_tie() {
+        assert_eq!(closest_known_regions("US-EAST-1"), ["us-east-1"]);
+        assert_eq!(closest_known_regions("eastus3"), ["eastus", "eastus2"]);
+        assert!(closest_known_regions("private-region-7").is_empty());
+    }
+
+    #[test]
+    fn region_hint_is_absent_without_a_rejected_unknown_region_close_to_a_known_one() {
+        let typo = ServicePostRequestRegion::Unknown("us-esat-1".to_string());
+        for (error, region) in [
+            // A known region is never the typo.
+            (rejected_create(400), ServicePostRequestRegion::Us_east_2),
+            // Nothing close to suggest.
+            (
+                rejected_create(400),
+                ServicePostRequestRegion::Unknown("private-region-7".to_string()),
+            ),
+            // Not a rejected request: another status, or no API response.
+            (rejected_create(403), typo.clone()),
+            (CloudError::new("api said no"), typo),
+        ] {
+            let before = error.message.clone();
+            assert_eq!(with_region_hint(error, &region).message, before);
+        }
     }
 
     #[test]

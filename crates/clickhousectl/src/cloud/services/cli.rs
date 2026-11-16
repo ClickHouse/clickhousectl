@@ -75,15 +75,17 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "aws")]
         provider: String,
 
-        /// Region, e.g. us-east-1, eu-west-1, us-central1
-        #[arg(long, default_value = "us-east-1")]
+        /// Region ID, e.g. us-east-1, eu-west-1, us-central1, eastus
+        ///
+        /// Any region ID is accepted, including private regions that are not publicly
+        /// listed. Cloud validates it.
+        #[arg(long, default_value = "us-east-1", value_parser = NonEmptyStringValueParser::new())]
         region: String,
 
-        /// Region ID sent without checking it against the --region list
-        ///
-        /// Overrides the known regions, e.g. for an internal or private region such as
-        /// sa-east-1. Cloud still validates it.
-        #[arg(long, value_name = "REGION", conflicts_with = "region")]
+        /// Deprecated alias of --region
+        // Kept from 0.5.1 (#1275), from before --region accepted any region
+        // (#1383). Hidden from help; remove in 1.0.0.
+        #[arg(long, value_name = "REGION", conflicts_with = "region", hide = true)]
         custom_region: Option<String>,
 
         /// Minimum memory per replica in GB
@@ -1396,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_create_custom_region_and_rejects_it_with_region() {
+    fn parses_deprecated_custom_region_and_rejects_it_with_region() {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
@@ -1412,6 +1414,7 @@ mod tests {
         };
         assert_eq!(custom_region.as_deref(), Some("sa-east-1"));
 
+        // Two values for one request field: rejected rather than picking one.
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",

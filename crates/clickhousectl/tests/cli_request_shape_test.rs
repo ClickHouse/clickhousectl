@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
+use wiremock::matchers::{
+    body_json, body_partial_json, header, method, path, path_regex, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
@@ -15352,6 +15354,44 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
         ],
     );
     assert_success(&output);
+}
+
+/// An unlisted `--region` goes to Cloud as-is (#1383), and when Cloud rejects
+/// it the error still carries Cloud's message plus the closest known region.
+#[tokio::test]
+async fn service_create_sends_an_unlisted_region_and_hints_when_cloud_rejects_it() {
+    let mock = MockServer::start().await;
+    let api_error = "BAD_REQUEST: region is not available";
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_partial_json(
+            serde_json::json!({"region": "us-esat-1"}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": api_error,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--region",
+            "us-esat-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(api_error), "{stderr}");
+    assert!(stderr.contains("us-east-1"), "{stderr}");
 }
 
 fn backup_encryption_config_document() -> Value {
