@@ -744,7 +744,7 @@ async fn login_with_api_key(
         .unwrap_or_else(|| DEFAULT_API_URL.to_string());
     credentials::set_api_credentials(key.to_owned(), secret.to_owned(), &api_url)
         .map_err(super::cloud_error_to_top_level)?;
-    let saved = credentials::credentials_path().display().to_string();
+    let saved = credentials::credentials_path()?.display().to_string();
     let report = LoginReport::new(saved, verification, "could not verify the credentials");
     if !json {
         println!("Credentials saved to {}", report.saved);

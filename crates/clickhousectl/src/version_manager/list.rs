@@ -234,8 +234,14 @@ pub fn set_default_version(version: &str) -> Result<()> {
 
     let versions_dir = paths::versions_dir()?;
     let _commit_lock = CommitLock::acquire_blocking(&versions_dir)?;
-    let default_file = paths::default_file()?;
-    std::fs::write(&default_file, version)?;
+    write_default_marker(&paths::default_file()?, version)
+}
+
+/// Replace the default-version marker atomically: a reader that races the
+/// write sees the old version or the new one, never an empty file, which
+/// would read as "no default" and make `start` bootstrap `latest`.
+fn write_default_marker(path: &std::path::Path, version: &str) -> Result<()> {
+    paths::atomic_write(path, version.as_bytes(), 0o644)?;
     Ok(())
 }
 
@@ -290,6 +296,26 @@ mod tests {
                 "{marker:?}"
             );
         }
+    }
+
+    #[test]
+    fn default_marker_write_replaces_atomically_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("default");
+        std::fs::write(&marker, "25.1.1.1").unwrap();
+
+        write_default_marker(&marker, "25.12.9.61").unwrap();
+
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            parse_default_marker(&contents).as_deref(),
+            Some("25.12.9.61")
+        );
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("default")]);
     }
 
     async fn mount_head(server: &MockServer, endpoint: &str, status: u16) {

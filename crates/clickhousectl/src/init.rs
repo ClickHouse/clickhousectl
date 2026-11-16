@@ -106,10 +106,10 @@ pub fn project_root() -> std::io::Result<&'static ProjectRoot> {
 }
 
 /// `<project root>/.clickhouse`: where this invocation's project state lives.
-pub fn local_dir() -> PathBuf {
-    project_root()
-        .expect("failed to resolve the project directory")
-        .state_dir()
+/// Fails when the current directory cannot be resolved, for example when it
+/// was deleted underneath the process.
+pub fn local_dir() -> std::io::Result<PathBuf> {
+    Ok(project_root()?.state_dir())
 }
 
 /// The project that encloses the current directory when `local init` would
@@ -142,7 +142,7 @@ pub struct RuntimeIgnoreResult {
 /// ignore file. The create-new write also preserves a file created by a
 /// concurrent process, and every other I/O failure reaches the caller.
 pub fn ensure_runtime_gitignore() -> Result<RuntimeIgnoreResult> {
-    ensure_runtime_gitignore_in(&local_dir())
+    ensure_runtime_gitignore_in(&local_dir()?)
 }
 
 fn ensure_runtime_gitignore_in(dir: &Path) -> Result<RuntimeIgnoreResult> {

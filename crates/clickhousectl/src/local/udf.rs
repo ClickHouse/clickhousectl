@@ -547,7 +547,7 @@ async fn deploy(
                     return Err(Error::UdfNotLoaded {
                         name: name.to_owned(),
                         server: server_name.to_owned(),
-                        log_path: std::path::absolute(server::server_log_path(server_name))?,
+                        log_path: std::path::absolute(server::server_log_path(server_name)?)?,
                         deploy_command,
                     });
                 }
@@ -1139,7 +1139,7 @@ fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
     let running = entry
         .filter(|entry| entry.running)
         .and_then(|entry| entry.info);
-    let data_dir = server::server_data_dir(name);
+    let data_dir = server::server_data_dir(name)?;
     if running.is_none() && !data_dir.is_dir() {
         return Err(server_not_found(name)?);
     }

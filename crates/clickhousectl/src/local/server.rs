@@ -159,8 +159,8 @@ pub fn validate_server_name(name: &str) -> Result<()> {
 }
 
 /// Directory where server tracking files and data live: .clickhouse/servers/
-fn servers_dir() -> PathBuf {
-    init::local_dir().join("servers")
+fn servers_dir() -> Result<PathBuf> {
+    Ok(init::local_dir()?.join("servers"))
 }
 
 /// The one project-wide metadata lock. Lifecycle operations hold this lock
@@ -244,28 +244,33 @@ impl MetadataLock {
             dir: dir.to_path_buf(),
         }))
     }
+
+    /// The `.clickhouse/servers/` directory this lock guards.
+    pub(crate) fn servers_dir(&self) -> &Path {
+        &self.dir
+    }
 }
 
 /// Lock this project's server metadata, creating `.clickhouse/servers/`.
 /// Only for commands that create servers.
 pub(crate) fn lock_metadata() -> Result<MetadataLock> {
-    MetadataLock::acquire_at(&servers_dir())
+    MetadataLock::acquire_at(&servers_dir()?)
 }
 
 /// Lock this project's server metadata if it has any. `None` means the project
 /// has no server state: nothing to read, recover, stop or remove.
 pub(crate) fn lock_existing_metadata() -> Result<Option<MetadataLock>> {
-    MetadataLock::acquire_existing_at(&servers_dir())
+    MetadataLock::acquire_existing_at(&servers_dir()?)
 }
 
 /// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
-pub fn server_data_dir(name: &str) -> PathBuf {
-    servers_dir().join(name).join("data")
+pub fn server_data_dir(name: &str) -> Result<PathBuf> {
+    Ok(servers_dir()?.join(name).join("data"))
 }
 
 /// Combined stdout/stderr log for a background ClickHouse server.
-pub fn server_log_path(name: &str) -> PathBuf {
-    servers_dir().join(name).join("server.log")
+pub fn server_log_path(name: &str) -> Result<PathBuf> {
+    Ok(servers_dir()?.join(name).join("server.log"))
 }
 
 /// Disk identifier for a Postgres instance: `<name>-pg<major>`. Used in the
@@ -320,20 +325,20 @@ fn reject_postgres_instance(name: &str, info: Option<&ServerInfo>) -> Result<()>
 
 /// Join a child name onto the servers directory. Exposed so handlers can
 /// remove a whole `<key>/` wrapper without poking at internals.
-pub fn servers_dir_join(child: &str) -> PathBuf {
-    servers_dir().join(child)
+pub fn servers_dir_join(child: &str) -> Result<PathBuf> {
+    Ok(servers_dir()?.join(child))
 }
 
 /// Data directory for a Postgres instance.
-pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
-    servers_dir()
+pub fn pg_data_dir(name: &str, major: &str) -> Result<PathBuf> {
+    Ok(servers_dir()?
         .join(pg_instance_key(name, major))
-        .join("data")
+        .join("data"))
 }
 
 /// Ensure the project-local server and ignore paths exist. Idempotent.
 fn ensure_servers_dir() -> Result<()> {
-    let dir = servers_dir();
+    let dir = servers_dir()?;
     std::fs::create_dir_all(&dir)?;
     init::ensure_runtime_gitignore()?;
     Ok(())
@@ -342,7 +347,7 @@ fn ensure_servers_dir() -> Result<()> {
 /// Ensure the data directory for a ClickHouse server exists.
 pub fn ensure_server_data_dir(name: &str) -> Result<()> {
     ensure_servers_dir()?;
-    std::fs::create_dir_all(server_data_dir(name))?;
+    std::fs::create_dir_all(server_data_dir(name)?)?;
     Ok(())
 }
 
@@ -350,7 +355,7 @@ pub fn ensure_server_data_dir(name: &str) -> Result<()> {
 /// this call created the instance directory, for transactional startup cleanup.
 pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<bool> {
     ensure_servers_dir()?;
-    let instance_dir = servers_dir().join(pg_instance_key(name, major));
+    let instance_dir = servers_dir()?.join(pg_instance_key(name, major));
     let created = match std::fs::create_dir(&instance_dir) {
         Ok(()) => true,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -1448,7 +1453,7 @@ fn lock_recovered_metadata_from(
     processes: &[discovery::DiscoveredProcess],
     engine: Option<Engine>,
 ) -> Result<Option<MetadataLock>> {
-    let lock = lock_metadata_if_recoverable_at(&servers_dir(), || {
+    let lock = lock_metadata_if_recoverable_at(&servers_dir()?, || {
         let current_dir = current_project_dir()?;
         let clickhouse = engine != Some(Engine::Postgres)
             && current_project_processes(processes, &current_dir)

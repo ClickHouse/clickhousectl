@@ -336,7 +336,7 @@ fn saved_key_base_url(
             "The API key in {} is for {saved}, not {requested}. \
              Pass `--url {saved}` to use it, or save a key for this endpoint with \
              `clickhousectl cloud auth login --api-key KEY --api-secret SECRET --url {requested}`.",
-            crate::cloud::credentials::credentials_path().display()
+            crate::cloud::credentials::credentials_path()?.display()
         ))),
         _ => Ok(saved),
     }
@@ -427,10 +427,10 @@ impl AuthSource {
     pub fn describe(&self) -> String {
         match self {
             AuthSource::CliFlags => "CLI flags (--api-key, --api-secret)".to_string(),
-            AuthSource::CredentialsFile => format!(
-                "credentials file ({})",
-                crate::cloud::credentials::credentials_path().display()
-            ),
+            AuthSource::CredentialsFile => match crate::cloud::credentials::credentials_path() {
+                Ok(path) => format!("credentials file ({})", path.display()),
+                Err(_) => "credentials file (.clickhouse/credentials.json)".to_string(),
+            },
             AuthSource::EnvVars => {
                 let base =
                     "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
@@ -1647,7 +1647,7 @@ mod tests {
             "{env}"
         );
         let file = AuthSource::CredentialsFile.describe();
-        let path = crate::cloud::credentials::credentials_path();
+        let path = crate::cloud::credentials::credentials_path().unwrap();
         assert!(file.contains(&path.display().to_string()), "{file}");
         let tokens = AuthSource::OAuthTokens.describe();
         assert!(tokens.contains("tokens.json"), "{tokens}");
