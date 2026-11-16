@@ -1,5 +1,10 @@
 //! Subprocess coverage for local client selector and native binary selection.
 
+#[path = "support/server_process.rs"]
+mod server_process;
+
+use server_process::ServerProcess;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -496,11 +501,12 @@ fn clickhouse_named_mode_uses_server_version_without_a_default() {
 
     let servers = project.path().join(".clickhouse/servers");
     std::fs::create_dir_all(&servers).expect("create server metadata directory");
+    let server = ServerProcess::spawn(project.path(), "dev");
     std::fs::write(
         servers.join("dev.json"),
         serde_json::to_vec(&serde_json::json!({
             "name": "dev",
-            "pid": std::process::id(),
+            "pid": server.pid(),
             "version": VERSION_B,
             "http_port": 8123,
             "tcp_port": 19000,

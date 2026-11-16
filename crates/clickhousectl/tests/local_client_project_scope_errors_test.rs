@@ -1,5 +1,10 @@
 //! Managed local-client project-scope diagnostics.
 
+#[path = "support/server_process.rs"]
+mod server_process;
+
+use server_process::ServerProcess;
+
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -222,7 +227,8 @@ fn child_of_a_project_reaches_its_server_and_agent_gets_json() {
         .join("clickhouse");
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
         .expect("make fake ClickHouse executable");
-    write_server(parent.path(), "default", std::process::id(), VERSION);
+    let server = ServerProcess::spawn(parent.path(), "default");
+    write_server(parent.path(), "default", server.pid(), VERSION);
     let child = parent.path().join("child/deeper");
     std::fs::create_dir_all(&child).expect("create child directory");
 
@@ -255,7 +261,8 @@ fn child_of_a_project_reaches_its_server_and_agent_gets_json() {
 fn explicit_wrong_name_preserves_named_selection_without_unsafe_command_interpolation() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
-    write_server(project.path(), "default", std::process::id(), VERSION);
+    let server = ServerProcess::spawn(project.path(), "default");
+    write_server(project.path(), "default", server.pid(), VERSION);
 
     // The named start command keeps its `<name>` placeholder rather than
     // interpolating the unquoted name.
@@ -290,7 +297,8 @@ fn stopped_metadata_suggests_starting_the_selected_named_server() {
 fn selected_missing_binary_keeps_managed_scope_and_install_guidance() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
-    write_server(project.path(), "dev", std::process::id(), VERSION);
+    let server = ServerProcess::spawn(project.path(), "dev");
+    write_server(project.path(), "dev", server.pid(), VERSION);
 
     assert_human_and_json(
         project.path(),
