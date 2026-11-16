@@ -9111,6 +9111,37 @@ async fn clickpipe_start_answered_with_paused_fails_with_the_start_to_rerun() {
     );
 }
 
+/// A start answered with `Completed` has no effect (#926): it fails with its
+/// own code, no command to retry, and no `next` poll on stdout.
+#[tokio::test]
+async fn clickpipe_start_answered_with_completed_fails_with_nothing_to_retry() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/pipe-s3/state",
+        ))
+        .and(body_json(serde_json::json!({"command": "start"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "s3-pipe", "state": "Completed"},
+            "status": 200,
+            "requestId": "stub-clickpipe-start-completed",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "start", "svc-id", "pipe-s3", "--org-id", "org"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error: Value = serde_json::from_slice(&output.stderr).expect("JSON error envelope");
+    assert_eq!(error["error"]["code"], "clickpipe_start_no_effect");
+    assert!(error["error"].get("command").is_none());
+}
+
 /// A resync answered with `Paused` is applied, so it still succeeds and
 /// names the poll; the not-applied check is specific to start.
 #[tokio::test]

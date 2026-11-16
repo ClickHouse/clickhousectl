@@ -385,8 +385,10 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Streaming and object-storage pipes use Stopped when halted; database CDC pipes
   use Paused. Inspect the current state with `get` before requesting start.
+  Rejected while Running, Degraded, InternalError or Provisioning. Failed pipes re-run.
   A start answered with Pausing, or with Paused just after a stop, is not applied
-  and exits 1: wait for Paused (`get`), rerun start until it returns Running.")]
+  and exits 1: wait for Paused (`get`), rerun start until it returns Running.
+  A Completed pipe does not re-run: start exits 1 and there is nothing to retry.")]
     Start {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -401,7 +403,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Streaming and object-storage pipes transition through Stopping to Stopped;
-  database CDC pipes transition through Pausing to Paused.")]
+  database CDC pipes transition through Pausing to Paused.
+  Rejected while Stopped, Stopping, Paused, Pausing, Modifying, Resync or Provisioning.")]
     Stop {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -412,7 +415,11 @@ CONTEXT FOR AGENTS:
         clickpipe_id: NameSelector,
     },
 
-    /// Resync a ClickPipe (Postgres and MySQL pipes only)
+    /// Resync a ClickPipe (database pipes only)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Re-ingests data, so it is not a safe retry target. Only Postgres, MySQL, MongoDB and
+  BigQuery pipes; rejected for a Postgres CDC-only pipe with a named replication slot.")]
     Resync {
         /// Service ID
         #[arg(value_parser = NonEmptyStringValueParser::new())]
@@ -4124,8 +4131,9 @@ impl ClickPipeLifecycleCommand {
     }
 
     /// `next` for the accepted state change: poll `clickpipe get` for `state`
-    /// (#1162). A stopped CDC pipe reports `Paused`; a finished one-off load
-    /// reports `Completed`.
+    /// (#1162). A stopped CDC pipe reports `Paused`; a one-off load that
+    /// finishes after the request reports `Completed`. A start answered with
+    /// `Completed` never gets here: `not_applied_in` rejects it.
     fn next(self, org_id: &str, service_id: &str, clickpipe_id: &str) -> NextStep {
         use clickhouse_cloud_api::models::ClickPipeState::*;
         let poll = NextStep::poll(
@@ -4147,9 +4155,11 @@ impl ClickPipeLifecycleCommand {
     /// start: a resync answered with `Paused` is applied. `Stopped` and
     /// `Stopping` are not included: streaming and object-storage pipes halt in
     /// `Stopped`, and no start answered with either has been seen dropped.
+    /// A start on a `Completed` pipe is accepted and has no effect (#926): it
+    /// does not re-run the pipe, which stays `Completed`.
     fn not_applied_in(self, state: Option<&clickhouse_cloud_api::models::ClickPipeState>) -> bool {
-        use clickhouse_cloud_api::models::ClickPipeState::{Paused, Pausing};
-        matches!(self, Self::Start) && matches!(state, Some(Pausing | Paused))
+        use clickhouse_cloud_api::models::ClickPipeState::{Completed, Paused, Pausing};
+        matches!(self, Self::Start) && matches!(state, Some(Pausing | Paused | Completed))
     }
 }
 
@@ -4171,29 +4181,41 @@ async fn clickpipe_state(
         .unwrap_or(clickpipe_id);
 
     if command.not_applied_in(clickpipe.state.as_ref()) {
+        use clickhouse_cloud_api::models::ClickPipeState::{Completed, Pausing};
         let label = command.label();
-        let (code, retry, message) = if matches!(
-            clickpipe.state,
-            Some(clickhouse_cloud_api::models::ClickPipeState::Pausing)
-        ) {
-            let check = cloud_command(&["clickpipe", "get", service_id, clickpipe_id], &org_id);
-            let message = format!(
-                "ClickPipe {name} is still Pausing, so the {label} request was not applied. \
-                 Repeat `{check}` until the state is Paused, then run {label} again."
-            );
-            (CloudErrorCode::ClickPipeStillPausing, check, message)
-        } else {
-            let retry = cloud_command(&["clickpipe", label, service_id, clickpipe_id], &org_id);
-            let message = format!(
-                "ClickPipe {name} answered the {label} request with state Paused, so it was \
-                 not applied. Wait a few seconds, then repeat `{retry}` until it returns \
-                 Running."
-            );
-            (CloudErrorCode::ClickPipeStartNotApplied, retry, message)
+        let (code, retry, message) = match clickpipe.state {
+            Some(Pausing) => {
+                let check = cloud_command(&["clickpipe", "get", service_id, clickpipe_id], &org_id);
+                let message = format!(
+                    "ClickPipe {name} is still Pausing, so the {label} request was not applied. \
+                     Repeat `{check}` until the state is Paused, then run {label} again."
+                );
+                (CloudErrorCode::ClickPipeStillPausing, Some(check), message)
+            }
+            Some(Completed) => {
+                let message = format!(
+                    "ClickPipe {name} has completed, so the {label} request has no effect: \
+                     {label} does not re-run a completed pipe."
+                );
+                (CloudErrorCode::ClickPipeStartNoEffect, None, message)
+            }
+            _ => {
+                let retry = cloud_command(&["clickpipe", label, service_id, clickpipe_id], &org_id);
+                let message = format!(
+                    "ClickPipe {name} answered the {label} request with state Paused, so it was \
+                     not applied. Wait a few seconds, then repeat `{retry}` until it returns \
+                     Running."
+                );
+                (
+                    CloudErrorCode::ClickPipeStartNotApplied,
+                    Some(retry),
+                    message,
+                )
+            }
         };
         return Err(
             CloudError::new(message.clone()).with_details(CloudErrorDetail {
-                command: Some(retry),
+                command: retry,
                 ..CloudErrorDetail::new(code, message)
             }),
         );
@@ -6645,6 +6667,15 @@ mod tests {
             resync.until,
             [serde_json::json!("Running"), serde_json::json!("Completed")]
         );
+    }
+
+    /// A start answered with `Completed` has no effect (#926); a resync that
+    /// finishes as `Completed` is still applied.
+    #[test]
+    fn only_a_start_answered_with_completed_is_not_applied() {
+        use clickhouse_cloud_api::models::ClickPipeState::Completed;
+        assert!(ClickPipeLifecycleCommand::Start.not_applied_in(Some(&Completed)));
+        assert!(!ClickPipeLifecycleCommand::Resync.not_applied_in(Some(&Completed)));
     }
 
     use super::*;
