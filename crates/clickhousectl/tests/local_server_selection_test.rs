@@ -11,6 +11,7 @@ fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
+/// Run with Docker unreachable, so Postgres lookups read metadata only.
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env_clear()
@@ -18,6 +19,10 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
         .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
         .env("HOME", home)
         .env("PATH", "/usr/bin:/bin")
+        .env(
+            "DOCKER_HOST",
+            format!("unix://{}/missing-docker.sock", home.display()),
+        )
         .current_dir(project)
         .args(args)
         .output()
@@ -83,6 +88,28 @@ fn create_stopped_server(project: &Path, name: &str) -> PathBuf {
     )
     .expect("write stopped server metadata");
     directory
+}
+
+/// A stopped Postgres instance's metadata, with no container to inspect.
+fn create_stopped_postgres(project: &Path, name: &str, major: &str) {
+    let servers = project.join(".clickhouse/servers");
+    let key = format!("{name}-pg{major}");
+    std::fs::create_dir_all(servers.join(&key).join("data")).expect("create Postgres data");
+    std::fs::write(
+        servers.join(format!("{key}.json")),
+        serde_json::to_vec_pretty(&json!({
+            "name": key,
+            "pid": 0,
+            "version": format!("postgres:{major}"),
+            "http_port": 0,
+            "tcp_port": 5432,
+            "started_at": "1700000000",
+            "cwd": project.display().to_string(),
+            "engine": "postgres"
+        }))
+        .unwrap(),
+    )
+    .expect("write stopped Postgres metadata");
 }
 
 fn install_fake_clickhouse(home: &Path) {
@@ -340,7 +367,84 @@ fn omitted_commands_prefer_default_without_touching_custom_servers() {
 }
 
 #[test]
-fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
+fn omitted_names_select_the_only_server_for_client_udf_and_postgres() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    create_stopped_server(project.path(), "dev");
+
+    // Without Postgres instances, an omitted Postgres stop does nothing.
+    let noop = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "stop"],
+    );
+    assert_success(&noop);
+    assert_eq!(
+        body(&noop),
+        json!({
+            "stopped": false,
+            "selection": "implicit",
+            "reason": "no_postgres_servers"
+        })
+    );
+
+    // The managed client selects `dev`, then reports it stopped.
+    let client = run(project.path(), home.path(), &["local", "--json", "client"]);
+    assert_eq!(client.status.code(), Some(1));
+    let error = &serde_json::from_slice::<Value>(&client.stderr).unwrap()["error"];
+    assert_eq!(error["code"], "managed_client_server_not_running");
+    assert_eq!(error["server"]["name"], "dev");
+    let start = error["guidance"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["action"] == "start_server")
+        .expect("start guidance");
+    assert_eq!(
+        start["command"],
+        "clickhousectl local clickhouse start <name>"
+    );
+
+    let udf = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "udf", "list"],
+    );
+    assert_success(&udf);
+    assert_eq!(body(&udf)["server"], "dev");
+
+    create_stopped_postgres(project.path(), "app", "18");
+    let stop = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "stop"],
+    );
+    assert_success(&stop);
+    assert_eq!(
+        body(&stop),
+        json!({"name": "app", "already_stopped": true, "selection": "implicit"})
+    );
+
+    // Two instance names and no `default`: the error lists both.
+    create_stopped_postgres(project.path(), "web", "17");
+    let ambiguous = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "dotenv"],
+    );
+    assert_eq!(ambiguous.status.code(), Some(1));
+    let error = &serde_json::from_slice::<Value>(&ambiguous.stderr).unwrap()["error"];
+    assert_eq!(error["code"], "server_selection_required");
+    assert_eq!(error["command"], "clickhousectl local postgres list");
+    let message = error["message"].as_str().unwrap();
+    for name in ["app", "web"] {
+        assert!(message.contains(name), "{name}: {message}");
+    }
+    assert!(!project.path().join(".env").exists());
+}
+
+#[test]
+fn omitted_stop_requires_a_name_for_many_non_default_servers() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     let alpha = create_stopped_server(project.path(), "alpha");
@@ -359,16 +463,16 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
         error["error"]["command"],
         "clickhousectl local clickhouse list"
     );
-    // The message counts the candidates and names both ways forward, in
+    // The message lists the candidates and the command to pass one, in
     // either output mode.
     let human = run(project.path(), home.path(), &["local", "server", "stop"]);
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
     for text in [error["error"]["message"].as_str().unwrap(), &stderr] {
-        assert_eq!(digits(text), "2", "{text}");
         for fragment in [
-            "`clickhousectl local clickhouse stop <name>`",
-            "`clickhousectl local clickhouse stop-all`",
+            "alpha",
+            "beta",
+            "clickhousectl local clickhouse stop <name>",
         ] {
             assert!(text.contains(fragment), "{fragment}: {text}");
         }

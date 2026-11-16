@@ -200,14 +200,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             name,
             name_flag,
             version,
-        } => {
-            stop(
-                name.or(name_flag).as_deref().unwrap_or("default"),
-                version.as_deref(),
-                json,
-            )
-            .await
-        }
+        } => stop(name.or(name_flag), version.as_deref(), json).await,
         PostgresCommands::List => super::list_project_servers(output::ProjectList::Postgres, json),
         PostgresCommands::StopAll => stop_all(json).await,
         PostgresCommands::Remove {
@@ -621,6 +614,63 @@ fn lock_and_resolve_pg_target(
     };
     let target = resolve_pg_target_locked(user_name, version, &metadata_lock)?;
     Ok((target, metadata_lock))
+}
+
+/// Lock project metadata, pick the instance name by the shared rule
+/// ([`super::select_server`], #1064), then its major version with `--version`
+/// as [`resolve_pg_target_locked`] does. `Ok(None)` means NAME was omitted and
+/// this project has no Postgres instances. `usage` is the command with a
+/// `<name>` placeholder, suggested when several names leave it ambiguous.
+fn lock_and_select_pg_target(
+    explicit: Option<String>,
+    version: Option<&str>,
+    usage: &'static str,
+) -> Result<Option<PgSelection>> {
+    if let Some(name) = &explicit {
+        server::validate_server_name(name)?;
+    }
+    if let Some(version) = version {
+        validate_pg_tag(version)?;
+    }
+    let metadata_lock = server::lock_recovered_metadata()?;
+    let names = match (&explicit, &metadata_lock) {
+        (None, Some(lock)) => server::list_postgres_instance_names_locked(lock)?,
+        _ => Vec::new(),
+    };
+    let Some((name, selection)) = super::select_server(explicit, &names, Engine::Postgres, usage)?
+    else {
+        return Ok(None);
+    };
+    let Some(metadata_lock) = metadata_lock else {
+        return Err(missing_pg_target(&name, version));
+    };
+    let target = resolve_pg_target_locked(&name, version, &metadata_lock)?;
+    Ok(Some(PgSelection {
+        name,
+        selection,
+        target,
+        metadata_lock,
+    }))
+}
+
+/// The instance a command acts on, and how its name was chosen.
+struct PgSelection {
+    /// The user-facing name, without the `-pg<major>` suffix.
+    name: String,
+    selection: output::ServerSelection,
+    target: server::ServerInfo,
+    metadata_lock: server::MetadataLock,
+}
+
+/// [`lock_and_select_pg_target`] for commands that need an instance: with
+/// none, `default` is reported missing, as for an explicit name.
+fn lock_and_require_pg_target(
+    explicit: Option<String>,
+    version: Option<&str>,
+    usage: &'static str,
+) -> Result<PgSelection> {
+    lock_and_select_pg_target(explicit, version, usage)?
+        .ok_or_else(|| missing_pg_target("default", version))
 }
 
 /// The error for a `[NAME] [--version <V>]` selection that matches nothing.
@@ -1064,9 +1114,32 @@ fn generate_password() -> String {
     Alphanumeric.sample_string(&mut rand::rng(), 24)
 }
 
-async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
-    server::validate_server_name(name)?;
-    let (target, metadata_lock) = lock_and_resolve_pg_target(name, version)?;
+async fn stop(name: Option<String>, version: Option<&str>, json: bool) -> Result<()> {
+    let Some(PgSelection {
+        selection,
+        target,
+        metadata_lock,
+        ..
+    }) = lock_and_select_pg_target(name, version, "clickhousectl local postgres stop <name>")?
+    else {
+        // As for ClickHouse: with no instance there is nothing to stop.
+        let project = crate::init::project_root()?;
+        let project_state_missing = !project.is_marked();
+        let out = output::ServerStopNoopOutput {
+            engine: Engine::Postgres,
+            stopped: false,
+            selection: output::ServerSelection::Implicit,
+            reason: "no_postgres_servers",
+            project_scope: project_state_missing.then(|| output::server_project_scope(project)),
+            guidance: if project_state_missing {
+                output::project_list_guidance(project.kind, "clickhousectl local postgres list")
+            } else {
+                Vec::new()
+            },
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    };
     // `stop` is idempotent, as for ClickHouse: an instance that exists but
     // is not running is already in the desired end state.
     let already_stopped = !server::is_server_running_locked(&target.name, &metadata_lock)?;
@@ -1080,7 +1153,7 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
         already_stopped,
-        selection: None,
+        selection: Some(selection),
     };
     output::print_output(&out, json);
     Ok(())
@@ -1182,10 +1255,18 @@ async fn client(
         );
     }
 
-    let server_name = name.as_deref().unwrap_or("default");
-    let (info, metadata_lock) = lock_and_resolve_pg_target(server_name, version.as_deref())?;
+    let PgSelection {
+        name: server_name,
+        target: info,
+        metadata_lock,
+        ..
+    } = lock_and_require_pg_target(
+        name,
+        version.as_deref(),
+        "clickhousectl local postgres client <name>",
+    )?;
     if !server::is_server_running_locked(&info.name, &metadata_lock)? {
-        return Err(Error::ServerNotRunning(server_name.to_string()));
+        return Err(Error::ServerNotRunning(server_name));
     }
     drop(metadata_lock);
 
@@ -1339,10 +1420,18 @@ fn exec_host_psql(
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
-    let server_name = name.unwrap_or("default");
-    let (info, metadata_lock) = lock_and_resolve_pg_target(server_name, version)?;
+    let PgSelection {
+        name: server_name,
+        target: info,
+        metadata_lock,
+        ..
+    } = lock_and_require_pg_target(
+        name.map(str::to_string),
+        version,
+        "clickhousectl local postgres dotenv <name>",
+    )?;
     if !server::is_server_running_locked(&info.name, &metadata_lock)? {
-        return Err(Error::ServerNotRunning(server_name.to_string()));
+        return Err(Error::ServerNotRunning(server_name));
     }
     drop(metadata_lock);
 

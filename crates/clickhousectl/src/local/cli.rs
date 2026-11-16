@@ -278,6 +278,8 @@ CONTEXT FOR AGENTS:
   Covers ClickHouse only; `local postgres` manages Postgres and `local status` lists both.
   Data persists across stop/start; only `remove` deletes it.
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
+  Omitting NAME selects \"default\", else the only server; several without \"default\" errors
+  listing them. `remove` never guesses: it takes only \"default\" or an explicit name.
   `local remove <version>` deletes an installed binary, not server data.
   Configs inherit built-in defaults; `clickhouse configs` lists the always-applied and named ones.
   Typical flow: `local init` -> `clickhouse start dev` -> `local client dev` -> `clickhouse stop dev`"
@@ -294,6 +296,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
+  Omitting NAME selects \"default\", else the only instance name; several without \"default\"
+  errors listing them. `remove` never guesses: it takes only \"default\" or an explicit name.
   Covers Postgres only; `local status` lists ClickHouse and Postgres together.
   Typical flow: `local init` -> `postgres start` -> `postgres client`
   -> `postgres dotenv --local` -> `postgres stop`"
@@ -311,14 +315,14 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Default mode looks up a server started by `clickhousectl local clickhouse start`; the name defaults
-  to \"default\".
+  Default mode looks up a server started by `clickhousectl local clickhouse start`: NAME, else
+  \"default\", else the project's only server.
   Put wrapper options before `--`; all arguments after it go to clickhouse-client.
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.
   Choose SQL output explicitly, e.g. `-- --format JSONEachRow`."
     )]
     Client {
-        /// Server name to connect to (default: "default")
+        /// Server name to connect to (default: "default", else the only server)
         #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_server_name_arg)]
         #[arg(display_order = 0)]
         name: Option<String>,
@@ -438,7 +442,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   A UDF is <project root>/clickhouse/udfs/<NAME>/: udf.json (as `cloud udf create --file` takes) and its entrypoint.
-  deploy needs an existing server, running or stopped; --server picks it and defaults to \"default\".
+  deploy needs an existing server, running or stopped; --server picks it, else \"default\", else
+  the project's only server.
   reload needs the server running.
   Typical flow: `local udf init my_fn` -> edit -> `local udf deploy my_fn` -> `local client --query \"SELECT my_fn('x')\"`")]
     Udf {
@@ -547,10 +552,10 @@ CONTEXT FOR AGENTS:
     /// Stop a running server
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Omitting NAME with no ClickHouse servers succeeds as a no-op; with several non-default servers
-  it errors — pass a name or use `stop-all`.")]
+  Omitting NAME with no ClickHouse servers succeeds as a no-op; when it is ambiguous, pass a name
+  or use `stop-all`.")]
     Stop {
-        /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
+        /// Name of the server to stop (default: "default", else the only server)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
@@ -618,7 +623,7 @@ CONTEXT FOR AGENTS:
   An existing file is edited in place: only the keys written here are replaced, other
   CLICKHOUSE_* lines are kept.")]
     Dotenv {
-        /// Server name (default: "default")
+        /// Server name (default: "default", else the only server)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
 
@@ -726,8 +731,12 @@ CONTEXT FOR AGENTS:
     List,
 
     /// Stop a running Postgres instance
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Omitting NAME with no Postgres instances succeeds as a no-op; when it is ambiguous, pass a name
+  or use `stop-all`.")]
     Stop {
-        /// Name of the instance to stop (default: "default")
+        /// Name of the instance to stop (default: "default", else the only instance)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
@@ -786,7 +795,7 @@ CONTEXT FOR AGENTS:
   pass `-- -v ON_ERROR_STOP=0` to keep going.
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
-        /// Managed instance to connect to (default: "default")
+        /// Managed instance to connect to (default: "default", else the only instance)
         #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"], value_parser = parse_pg_server_name_arg)]
         #[arg(display_order = 0)]
         name: Option<String>,
@@ -850,7 +859,7 @@ CONTEXT FOR AGENTS:
   Managed POSTGRES_* keys are replaced in place; other lines in the file are preserved.
   Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
-        /// Instance name (default: "default")
+        /// Instance name (default: "default", else the only instance)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg)]
         name: Option<String>,
 
@@ -950,14 +959,9 @@ CONTEXT FOR AGENTS:
 /// Selects the local server a `udf` command targets.
 #[derive(Args, Debug)]
 pub struct UdfServerArg {
-    /// Local server name
-    #[arg(
-        long,
-        value_name = "NAME",
-        default_value = "default",
-        value_parser = parse_server_name_arg
-    )]
-    pub server: String,
+    /// Local server name (default: "default", else the only server)
+    #[arg(long, value_name = "NAME", value_parser = parse_server_name_arg)]
+    pub server: Option<String>,
 }
 
 #[cfg(test)]
@@ -1094,18 +1098,18 @@ mod tests {
         );
     }
 
-    fn udf_server(command: &UdfCommands) -> &str {
+    fn udf_server(command: &UdfCommands) -> Option<&str> {
         match command {
             UdfCommands::Deploy { server, .. }
             | UdfCommands::List { server }
             | UdfCommands::Remove { server, .. }
-            | UdfCommands::Reload { server } => &server.server,
+            | UdfCommands::Reload { server } => server.server.as_deref(),
             UdfCommands::Init { .. } => panic!("init has no server selector"),
         }
     }
 
     #[test]
-    fn udf_leaves_take_server_flag_with_default_and_validation() {
+    fn udf_leaves_take_an_optional_validated_server_flag() {
         use clap::error::ErrorKind;
         let leaves: [&[&str]; 4] = [
             &["udf", "deploy", "my_fn"],
@@ -1117,14 +1121,14 @@ mod tests {
             let LocalCommands::Udf { command } = local_command(leaf) else {
                 panic!("expected udf command for {leaf:?}");
             };
-            assert_eq!(udf_server(&command), "default", "{leaf:?}");
+            assert_eq!(udf_server(&command), None, "{leaf:?}");
 
             let mut with_server = leaf.to_vec();
             with_server.extend(["--server", "dev"]);
             let LocalCommands::Udf { command } = local_command(&with_server) else {
                 panic!("expected udf command for {with_server:?}");
             };
-            assert_eq!(udf_server(&command), "dev", "{leaf:?}");
+            assert_eq!(udf_server(&command), Some("dev"), "{leaf:?}");
 
             let mut bad = leaf.to_vec();
             bad.extend(["--server", "../x"]);

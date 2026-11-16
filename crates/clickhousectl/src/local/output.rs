@@ -432,8 +432,15 @@ impl LocalErrorBody {
             // covers both.
             Error::ServerNotFound(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
                 .command("clickhousectl local status"),
-            Error::ServerStopSelectionRequired { .. }
-            | Error::ServerRemoveSelectionRequired { .. } => {
+            Error::ServerSelectionRequired { engine, .. } => {
+                Mapping::parity(LocalErrorCode::ServerSelectionRequired).command(match engine {
+                    crate::local::server::Engine::Clickhouse => {
+                        "clickhousectl local clickhouse list"
+                    }
+                    crate::local::server::Engine::Postgres => "clickhousectl local postgres list",
+                })
+            }
+            Error::ServerRemoveSelectionRequired { .. } => {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
                     .command("clickhousectl local clickhouse list")
             }
@@ -927,7 +934,10 @@ pub(crate) fn server_project_scope(project: &ProjectRoot) -> ServerProjectScope 
 
 /// Changing directory helps only when no project was found: inside one, the
 /// project's own list is the next step.
-fn project_list_guidance(kind: ProjectRootKind, list: &'static str) -> Vec<LocalGuidance> {
+pub(crate) fn project_list_guidance(
+    kind: ProjectRootKind,
+    list: &'static str,
+) -> Vec<LocalGuidance> {
     match kind {
         ProjectRootKind::Marked => vec![LocalGuidance {
             action: LocalGuidanceAction::ListProjectServers,
@@ -1809,6 +1819,9 @@ impl fmt::Display for ServerStopOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopNoopOutput {
+    /// Which engine had nothing to stop; `reason` says it to JSON consumers.
+    #[serde(skip)]
+    pub engine: crate::local::server::Engine,
     pub stopped: bool,
     pub selection: ServerSelection,
     pub reason: &'static str,
@@ -1820,15 +1833,25 @@ pub struct ServerStopNoopOutput {
 
 impl fmt::Display for ServerStopNoopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "No ClickHouse servers found; nothing to stop")?;
+        use crate::local::server::Engine;
+        match self.engine {
+            Engine::Clickhouse => write!(f, "No ClickHouse servers found; nothing to stop")?,
+            Engine::Postgres => write!(f, "No Postgres instances found; nothing to stop")?,
+        }
         if let Some(scope) = &self.project_scope {
             writeln!(f)?;
             writeln!(f, "Searched from '{}'.", scope.path)?;
             writeln!(f, "{NO_PROJECT_FOUND}")?;
-            write!(
-                f,
-                "Change to a directory inside the project where the server was started and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
-            )?;
+            match self.engine {
+                Engine::Clickhouse => write!(
+                    f,
+                    "Change to a directory inside the project where the server was started and run `clickhousectl local clickhouse list`, or use `clickhousectl local clickhouse list --global` to locate running servers in other projects."
+                )?,
+                Engine::Postgres => write!(
+                    f,
+                    "Change to a directory inside the project where the instance was started and run `clickhousectl local postgres list`."
+                )?,
+            }
         }
         Ok(())
     }
@@ -2026,7 +2049,11 @@ mod tests {
             ),
             (Error::ServerNotFound("default".into()), "server_not_found"),
             (
-                Error::ServerStopSelectionRequired { available: 2 },
+                Error::ServerSelectionRequired {
+                    engine: crate::local::server::Engine::Postgres,
+                    names: vec!["alpha".into(), "beta".into()],
+                    usage: "clickhousectl local postgres stop <name>",
+                },
                 "server_selection_required",
             ),
             (
@@ -3065,7 +3092,11 @@ mod tests {
                 name: "dev".into(),
                 command: "clickhousectl local clickhouse stop dev".into(),
             },
-            Error::ServerStopSelectionRequired { available: 2 },
+            Error::ServerSelectionRequired {
+                engine: crate::local::server::Engine::Clickhouse,
+                names: vec!["alpha".into(), "beta".into()],
+                usage: "clickhousectl local clickhouse stop <name>",
+            },
             Error::ServerRemoveSelectionRequired { available: 1 },
             Error::ServerInMultipleProjects {
                 name: "dev".into(),

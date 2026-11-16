@@ -652,10 +652,19 @@ pub enum Error {
     #[error("{0}")]
     ManagedClient(ManagedClientError),
 
+    /// A name was omitted and this project has several servers of the engine,
+    /// none named `default` (#1064). `usage` is the command with a `<name>`
+    /// placeholder.
     #[error(
-        "No server name was provided and multiple non-default ClickHouse servers exist (available: {available}). Pass a name with `clickhousectl local clickhouse stop <name>`, or stop every server with `clickhousectl local clickhouse stop-all`."
+        "No server name was provided and none of this project's {} servers is named `default` (available: {}). Pass a name with `{usage}`.",
+        engine.label(),
+        names.join(", ")
     )]
-    ServerStopSelectionRequired { available: usize },
+    ServerSelectionRequired {
+        engine: crate::local::server::Engine,
+        names: Vec<String>,
+        usage: &'static str,
+    },
 
     /// `clickhouse stop --global <name>` matched running servers in more than one
     /// project, so `--project` is needed to pick one. Self-composed guidance
