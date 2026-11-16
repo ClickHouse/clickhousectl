@@ -73,8 +73,7 @@ the workflow; those files are the rules.
      `references/analyzer.md`.
    - Unsupported enum constraints: prefer changing the Rust field to a concrete value enum. Otherwise
      acknowledge the pointer in `acknowledged_unsupported_enum_pointers` with a tracking issue.
-3. Add library tests for what changed: missing-key → `None` and explicit-`null` → `None` for each new response type;
-   request strictness and the `TryFrom` write-back for each split pair; wiremock coverage for each new method; facade
+3. Add library tests for what changed: request strictness and the `TryFrom` write-back for each split pair; wiremock coverage for each new method; facade
    paths for new exports. Add live integration steps for new operations to the owning suite.
 4. Map any added or renamed file under `crates/clickhouse-cloud-api/` in `scripts/classify-cloud-integration.py`
    (unknown paths there select all suites). The install classifier is not involved unless a CLI file outside

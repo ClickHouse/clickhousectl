@@ -91,8 +91,8 @@ Test coverage is non-negotiable. Test each behaviour in **one** layer: the cheap
 the unit layer by default. Where a unit test and a subprocess test overlap, keep the unit test.
 
 - **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning
-  `src/cloud/<domain>.rs` or `src/cloud/<domain>/cli.rs`, `src/cloud/cli.rs`, `src/local/cli.rs`). Assert flag
-  names, types, defaults, repeatability.
+  `src/cloud/<domain>.rs` or `src/cloud/<domain>/cli.rs`, `src/cloud/cli.rs`, `src/local/cli.rs`). Test
+  defaults, parsers, ranges, repeats, clashes.
 - **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on
   library request-struct fields with minimal + maximal inputs.
 - **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
