@@ -101,7 +101,6 @@ async fn install_postgres(tag: &str, force: bool, docker: bool, json: bool) -> R
             ),
         ));
     };
-    pg_native::reject_root()?;
     let bundle = pg_bundle::ensure_bundle(&request, force, json).await?;
     let out = output::InstallOutput {
         version: format!("postgres@{}", bundle.spec.postgres_version),

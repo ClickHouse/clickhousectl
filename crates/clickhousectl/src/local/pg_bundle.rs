@@ -171,7 +171,8 @@ pub(crate) fn target_triple(platform: Platform) -> &'static str {
     }
 }
 
-fn cache_root() -> Result<PathBuf> {
+/// Where extracted bundles are kept.
+pub(crate) fn cache_root() -> Result<PathBuf> {
     Ok(paths::base_dir()?.join("postgres"))
 }
 

@@ -99,6 +99,9 @@ pub(crate) enum LocalErrorCode {
     PostgresBundleUnavailable,
     /// A downloaded Postgres bundle did not match its manifest sha256.
     ChecksumMismatch,
+    /// Run as root, the unprivileged user that runs native Postgres cannot
+    /// enter a directory on the way to the build or the instance.
+    PostgresDirectoryNotSearchable,
     SqlInputOpenFailed,
     SqlInputReadFailed,
     /// A managed server metadata file contains invalid JSON. The structured
@@ -160,6 +163,7 @@ impl LocalErrorCode {
             Self::PostgresError => "postgres_error",
             Self::PostgresBundleUnavailable => "postgres_bundle_unavailable",
             Self::ChecksumMismatch => "checksum_mismatch",
+            Self::PostgresDirectoryNotSearchable => "postgres_directory_not_searchable",
             Self::SqlInputOpenFailed => "sql_input_open_failed",
             Self::SqlInputReadFailed => "sql_input_read_failed",
             Self::ServerMetadataInvalid => "server_metadata_invalid",
@@ -772,6 +776,10 @@ impl LocalErrorBody {
             Error::PostgresBundleUnavailable(_) => {
                 Mapping::parity(LocalErrorCode::PostgresBundleUnavailable)
                     .command("clickhousectl local postgres start --help")
+            }
+            // Self-composed: the account and the directory it cannot enter.
+            Error::PostgresServerUserAccess { .. } => {
+                Mapping::parity(LocalErrorCode::PostgresDirectoryNotSearchable)
             }
             // Bundle name and digests only, all from the manifest and file.
             Error::PostgresBundleChecksum { .. } => {
