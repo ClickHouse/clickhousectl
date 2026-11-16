@@ -422,3 +422,44 @@ fn executable_generates_catalog_and_preserves_output_on_unsupported_security() {
     assert!(!run().status.success());
     assert_eq!(std::fs::read_to_string(&catalog).unwrap(), expected);
 }
+
+#[test]
+fn executable_generates_the_committed_beta_and_deprecated_lists() {
+    let api_root = Path::new(API_ROOT);
+    let source_root = api_root.join("src");
+    let output = Command::new(env!("CARGO_BIN_EXE_openapi-drift-analyzer"))
+        .arg("--spec")
+        .arg(api_root.join("clickhouse_cloud_openapi.json"))
+        .arg("--source-root")
+        .arg(&source_root)
+        .arg("--generate-stability-lists")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        generated,
+        clickhouse_openapi_analyzer::generate_stability_lists(
+            SPEC,
+            &source_root,
+            &clickhouse_cloud_config()
+        )
+        .unwrap()
+    );
+
+    // Each generated declaration is pasted into meta.rs verbatim, so it must
+    // appear there byte for byte. Split request/response variants such as
+    // `ClickPipeScalingResponse` come from the analyzer, not by hand.
+    assert!(generated.contains("(\"ClickPipeScalingResponse\", \"concurrency\"),"));
+    let meta = std::fs::read_to_string(source_root.join("meta.rs")).unwrap();
+    for declaration in generated.split("\n\n") {
+        assert!(
+            meta.contains(declaration),
+            "meta.rs differs from the generated declaration:\n{declaration}"
+        );
+    }
+}

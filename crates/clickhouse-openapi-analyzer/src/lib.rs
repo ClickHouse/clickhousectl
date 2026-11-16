@@ -217,6 +217,37 @@ pub fn model_types_with_manual_default_impl(
         .collect())
 }
 
+/// Generates the `BETA_OPERATIONS` and `DEPRECATED_FIELDS` declarations for
+/// `meta.rs`, exactly as committed, from the spec and the library source tree.
+///
+/// Both lists come from the inventory drift analysis compares against, so the
+/// output is the one list the analyzer accepts: `DEPRECATED_FIELDS` names every
+/// Rust type a deprecated property maps to, including the `{Name}Response`
+/// variant of a split schema, and leaves out configured exemptions.
+pub fn generate_stability_lists(
+    spec_json: &str,
+    rust_source_root: &Path,
+    config: &AnalyzerConfig,
+) -> Result<String, AnalyzeError> {
+    use std::fmt::Write as _;
+
+    let spec = serde_json::from_str(spec_json).map_err(AnalyzeError::SpecJson)?;
+    let spec = OpenApiInventory::build(&spec, config).map_err(AnalyzeError::SpecInventory)?;
+    let rust = load_rust_inventory(rust_source_root)?;
+    let (deprecated, _) = compare::expected_deprecated_fields(&rust, &spec, config);
+
+    let mut source = String::from("pub const BETA_OPERATIONS: &[&str] = &[\n");
+    for operation in spec.beta_operations.keys() {
+        writeln!(source, "    {operation:?},").unwrap();
+    }
+    source.push_str("];\n\npub const DEPRECATED_FIELDS: &[(&str, &str)] = &[\n");
+    for (struct_name, field) in deprecated.keys() {
+        writeln!(source, "    ({struct_name:?}, {field:?}),").unwrap();
+    }
+    source.push_str("];\n");
+    Ok(source)
+}
+
 fn load_rust_inventory(rust_source_root: &Path) -> Result<RustInventory, AnalyzeError> {
     RustInventory::load(rust_source_root)
         .map_err(|error| AnalyzeError::RustSource(error.to_string()))

@@ -837,6 +837,35 @@ fn composition_branch_matches(
         })
 }
 
+/// A `(RustStructName, specFieldName)` pair.
+pub(crate) type FieldKey = (String, String);
+
+/// The `(RustStructName, specFieldName)` pairs `DEPRECATED_FIELDS` must list,
+/// with each pair's spec pointer, plus the configured exemptions that matched.
+///
+/// A deprecated property is expected once per Rust type the schema maps to:
+/// `{Name}`, and additionally `{Name}Response` once a schema used in both
+/// directions is split, doubling the DEPRECATED_FIELDS bookkeeping.
+pub(crate) fn expected_deprecated_fields<'a>(
+    rust: &RustInventory,
+    spec: &'a OpenApiInventory,
+    config: &AnalyzerConfig,
+) -> (BTreeMap<FieldKey, &'a String>, BTreeSet<FieldKey>) {
+    let mut exemption_hits = BTreeSet::new();
+    let mut expected = BTreeMap::new();
+    for ((schema_name, field), pointer) in &spec.deprecated_fields {
+        for (rust_name, _direction) in field_check_targets(rust, spec, schema_name) {
+            let key = (rust_name, field.clone());
+            if config.deprecated_field_exemptions.contains(&key) {
+                exemption_hits.insert(key);
+            } else {
+                expected.insert(key, pointer);
+            }
+        }
+    }
+    (expected, exemption_hits)
+}
+
 fn compare_beta_and_deprecation(
     rust: &RustInventory,
     spec: &OpenApiInventory,
@@ -869,21 +898,8 @@ fn compare_beta_and_deprecation(
         }
     }
 
-    // A deprecated property is expected once per Rust type the schema maps to:
-    // just `{Name}` today, and additionally `{Name}Response` once a schema used
-    // in both directions is split, doubling the DEPRECATED_FIELDS bookkeeping.
-    let mut deprecated_exemption_hits = BTreeSet::new();
-    let mut expected_pointers: BTreeMap<(String, String), &String> = BTreeMap::new();
-    for ((schema_name, field), pointer) in &spec.deprecated_fields {
-        for (rust_name, _direction) in field_check_targets(rust, spec, schema_name) {
-            let key = (rust_name, field.clone());
-            if config.deprecated_field_exemptions.contains(&key) {
-                deprecated_exemption_hits.insert(key);
-            } else {
-                expected_pointers.insert(key, pointer);
-            }
-        }
-    }
+    let (expected_pointers, deprecated_exemption_hits) =
+        expected_deprecated_fields(rust, spec, config);
     let expected: BTreeSet<(String, String)> = expected_pointers.keys().cloned().collect();
     stale_pairs(
         "deprecated_field",

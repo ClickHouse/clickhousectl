@@ -83,6 +83,8 @@ outage. Tolerance lives in the **type system**, not in serde attributes:
   `From` where the conversion is total. A fallible one returns `MissingRequiredFields` (re-exported at the crate
   root; `.fields()` lists the missing **wire** names). Give each nested object its own conversion so a missing
   field is named at the level it is missing from; reuse `MissingRequiredFields` rather than adding another error type.
+- Add a conversion together with the first caller that fetches, edits and writes back that type, never
+  speculatively. Existing conversions are public API: do not remove them.
 - Residual risk: a key *present* with a changed type still fails — enums absorb it via catch-alls and unions via
   `Unknown(Value)`, a plain struct field does not. Spec conformance is the drift job's responsibility.
 
@@ -136,7 +138,7 @@ workflow, from reproducing the findings and splitting API and CLI pull requests 
 - Requiredness semantics in `openapi.rs`: PATCH request schemas are all-optional; nullable fields are always
   `Option<T>`; schemas with `required[]` use it; schemas without it use the `"Optional"` description convention.
   A schema whose `required[]` is known to be partial uses the union of both and must be listed in
-  `partial_required_schemas`. (`scripts/resolve-field-requirements.py` is a code-generation aid only.)
+  `partial_required_schemas`.
 - `response_tree()` exposes response-tree membership for the policy enforcement tests.
 
 ### Analyzer policy
@@ -149,7 +151,8 @@ Exemptions, acknowledgements, enum value mapping and analyzer extension rules li
   update both the variant and the const or CI fails.
 - A spec-deprecated field is listed in `meta.rs::DEPRECATED_FIELDS` and gated with
   `#[cfg(feature = "deprecated-fields")]`, once per Rust type (`{Name}` and `{Name}Response`). Both feature
-  configurations of the CLI must compile.
+  configurations of the CLI must compile. The analyzer's `--generate-stability-lists` prints `DEPRECATED_FIELDS`
+  and `BETA_OPERATIONS`; never edit either list by hand.
 
 ## Tests
 
