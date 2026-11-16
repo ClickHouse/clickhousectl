@@ -544,12 +544,6 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
-    /// A rejected argument, with self-composed guidance. Kept separate from
-    /// [`Error::Exec`], whose payload is subprocess or OS text and is therefore
-    /// summarized in structured output rather than rendered.
-    #[error("{0}")]
-    UnsupportedArgument(String),
-
     /// The selected native binary cannot be launched, detected before the
     /// `exec()` handoff (#471). Also self-composed — see
     /// [`BinaryLaunchProblem`] — so it renders in full, unlike

@@ -340,7 +340,7 @@ fn io_and_docker_errors_keep_paths_and_secrets_out_of_json() {
 /// Issue #608: the message an agent gets in JSON must not be thinner than the
 /// human `Error: ...` line for a self-composed local failure.
 #[test]
-fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
+fn config_failures_carry_their_full_human_detail_in_json() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     install_fake_clickhouse(home.path(), "#!/bin/sh\nexit 7\n");
@@ -395,31 +395,6 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
         human_stderr == error_line || human_stderr.ends_with(&format!("\n{error_line}")),
         "JSON and human mode must carry the same detail: {human_stderr}"
     );
-
-    // Port 0 would hand the choice to the OS, which managed metadata cannot
-    // track; the refusal is self-composed guidance, not a redacted fallback.
-    let zero_port = run(
-        project.path(),
-        home.path(),
-        &[
-            "local",
-            "--json",
-            "server",
-            "start",
-            "--version",
-            VERSION,
-            "--http-port",
-            "0",
-        ],
-    );
-    let message = assert_structured_failure(
-        &zero_port,
-        &expected_error(
-            "unsupported_argument",
-            Some("clickhousectl local clickhouse start --help"),
-        ),
-    );
-    assert!(message.contains("--http-port"), "{message}");
 }
 
 #[test]

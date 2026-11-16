@@ -26,6 +26,18 @@ fn parse_pg_server_name_arg(name: &str) -> Result<String, String> {
     }
 }
 
+/// A managed server records the port it was given, so port 0 (let the OS pick)
+/// would leave metadata, readiness checks and `dotenv` with no real port.
+fn parse_port_arg(value: &str) -> Result<u16, String> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid port '{value}': expected an integer from 1 to 65535"))?;
+    if port == 0 {
+        return Err("port 0 is not allowed; pick a specific port or omit the flag".into());
+    }
+    Ok(port)
+}
+
 fn parse_config_name_arg(name: &str) -> Result<String, String> {
     crate::local::config::validate_config_name(name)
         .map(|()| name.to_string())
@@ -472,13 +484,13 @@ CONTEXT FOR AGENTS:
         /// HTTP port; when omitted, 8123 if free else an auto-selected free port
         ///
         /// An explicitly requested port that is already in use is rejected.
-        #[arg(long)]
+        #[arg(long, value_parser = parse_port_arg)]
         http_port: Option<u16>,
 
         /// TCP port; when omitted, 9000 if free else an auto-selected free port
         ///
         /// An explicitly requested port that is already in use is rejected.
-        #[arg(long)]
+        #[arg(long, value_parser = parse_port_arg)]
         tcp_port: Option<u16>,
 
         /// Run in foreground instead of background (alias: --fg)
@@ -672,7 +684,7 @@ CONTEXT FOR AGENTS:
         /// Host TCP port; when omitted, 5432 if free else an auto-selected free port
         ///
         /// An explicitly requested port that is already in use is rejected.
-        #[arg(long, value_parser = crate::local::postgres::parse_pg_port_arg)]
+        #[arg(long, value_parser = parse_port_arg)]
         port: Option<u16>,
 
         /// POSTGRES_USER (default: postgres)
@@ -1997,8 +2009,8 @@ mod tests {
     }
 
     #[test]
-    fn postgres_start_rejects_invalid_name_tag_port_and_env_at_clap_time() {
-        use crate::local::postgres::{parse_pg_env_arg, parse_pg_port_arg, parse_pg_tag_arg};
+    fn postgres_start_rejects_invalid_name_tag_and_env_at_clap_time() {
+        use crate::local::postgres::{parse_pg_env_arg, parse_pg_tag_arg};
 
         // Each rejection carries its own parser's diagnostic and the
         // identifiers that diagnostic must name.
@@ -2022,11 +2034,6 @@ mod tests {
                 vec!["--version", "18..1"],
                 parse_pg_tag_arg("18..1"),
                 &["18..1"],
-            ),
-            (
-                vec!["--port", "0"],
-                parse_pg_port_arg("0").map(|port| port.to_string()),
-                &["--port 0"],
             ),
             (
                 vec!["--env", "NO_EQUALS"],
@@ -2060,6 +2067,50 @@ mod tests {
             assert!(error.to_string().contains(&diagnostic), "{error}");
             for identifier in identifiers {
                 assert!(diagnostic.contains(identifier), "{diagnostic}");
+            }
+        }
+    }
+
+    /// Port 0 is a usage error at parse time for every managed-server port flag,
+    /// before any version download or Docker call (#1313).
+    #[test]
+    fn port_flags_reject_zero_and_accept_the_full_range() {
+        for (command, flag) in [
+            (&["clickhouse", "start"][..], "--http-port"),
+            (&["clickhouse", "start"], "--tcp-port"),
+            (&["postgres", "start"], "--port"),
+        ] {
+            let mut args = command.to_vec();
+            args.extend([flag, "0"]);
+            let error = local_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(error.to_string().contains(flag), "{error}");
+
+            for port in ["1", "65535"] {
+                let mut args = command.to_vec();
+                args.extend([flag, port]);
+                let expected = port.parse::<u16>().unwrap();
+                let parsed = match local_command(&args) {
+                    LocalCommands::Clickhouse {
+                        command:
+                            ServerCommands::Start {
+                                http_port,
+                                tcp_port,
+                                ..
+                            },
+                    } => {
+                        if flag == "--http-port" {
+                            http_port
+                        } else {
+                            tcp_port
+                        }
+                    }
+                    LocalCommands::Postgres {
+                        command: PostgresCommands::Start { port, .. },
+                    } => port,
+                    _ => panic!("expected a start command"),
+                };
+                assert_eq!(parsed, Some(expected), "{flag} {port}");
             }
         }
     }

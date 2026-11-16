@@ -166,7 +166,6 @@ Every command except `update`, `--version` included, checks for a newer release 
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
 | `invalid_server_name` | A stored server name contains path separators or `..`; a name given on the command line is rejected as a usage error, including a Postgres name with a character other than letters, digits, `_`, `.`, and `-` |
-| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (`--http-port`/`--tcp-port` `0`); a pass-through `--config` or `-C` is a usage error |
 | `config_not_found` | The named `clickhouse start --config` file does not exist, or the name is ambiguous |
 | `invalid_config_name` | The config name is a path rather than a file in the configs dir; `clickhouse start --config` rejects one as a usage error |
 | `invalid_version` | The version selector is invalid |

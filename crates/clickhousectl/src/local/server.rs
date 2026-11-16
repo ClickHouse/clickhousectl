@@ -1319,11 +1319,6 @@ fn find_free_port(start: u16) -> Option<u16> {
 /// we picked non-default ports.
 pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u16, u16, bool)> {
     let http = match http_port {
-        Some(0) => {
-            return Err(Error::UnsupportedArgument(
-                "--http-port 0 is not allowed; pick a specific port or omit the flag".into(),
-            ));
-        }
         Some(p) if is_port_available(p) => p,
         Some(p) => {
             return Err(Error::PortInUse {
@@ -1342,11 +1337,6 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
     };
 
     let tcp = match tcp_port {
-        Some(0) => {
-            return Err(Error::UnsupportedArgument(
-                "--tcp-port 0 is not allowed; pick a specific port or omit the flag".into(),
-            ));
-        }
         Some(p) if is_port_available(p) => p,
         Some(p) => {
             return Err(Error::PortInUse {
@@ -2548,19 +2538,6 @@ mod tests {
             is_port_available(port)
         });
         assert!(any_freed_port_is_available);
-    }
-
-    #[test]
-    fn explicit_ports_reject_zero() {
-        let http_error = resolve_ports(Some(0), None).unwrap_err();
-        assert!(
-            matches!(http_error, Error::UnsupportedArgument(msg) if msg.contains("--http-port 0"))
-        );
-
-        let tcp_error = resolve_ports(None, Some(0)).unwrap_err();
-        assert!(
-            matches!(tcp_error, Error::UnsupportedArgument(msg) if msg.contains("--tcp-port 0"))
-        );
     }
 
     // ── ensure_stopped_by_pid (issue #600) ─────────────────────────────

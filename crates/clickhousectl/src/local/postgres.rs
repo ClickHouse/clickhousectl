@@ -76,16 +76,6 @@ pub(crate) fn parse_pg_tag_arg(tag: &str) -> std::result::Result<String, String>
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn parse_pg_port_arg(value: &str) -> std::result::Result<u16, String> {
-    let port = value
-        .parse::<u16>()
-        .map_err(|_| format!("invalid port '{value}': expected an integer from 1 to 65535"))?;
-    if port == 0 {
-        return Err("--port 0 is not allowed; pick a specific port or omit the flag".into());
-    }
-    Ok(port)
-}
-
 fn validate_pg_env_assignment(assignment: &str) -> std::result::Result<(&str, &str), String> {
     let Some((key, value)) = assignment.split_once('=') else {
         return Err(format!(
@@ -1046,11 +1036,6 @@ fn format_postgres_readiness_error(
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     match explicit {
-        Some(0) => {
-            return Err(Error::PostgresUsage(
-                "--port 0 is not allowed; pick a specific port or omit the flag".into(),
-            ));
-        }
         Some(port) if server::is_port_available(port) => {
             return Ok(port);
         }
@@ -1692,12 +1677,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_port_rejects_zero_for_non_clap_callers() {
-        let err = resolve_port(Some(0)).unwrap_err();
-        assert!(matches!(err, Error::PostgresUsage(msg) if msg.contains("--port 0")));
-    }
-
-    #[test]
     fn fresh_data_cleanup_ownership_is_conservative() {
         let tempdir = tempfile::tempdir().expect("create policy tempdir");
         let instance_dir = tempdir.path().join("policy-pg18");
@@ -1712,12 +1691,6 @@ mod tests {
 
         std::fs::write(data_dir.join("PG_VERSION"), "existing").expect("write existing PGDATA");
         assert!(!fresh_instance_dir_is_disposable(&instance_dir));
-    }
-
-    #[test]
-    fn parse_pg_port_rejects_zero_with_actionable_error() {
-        let err = parse_pg_port_arg("0").unwrap_err();
-        assert!(err.contains("--port 0"), "{err}");
     }
 
     #[test]
