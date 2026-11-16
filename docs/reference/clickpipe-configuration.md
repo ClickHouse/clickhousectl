@@ -87,7 +87,7 @@ Kafka, Kinesis, object storage, and Pub/Sub support `--start-paused`, repeatable
 
 For Postgres, snapshot worker/partition settings, nullability, failover slots, and delete-on-merge are create-time choices. Only `syncIntervalSeconds` and `pullBatchSize` can be patched later. `--replication-slot-name` requires `--replication-mode cdc_only`; PG17+ failover slots apply when ClickPipes creates the slot, not when reusing one. MongoDB `--initial-load-parallelism` is per collection; `--snapshot-parallel-collections` controls concurrent collections.
 
-Kafka/Kinesis Protobuf schema inputs accept `.proto` or serialized `FileDescriptorSet`; use `--protobuf-schema-file -` for stdin. The encoded limit is 1 MiB. Kafka Protobuf input conflicts with registry flags; `--exactly-once` is create-only. Pub/Sub timestamp seek requires `--seek-timestamp`; `earliest` reads backlog and `latest` reads new messages only.
+Kafka/Kinesis Protobuf schema inputs accept `.proto` or serialized `FileDescriptorSet`; use `--protobuf-schema-file -` for stdin. The API limits the encoded schema to 1 MiB. Kafka Protobuf input conflicts with registry flags; `--exactly-once` is create-only. Pub/Sub timestamp seek requires `--seek-timestamp`; `earliest` reads backlog and `latest` reads new messages only.
 
 Object storage `--skip-initial-load` and `--start-after` cannot be combined. `--skip-first-lines` applies only to TabSeparated formats and is set at creation; the API validates the format and range. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
 
