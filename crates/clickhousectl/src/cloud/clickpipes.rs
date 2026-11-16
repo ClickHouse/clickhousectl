@@ -344,11 +344,11 @@ pub enum ClickPipeCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   The file is a typed PATCH body; omitted top-level fields remain unchanged.
-  Source updates support kafka, kinesis, objectStorage, pubsub, postgres, mysql,
-  and mongodb. BigQuery sources cannot be updated by this API.
+  Updatable sources: kafka, kinesis, objectStorage, pubsub, postgres, mysql, mongodb (not BigQuery).
   For Postgres, MySQL, and MongoDB: stop -> get until Paused -> update --file.
   Update does not stop or restart the pipe; run start after a successful update.
-  For object-storage, fieldMappings (including []) requires destination.columns.
+  fieldMappings needs destination.columns, matched 1:1; [] and CDC pipes are rejected.
+  GET returns fieldMappings: [] for CDC pipes: remove it before reusing the output.
   Root settings are rejected; change them with `clickpipe settings update`.")]
     Update {
         /// Service ID
@@ -1014,6 +1014,8 @@ pub struct ClickPipeCreateRequestArgs {
     pub memory_gb: Option<f64>,
 
     /// Field mapping JSON with sourceField and destinationField (repeatable)
+    ///
+    /// Give one mapping per --column.
     #[arg(long = "field-mapping", value_name = "JSON")]
     pub field_mappings: Vec<String>,
 
