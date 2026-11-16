@@ -103,6 +103,9 @@ jobs:
           DIR="clickhousectl-${TARGET}-v${VERSION}"
           mkdir "$DIR"
           cp "target/${TARGET}/release/clickhousectl" "$DIR/"
+          # install.sh, npm install.js and `update` take the binary by name,
+          # so the licence beside it changes nothing they extract.
+          cp LICENSE "$DIR/"
           tar -czf "${DIR}.tar.gz" "$DIR"
 
       - name: Upload artifact

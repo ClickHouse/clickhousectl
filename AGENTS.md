@@ -134,7 +134,7 @@ the unit layer by default. Where a unit test and a subprocess test overlap, keep
 ## Dependencies
 
 Use `cargo add` with the latest version and an explicit crate, e.g. `cargo add -p clickhouse-cloud-api url`.
-Every crate declares the same `rust-version`; raise it in all three manifests, both READMEs and `msrv.yml` together.
+The MSRV is `rust-version` in the root `[workspace.package]` (`msrv.yml` reads it); raise it there and in both READMEs.
 
 ## Releases
 

@@ -75,6 +75,8 @@
 //! spec drift of that kind is the job of the repository's daily OpenAPI drift
 //! check, not of runtime deserialization.
 
+#![forbid(unsafe_code)]
+
 pub mod client;
 pub mod convert;
 pub mod error;

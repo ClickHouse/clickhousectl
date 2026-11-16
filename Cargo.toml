@@ -5,3 +5,12 @@ members = [
     "crates/clickhouse-openapi-analyzer",
 ]
 resolver = "3"
+
+# Shared by every crate (`<key>.workspace = true`). `rust-version` is the one
+# MSRV: msrv.yml reads it from `cargo metadata`. Versions stay per crate.
+[workspace.package]
+edition = "2024"
+rust-version = "1.94.1"
+license = "Apache-2.0"
+repository = "https://github.com/ClickHouse/clickhousectl"
+homepage = "https://github.com/ClickHouse/clickhousectl"
