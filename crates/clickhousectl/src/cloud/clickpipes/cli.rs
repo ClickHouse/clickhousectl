@@ -221,8 +221,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Needs API key auth even though it only reads; OAuth is rejected here.
-  Output is one inferred name/type per field — pass them to `--column name:type` on
-  `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
+  Output is one inferred name/type per field. Save the --json output and pass it to
+  `clickpipe create <source> --columns-from`, which takes the same source flags.
   Virtual fields are metadata ClickPipes adds (e.g. `_topic`, `_path`), not source data.
   GCP workload identity uses the principal from `clickpipe context get`.
   Typical flow: `schema-discover <source> <service-id>` -> `create <source> <service-id>`.")]
@@ -250,8 +250,8 @@ CONTEXT FOR AGENTS:
     /// Create a ClickPipe
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  For kafka, kinesis, object-storage and pubsub, get --column from
-  `clickhousectl cloud clickpipe schema-discover <source> <service-id>`.
+  For kafka, kinesis, object-storage and pubsub, pass the --json output of
+  `clickpipe schema-discover <source> <service-id>` as --columns-from (or use --column).
   GCP workload identity is private preview for GCS, GCMK, Pub/Sub and BigQuery:
   run `clickpipe context get`, grant its principal access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
   The source must be reachable from ClickPipes; allow the static egress IPs:
@@ -305,18 +305,36 @@ impl ClickPipeCommands {
                 "object-storage",
                 build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)
                     .and_then(|_| validate_object_storage_source_args(&args.source))
+                    .and_then(|_| {
+                        args.destination.refuse_shared_stdin(&[(
+                            "--service-account-file",
+                            args.source.service_account_file.as_deref(),
+                        )])
+                    })
                     .err(),
             ),
             ClickPipeCreateCommands::Kafka(args) => (
                 "kafka",
                 build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)
                     .and_then(|_| validate_kafka_source_args(&args.source))
+                    .and_then(|_| {
+                        args.destination.refuse_shared_stdin(&[(
+                            "--protobuf-schema-file",
+                            args.source.protobuf_schema_file.as_deref(),
+                        )])
+                    })
                     .err(),
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
                 "kinesis",
                 build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)
                     .and_then(|_| validate_kinesis_source_args(&args.source))
+                    .and_then(|_| {
+                        args.destination.refuse_shared_stdin(&[(
+                            "--protobuf-schema-file",
+                            args.source.protobuf_schema_file.as_deref(),
+                        )])
+                    })
                     .err(),
             ),
             ClickPipeCreateCommands::Postgres(args) => {
@@ -335,6 +353,12 @@ impl ClickPipeCommands {
                 "pubsub",
                 build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)
                     .and_then(|_| validate_pubsub_source_args(&args.source))
+                    .and_then(|_| {
+                        args.destination.refuse_shared_stdin(&[(
+                            "--service-account-file",
+                            args.source.service_account_file.as_deref(),
+                        )])
+                    })
                     .err(),
             ),
         };
@@ -583,7 +607,7 @@ pub enum ClickPipeCreateCommands {
         after_help = "\
 CONTEXT FOR AGENTS:
   First run `clickpipe schema-discover object-storage <service-id>` with the same
-  source flags, then pass every desired field as `--column name:type`.
+  source flags and --json, then pass its output as --columns-from (or --column).
   Auth is inferred from the credential flags, in order: --iam-role,
   --access-key-id/--secret-key, --connection-string, --service-account-file.
   GCS workload identity uses --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY without
@@ -721,7 +745,7 @@ pub struct ClickPipeCreateRequestArgs {
 
     /// Field mapping JSON with sourceField and destinationField (repeatable)
     ///
-    /// Give one mapping per --column.
+    /// Give one mapping per destination column.
     #[arg(long = "field-mapping", value_name = "JSON")]
     pub field_mappings: Vec<String>,
 
@@ -734,6 +758,12 @@ pub struct ClickPipeCreateRequestArgs {
 /// subcommands cannot drift apart (#1243 was one copy marking `--column`
 /// differently).
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("destination_columns")
+        .args(["columns", "columns_from"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct StreamingDestinationArgs {
     /// Destination database
     #[arg(long)]
@@ -743,14 +773,22 @@ pub struct StreamingDestinationArgs {
     #[arg(long)]
     pub table: String,
 
-    /// Destination column as name:type (required, repeatable)
+    /// Destination column as name:type (repeatable)
+    ///
+    /// Give --column, --columns-from, or both.
     #[arg(
         long = "column",
-        required = true,
         value_name = "NAME:TYPE",
         value_parser = parse_destination_column
     )]
     pub columns: Vec<String>,
+
+    /// `schema-discover --json` output to use as columns, or - for stdin
+    ///
+    /// Imports every field except metadata disabled by default; a name
+    /// also given with --column is an error.
+    #[arg(long, value_name = "PATH|-")]
+    pub columns_from: Option<String>,
 
     #[command(flatten)]
     pub destination_table: StreamingDestinationTableArgs,

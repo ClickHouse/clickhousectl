@@ -1,7 +1,9 @@
 use super::cli::{StreamingDestinationArgs, StreamingDestinationTableArgs};
 use super::non_empty;
 use crate::cloud::client::{CloudError, Result as CloudResult};
-use crate::cloud::config::{deserialize_strict_config, read_flag_config_value};
+use crate::cloud::config::{
+    config_source_label, deserialize_strict_config, read_flag_config_value, read_flag_text,
+};
 
 /// Parse `name:type` column specifications into library destination columns.
 pub(super) fn parse_columns(
@@ -23,6 +25,79 @@ fn parse_column(
         name: name.to_string(),
         r#type: column_type.to_string(),
     })
+}
+
+/// Convert a `clickpipe schema-discover --json` response into destination
+/// columns, in discovery order. Source fields and default-enabled metadata
+/// (`isVirtual`) are kept; metadata the API marks `isVirtualDisabledDefault`
+/// is left out, as the console does. `type` is used as given and `optional`
+/// is ignored.
+pub(super) fn columns_from_discovery(
+    response: clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
+    let mut columns = Vec::new();
+    for (index, field) in response.fields.unwrap_or_default().into_iter().enumerate() {
+        if field.is_virtual == Some(true) && field.is_virtual_disabled_default == Some(true) {
+            continue;
+        }
+        let name = field.name.filter(|name| !name.is_empty()).ok_or_else(|| {
+            CloudError::usage(format!("--columns-from: fields[{index}] has no name"))
+        })?;
+        let column_type = field
+            .r#type
+            .filter(|column_type| !column_type.is_empty())
+            .ok_or_else(|| {
+                CloudError::usage(format!("--columns-from: field `{name}` has no type"))
+            })?;
+        columns.push(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
+            name,
+            r#type: column_type,
+        });
+    }
+    if columns.is_empty() {
+        return Err(CloudError::usage(
+            "--columns-from has no fields to use as destination columns",
+        ));
+    }
+    Ok(columns)
+}
+
+/// Read `--columns-from` from a file or stdin and convert it with
+/// [`columns_from_discovery`]. An unreadable file is an I/O failure; empty or
+/// malformed input is a usage error.
+fn read_columns_from(
+    source: &str,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
+    let contents = read_flag_text("--columns-from", std::path::Path::new(source))?;
+    let label = config_source_label(source);
+    if contents.trim().is_empty() {
+        return Err(CloudError::usage(format!(
+            "--columns-from {label} is empty"
+        )));
+    }
+    let response = serde_json::from_str(&contents).map_err(|error| {
+        CloudError::usage(format!(
+            "--columns-from {label} is not `clickpipe schema-discover --json` output: {error}"
+        ))
+    })?;
+    columns_from_discovery(response)
+}
+
+/// Refuse more than one flag reading stdin (`-`) in one invocation: the first
+/// reader would consume the stream and leave the others empty.
+fn refuse_more_than_one_stdin_reader(readers: &[(&str, Option<&str>)]) -> CloudResult<()> {
+    let flags: Vec<&str> = readers
+        .iter()
+        .filter(|(_, value)| *value == Some("-"))
+        .map(|(flag, _)| *flag)
+        .collect();
+    if flags.len() > 1 {
+        return Err(CloudError::usage(format!(
+            "{} all read stdin; give `-` to only one of them",
+            flags.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Validate the same grammar as the request builder before credential lookup.
@@ -153,6 +228,47 @@ pub(super) fn build_streaming_destination(
 }
 
 impl StreamingDestinationArgs {
+    /// The destination columns: those read from `--columns-from` first, then
+    /// each `--column`. A name given by both is a usage error.
+    pub(super) fn parsed_columns(
+        &self,
+    ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
+        let explicit = parse_columns(&self.columns)?;
+        let Some(source) = self.columns_from.as_deref() else {
+            return Ok(explicit);
+        };
+        let mut columns = read_columns_from(source)?;
+        if let Some(duplicate) = explicit
+            .iter()
+            .find(|column| columns.iter().any(|imported| imported.name == column.name))
+        {
+            return Err(CloudError::usage(format!(
+                "--column {} is also in --columns-from {}",
+                duplicate.name,
+                config_source_label(source)
+            )));
+        }
+        columns.extend(explicit);
+        Ok(columns)
+    }
+
+    /// Refuse an invocation where this destination's file flags and the
+    /// source's `source_readers` name stdin more than once.
+    pub(super) fn refuse_shared_stdin(
+        &self,
+        source_readers: &[(&'static str, Option<&str>)],
+    ) -> CloudResult<()> {
+        let mut readers = vec![
+            ("--columns-from", self.columns_from.as_deref()),
+            (
+                "--table-definition-file",
+                self.destination_table.table_definition_file.as_deref(),
+            ),
+        ];
+        readers.extend_from_slice(source_readers);
+        refuse_more_than_one_stdin_reader(&readers)
+    }
+
     /// Build this create's destination from columns the caller already parsed,
     /// so each handler keeps its own validation order.
     pub(super) fn build(
@@ -208,8 +324,8 @@ mod tests {
     use crate::cli::Cli;
     use crate::cloud::clickpipes::cli::{ClickPipeCommands, ClickPipeCreateCommands};
     use crate::cloud::clickpipes::test_support::{
-        assert_names, clickpipe_parse_error, kafka_create_cli_args, object_storage_create_cli_args,
-        parse_clickpipe, postgres_cli_args, pubsub_source_flags,
+        assert_names, clickpipe_parse_error, clickpipe_validation_message, kafka_create_cli_args,
+        object_storage_create_cli_args, parse_clickpipe, postgres_cli_args, pubsub_source_flags,
     };
     use clap::Parser;
 
@@ -260,11 +376,23 @@ mod tests {
                 args[1]
             );
             assert_eq!(error.exit_code(), 2);
-            assert!(
-                error.to_string().contains("--column <NAME:TYPE>"),
-                "{}",
-                args[1]
-            );
+            assert_names(&error.to_string(), &["--column", "--columns-from"]);
+
+            // Either flag alone satisfies the requirement.
+            let mut with_file = args.clone();
+            with_file.extend(["--columns-from", "discovery.json"]);
+            let ClickPipeCommands::Create { command } = parse_clickpipe(&with_file) else {
+                panic!("expected create");
+            };
+            let destination = match &command {
+                ClickPipeCreateCommands::ObjectStorage(args) => &args.destination,
+                ClickPipeCreateCommands::Kafka(args) => &args.destination,
+                ClickPipeCreateCommands::Kinesis(args) => &args.destination,
+                ClickPipeCreateCommands::PubSub(args) => &args.destination,
+                _ => panic!("expected a streaming create"),
+            };
+            assert_eq!(destination.columns_from.as_deref(), Some("discovery.json"));
+            assert!(destination.columns.is_empty());
         }
 
         let mut args = object_storage_create_cli_args();
@@ -367,6 +495,203 @@ mod tests {
         let columns = vec!["id_without_type".to_string()];
         let error = parse_columns(&columns).unwrap_err();
         assert_names(&error.message, &["id_without_type", "name:type"]);
+    }
+
+    /// Parse `json` the way `--columns-from` does: as the response type that
+    /// `clickpipe schema-discover --json` prints.
+    fn discovery(
+        json: serde_json::Value,
+    ) -> clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse {
+        serde_json::from_value(json).expect("schema-discover output")
+    }
+
+    fn name_type_pairs(
+        columns: &[clickhouse_cloud_api::models::ClickPipeDestinationColumn],
+    ) -> Vec<(&str, &str)> {
+        columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.r#type.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn columns_from_discovery_keeps_source_and_default_enabled_metadata_fields() {
+        let columns = columns_from_discovery(discovery(serde_json::json!({
+            "fields": [
+                {"name": "id", "type": "Int64", "optional": false,
+                 "isVirtual": false, "isVirtualDisabledDefault": false},
+                {"name": "note", "type": "Nullable(String)", "optional": true},
+                {"name": "_topic", "type": "LowCardinality(String)", "optional": false,
+                 "isVirtual": true, "isVirtualDisabledDefault": false},
+                {"name": "_raw_message", "type": "String", "optional": false,
+                 "isVirtual": true, "isVirtualDisabledDefault": true},
+                {"name": "_key", "type": "String", "isVirtual": true},
+            ],
+            "meta": {"format": "JSONEachRow"}
+        })))
+        .unwrap();
+        assert_eq!(
+            name_type_pairs(&columns),
+            [
+                ("id", "Int64"),
+                ("note", "Nullable(String)"),
+                ("_topic", "LowCardinality(String)"),
+                ("_key", "String"),
+            ]
+        );
+    }
+
+    #[test]
+    fn columns_from_discovery_rejects_unusable_fields_and_empty_results() {
+        for json in [
+            serde_json::json!({}),
+            serde_json::json!({"fields": []}),
+            serde_json::json!({"fields": [{"name": "_raw_message", "type": "String",
+                "isVirtual": true, "isVirtualDisabledDefault": true}]}),
+            serde_json::json!({"fields": [{"type": "String"}]}),
+            serde_json::json!({"fields": [{"name": "", "type": "String"}]}),
+            serde_json::json!({"fields": [{"name": "id"}]}),
+        ] {
+            let error = columns_from_discovery(discovery(json.clone())).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{json}"
+            );
+            assert_names(&error.message, &["--columns-from"]);
+        }
+    }
+
+    #[test]
+    fn columns_from_file_reports_empty_and_malformed_input_as_usage_errors() {
+        use std::io::Write as _;
+
+        for contents in ["", "  \n", "not json", "[1, 2]", r#"{"fields": "id"}"#] {
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            file.write_all(contents.as_bytes()).unwrap();
+            let path = file.path().to_str().unwrap();
+            let error = read_columns_from(path).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{contents:?}"
+            );
+            assert_names(&error.message, &["--columns-from", path]);
+        }
+
+        let missing = tempfile::tempdir().unwrap().path().join("missing.json");
+        let error = read_columns_from(missing.to_str().unwrap()).unwrap_err();
+        assert_ne!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(&error.message, &["--columns-from"]);
+    }
+
+    #[test]
+    fn parsed_columns_merges_imported_and_explicit_columns_and_rejects_duplicates() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(
+            br#"{"fields": [{"name": "id", "type": "Int64", "optional": false},
+                            {"name": "_path", "type": "LowCardinality(String)",
+                             "isVirtual": true, "isVirtualDisabledDefault": false}]}"#,
+        )
+        .unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+        let destination = |columns: &[&str]| StreamingDestinationArgs {
+            database: "db".into(),
+            table: "events".into(),
+            columns: columns.iter().map(|column| column.to_string()).collect(),
+            columns_from: Some(path.clone()),
+            destination_table: StreamingDestinationTableArgs::default(),
+            destination_roles: Default::default(),
+        };
+
+        let columns = destination(&["ingested_at:DateTime"])
+            .parsed_columns()
+            .unwrap();
+        assert_eq!(
+            name_type_pairs(&columns),
+            [
+                ("id", "Int64"),
+                ("_path", "LowCardinality(String)"),
+                ("ingested_at", "DateTime"),
+            ]
+        );
+
+        let error = destination(&["id:UInt64"]).parsed_columns().unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert_names(&error.message, &["--column", "id", "--columns-from", &path]);
+    }
+
+    #[test]
+    fn streaming_creates_refuse_two_stdin_readers_before_any_io() {
+        let mut kinesis = vec![
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "events",
+            "--region",
+            "eu-west-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        let mut object_storage = object_storage_create_cli_args();
+        object_storage.extend(["--storage-type", "gcs", "--service-account-file", "-"]);
+        let mut kafka: Vec<&str> = kafka_create_cli_args()
+            .into_iter()
+            .map(|arg| {
+                if arg == "JSONEachRow" {
+                    "Protobuf"
+                } else {
+                    arg
+                }
+            })
+            .collect();
+        kafka.extend(["--protobuf-schema-file", "-"]);
+        let mut kinesis_protobuf = kinesis.clone();
+        kinesis_protobuf.extend(["--format", "Protobuf", "--protobuf-schema-file", "-"]);
+        let mut pubsub = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        pubsub.extend(pubsub_source_flags("-"));
+
+        // Each source's own stdin flag collides with --columns-from -.
+        for (mut args, source_flag) in [
+            (object_storage, "--service-account-file"),
+            (kafka, "--protobuf-schema-file"),
+            (kinesis_protobuf, "--protobuf-schema-file"),
+            (pubsub, "--service-account-file"),
+        ] {
+            args.extend(["--columns-from", "-"]);
+            let message = clickpipe_validation_message(&parse_clickpipe(&args))
+                .unwrap_or_else(|| panic!("expected a stdin refusal for {}", args[1]));
+            assert_names(&message, &["--columns-from", source_flag]);
+        }
+
+        // So does the destination's own --table-definition-file -; one
+        // reader alone is accepted.
+        kinesis.extend(["--format", "JSONEachRow", "--columns-from", "-"]);
+        assert_eq!(
+            clickpipe_validation_message(&parse_clickpipe(&kinesis)),
+            None
+        );
+        kinesis.extend(["--table-definition-file", "-"]);
+        let message = clickpipe_validation_message(&parse_clickpipe(&kinesis))
+            .expect("expected a stdin refusal");
+        assert_names(&message, &["--columns-from", "--table-definition-file"]);
     }
 
     #[test]
