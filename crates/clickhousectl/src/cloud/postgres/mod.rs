@@ -87,8 +87,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         CONFIRM_POSTGRES_SERVICE,
     ]),
-    Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET])
-        .when(&[CONFIRM_POSTGRES_SERVICE]),
+    Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api(
         "postgres prometheus service",
         &[&op::POSTGRES_INSTANCE_PROMETHEUS_GET],
@@ -398,8 +400,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_slow_queries_list(client, &postgres_id, input, json).await
         }
         PostgresCommands::SlowQueries(SlowQueryCommands::Get {
-            postgres_id,
-            query_id,
+            target,
             db_name,
             db_user,
             db_operation,
@@ -413,7 +414,9 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 app: app.as_deref(),
                 timestamp: timestamp.as_deref(),
             };
-            postgres_slow_query_get(client, &postgres_id, &query_id, input, json).await
+            let (selector, query_id) = target.parts();
+            let postgres_id = selector.resolve(client, NamedResource::Postgres).await?;
+            postgres_slow_query_get(client, &postgres_id, query_id, input, json).await
         }
         PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
             postgres_prometheus_service(

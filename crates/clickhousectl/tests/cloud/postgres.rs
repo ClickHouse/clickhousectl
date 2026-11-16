@@ -553,55 +553,16 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
         ],
     );
     assert_success(&output);
+    // Column layout and absent cells: `render_slow_query_patterns` unit test.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for heading in [
-        "Query ID",
-        "Query",
-        "Calls",
-        "Avg duration (µs)",
-        "Total duration (µs)",
-    ] {
-        assert!(
-            stdout.contains(heading),
-            "missing {heading:?} from:\n{stdout}"
-        );
-    }
     for value in [
         "query-1",
         "SELECT * FROM events WHERE id = $1",
-        "1190.8419405320817",
-        "2381.6838810641634",
         "query-2",
         "0.125",
     ] {
         assert!(stdout.contains(value), "missing {value:?} from:\n{stdout}");
     }
-    let cells = |id: &str| -> Vec<String> {
-        stdout
-            .lines()
-            .find(|line| line.contains(id))
-            .unwrap_or_else(|| panic!("missing {id} row:\n{stdout}"))
-            .split('|')
-            .map(str::trim)
-            .filter(|cell| !cell.is_empty())
-            .map(str::to_string)
-            .collect()
-    };
-    assert_eq!(
-        cells("query-1"),
-        [
-            "query-1",
-            "SELECT * FROM events WHERE id = $1",
-            "2",
-            "1190.8419405320817",
-            "2381.6838810641634"
-        ]
-    );
-    let second_row = stdout
-        .lines()
-        .find(|line| line.contains("query-2"))
-        .expect("second slow-query row");
-    assert_eq!(second_row.matches(" - ").count(), 3, "{stdout}");
     assert!(!stdout.contains("p95DurationUs"), "{stdout}");
     let requests = mock.received_requests().await.unwrap();
     let query: Vec<_> = requests[0].url.query_pairs().collect();
@@ -703,19 +664,27 @@ async fn postgres_slow_query_get_has_distinct_query_and_preserves_recent_executi
             ("app".to_string(), "reporting/api".to_string()),
             (
                 "timestamp".to_string(),
-                "2026-04-16T12:30:00+01:00".to_string()
+                "2026-04-16T11:30:00.000Z".to_string()
             ),
         ]
     );
 }
 
 #[tokio::test]
-async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail() {
+async fn postgres_slow_query_get_resolves_name_omits_optional_query_and_renders_sparse_detail() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns/query-1",
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"result": [{"id": POSTGRES_ID, "name": "analytics"}]}),
         ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{POSTGRES_ID}/slowQueryPatterns/query-1"
+        )))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
                 "aggregate": { "queryId": "query-1", "avgDurationUs": 1190.8419405320817, "p99DurationUs": 2000.25 },
@@ -732,7 +701,8 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
             "postgres",
             "slow-queries",
             "get",
-            "pg-1",
+            "--name",
+            "analytics",
             "query-1",
             "--db-name",
             "app",
@@ -762,7 +732,8 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
         assert!(stdout.contains(text), "missing {text:?} from:\n{stdout}");
     }
     let requests = mock.received_requests().await.unwrap();
-    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(requests.len(), 2);
+    let query: Vec<_> = requests[1].url.query_pairs().collect();
     assert_eq!(query.len(), 3, "unexpected query parameters: {query:?}");
     assert!(
         query
