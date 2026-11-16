@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -8,8 +9,7 @@ impl Client {
         &self,
         organization_id: &str,
     ) -> Result<ApiResponse<Vec<Invitation>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::INVITATION_GET_LIST, &[organization_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -31,8 +31,7 @@ impl Client {
         organization_id: &str,
         body: &InvitationPostRequest,
     ) -> Result<ApiResponse<Invitation>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::INVITATION_CREATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -55,8 +54,10 @@ impl Client {
         organization_id: &str,
         invitation_id: &str,
     ) -> Result<ApiResponse<Invitation>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations/{invitation_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::INVITATION_GET,
+            &[organization_id, invitation_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -78,8 +79,10 @@ impl Client {
         organization_id: &str,
         invitation_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations/{invitation_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::INVITATION_DELETE,
+            &[organization_id, invitation_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

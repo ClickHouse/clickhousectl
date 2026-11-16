@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -9,8 +10,10 @@ impl Client {
         organization_id: &str,
         body: &ByocInfrastructurePostRequest,
     ) -> Result<ApiResponse<ByocConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE,
+            &[organization_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -35,8 +38,10 @@ impl Client {
         organization_id: &str,
         body: &ByocInfrastructureValidatePostRequest,
     ) -> Result<ApiResponse<ByocInfrastructureValidation>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/validate");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_VALIDATE,
+            &[organization_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -59,10 +64,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<ByocInfrastructureDetails>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_GET,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -84,10 +89,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<ByocInfrastructureProgress>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/progress"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -112,10 +117,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<ByocInfrastructurePrivateEndpointConfig>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/privateEndpointConfig"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -139,10 +144,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<ByocInfrastructureTagsResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/tags"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_TAGS_GET,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -164,10 +169,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -190,10 +195,10 @@ impl Client {
         byoc_infrastructure_id: &str,
         body: &ByocInfrastructurePatchRequest,
     ) -> Result<ApiResponse<ByocConfig>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_UPDATE,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -219,10 +224,10 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<ByocCustomerAuthorizedAccess>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/customerAuthorizedAccess"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -245,10 +250,10 @@ impl Client {
         byoc_infrastructure_id: &str,
         body: &ByocCustomerAuthorizedAccessPatchRequest,
     ) -> Result<ApiResponse<ByocCustomerAuthorizedAccess>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/customerAuthorizedAccess"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();

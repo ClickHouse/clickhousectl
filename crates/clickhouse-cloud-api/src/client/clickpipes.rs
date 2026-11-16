@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -9,9 +10,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ClickPipesServiceContext>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/context");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPES_SERVICE_CONTEXT_GET,
+            &[organization_id, service_id],
+        )?;
 
         let resp = req.send().await?;
         let status = resp.status();
@@ -41,8 +43,10 @@ impl Client {
         limit: Option<i64>,
         cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<ClickPipe>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_GET_LIST,
+            &[organization_id, service_id],
+        )?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -70,8 +74,10 @@ impl Client {
         service_id: &str,
         body: &ClickPipePostRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_CREATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -95,10 +101,10 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_GET,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -122,10 +128,10 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipePatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_UPDATE,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -149,10 +155,10 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_DELETE,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -176,10 +182,10 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeScalingPatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/scaling"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_SCALING_UPDATE,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -203,10 +209,10 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_SETTINGS_GET,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -230,10 +236,10 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeSettingsPutRequest,
     ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_SETTINGS_UPDATE,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -258,10 +264,10 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeStatePatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/state"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_STATE_UPDATE,
+            &[organization_id, service_id, click_pipe_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -284,10 +290,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_CDC_SCALING_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -310,10 +316,10 @@ impl Client {
         service_id: &str,
         body: &ClickPipesCdcScalingPatchRequest,
     ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_CDC_SCALING_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -336,10 +342,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ReversePrivateEndpoint>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_GET_LIST,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -362,10 +368,10 @@ impl Client {
         service_id: &str,
         body: &CreateReversePrivateEndpoint,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_CREATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -389,10 +395,10 @@ impl Client {
         service_id: &str,
         reverse_private_endpoint_id: &str,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_GET,
+            &[organization_id, service_id, reverse_private_endpoint_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -415,10 +421,10 @@ impl Client {
         service_id: &str,
         reverse_private_endpoint_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_DELETE,
+            &[organization_id, service_id, reverse_private_endpoint_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -442,10 +448,10 @@ impl Client {
         reverse_private_endpoint_id: &str,
         body: &UpdateReversePrivateEndpoint,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_UPDATE,
+            &[organization_id, service_id, reverse_private_endpoint_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -469,10 +475,10 @@ impl Client {
         service_id: &str,
         body: &ClickPipeSchemaDiscoveryRequest,
     ) -> Result<ApiResponse<ClickPipeSchemaDiscoveryResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/schemaDiscovery"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_PIPE_SCHEMA_DISCOVERY,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();

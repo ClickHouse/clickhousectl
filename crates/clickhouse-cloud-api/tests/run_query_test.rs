@@ -85,6 +85,23 @@ async fn run_query_sends_basic_auth_with_query_key() {
 }
 
 #[tokio::test]
+async fn run_query_sends_the_service_id_as_one_path_segment() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/service/svc-1%2F..%2Fother%3Fx/run"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let client = Client::with_bearer_token(mock.uri(), "token").with_query_host(mock.uri());
+
+    client
+        .run_query_bearer("svc-1/../other?x", "SELECT 1", None, "TabSeparated", false)
+        .await
+        .expect("run_query_bearer failed");
+}
+
+#[tokio::test]
 async fn run_query_bearer_sends_bearer_token() {
     let mock = start_mock_query_host(200, "1\n").await;
     let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());

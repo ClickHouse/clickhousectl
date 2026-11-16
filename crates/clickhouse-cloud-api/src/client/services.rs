@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -13,8 +14,7 @@ impl Client {
         region_id: Option<&str>,
         byoc_id: Option<&str>,
     ) -> Result<ApiResponse<Vec<ServiceProfile>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/serviceProfiles");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::SERVICE_PROFILES_LIST, &[organization_id])?;
         let req = if let Some(region_id) = region_id {
             req.query(&[("region_id", region_id)])
         } else {
@@ -46,8 +46,7 @@ impl Client {
         organization_id: &str,
         filters: &[&str],
     ) -> Result<ApiResponse<Vec<Service>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::INSTANCE_GET_LIST, &[organization_id])?;
         for f in filters {
             req = req.query(&[("filter", f)]);
         }
@@ -71,8 +70,7 @@ impl Client {
         organization_id: &str,
         body: &ServicePostRequest,
     ) -> Result<ApiResponse<ServicePostResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::INSTANCE_CREATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -95,8 +93,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::INSTANCE_GET, &[organization_id, service_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -119,8 +116,7 @@ impl Client {
         service_id: &str,
         body: &ServicePatchRequest,
     ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(&operations::INSTANCE_UPDATE, &[organization_id, service_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -143,8 +139,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(&operations::INSTANCE_DELETE, &[organization_id, service_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -167,8 +162,10 @@ impl Client {
         service_id: &str,
         body: &ServicePasswordPatchRequest,
     ) -> Result<ApiResponse<ServicePasswordPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/password");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_PASSWORD_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -192,9 +189,10 @@ impl Client {
         service_id: &str,
         body: &ServicPrivateEndpointePostRequest,
     ) -> Result<ApiResponse<InstancePrivateEndpoint>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpoint");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_PRIVATE_ENDPOINT_CREATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -217,10 +215,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<PrivateEndpointConfig>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/privateEndpointConfig"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::INSTANCE_PRIVATE_ENDPOINT_CONFIG_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -243,8 +241,10 @@ impl Client {
         service_id: &str,
         filtered_metrics: Option<&str>,
     ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/prometheus");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_PROMETHEUS_GET,
+            &[organization_id, service_id],
+        )?;
         if let Some(v) = filtered_metrics {
             req = req.query(&[("filtered_metrics", v)]);
         }
@@ -269,10 +269,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ReplicaAwareRouting>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/replicaAwareRouting"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::REPLICA_AWARE_ROUTING_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -297,10 +297,10 @@ impl Client {
         service_id: &str,
         body: &ReplicaAwareRoutingPatchRequest,
     ) -> Result<ApiResponse<ReplicaAwareRouting>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/replicaAwareRouting"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::REPLICA_AWARE_ROUTING_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -324,9 +324,10 @@ impl Client {
         service_id: &str,
         body: &ServiceReplicaScalingPatchRequest,
     ) -> Result<ApiResponse<ServiceScalingPatchResponse>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/replicaScaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_REPLICA_SCALING_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -352,8 +353,10 @@ impl Client {
         service_id: &str,
         body: &ServiceScalingPatchRequest,
     ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_SCALING_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -376,9 +379,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SCALING_SCHEDULE_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -401,9 +405,10 @@ impl Client {
         service_id: &str,
         body: &ScalingSchedulePostRequest,
     ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::SCALING_SCHEDULE_UPSERT,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -426,9 +431,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::SCALING_SCHEDULE_DELETE,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -450,9 +456,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::UPGRADE_WINDOW_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -475,9 +482,10 @@ impl Client {
         service_id: &str,
         body: &UpgradeWindowPutRequest,
     ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::UPGRADE_WINDOW_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -500,9 +508,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::UPGRADE_WINDOW_DELETE,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -524,10 +533,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::INSTANCE_QUERY_ENDPOINT_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -549,10 +558,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::INSTANCE_QUERY_ENDPOINT_DELETE,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -575,10 +584,10 @@ impl Client {
         service_id: &str,
         body: &InstanceServiceQueryApiEndpointsPostRequest,
     ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_QUERY_ENDPOINT_UPSERT,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -602,8 +611,10 @@ impl Client {
         service_id: &str,
         body: &ServiceStatePatchRequest,
     ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/state");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::INSTANCE_STATE_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -626,9 +637,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsList>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SERVICE_CLICKHOUSE_SETTINGS_LIST_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -651,9 +663,10 @@ impl Client {
         service_id: &str,
         body: &ServiceClickhouseSettingsPatchRequest<T>,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::SERVICE_CLICKHOUSE_SETTINGS_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -676,10 +689,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsSchema>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SERVICE_CLICKHOUSE_SETTINGS_SCHEMA_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -702,10 +715,10 @@ impl Client {
         service_id: &str,
         setting_name: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSetting>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SERVICE_CLICKHOUSE_SETTING_GET,
+            &[organization_id, service_id, setting_name],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -727,10 +740,10 @@ impl Client {
         service_id: &str,
         setting_name: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::SERVICE_CLICKHOUSE_SETTING_DELETE,
+            &[organization_id, service_id, setting_name],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

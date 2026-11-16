@@ -237,11 +237,11 @@ impl Client {
             database: Option<&'a str>,
         }
 
-        let url = format!(
-            "{}/service/{}/run",
+        let url = super::endpoint_url(
             self.resolved_query_host().trim_end_matches('/'),
-            service_id,
-        );
+            "/service/{serviceId}/run",
+            &[service_id],
+        )?;
 
         let body = RunQueryBody {
             run_id: uuid::Uuid::new_v4().to_string(),

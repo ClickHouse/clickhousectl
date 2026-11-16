@@ -423,7 +423,7 @@ and repeat the smoke test with an explicit non-default database.
 | `src/client.rs`, `src/client/*.rs` | `Client`, shared HTTP machinery, and per-domain endpoint methods |
 | `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models (`src/models/clickpipes/` is split by source kind, `src/models/clickstack/` by resource) |
 | `src/convert.rs`, `src/convert/*.rs` | Conversion error and per-domain response-to-request conversions |
-| `src/error.rs` | Error types (`Http`, `Json`, `Api`) |
+| `src/error.rs` | Error types (`Http`, `Json`, `Api`, `InvalidPathParameter`, …) |
 | `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
 | `tests/spec_coverage_test.rs` | Thin snapshot/live-spec consumer of the shared drift analyzer |
 | `../clickhouse-openapi-analyzer` | Canonical Rust/OpenAPI parsing, comparison, report, and exemptions |
@@ -561,6 +561,10 @@ for the server defaults (1,000 records, offset zero). For a complete inventory,
 request pages with an explicit limit from 1 to 1,000 and advance the offset
 until the returned page is shorter than that limit. Existing callers upgrading
 to 0.5.0 should add `None, None` to preserve their current request behavior.
+
+### Path parameters
+
+Every `Client` method sends each path parameter (organization, service, key, pipe or provider ID, UDF or setting name) as one percent-encoded URL segment, so `/`, `?`, `#` or `%` in an ID can no longer change the request path; the API answers 400 or 404 for a malformed ID instead. The same applies to the service ID in the Query API URLs. A parameter that is empty, `.` or `..` cannot be one segment, because URL parsing drops or resolves it, so the method returns `Error::InvalidPathParameter` without sending a request. Each method takes its HTTP method and path template from its generated `meta::operations` descriptor.
 
 ### UDF attachment errors
 

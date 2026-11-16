@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -14,9 +15,10 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackAlertResponse>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_LIST_ALERTS,
+            &[organization_id, service_id],
+        )?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -44,9 +46,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateAlertRequest,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_ALERT,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -70,10 +73,10 @@ impl Client {
         service_id: &str,
         click_stack_alert_id: &str,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_GET_ALERT,
+            &[organization_id, service_id, click_stack_alert_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -97,10 +100,10 @@ impl Client {
         click_stack_alert_id: &str,
         body: &ClickStackUpdateAlertRequest,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_ALERT,
+            &[organization_id, service_id, click_stack_alert_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -124,10 +127,10 @@ impl Client {
         service_id: &str,
         click_stack_alert_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_ALERT,
+            &[organization_id, service_id, click_stack_alert_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -154,10 +157,10 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackSavedSearch>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches"
-        );
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_LIST_SAVED_SEARCHES,
+            &[organization_id, service_id],
+        )?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -186,10 +189,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackSavedSearchInput,
     ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_SAVED_SEARCH,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -213,10 +216,10 @@ impl Client {
         service_id: &str,
         click_stack_saved_search_id: &str,
     ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_GET_SAVED_SEARCH,
+            &[organization_id, service_id, click_stack_saved_search_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -240,10 +243,10 @@ impl Client {
         click_stack_saved_search_id: &str,
         body: &ClickStackSavedSearchInput,
     ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_SAVED_SEARCH,
+            &[organization_id, service_id, click_stack_saved_search_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -267,10 +270,10 @@ impl Client {
         service_id: &str,
         click_stack_saved_search_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_SAVED_SEARCH,
+            &[organization_id, service_id, click_stack_saved_search_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -292,10 +295,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackDashboardResponse>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_LIST_DASHBOARDS,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -318,10 +321,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateDashboardRequest,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_DASHBOARD,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -345,10 +348,10 @@ impl Client {
         service_id: &str,
         click_stack_dashboard_id: &str,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_GET_DASHBOARD,
+            &[organization_id, service_id, click_stack_dashboard_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -372,10 +375,10 @@ impl Client {
         click_stack_dashboard_id: &str,
         body: &ClickStackUpdateDashboardRequest,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_DASHBOARD,
+            &[organization_id, service_id, click_stack_dashboard_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -399,10 +402,10 @@ impl Client {
         service_id: &str,
         click_stack_dashboard_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_DASHBOARD,
+            &[organization_id, service_id, click_stack_dashboard_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -424,9 +427,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackSourceResponse>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_LIST_SOURCES,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -449,9 +453,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackSource,
     ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_SOURCE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -475,10 +480,10 @@ impl Client {
         service_id: &str,
         click_stack_source_id: &str,
     ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_GET_SOURCE,
+            &[organization_id, service_id, click_stack_source_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -502,10 +507,10 @@ impl Client {
         click_stack_source_id: &str,
         body: &ClickStackSource,
     ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_SOURCE,
+            &[organization_id, service_id, click_stack_source_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -529,10 +534,10 @@ impl Client {
         service_id: &str,
         click_stack_source_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_SOURCE,
+            &[organization_id, service_id, click_stack_source_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -554,9 +559,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackRole>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/roles");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_LIST_ROLES,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -579,9 +585,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateRoleRequest,
     ) -> Result<ApiResponse<ClickStackRole>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/roles");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_ROLE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -605,10 +612,10 @@ impl Client {
         service_id: &str,
         click_stack_role_id: &str,
     ) -> Result<ApiResponse<ClickStackRole>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/roles/{click_stack_role_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_GET_ROLE,
+            &[organization_id, service_id, click_stack_role_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -632,10 +639,10 @@ impl Client {
         click_stack_role_id: &str,
         body: &ClickStackUpdateRoleRequest,
     ) -> Result<ApiResponse<ClickStackRole>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/roles/{click_stack_role_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_ROLE,
+            &[organization_id, service_id, click_stack_role_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -659,10 +666,10 @@ impl Client {
         service_id: &str,
         click_stack_role_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/roles/{click_stack_role_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_ROLE,
+            &[organization_id, service_id, click_stack_role_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -689,10 +696,10 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackWebhook>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks"
-        );
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_LIST_WEBHOOKS,
+            &[organization_id, service_id],
+        )?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -721,10 +728,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackWebhookInput,
     ) -> Result<ApiResponse<ClickStackWebhook>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_CREATE_WEBHOOK,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -749,10 +756,10 @@ impl Client {
         click_stack_webhook_id: &str,
         body: &ClickStackWebhookInput,
     ) -> Result<ApiResponse<ClickStackWebhook>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks/{click_stack_webhook_id}"
-        );
-        let mut req = self.request(reqwest::Method::PUT, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_UPDATE_WEBHOOK,
+            &[organization_id, service_id, click_stack_webhook_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -776,10 +783,10 @@ impl Client {
         service_id: &str,
         click_stack_webhook_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks/{click_stack_webhook_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::CLICK_STACK_DELETE_WEBHOOK,
+            &[organization_id, service_id, click_stack_webhook_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -805,10 +812,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackWebhookInput,
     ) -> Result<ApiResponse<ClickStackValidateWebhookResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks/validate"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_VALIDATE_WEBHOOK,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -832,10 +839,10 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateDashboardRequest,
     ) -> Result<ApiResponse<ClickStackValidateDashboardResponse>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/validate"
-        );
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::CLICK_STACK_VALIDATE_DASHBOARD,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();

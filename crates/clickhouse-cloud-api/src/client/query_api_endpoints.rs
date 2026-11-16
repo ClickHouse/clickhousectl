@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -10,10 +11,12 @@ impl Client {
         service_id: &str,
         body: &PublicQueryApiEndpointRequest,
     ) -> Result<ApiResponse<PublicQueryApiEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints"
-        );
-        let req = self.request(reqwest::Method::POST, &path).json(body);
+        let req = self
+            .request(
+                &operations::QUERY_API_ENDPOINT_CREATE,
+                &[organization_id, service_id],
+            )?
+            .json(body);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -36,10 +39,10 @@ impl Client {
         service_id: &str,
         endpoint_id: &str,
     ) -> Result<ApiResponse<PublicQueryApiEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints/{endpoint_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::QUERY_API_ENDPOINT_GET,
+            &[organization_id, service_id, endpoint_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -66,10 +69,10 @@ impl Client {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> Result<ApiResponse<Vec<PublicQueryApiEndpointListItem>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints"
-        );
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::QUERY_API_ENDPOINT_LIST,
+            &[organization_id, service_id],
+        )?;
         if let Some(cursor) = cursor {
             req = req.query(&[("cursor", cursor)]);
         }
@@ -101,10 +104,12 @@ impl Client {
         endpoint_id: &str,
         body: &PublicQueryApiEndpointRequest,
     ) -> Result<ApiResponse<PublicQueryApiEndpoint>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints/{endpoint_id}"
-        );
-        let req = self.request(reqwest::Method::PUT, &path).json(body);
+        let req = self
+            .request(
+                &operations::QUERY_API_ENDPOINT_UPDATE,
+                &[organization_id, service_id, endpoint_id],
+            )?
+            .json(body);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -129,10 +134,10 @@ impl Client {
         service_id: &str,
         endpoint_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints/{endpoint_id}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::QUERY_API_ENDPOINT_DELETE,
+            &[organization_id, service_id, endpoint_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

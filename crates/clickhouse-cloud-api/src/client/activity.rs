@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -10,8 +11,7 @@ impl Client {
         from_date: Option<&str>,
         to_date: Option<&str>,
     ) -> Result<ApiResponse<Vec<Activity>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/activities");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::ACTIVITY_GET_LIST, &[organization_id])?;
         if let Some(v) = from_date {
             req = req.query(&[("from_date", v)]);
         }
@@ -38,8 +38,7 @@ impl Client {
         organization_id: &str,
         activity_id: &str,
     ) -> Result<ApiResponse<Activity>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/activities/{activity_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::ACTIVITY_GET, &[organization_id, activity_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

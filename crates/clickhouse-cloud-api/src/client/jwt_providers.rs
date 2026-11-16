@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -11,9 +12,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<JwtProvider>>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/jwtProviders");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::JWT_PROVIDER_GET_LIST,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -40,9 +42,12 @@ impl Client {
         service_id: &str,
         body: &JwtProviderPostRequest,
     ) -> Result<ApiResponse<JwtProvider>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/jwtProviders");
-        let req = self.request(reqwest::Method::POST, &path).json(body);
+        let req = self
+            .request(
+                &operations::JWT_PROVIDER_CREATE,
+                &[organization_id, service_id],
+            )?
+            .json(body);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -65,10 +70,10 @@ impl Client {
         service_id: &str,
         jwt_provider_name: &str,
     ) -> Result<ApiResponse<JwtProvider>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/jwtProviders/{jwt_provider_name}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::JWT_PROVIDER_GET,
+            &[organization_id, service_id, jwt_provider_name],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -95,10 +100,12 @@ impl Client {
         jwt_provider_name: &str,
         body: &JwtProviderPutRequest,
     ) -> Result<ApiResponse<JwtProvider>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/jwtProviders/{jwt_provider_name}"
-        );
-        let req = self.request(reqwest::Method::PUT, &path).json(body);
+        let req = self
+            .request(
+                &operations::JWT_PROVIDER_UPDATE,
+                &[organization_id, service_id, jwt_provider_name],
+            )?
+            .json(body);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -124,10 +131,10 @@ impl Client {
         service_id: &str,
         jwt_provider_name: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/jwtProviders/{jwt_provider_name}"
-        );
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::JWT_PROVIDER_DELETE,
+            &[organization_id, service_id, jwt_provider_name],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

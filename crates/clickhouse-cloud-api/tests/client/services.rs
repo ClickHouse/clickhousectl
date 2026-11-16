@@ -116,6 +116,37 @@ async fn get_service_details() {
 }
 
 #[tokio::test]
+async fn path_parameters_cannot_retarget_the_request() {
+    let (mock_server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1%2F..%2F..%2Forganizations%2Forg-2%2Fkeys%2Fkey-9",
+        ))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    client
+        .instance_get("org-1", "svc-1/../../organizations/org-2/keys/key-9")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn dot_segment_path_parameter_is_rejected_before_sending() {
+    let (mock_server, client) = setup().await;
+
+    let err = client.instance_delete("org-1", "..").await.unwrap_err();
+
+    assert!(
+        matches!(&err, clickhouse_cloud_api::Error::InvalidPathParameter(id) if id == ".."),
+        "{err:?}"
+    );
+    assert!(mock_server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn update_service() {
     let (s, c) = setup().await;
 

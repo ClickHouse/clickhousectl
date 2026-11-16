@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -10,7 +11,7 @@ impl Client {
     /// organization API key resolves to [`Whoami::WhoamiApiKey`]. An
     /// unrecognized `actorType` is kept verbatim in [`Whoami::Unknown`].
     pub async fn whoami_get(&self) -> Result<ApiResponse<Whoami>, Error> {
-        let req = self.request(reqwest::Method::GET, "/v1/whoami");
+        let req = self.request(&operations::WHOAMI_GET, &[])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

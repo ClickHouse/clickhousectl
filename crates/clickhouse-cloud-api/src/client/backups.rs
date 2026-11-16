@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -9,10 +10,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<SnapshotConfiguration>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/snapshotConfiguration"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SNAPSHOT_CONFIGURATION_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -40,10 +41,12 @@ impl Client {
         service_id: &str,
         body: &SnapshotConfigurationPatchRequest,
     ) -> Result<ApiResponse<SnapshotConfiguration>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/snapshotConfiguration"
-        );
-        let req = self.request(reqwest::Method::PATCH, &path).json(body);
+        let req = self
+            .request(
+                &operations::SNAPSHOT_CONFIGURATION_UPDATE,
+                &[organization_id, service_id],
+            )?
+            .json(body);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -70,8 +73,10 @@ impl Client {
         limit: Option<i64>,
         cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<Snapshot>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/snapshots");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(
+            &operations::SNAPSHOT_GET_LIST,
+            &[organization_id, service_id],
+        )?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -100,10 +105,10 @@ impl Client {
         service_id: &str,
         snapshot_id: &str,
     ) -> Result<ApiResponse<Snapshot>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/snapshots/{snapshot_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::SNAPSHOT_GET,
+            &[organization_id, service_id, snapshot_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -125,9 +130,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::BACKUP_BUCKET_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -149,9 +155,10 @@ impl Client {
         service_id: &str,
         body: &BackupBucketPostRequest,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(
+            &operations::BACKUP_BUCKET_CREATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -175,9 +182,10 @@ impl Client {
         service_id: &str,
         body: &BackupBucketPatchRequest,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::BACKUP_BUCKET_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -200,9 +208,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(
+            &operations::BACKUP_BUCKET_DELETE,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -224,10 +233,10 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::BACKUP_CONFIGURATION_GET,
+            &[organization_id, service_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -250,10 +259,10 @@ impl Client {
         service_id: &str,
         body: &BackupConfigurationPatchRequest,
     ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration"
-        );
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(
+            &operations::BACKUP_CONFIGURATION_UPDATE,
+            &[organization_id, service_id],
+        )?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -276,8 +285,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<Backup>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backups");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::BACKUP_GET_LIST, &[organization_id, service_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -300,10 +308,10 @@ impl Client {
         service_id: &str,
         backup_id: &str,
     ) -> Result<ApiResponse<Backup>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/services/{service_id}/backups/{backup_id}"
-        );
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(
+            &operations::BACKUP_GET,
+            &[organization_id, service_id, backup_id],
+        )?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

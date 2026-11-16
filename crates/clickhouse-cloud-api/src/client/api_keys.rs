@@ -1,5 +1,6 @@
 use super::Client;
 use crate::error::Error;
+use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
@@ -13,8 +14,7 @@ impl Client {
         limit: Option<i64>,
         cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<ApiKey>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys");
-        let mut req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(&operations::OPENAPI_KEY_GET_LIST, &[organization_id])?;
         if let Some(limit) = limit {
             req = req.query(&[("limit", limit)]);
         }
@@ -41,8 +41,7 @@ impl Client {
         organization_id: &str,
         body: &ApiKeyPostRequest,
     ) -> Result<ApiResponse<ApiKeyPostResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys");
-        let mut req = self.request(reqwest::Method::POST, &path);
+        let mut req = self.request(&operations::OPENAPI_KEY_CREATE, &[organization_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -65,8 +64,7 @@ impl Client {
         organization_id: &str,
         key_id: &str,
     ) -> Result<ApiResponse<ApiKey>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let req = self.request(reqwest::Method::GET, &path);
+        let req = self.request(&operations::OPENAPI_KEY_GET, &[organization_id, key_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -89,8 +87,7 @@ impl Client {
         key_id: &str,
         body: &ApiKeyPatchRequest,
     ) -> Result<ApiResponse<ApiKey>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
+        let mut req = self.request(&operations::OPENAPI_KEY_UPDATE, &[organization_id, key_id])?;
         req = req.json(body);
         let resp = req.send().await?;
         let status = resp.status();
@@ -113,8 +110,7 @@ impl Client {
         organization_id: &str,
         key_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
+        let req = self.request(&operations::OPENAPI_KEY_DELETE, &[organization_id, key_id])?;
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
