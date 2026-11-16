@@ -64,6 +64,18 @@ pub async fn download_from_source(
     download_url_with_output(&url, dest_path, structured_output, etag).await
 }
 
+/// Downloads `url` to `dest_path` with the install retry policy and progress
+/// output. The request carries nothing but the `User-Agent`.
+pub(crate) async fn download_file(
+    url: &str,
+    dest_path: &Path,
+    structured_output: bool,
+) -> Result<()> {
+    download_url_with_output(url, dest_path, structured_output, None)
+        .await
+        .map(drop)
+}
+
 async fn download_url_with_output(
     url: &str,
     dest_path: &Path,

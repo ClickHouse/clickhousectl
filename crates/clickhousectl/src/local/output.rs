@@ -94,6 +94,11 @@ pub(crate) enum LocalErrorCode {
     /// A Postgres validation or state error whose text (and recovery
     /// guidance) clickhousectl composes itself, rendered verbatim.
     PostgresError,
+    /// No Postgres bundle can be used for the native runtime: the manifest
+    /// is unreadable by this version or has nothing for the request.
+    PostgresBundleUnavailable,
+    /// A downloaded Postgres bundle did not match its manifest sha256.
+    ChecksumMismatch,
     SqlInputOpenFailed,
     SqlInputReadFailed,
     /// A managed server metadata file contains invalid JSON. The structured
@@ -153,6 +158,8 @@ impl LocalErrorCode {
             Self::DockerError => "docker_error",
             Self::ContainerNameConflict => "container_name_conflict",
             Self::PostgresError => "postgres_error",
+            Self::PostgresBundleUnavailable => "postgres_bundle_unavailable",
+            Self::ChecksumMismatch => "checksum_mismatch",
             Self::SqlInputOpenFailed => "sql_input_open_failed",
             Self::SqlInputReadFailed => "sql_input_read_failed",
             Self::ServerMetadataInvalid => "server_metadata_invalid",
@@ -761,6 +768,15 @@ impl LocalErrorBody {
             // Self-composed validation and state guidance; the foreign-text
             // sibling `Error::Postgres` stays in the fallback below.
             Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
+            // Self-composed; `--docker` is the way around a missing bundle.
+            Error::PostgresBundleUnavailable(_) => {
+                Mapping::parity(LocalErrorCode::PostgresBundleUnavailable)
+                    .command("clickhousectl local postgres start --help")
+            }
+            // Bundle name and digests only, all from the manifest and file.
+            Error::PostgresBundleChecksum { .. } => {
+                Mapping::parity(LocalErrorCode::ChecksumMismatch)
+            }
             // The OS cause goes in `details`; the path stays out.
             Error::SqlInputOpen { source, .. } => Mapping::redacted(
                 LocalErrorCode::SqlInputOpenFailed,
@@ -1778,17 +1794,15 @@ impl fmt::Display for ServerListOutput {
                 });
                 Table::new(rows)
             }
-            // Lists that can hold Postgres combine the ClickHouse PID and the
-            // Postgres container short ID into one "ID" column.
+            // Lists that can hold Postgres combine the PID of a process and
+            // the short ID of a Postgres container into one "ID" column.
             ServerList::Project(ProjectList::Postgres | ProjectList::Status) => {
                 let rows = self.servers.iter().map(|e| {
-                    let id = if e.engine == "postgres" {
-                        e.container_id
-                            .as_deref()
-                            .map(|s| s.chars().take(12).collect::<String>())
-                            .unwrap_or_else(|| ABSENT.to_string())
-                    } else {
-                        or_absent(e.pid)
+                    // A Docker instance has a container; a ClickHouse server
+                    // and a native Postgres instance have a PID.
+                    let id = match e.container_id.as_deref() {
+                        Some(container) => container.chars().take(12).collect::<String>(),
+                        None => or_absent(e.pid),
                     };
                     ServerListRowWithEngine {
                         name: e.name.clone(),
@@ -1817,11 +1831,29 @@ impl fmt::Display for ServerListOutput {
 
 // ── postgres start ──────────────────────────────────────────────────────────
 
+/// How a Postgres instance is run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PostgresRuntime {
+    Native,
+    Docker,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PostgresStartOutput {
     pub name: String,
-    pub container_id: String,
+    pub runtime: PostgresRuntime,
+    /// The container, for the Docker runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    /// The postmaster, for the native runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// `postgres:<tag>` for Docker, `postgres:<version>` for native.
     pub image: String,
+    /// Extensions the native bundle ships, by name and version.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extensions: std::collections::BTreeMap<String, String>,
     pub port: u16,
     pub user: String,
     pub password: String,
@@ -1830,9 +1862,25 @@ pub struct PostgresStartOutput {
 
 impl fmt::Display for PostgresStartOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let short = self.container_id.chars().take(12).collect::<String>();
-        writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
-        writeln!(f, "  Image:    {}", self.image)?;
+        match (&self.container_id, self.pid) {
+            (Some(container_id), _) => {
+                let short = container_id.chars().take(12).collect::<String>();
+                writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
+                writeln!(f, "  Image:    {}", self.image)?;
+            }
+            (None, pid) => {
+                match pid {
+                    Some(pid) => writeln!(f, "Postgres '{}' running (PID: {})", self.name, pid)?,
+                    None => writeln!(f, "Postgres '{}' running", self.name)?,
+                }
+                let version = self.image.strip_prefix("postgres:").unwrap_or(&self.image);
+                write!(f, "  Version:  {version}")?;
+                for (name, version) in &self.extensions {
+                    write!(f, ", {name} {version}")?;
+                }
+                writeln!(f)?;
+            }
+        }
         writeln!(f, "  Port:     {}", self.port)?;
         writeln!(f, "  User:     {}", self.user)?;
         writeln!(f, "  Password: {}", self.password)?;
@@ -3873,6 +3921,7 @@ mod tests {
                     )),
                     binary: None,
                     force: false,
+                    docker: false,
                 }
             ),
             "{argv:?}"
