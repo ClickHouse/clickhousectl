@@ -552,22 +552,25 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
 }
 
 // An expired login that cannot be refreshed is kept (#1224): no refresh
-// token, a rejected refresh, and an unreachable issuer all exit 4 without
-// deleting the file or calling the API. The resolver unit test
+// token, a rejected refresh, an unreachable issuer and a stalled one all exit 4
+// without deleting the file or calling the API. A stalled issuer is cut off by
+// the OAuth request bound (#1444). The resolver unit test
 // `client::expired_oauth_login_reports_expiry_not_missing_credentials` owns
 // which message is reported.
 #[tokio::test]
 async fn unrefreshable_expired_oauth_login_is_kept_and_reported() {
-    for case in ["no-refresh-token", "rejected", "unreachable"] {
+    for case in ["no-refresh-token", "rejected", "unreachable", "stalled"] {
         let api = MockServer::start().await;
         let issuer = MockServer::start().await;
+        let response = if case == "stalled" {
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(60))
+        } else {
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": "invalid_grant"}))
+        };
         Mock::given(method("POST"))
             .and(path("/oauth/token"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_json(serde_json::json!({"error": "invalid_grant"})),
-            )
-            .expect(u64::from(case == "rejected"))
+            .respond_with(response)
+            .expect(u64::from(matches!(case, "rejected" | "stalled")))
             .mount(&issuer)
             .await;
         let auth_url = if case == "unreachable" {
@@ -590,7 +593,9 @@ async fn unrefreshable_expired_oauth_login_is_kept_and_reported() {
         }))
         .unwrap();
         std::fs::write(&token_path, &original).unwrap();
+        let started = std::time::Instant::now();
         let output = custom_oauth_command(dir.path(), &api.uri())
+            .env("CHCTL_OAUTH_TIMEOUT_MS", "50")
             .args(["org", "list"])
             .output()
             .unwrap();
@@ -598,6 +603,11 @@ async fn unrefreshable_expired_oauth_login_is_kept_and_reported() {
         assert!(output.stdout.is_empty(), "{case}");
         assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
         assert_eq!(std::fs::read(&token_path).unwrap(), original, "{case}");
+        // Unbounded, the stalled issuer would hold the run for its full delay.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{case}"
+        );
         assert!(api.received_requests().await.unwrap().is_empty(), "{case}");
         tokio::task::yield_now().await;
     }

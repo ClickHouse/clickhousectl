@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 const QUERY_PROVISIONING_LOCK: &str = "query-provisioning.lock";
 const CREDENTIALS_LOCK: &str = "credentials.lock";
+const CREDENTIALS_FILE: &str = "credentials.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
@@ -47,17 +48,22 @@ impl Credentials {
 /// Saved API keys live with the project, so commands run anywhere beneath its
 /// root find them; outside any project they are in the current directory.
 pub fn credentials_path() -> std::io::Result<PathBuf> {
-    Ok(init::local_dir()?.join("credentials.json"))
+    Ok(init::local_dir()?.join(CREDENTIALS_FILE))
 }
 
 fn ensure_local_dir() -> CloudResult<PathBuf> {
     let dir = init::local_dir()?;
-    std::fs::create_dir_all(&dir)?;
+    ensure_dir(&dir)?;
+    Ok(dir)
+}
+
+fn ensure_dir(dir: &Path) -> CloudResult<()> {
+    std::fs::create_dir_all(dir)?;
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {
         std::fs::write(gitignore, "*\n")?;
     }
-    Ok(dir)
+    Ok(())
 }
 
 pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
@@ -72,7 +78,12 @@ pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
-    let path = ensure_local_dir()?.join(CREDENTIALS_LOCK);
+    lock_credentials_mutation_in(&init::local_dir()?)
+}
+
+fn lock_credentials_mutation_in(dir: &Path) -> CloudResult<std::fs::File> {
+    ensure_dir(dir)?;
+    let path = dir.join(CREDENTIALS_LOCK);
     open_lock_file(&path).map_err(|error| {
         CloudError::new(format!(
             "failed to lock credential mutations at {}: {error}",
@@ -116,8 +127,11 @@ pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLo
 /// cannot be read (tagged `io`) or parsed is an error naming its path, never
 /// "no credentials": resolution must not fall through to a lower tier (#1327).
 pub(crate) fn try_load_credentials() -> CloudResult<Option<Credentials>> {
-    let path = credentials_path()?;
-    let data = match std::fs::read_to_string(&path) {
+    load_credentials_from(&credentials_path()?)
+}
+
+fn load_credentials_from(path: &Path) -> CloudResult<Option<Credentials>> {
+    let data = match std::fs::read_to_string(path) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
@@ -148,9 +162,13 @@ pub fn clear_credentials() -> CloudResult<()> {
 }
 
 fn save_credentials(creds: &Credentials) -> CloudResult<()> {
-    ensure_local_dir()?;
+    save_credentials_in(&ensure_local_dir()?, creds)
+}
+
+fn save_credentials_in(dir: &Path, creds: &Credentials) -> CloudResult<()> {
+    ensure_dir(dir)?;
     let json = serde_json::to_string_pretty(creds)?;
-    crate::paths::atomic_write(&credentials_path()?, json.as_bytes(), 0o600)?;
+    crate::paths::atomic_write(&dir.join(CREDENTIALS_FILE), json.as_bytes(), 0o600)?;
     Ok(())
 }
 
@@ -182,17 +200,38 @@ fn stored_api_url(api_url: &str) -> Option<String> {
 /// Versions before #1325 created a per-service key and stored it here; such a
 /// record is no longer used, so the first command that touches the service
 /// drops it and reports the key that still exists in the organization.
+///
+/// Nothing is created when there is no record to drop: the check runs on
+/// every `cloud service query` and `delete`, and a stray `.clickhouse/` would
+/// mark the current directory as a project root (#1444).
 pub(crate) fn take_legacy_service_query_key(
     service_id: &str,
 ) -> CloudResult<Option<serde_json::Value>> {
-    let _lock = lock_credentials_mutation()?;
-    let Some(mut creds) = try_load_credentials()? else {
+    take_legacy_service_query_key_in(&init::local_dir()?, service_id)
+}
+
+fn take_legacy_service_query_key_in(
+    dir: &Path,
+    service_id: &str,
+) -> CloudResult<Option<serde_json::Value>> {
+    let path = dir.join(CREDENTIALS_FILE);
+    let has_record = |creds: &Option<Credentials>| {
+        creds
+            .as_ref()
+            .is_some_and(|creds| creds.service_query_keys.contains_key(service_id))
+    };
+    if !has_record(&load_credentials_from(&path)?) {
+        return Ok(None);
+    }
+    let _lock = lock_credentials_mutation_in(dir)?;
+    // Another process may have dropped the record before the lock was taken.
+    let Some(mut creds) = load_credentials_from(&path)? else {
         return Ok(None);
     };
     let Some(record) = creds.service_query_keys.remove(service_id) else {
         return Ok(None);
     };
-    save_credentials(&creds)?;
+    save_credentials_in(dir, &creds)?;
     Ok(Some(record))
 }
 
@@ -264,5 +303,44 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&creds).unwrap()).unwrap();
         assert_eq!(back.service_query_keys["svc-1"], record);
         assert_eq!(back.api_key.as_deref(), Some("k2"));
+    }
+
+    #[test]
+    fn taking_a_legacy_query_key_creates_nothing_unless_a_record_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".clickhouse");
+        assert!(
+            take_legacy_service_query_key_in(&dir, "svc-1")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir.exists());
+
+        std::fs::create_dir(&dir).unwrap();
+        let other = serde_json::json!({
+            "api_key": "k", "api_secret": "s",
+            "service_query_keys": {"svc-2": {"key_id": "kid"}}
+        });
+        std::fs::write(dir.join(CREDENTIALS_FILE), other.to_string()).unwrap();
+        assert!(
+            take_legacy_service_query_key_in(&dir, "svc-1")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir.join(CREDENTIALS_LOCK).exists());
+        assert!(!dir.join(".gitignore").exists());
+
+        let record = take_legacy_service_query_key_in(&dir, "svc-2").unwrap();
+        assert_eq!(record, Some(serde_json::json!({"key_id": "kid"})));
+        let left = load_credentials_from(&dir.join(CREDENTIALS_FILE))
+            .unwrap()
+            .unwrap();
+        assert!(left.service_query_keys.is_empty());
+        assert_eq!(left.api_credentials(), Some(("k", "s")));
+        assert!(
+            take_legacy_service_query_key_in(&dir, "svc-2")
+                .unwrap()
+                .is_none()
+        );
     }
 }

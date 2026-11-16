@@ -26,6 +26,8 @@ pub const UPDATE_CHECK_TIMEOUT_ENV: &str = "CHCTL_UPDATE_CHECK_TIMEOUT_MS";
 pub const BINARY_VERSION_TIMEOUT_ENV: &str = "CHCTL_BINARY_VERSION_TIMEOUT_MS";
 /// Bounds the `skills` archive download.
 pub const SKILLS_DOWNLOAD_TIMEOUT_ENV: &str = "CHCTL_SKILLS_DOWNLOAD_TIMEOUT_MS";
+/// Bounds each OAuth request: device login, its polls, and token refresh.
+pub const OAUTH_TIMEOUT_ENV: &str = "CHCTL_OAUTH_TIMEOUT_MS";
 /// Bounds the `feedback` send.
 #[cfg(feature = "feedback")]
 pub const FEEDBACK_SEND_TIMEOUT_ENV: &str = "CHCTL_FEEDBACK_SEND_TIMEOUT_MS";

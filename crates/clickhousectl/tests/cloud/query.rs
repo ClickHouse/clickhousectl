@@ -647,6 +647,9 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
         !ch_dir.join("credentials.json").exists(),
         "OAuth service query wrote .clickhouse/credentials.json",
     );
+    // Nor any project state: a `.clickhouse/` here would turn the working
+    // directory into a project root for everything beneath it (#1444).
+    assert!(!dir.path().join(".clickhouse").exists());
 
     // The query result streams through to stdout untouched.
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
