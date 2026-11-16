@@ -537,6 +537,7 @@ fn run_start_command(
             "--json",
             "postgres",
             "start",
+            "--docker",
             "--wait-timeout",
             &wait_timeout,
         ]);
@@ -754,6 +755,7 @@ fn postgres_start_revalidates_metadata_after_image_inspection() {
             "local",
             "postgres",
             "start",
+            "--docker",
             "--name",
             "default",
             "--version",

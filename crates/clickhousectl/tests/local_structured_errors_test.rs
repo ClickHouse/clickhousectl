@@ -325,7 +325,7 @@ fn io_and_docker_errors_keep_paths_and_secrets_out_of_json() {
     let docker_secret = home.join("docker-secret-token.sock");
     let unavailable = command(&project, &home)
         .env("DOCKER_HOST", format!("unix://{}", docker_secret.display()))
-        .args(["local", "--json", "postgres", "start"])
+        .args(["local", "--json", "postgres", "start", "--docker"])
         .output()
         .expect("run Docker unavailable failure");
     assert_eq!(unavailable.status.code(), Some(1));
@@ -335,7 +335,7 @@ fn io_and_docker_errors_keep_paths_and_secrets_out_of_json() {
     let message = error["error"]["message"].as_str().expect("message");
     let human = command(&project, &home)
         .env("DOCKER_HOST", format!("unix://{}", docker_secret.display()))
-        .args(["local", "postgres", "start"])
+        .args(["local", "postgres", "start", "--docker"])
         .output()
         .expect("run human Docker unavailable failure");
     assert_eq!(
