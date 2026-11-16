@@ -1599,7 +1599,7 @@ mod tests {
         let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
             panic!("expected backup-config command");
         };
-        let crate::cloud::cli::BackupConfigCommands::Update {
+        let crate::cloud::backups::BackupConfigCommands::Update {
             backup_period_hours,
             backup_start_time,
             clear_backup_start_time,

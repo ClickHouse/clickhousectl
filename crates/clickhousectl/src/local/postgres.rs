@@ -1059,8 +1059,8 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
 }
 
 fn generate_password() -> String {
-    // 24 alphanumeric chars. Persisted in `.clickhouse/servers/<name>.json`
-    // so other processes (and `dotenv`) can recover the value.
+    // 24 alphanumeric chars. Stored only in the container env, from which
+    // other processes (and `dotenv`) recover the value.
     Alphanumeric.sample_string(&mut rand::rng(), 24)
 }
 

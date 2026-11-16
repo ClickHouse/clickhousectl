@@ -4384,12 +4384,6 @@ async fn clickpipe_settings_get(
     Ok(())
 }
 
-/// The settings a `clickpipe settings update` invocation carries, decoupled from
-/// clap so the request builder can be unit-tested.
-///
-/// Only explicitly requested settings enter the update. Kafka read-committed
-/// additionally preserves the current value when omitted; it is only ever sent
-/// after the source is confirmed to be Kafka.
 /// Which source a fetched pipe reads from, as a closed vocabulary.
 ///
 /// Two decisions hang off this: whether the Kafka-only `kafka_read_committed`

@@ -1,28 +1,13 @@
 pub(crate) use crate::cloud::activity::ActivityCommands;
 pub(crate) use crate::cloud::api_keys::KeyCommands;
 pub(crate) use crate::cloud::auth::AuthCommands;
-#[allow(unused_imports)]
-pub(crate) use crate::cloud::backups::{BackupCommands, BackupConfigCommands};
-#[allow(unused_imports)]
-pub(crate) use crate::cloud::clickpipe_endpoints::{
-    ReversePrivateEndpointCommands, ReversePrivateEndpointCreateArgs,
-};
-#[allow(unused_imports)]
-pub(crate) use crate::cloud::clickpipes::{
-    BigQueryCreateArgs, ClickPipeCommands, ClickPipeCreateCommands,
-    ClickPipeSchemaDiscoverCommands, ClickPipeSettingsCommands, KafkaCreateArgs, KafkaSourceFields,
-    KinesisCreateArgs, KinesisSourceFields, MongoDbCreateArgs, MySqlCreateArgs,
-    ObjectStorageCreateArgs, PostgresCreateArgs,
-};
+pub(crate) use crate::cloud::backups::BackupCommands;
+pub(crate) use crate::cloud::clickpipes::ClickPipeCommands;
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
-#[allow(unused_imports)]
-pub(crate) use crate::cloud::services::{
-    PrivateEndpointCommands, QueryEndpointCommands, ReplicaAwareRoutingCommands, ServiceCommands,
-    UpgradeWindowCommands,
-};
+pub(crate) use crate::cloud::services::ServiceCommands;
 use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
 

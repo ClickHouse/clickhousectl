@@ -177,11 +177,6 @@ struct LocalErrorDetail {
     details: Option<String>,
 }
 
-/// How one [`Error`] variant renders into a [`LocalErrorDetail`].
-///
-/// Built with either [`Mapping::parity`] — the JSON message is the error's own
-/// human text, verbatim — or [`Mapping::redacted`], which substitutes a curated
-/// summary for errors that interpolate foreign text.
 /// Removing the broken function unblocks a server's reloads; with no culprit
 /// identified, `list` shows which deployed functions are not loaded.
 fn udf_culprit_command(culprit: Option<&String>, server: &str) -> String {
@@ -191,6 +186,11 @@ fn udf_culprit_command(culprit: Option<&String>, server: &str) -> String {
     }
 }
 
+/// How one [`Error`] variant renders into a [`LocalErrorDetail`].
+///
+/// Built with either [`Mapping::parity`] — the JSON message is the error's own
+/// human text, verbatim — or [`Mapping::redacted`], which substitutes a curated
+/// summary for errors that interpolate foreign text.
 struct Mapping {
     code: LocalErrorCode,
     command: Option<String>,

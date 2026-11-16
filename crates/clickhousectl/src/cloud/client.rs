@@ -301,8 +301,9 @@ fn resolve_auth_with_sources(
     let tokens =
         load_tokens().map_err(|_| CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_REQUIRED))?;
     if let Some(tokens) = tokens {
-        // `cloud::run` has already tried to refresh an expired login and kept
-        // the file; name the expiry rather than claiming nothing is saved.
+        // An expired login reaches here when a refresh failed or was not tried,
+        // and the file is kept; name the expiry rather than claiming nothing is
+        // saved.
         if !crate::cloud::auth::is_token_valid(&tokens) {
             return Err(CloudError::auth(crate::cloud::auth::OAUTH_LOGIN_EXPIRED));
         }
@@ -466,7 +467,7 @@ impl AuthSource {
 
 // The same not-found shape covers every other by-identifier path (#1237),
 // keyed only on the typed HTTP 404 the API now returns for an identifier that
-// resolves to nothing. Those paths never take the 400 arm above (#1226).
+// resolves to nothing. Those paths never take the 400 rewrite described above (#1226).
 
 /// Which kind of resource a by-identifier request or a name lookup was for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1389,13 +1390,6 @@ mod tests {
             lib_base_url("https://api.control-plane.clickhouse-staging.com/v1"),
             "https://api.control-plane.clickhouse-staging.com"
         );
-    }
-
-    #[test]
-    fn api_returns_library_client_ref() {
-        let client = test_client();
-        // Verify api() returns a reference without panicking
-        let _api = client.api();
     }
 
     #[test]

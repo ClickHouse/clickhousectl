@@ -552,9 +552,9 @@ pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        // No connection string here: the get endpoint stops returning
-        // credentials on July 31, 2026 — they are only available from
-        // `postgres create` and `postgres reset-password`.
+        // No connection string here: the get endpoint no longer returns
+        // credentials; they are only available from `postgres create` and
+        // `postgres reset-password`.
         render_postgres_service(&svc);
         render_postgres_connection_guidance(&svc);
     }

@@ -1,28 +1,16 @@
 use crate::error::Result;
 use crate::paths;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SymlinkOutcome {
-    Created {
-        path: PathBuf,
-        target: PathBuf,
-    },
-    Updated {
-        path: PathBuf,
-        target: PathBuf,
-    },
-    Unchanged {
-        path: PathBuf,
-    },
-    SkippedRegularFile {
-        path: PathBuf,
-    },
-    #[allow(dead_code)] // only constructed on non-unix
-    SkippedNonUnix,
+    Created { path: PathBuf, target: PathBuf },
+    Updated { path: PathBuf, target: PathBuf },
+    Unchanged { path: PathBuf },
+    SkippedRegularFile { path: PathBuf },
 }
 
-#[cfg(unix)]
 pub fn ensure_global_symlink(version: &str) -> Result<SymlinkOutcome> {
     let link = paths::global_clickhouse_symlink()?;
     let target = paths::binary_path(version)?;
@@ -30,27 +18,13 @@ pub fn ensure_global_symlink(version: &str) -> Result<SymlinkOutcome> {
     ensure_symlink_at(&link, &target, &bin_dir)
 }
 
-#[cfg(not(unix))]
-pub fn ensure_global_symlink(_version: &str) -> Result<SymlinkOutcome> {
-    Ok(SymlinkOutcome::SkippedNonUnix)
-}
-
-#[cfg(unix)]
 pub fn remove_global_symlink_for(removed_version: &str) -> Result<()> {
     let link = paths::global_clickhouse_symlink()?;
     let expected_dir = paths::version_dir(removed_version)?;
     remove_symlink_at(&link, &expected_dir)
 }
 
-#[cfg(not(unix))]
-pub fn remove_global_symlink_for(_removed_version: &str) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<SymlinkOutcome> {
-    use std::os::unix::fs::symlink;
-
     if let Err(e) = std::fs::create_dir_all(bin_dir) {
         eprintln!("warning: could not create {}: {}", bin_dir.display(), e);
         return Ok(SymlinkOutcome::Unchanged {
@@ -112,10 +86,7 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
     }
 }
 
-#[cfg(unix)]
 fn replace_symlink_atomically(target: &Path, link: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::symlink;
-
     let link_name = link
         .file_name()
         .and_then(|name| name.to_str())
@@ -136,7 +107,6 @@ fn replace_symlink_atomically(target: &Path, link: &Path) -> std::io::Result<()>
     result
 }
 
-#[cfg(unix)]
 fn remove_symlink_at(link: &Path, expected_target_dir: &Path) -> Result<()> {
     let meta = match std::fs::symlink_metadata(link) {
         Ok(m) => m,
@@ -155,7 +125,6 @@ fn remove_symlink_at(link: &Path, expected_target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn maybe_warn_path_missing(bin_dir: &Path) {
     let path_env = match std::env::var_os("PATH") {
         Some(p) => p,
@@ -175,10 +144,9 @@ fn maybe_warn_path_missing(bin_dir: &Path) {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
     fn version_binary(tmp: &Path, version: &str) -> PathBuf {

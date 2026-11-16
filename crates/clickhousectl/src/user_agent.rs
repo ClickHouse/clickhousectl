@@ -7,20 +7,14 @@
 /// in the User-Agent header, and parenthesised key=value pairs are a
 /// conventional shape (cf. browsers' `Mozilla/5.0 (Windows NT 10.0; ...)`).
 pub fn user_agent() -> String {
-    let base = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
-    match is_ai_agent::detect() {
-        Some(agent) => format!("{} (agent={})", base, agent.id.as_str()),
-        None => base,
-    }
+    user_agent_from(is_ai_agent::detect().map(|agent| agent.id.as_str()))
 }
 
-/// Build a User-Agent string from an explicit (test-injected) detected agent.
-/// Mirrors `user_agent` but lets tests exercise both branches deterministically.
-#[cfg(test)]
+/// Build the User-Agent from the detected agent id, if any.
 fn user_agent_from(detected: Option<&str>) -> String {
     let base = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
     match detected {
-        Some(id) => format!("{} (agent={})", base, id),
+        Some(id) => format!("{base} (agent={id})"),
         None => base,
     }
 }
