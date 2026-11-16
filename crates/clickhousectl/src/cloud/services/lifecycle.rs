@@ -278,11 +278,21 @@ pub(super) async fn service_dotenv(
     Ok(())
 }
 
+/// `--custom-region` skips the known-region check; Cloud validates the value.
+fn parse_custom_region(region: &str) -> CloudResult<ServicePostRequestRegion> {
+    let region = region.trim();
+    if region.is_empty() {
+        return Err(CloudError::usage("--custom-region cannot be empty"));
+    }
+    Ok(ServicePostRequestRegion::Unknown(region.to_string()))
+}
+
 #[derive(Default)]
 pub(super) struct CreateServiceOptions {
     pub(super) name: String,
     pub(super) provider: String,
     pub(super) region: String,
+    pub(super) custom_region: Option<String>,
     pub(super) min_replica_memory_gb: Option<u32>,
     pub(super) max_replica_memory_gb: Option<u32>,
     pub(super) num_replicas: Option<u32>,
@@ -434,11 +444,14 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             "provider",
             ServicePostRequestProvider::VALUES,
         )?,
-        region: parse_serde_enum::<ServicePostRequestRegion>(
-            &options.region,
-            "region",
-            ServicePostRequestRegion::VALUES,
-        )?,
+        region: match options.custom_region.as_deref() {
+            Some(region) => parse_custom_region(region)?,
+            None => parse_serde_enum::<ServicePostRequestRegion>(
+                &options.region,
+                "region",
+                ServicePostRequestRegion::VALUES,
+            )?,
+        },
         ip_access_list,
         min_replica_memory_gb: options.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: options.max_replica_memory_gb.map(f64::from),
@@ -2163,6 +2176,35 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("us-east-99"));
+    }
+
+    #[test]
+    fn build_create_service_request_sends_custom_region_unchecked() {
+        let request = build_create_service_request(&CreateServiceOptions {
+            region: "us-east-1".to_string(),
+            custom_region: Some("sa-east-1".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+        assert_eq!(
+            request.region,
+            ServicePostRequestRegion::Unknown("sa-east-1".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["region"],
+            "sa-east-1"
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_empty_custom_region() {
+        let error = build_create_service_request(&CreateServiceOptions {
+            custom_region: Some("  ".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert!(error.to_string().contains("--custom-region"));
     }
 
     #[test]
