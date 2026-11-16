@@ -1,20 +1,23 @@
 //! Subprocess coverage for the cross-project `local remove` running-server
 //! guard (issue #600).
 //!
-//! Strategy: an isolated `HOME` with three fake installed versions, two project
-//! directories, and deterministic `pgrep`/`lsof`/`ps` stand-ins on `PATH` (the
-//! same technique as `local_server_state_machine_test.rs`) so process discovery
-//! only ever sees this fixture's fake servers. A server is started in project B
-//! and `local remove` is then run from project A, where the server is invisible
-//! to project-scoped metadata.
+//! Strategy: an isolated `HOME` with three fake installed versions and two
+//! project directories. The fake servers are compiled stand-ins (see
+//! `support/fake_clickhouse.rs`) that native process discovery finds like real
+//! ones. A server is started in project B and `local remove` is then run from
+//! project A, where the server is invisible to project-scoped metadata.
+//!
+//! Discovery sees every process on the machine, including the fixtures of the
+//! other tests here running in parallel, so each fixture's running version is
+//! its own: no test can find, or `--force`-stop, another test's server.
 
-use std::os::unix::fs::PermissionsExt;
+#[path = "support/fake_clickhouse.rs"]
+mod fake_clickhouse;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-/// The version the fake server in the other project runs on.
-const RUNNING_VERSION: &str = "26.9.1.217";
 /// The default version, so the issue-599 default guard never masks this one.
 const DEFAULT_VERSION: &str = "25.12.9.61";
 /// Installed and used by nothing.
@@ -26,35 +29,26 @@ fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
 
-struct ProcessGuard {
-    pid_file: PathBuf,
-}
-
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        let Ok(contents) = std::fs::read_to_string(&self.pid_file) else {
-            return;
-        };
-        for pid in contents
-            .lines()
-            .filter_map(|line| line.split('|').next()?.parse::<i32>().ok())
-        {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-    }
+/// The version a fixture's fake server runs on, derived from its label so no
+/// two fixtures share one.
+fn running_version_for(label: &str) -> String {
+    let hash = label.bytes().fold(2166136261u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16777619)
+    });
+    format!("26.9.{}.217", 1000 + hash % 100_000)
 }
 
 struct Fixture {
     // Drop the process guard before removing directories used as process CWDs.
-    _processes: ProcessGuard,
+    _processes: fake_clickhouse::ProcessGuard,
     _root: tempfile::TempDir,
     home: PathBuf,
     project_a: PathBuf,
     project_b: PathBuf,
-    pid_file: PathBuf,
+    /// The version the fake server in the other project runs on.
+    running_version: String,
     path: String,
+    pid_file: PathBuf,
 }
 
 impl Fixture {
@@ -67,94 +61,34 @@ impl Fixture {
         let project_a = root.path().join("project-a");
         let project_b = root.path().join("project-b");
         let pid_file = root.path().join("fake-clickhouse-pids");
-        let tools = root.path().join("fake-tools");
+        let running_version = running_version_for(label);
 
         std::fs::create_dir_all(home.join(".clickhouse")).expect("create isolated HOME");
         std::fs::create_dir_all(&project_a).expect("create project A");
         std::fs::create_dir_all(&project_b).expect("create project B");
-        std::fs::create_dir_all(&tools).expect("create fake process tools directory");
 
-        for version in [RUNNING_VERSION, DEFAULT_VERSION, UNUSED_VERSION] {
-            let binary = version_binary(&home, version);
-            std::fs::create_dir_all(binary.parent().expect("fake binary parent"))
-                .expect("create fake version directory");
-            // Records `<pid>|<cwd>|<version>` for the fake process tools, then
-            // blocks so the server stays "running" for the whole test.
-            write_executable(
-                &binary,
-                &format!(
-                    "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$$\" \"$PWD\" '{version}' >> \"$FAKE_CLICKHOUSE_PID_FILE\"\nexec /bin/sleep 300\n"
-                ),
-            );
+        for version in [running_version.as_str(), DEFAULT_VERSION, UNUSED_VERSION] {
+            fake_clickhouse::install(&version_binary(&home, version));
         }
 
         std::fs::write(home.join(".clickhouse/default"), DEFAULT_VERSION)
             .expect("write default marker");
 
-        // Deterministic stand-ins: they expose only this fixture's live fake
-        // processes, so the global scan cannot see (or kill) anything else on
-        // the machine, and does not depend on platform process names.
-        write_executable(
-            &tools.join("pgrep"),
-            // `-P <ppid>` is the child lookup in the SIGKILL escalation path.
-            // These fake servers `exec` a sleep and have no children, so there
-            // is nothing to report.
-            r#"#!/bin/sh
-[ "$1" = "-P" ] && exit 1
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r pid cwd version; do
-  if kill -0 "$pid" 2>/dev/null; then
-    printf '%s\n' "$pid"
-    found=0
-  fi
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#,
-        );
-        write_executable(
-            &tools.join("lsof"),
-            "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nwhile IFS='|' read -r pid cwd version; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf 'p%s\\nfcwd\\nn%s\\n' \"$pid\" \"$cwd\"\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\n",
-        );
-        // `ps -o pid=,ppid=,args= -p <pid,...>`: one batched call is the only
-        // shape discovery uses. The version is what the guard matches on, so
-        // each row's command line comes from that PID's own record, and the
-        // PPID is 1 because the CLI that spawned these exits immediately.
-        write_executable(
-            &tools.join("ps"),
-            r#"#!/bin/sh
-targets=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -p) targets="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
-found=1
-while IFS='|' read -r pid cwd version; do
-  case ",$targets," in
-    *",$pid,"*) ;;
-    *) continue ;;
-  esac
-  printf '%5s %5s %s\n' "$pid" 1 "$HOME/.clickhouse/versions/$version/clickhouse server --http_port=8123 --tcp_port=9000"
-  found=0
-done < "$FAKE_CLICKHOUSE_PID_FILE"
-exit "$found"
-"#,
-        );
-        let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
+        // No /usr/local/bin or /opt/homebrew/bin, so a developer's `docker`
+        // is unreachable and recovery never takes its Postgres leg.
+        let path = "/usr/bin:/bin:/usr/sbin:/sbin".to_string();
 
         Self {
-            _processes: ProcessGuard {
+            _processes: fake_clickhouse::ProcessGuard {
                 pid_file: pid_file.clone(),
             },
             _root: root,
             home,
             project_a,
             project_b,
-            pid_file,
+            running_version,
             path,
+            pid_file,
         }
     }
 
@@ -175,7 +109,8 @@ exit "$found"
             .expect("run shipped clickhousectl binary")
     }
 
-    /// Start a fake server on `RUNNING_VERSION` in `project`, returning its PID.
+    /// Start a fake server on the running version in `project`, returning its
+    /// PID.
     fn start_server(&self, project: &Path, name: &str) -> u32 {
         let output = self.run(
             project,
@@ -186,7 +121,7 @@ exit "$found"
                 "start",
                 name,
                 "-v",
-                RUNNING_VERSION,
+                &self.running_version,
                 "--no-wait",
             ],
         );
@@ -198,10 +133,8 @@ exit "$found"
         );
         let body: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("parse start JSON");
-        assert_eq!(body["version"], RUNNING_VERSION);
+        assert_eq!(body["version"], self.running_version.as_str());
         let pid = body["pid"].as_u64().expect("start PID") as u32;
-        // The guard reads the process's own command line, so wait until the
-        // fake binary has recorded itself for the stand-in tools.
         wait_for_pid_record(&self.pid_file, pid);
         assert!(process_is_alive(pid));
         pid
@@ -216,12 +149,6 @@ fn version_binary(home: &Path, version: &str) -> PathBuf {
     home.join(".clickhouse/versions")
         .join(version)
         .join("clickhouse")
-}
-
-fn write_executable(path: &Path, contents: &str) {
-    std::fs::write(path, contents).expect("write fake executable");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("make fake executable executable");
 }
 
 fn stdout_of(output: &Output) -> String {
@@ -246,17 +173,13 @@ fn wait_for_process_exit(pid: u32) {
 
 fn wait_for_pid_record(pid_file: &Path, pid: u32) {
     let deadline = Instant::now() + WAIT_TIMEOUT;
-    loop {
-        let recorded = std::fs::read_to_string(pid_file).unwrap_or_default();
-        if recorded
-            .lines()
-            .any(|line| line.split('|').next() == Some(&pid.to_string()))
-        {
-            return;
-        }
+    while !fake_clickhouse::records(pid_file)
+        .iter()
+        .any(|record| record.pid == pid)
+    {
         assert!(
             Instant::now() < deadline,
-            "fake ClickHouse {pid} never recorded itself: {recorded}"
+            "fake ClickHouse {pid} never recorded itself"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -274,12 +197,15 @@ fn removing_a_version_a_server_in_another_project_runs_is_refused() {
     let fixture = Fixture::new("other-project");
     let pid = fixture.start_server(&fixture.project_b, "dev");
 
-    let output = fixture.run(&fixture.project_a, &["local", "remove", RUNNING_VERSION]);
+    let output = fixture.run(
+        &fixture.project_a,
+        &["local", "remove", fixture.running_version.as_str()],
+    );
 
     let stderr = stderr_of(&output);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     for required in [
-        RUNNING_VERSION,
+        fixture.running_version.as_str(),
         "'dev'",
         &canonical(&fixture.project_b),
         &format!("PID {pid}"),
@@ -288,7 +214,7 @@ fn removing_a_version_a_server_in_another_project_runs_is_refused() {
         assert!(stderr.contains(required), "missing {required:?}: {stderr}");
     }
     assert!(
-        fixture.version_dir(RUNNING_VERSION).exists(),
+        fixture.version_dir(&fixture.running_version).exists(),
         "a refused removal must not delete the version directory"
     );
     assert!(
@@ -304,7 +230,12 @@ fn the_structured_refusal_names_the_blocking_project_and_the_global_list() {
 
     let output = fixture.run(
         &fixture.project_a,
-        &["local", "--json", "remove", RUNNING_VERSION],
+        &[
+            "local",
+            "--json",
+            "remove",
+            fixture.running_version.as_str(),
+        ],
     );
 
     let stderr = stderr_of(&output);
@@ -318,7 +249,11 @@ fn the_structured_refusal_names_the_blocking_project_and_the_global_list() {
         serde_json::from_str(&stderr).expect("one JSON error object on stderr");
     assert_eq!(error["error"]["code"], "server_running");
     let message = error["error"]["message"].as_str().expect("message");
-    for required in [RUNNING_VERSION, "'dev'", &canonical(&fixture.project_b)] {
+    for required in [
+        fixture.running_version.as_str(),
+        "'dev'",
+        &canonical(&fixture.project_b),
+    ] {
         assert!(
             message.contains(required),
             "missing {required:?}: {message}"
@@ -328,7 +263,7 @@ fn the_structured_refusal_names_the_blocking_project_and_the_global_list() {
         error["error"]["command"],
         "clickhousectl local clickhouse list --global"
     );
-    assert!(fixture.version_dir(RUNNING_VERSION).exists());
+    assert!(fixture.version_dir(&fixture.running_version).exists());
     assert!(process_is_alive(pid));
 }
 
@@ -339,7 +274,12 @@ fn force_stops_the_other_projects_server_before_removing_the_version() {
 
     let output = fixture.run(
         &fixture.project_a,
-        &["local", "remove", RUNNING_VERSION, "--force"],
+        &[
+            "local",
+            "remove",
+            fixture.running_version.as_str(),
+            "--force",
+        ],
     );
 
     let stderr = stderr_of(&output);
@@ -355,7 +295,7 @@ fn force_stops_the_other_projects_server_before_removing_the_version() {
     );
     wait_for_process_exit(pid);
     assert!(
-        !fixture.version_dir(RUNNING_VERSION).exists(),
+        !fixture.version_dir(&fixture.running_version).exists(),
         "--force must remove the version directory"
     );
 }
@@ -365,7 +305,10 @@ fn the_same_project_guard_still_refuses_and_keeps_metadata_consistent() {
     let fixture = Fixture::new("same-project");
     let pid = fixture.start_server(&fixture.project_a, "dev");
 
-    let refused = fixture.run(&fixture.project_a, &["local", "remove", RUNNING_VERSION]);
+    let refused = fixture.run(
+        &fixture.project_a,
+        &["local", "remove", fixture.running_version.as_str()],
+    );
     assert_eq!(
         refused.status.code(),
         Some(1),
@@ -377,7 +320,12 @@ fn the_same_project_guard_still_refuses_and_keeps_metadata_consistent() {
 
     let forced = fixture.run(
         &fixture.project_a,
-        &["local", "remove", RUNNING_VERSION, "--force"],
+        &[
+            "local",
+            "remove",
+            fixture.running_version.as_str(),
+            "--force",
+        ],
     );
     assert!(
         forced.status.success(),
@@ -386,7 +334,7 @@ fn the_same_project_guard_still_refuses_and_keeps_metadata_consistent() {
         stderr_of(&forced)
     );
     wait_for_process_exit(pid);
-    assert!(!fixture.version_dir(RUNNING_VERSION).exists());
+    assert!(!fixture.version_dir(&fixture.running_version).exists());
 
     // Stopping through this project's metadata keeps the recorded server
     // stopped rather than leaving a stale live PID behind.
@@ -420,7 +368,7 @@ fn a_version_nothing_runs_is_removed_while_another_projects_server_keeps_running
     assert_eq!(value["version"], UNUSED_VERSION);
     assert!(!fixture.version_dir(UNUSED_VERSION).exists());
     assert!(
-        fixture.version_dir(RUNNING_VERSION).exists(),
+        fixture.version_dir(&fixture.running_version).exists(),
         "the in-use version must be untouched"
     );
     assert!(

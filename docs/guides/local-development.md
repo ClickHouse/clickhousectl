@@ -166,7 +166,7 @@ clickhousectl local postgres remove app --version 18
 
 Both require stopped servers. `local clickhouse stop-all` and `local postgres stop-all` each stop one engine's servers in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
 
-`local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project. Its `--force` stops those servers across projects and removes the version even if it is the default.
+`local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project, and refuses when the running processes cannot be read, since then other projects' servers are unknown. Its `--force` stops those servers across projects and removes the version even if it is the default; after a failed process scan it stops only this project's servers.
 
 Without a name, ClickHouse `stop` selects `default`, then the sole server, and is a no-op if none exists. Bare `remove` only selects `default`; use explicit names for cleanup.
 
