@@ -127,7 +127,7 @@ settings. The service, not the CLI, validates the expression itself.
 
 Use `clickpipe update --file patch.json` or `--file -`. For CDC, [stop and wait for `Paused`](../guides/clickpipes.md#pause-update-and-resume-cdc) first. GET responses contain fields that cannot be patched; build a request from the writable fields below.
 
-Omitted and null top-level fields are not sent. Explicit `false`, `0`, empty strings, and arrays remain explicit. Empty `{}`, unknown fields, and unsupported enum values fail before the request. A source patch selects at most one source arm.
+Omitted and null top-level fields are not sent. Neither resets a stored value. Explicit `false`, `0`, empty strings, and arrays remain explicit. Empty `{}`, unknown fields, and unsupported enum values fail before the request. A source patch selects at most one source arm.
 
 | Object | Writable fields |
 | --- | --- |
@@ -153,7 +153,7 @@ Root `fieldMappings` applies to Kafka, Kinesis, Pub/Sub, object storage, and One
 
 Kafka credentials must match the authentication mode. IAM role carries `iamRole` without a credentials object; workload identity carries neither. Unrelated credential/CA/endpoint fields may be omitted. For CDC table changes use `tableMappingsToAdd`/`tableMappingsToRemove`; these are distinct from root field mappings. Omitting a Postgres source port preserves it.
 
-`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. `clickpipe update` rejects a root `settings` object, because the whole-pipe PATCH does not currently apply it; change an existing pipe's ingestion settings with `settings update`. `--object-storage-max-file-size` is a private preview and can only lower the default maximum file size.
+`clickpipe settings get/update` is for streaming and object-storage pipes, including Pub/Sub. For database-source settings, use `clickpipe get` and the source-specific PATCH instead. Omitted settings preserve stored values; explicit `0`/`false` are retained. There is no reset: neither omission nor `null` returns a setting to its default, and the service rejects `null` settings. To go back to a default, pass the default value explicitly (the flag with that value for `settings update`, or the value in the update file). A `settings get` followed by `settings update` stores the filled-in defaults as explicit values. For Kafka isolation, pass `--kafka-read-committed` explicitly if the current API response omits it. `clickpipe update` rejects a root `settings` object, because the whole-pipe PATCH does not currently apply it; change an existing pipe's ingestion settings with `settings update`. `--object-storage-max-file-size` is a private preview and can only lower the default maximum file size.
 
 ## Connect a private source
 
