@@ -44,6 +44,8 @@ Human detail views summarize PEM blocks; JSON returns their original contents. `
 
 ## Check status and stderr
 
+Before acting, `clickhousectl cloud auth status --json` reports the Cloud credentials in use and `clickhousectl local status --json` reports the local servers.
+
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Success (which may mean an asynchronous request was accepted) |
