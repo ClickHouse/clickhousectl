@@ -54,15 +54,13 @@ An idle service can be woken in either auth mode. If the gateway requests wake c
 Use a native client for bulk loads, binary formats such as `RowBinary`/`Native`, or long-running queries:
 
 ```bash
-clickhousectl local use stable
-clickhousectl cloud service get <service-id>
-clickhouse client --host <nativesecure-host> --secure --port 9440 \
-  --user default --password --queries-file backfill.sql
+clickhousectl local use latest
+clickhousectl cloud service client <service-id> -- --queries-file backfill.sql
 ```
 
-Use the `nativesecure` host and port from `get`; `--password` prompts for the database password. Use the password saved at creation, or deliberately reset it with `cloud service reset-password`. Direct connections must satisfy the service's IP allowlist.
+`cloud service client` connects to the service's `nativesecure` endpoint and signs in through a browser as your Cloud user, so no service password is needed; it needs ClickHouse 25.12 or newer. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client). Direct connections must satisfy the service's IP allowlist.
 
-In JSON mode a timeout reports `error.code: query_timeout` on stderr. Optional `command`, `host`, and `port` fields suggest recovery; SQL and password placeholders are never filled with your input. A possible wake delay instead suggests a service-state check. Always check the exit status even if stdout already contains rows.
+In JSON mode a timeout reports `error.code: query_timeout` on stderr. Optional `command`, `host`, and `port` fields suggest recovery; the SQL placeholder is never filled with your input. A possible wake delay instead suggests a service-state check. Always check the exit status even if stdout already contains rows.
 
 ## Keys stored by earlier versions
 

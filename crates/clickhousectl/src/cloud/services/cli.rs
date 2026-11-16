@@ -1,6 +1,7 @@
 use crate::cloud::backups::{BackupConfigCommands, SnapshotCommands};
 use crate::cloud::shared::NameSelector;
 use crate::cloud::shared::parse_tag_filter;
+use crate::local::cli::ClientVersionArg;
 use clap::builder::NonEmptyStringValueParser;
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
@@ -558,6 +559,39 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         no_auto_enable: bool,
     },
+
+    /// Open clickhouse client on the service, signed in through a browser
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Needs a person at a browser: the client signs in as their Cloud user (device flow), no password.
+  Not for CI or agents; use `cloud service query` there. The Cloud credentials only look up the host.
+  Needs ClickHouse 25.12+ installed (`clickhousectl local install latest`).")]
+    Client(ServiceClientArgs),
+}
+
+/// `cloud service client`: the service, the local build to run, and the
+/// native client's own arguments.
+#[derive(clap::Args, Debug)]
+pub struct ServiceClientArgs {
+    /// Service ID
+    #[command(flatten)]
+    pub service_id: NameSelector,
+
+    /// Installed local client version (25.12+; default: the default version)
+    ///
+    /// Numeric versions only (25.12, 25.12.9.61). Does not change the default.
+    #[arg(long, short = 'v')]
+    #[arg(display_order = 3)]
+    pub version: Option<ClientVersionArg>,
+
+    /// Execute a SQL query; repeatable
+    #[arg(long, short)]
+    #[arg(display_order = 4)]
+    pub query: Vec<String>,
+
+    /// Native clickhouse-client arguments (require --)
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -1057,6 +1091,7 @@ impl ServiceCommands {
             ServiceCommands::ScalingSchedule { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
+            ServiceCommands::Client(_) => false,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -2570,6 +2605,66 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    /// `service client` is a read: OAuth may run it. Its version selector
+    /// keeps the installed-numeric rule, `--query` repeats, and everything
+    /// after `--` reaches the native client untouched, even its own flags.
+    #[test]
+    fn parses_service_client_options() {
+        let base = ["clickhousectl", "cloud", "service", "client"];
+        let parse_client = |extra: &[&str]| {
+            let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+            let crate::cloud::cli::ServiceCommands::Client(client) = parse_service(&args) else {
+                panic!("expected service client");
+            };
+            client
+        };
+
+        let client = parse_client(&["svc-1"]);
+        assert_eq!(client.service_id.id.as_deref(), Some("svc-1"));
+        assert!(client.service_id.name.is_none());
+        assert!(client.version.is_none());
+        assert!(client.query.is_empty());
+        assert!(client.args.is_empty());
+        assert_write(&[&base[..], &["svc-1"]].concat(), false);
+
+        let client = parse_client(&[
+            "--name",
+            "prod",
+            "-v",
+            "25.12",
+            "-q",
+            "SELECT 1",
+            "--query",
+            "SELECT 2",
+            "--org-id",
+            "org-1",
+            "--",
+            "--format",
+            "CSV",
+            "--host",
+            "elsewhere",
+        ]);
+        assert_eq!(client.service_id.name.as_deref(), Some("prod"));
+        assert!(client.service_id.id.is_none());
+        assert_eq!(
+            client
+                .version
+                .map(|version| version.into_spec().to_string()),
+            Some("25.12".to_string())
+        );
+        assert_eq!(client.query, ["SELECT 1", "SELECT 2"]);
+        assert_eq!(client.args, ["--format", "CSV", "--host", "elsewhere"]);
+
+        for invalid in [
+            &[][..],
+            &["svc-1", "--name", "prod"],
+            &["svc-1", "--version", "latest"],
+        ] {
+            let args: Vec<&str> = base.iter().chain(invalid).copied().collect();
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@ mod client;
 mod endpoints;
 mod jwt_provider;
 mod lifecycle;
+mod native_client;
 mod query;
 pub mod query_key;
 mod scaling_schedule;
@@ -187,7 +188,15 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             ),
         ])
         .authorization("SQL uses database privileges; OAuth permits read-only SELECT."),
+    Permission::api("service client", &[])
+        .when(&[
+            Conditional::new("service ID", &[&op::INSTANCE_GET]),
+            Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        ])
+        .authorization("SQL runs as the Cloud user who signs in through the browser."),
 ];
+
+pub(crate) use native_client::service_client;
 
 pub use cli::{
     JwtProviderCommands, PrivateEndpointCommands, QueryEndpointCommands,
@@ -738,5 +747,10 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             };
             service_query(client, options).await
         }
+        // It execs a local program and fails with local errors, so
+        // `cloud::run` hands it to `service_client` before this router.
+        ServiceCommands::Client(_) => Err(crate::cloud::client::CloudError::new(
+            "`cloud service client` is not routed through the Cloud command dispatcher",
+        )),
     }
 }

@@ -119,7 +119,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query,
+  Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query, client,
     query-endpoint get, private-endpoint get-config, backup-config get, snapshot list/get,
     snapshot config get, scaling-schedule get, upgrade-window get, replica-aware-routing get,
     jwt-provider list/get.
@@ -387,7 +387,9 @@ pub(crate) mod tests {
     #[test]
     fn every_cloud_positional_rejects_an_empty_value_before_any_request() {
         fn walk(command: &clap::Command, path: &str, checked: &mut usize) {
-            for arg in command.get_positionals() {
+            // Arguments after `--` go to a native client, never into a
+            // request, and an empty one can be meaningful there.
+            for arg in command.get_positionals().filter(|arg| !arg.is_last_set()) {
                 let index = arg.get_index().unwrap();
                 let mut argv = vec![command.get_name().to_string()];
                 argv.extend((1..index).map(|_| "x".to_string()));

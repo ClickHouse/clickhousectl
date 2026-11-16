@@ -6920,8 +6920,7 @@ fn assert_invalid_utf8_query_input(output: &std::process::Output) {
     // The native-client way out, by its commands.
     for expected in [
         "clickhousectl local use latest",
-        "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure",
-        "clickhousectl cloud service get <service-id>",
+        "clickhousectl cloud service client <service-id> --query",
     ] {
         assert!(
             stderr.contains(expected),
@@ -11083,12 +11082,11 @@ async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
         stderr.contains("clickhousectl local use latest"),
         "{stderr}"
     );
-    // The host and port come from the mocked service response, not from a
-    // placeholder or a guess.
+    // The rerun names the same service and org; it needs no password.
     assert!(
         stderr.contains(&format!(
-            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
-             default --password '<password>' --query '<your SQL>'"
+            "clickhousectl cloud service client {QUERY_TEST_SERVICE_ID} --org-id org-1 \
+             --query '<your SQL>'"
         )),
         "{stderr}"
     );
@@ -11133,8 +11131,8 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
     assert_eq!(
         error["error"]["command"],
         format!(
-            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
-             default --password '<password>' --query '<your SQL>'"
+            "clickhousectl cloud service client {QUERY_TEST_SERVICE_ID} --org-id org-1 \
+             --query '<your SQL>'"
         )
     );
     let message = error["error"]["message"]
@@ -11144,6 +11142,68 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
         message.contains("SELECT query_id, elapsed FROM system.processes"),
         "{message}"
     );
+}
+
+// ── cloud service client (#1154) ───────────────────────────────────────────
+
+/// `cloud service client` looks the service's native endpoint up with the
+/// Cloud credentials, then execs the installed `clickhouse client` with that
+/// host and port, `--secure --login`, the queries, and the passthrough last.
+/// The fake client prints its argv, so the handoff is observed exactly; no
+/// credential reaches it on the command line.
+#[tokio::test]
+async fn service_client_execs_the_installed_client_against_the_native_endpoint() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let client = home.join(".clickhouse/versions/25.12.1.649/clickhouse");
+    std::fs::create_dir_all(client.parent().unwrap()).unwrap();
+    std::fs::write(&client, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&client, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args(["cloud", "--url", &control.uri(), "--org-id", "org-1"])
+        .args(["service", "client", QUERY_TEST_SERVICE_ID, "-q", "SELECT 1"])
+        .args(["--", "--format", "CSV"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    let argv: Vec<&str> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .strip_suffix('\0')
+        .expect("NUL-terminated argv")
+        .split('\0')
+        .collect();
+    assert_eq!(
+        argv,
+        [
+            "client",
+            "--host",
+            QUERY_TEST_NATIVE_HOST,
+            "--port",
+            "9440",
+            "--secure",
+            "--login",
+            "--query",
+            "SELECT 1",
+            "--format",
+            "CSV",
+        ]
+    );
+    for secret in ["fake-key-for-tests", "fake-secret-for-tests"] {
+        assert!(!argv.contains(&secret));
+    }
+
+    let help = permission_help(&control, &["service", "client"], "--help");
+    assert_observed_permissions_advertised(&control, &help).await;
 }
 
 // ── Query timeout diagnosis after an idle/wake observation (#826) ─────────

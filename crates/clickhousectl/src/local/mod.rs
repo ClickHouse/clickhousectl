@@ -399,11 +399,7 @@ fn run_client(
     let (resolved_host, tcp_port, version, binary) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
-        let v = resolve_direct_client_version(version_spec)?;
-        let binary = paths::binary_path(&v)?;
-        if !binary.exists() {
-            return Err(Error::VersionNotFound(v));
-        }
+        let (v, binary) = resolve_installed_client(version_spec)?;
         (h, p, v, binary)
     } else {
         // The canonical project root, so diagnostics identify the one physical
@@ -488,26 +484,47 @@ fn run_client(
     };
 
     ensure_repeated_query_supported(&version, query.len())?;
+
+    let mut client_args = vec![
+        "--host".to_string(),
+        resolved_host,
+        "--port".to_string(),
+        tcp_port.to_string(),
+    ];
+    for q in query {
+        client_args.extend(["--query".to_string(), q]);
+    }
+    for f in queries_file {
+        client_args.extend(["--queries-file".to_string(), f]);
+    }
+    client_args.extend(args);
+    exec_clickhouse_client(&binary, &version, &client_args)
+}
+
+/// The installed ClickHouse build a direct client connection runs: `--version`
+/// when given, else the default, else the only installed version.
+pub(crate) fn resolve_installed_client(
+    version_spec: Option<ClientVersionArg>,
+) -> Result<(String, PathBuf)> {
+    let version = resolve_direct_client_version(version_spec)?;
+    let binary = paths::binary_path(&version)?;
+    if !binary.exists() {
+        return Err(Error::VersionNotFound(version));
+    }
+    Ok((version, binary))
+}
+
+/// Hand the process over to `<binary> client <args>`; returns only on failure.
+///
+/// Shared by `local client` and `cloud service client`. `args` is the native
+/// client's argv, passed as separate arguments with no shell in between.
+pub(crate) fn exec_clickhouse_client(binary: &Path, version: &str, args: &[String]) -> Result<()> {
     // Before the telemetry pre-exec hook, so a binary that cannot be launched
     // is an ordinary error event rather than a censored handoff attempt (#471).
-    ensure_launchable(&binary, &version)?;
+    ensure_launchable(binary, version)?;
 
-    let mut cmd = Command::new(&binary);
-    cmd.arg("client")
-        .arg("--host")
-        .arg(&resolved_host)
-        .arg("--port")
-        .arg(tcp_port.to_string());
-
-    for q in &query {
-        cmd.arg("--query").arg(q);
-    }
-
-    for f in &queries_file {
-        cmd.arg("--queries-file").arg(f);
-    }
-
-    cmd.args(&args);
+    let mut cmd = Command::new(binary);
+    cmd.arg("client").args(args);
     // `exec()` replaces the process image on success, so `main`'s telemetry
     // tail never runs for this invocation; record the censored handoff attempt
     // now (#320, #471). Everything checkable about the launch is checked above

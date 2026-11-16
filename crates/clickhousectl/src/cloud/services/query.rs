@@ -34,7 +34,7 @@ fn query_endpoint_readiness() -> QueryEndpointReadiness {
 
 /// Resolve a service by name or ID within the given org.
 /// Exactly one of `name` or `id` must be provided.
-async fn resolve_service(
+pub(super) async fn resolve_service(
     client: &CloudClient,
     org_id: &str,
     name: Option<&str>,
@@ -621,9 +621,9 @@ fn eprint_waking_service(service_name: &str) {
 /// port would hand the user a command that does not connect, which is worse
 /// than a command that visibly needs filling in.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NativeEndpoint {
-    host: String,
-    port: i64,
+pub(super) struct NativeEndpoint {
+    pub(super) host: String,
+    pub(super) port: i64,
 }
 
 /// What the query path knows about its target service when it has to render
@@ -649,7 +649,9 @@ struct QueryTarget<'a> {
 /// Every field of a response model is optional, so a partial endpoint (a host
 /// with no port, or the reverse) counts as absent here rather than being
 /// half-rendered into a command.
-fn native_secure_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> Option<NativeEndpoint> {
+pub(super) fn native_secure_endpoint(
+    endpoints: Option<&[ServiceEndpoint]>,
+) -> Option<NativeEndpoint> {
     endpoints?.iter().find_map(|endpoint| {
         if endpoint.protocol != Some(ServiceEndpointProtocol::Nativesecure) {
             return None;
@@ -661,27 +663,15 @@ fn native_secure_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> Option<Nativ
     })
 }
 
-/// Stand-in for a host the API did not return. A placeholder, never a guess.
-const NATIVE_HOST_PLACEHOLDER: &str = "<host>";
-
-/// The standard native-protocol TLS port. Only used in the placeholder
-/// command, where there is no endpoint to read a real port from.
-const DEFAULT_NATIVE_SECURE_PORT: i64 = 9440;
-
-/// The `clickhouse client` command that reruns the statement over the native
-/// protocol.
+/// The `cloud service client` command that reruns the statement over the
+/// native protocol, signed in as the user's Cloud identity: no password.
 ///
-/// The SQL and the password are always literal placeholders: the user's
-/// statement is never echoed back into an error message, and no credential is
-/// ever rendered.
-fn native_client_command(native: Option<&NativeEndpoint>) -> String {
-    let (host, port) = match native {
-        Some(endpoint) => (endpoint.host.as_str(), endpoint.port),
-        None => (NATIVE_HOST_PLACEHOLDER, DEFAULT_NATIVE_SECURE_PORT),
-    };
+/// The SQL is always a literal placeholder: the user's statement is never
+/// echoed back into an error message.
+fn native_client_command(target: QueryTarget<'_>) -> String {
     format!(
-        "clickhouse client --host {host} --secure --port {port} --user default \
-         --password '<password>' --query '<your SQL>'"
+        "clickhousectl cloud service client {} --org-id {} --query '<your SQL>'",
+        target.service_id, target.org_id
     )
 }
 
@@ -707,26 +697,15 @@ fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
             ..CloudErrorDetail::new(CloudErrorCode::QueryTimeout, message)
         }
     } else {
-        let command = native_client_command(target.native);
-        let endpoint_guidance = if target.native.is_some() {
-            String::new()
-        } else {
-            format!(
-                "\nThe API response carried no native endpoint for this service; read the host and \
-                 port from `clickhousectl cloud service get {} --org-id {}`.",
-                target.service_id, target.org_id
-            )
-        };
+        let command = native_client_command(target);
         let message = format!(
             "the query timed out at the Query API gateway, which stops waiting after about 30 \
              seconds.\nThe statement may still be running on the service or may already have \
              completed; check `SELECT query_id, elapsed FROM system.processes` and verify its \
              outcome before running it again.\n\nHint: run long statements over the native \
-             protocol instead. Install the client with\n  clickhousectl local use latest\nthen \
-             rerun the query with\n  {command}{endpoint_guidance}\nThe password is the one shown \
-             when the service was created; `clickhousectl cloud service reset-password {}` \
-             issues a new one.",
-            target.service_id
+             protocol instead. Install ClickHouse 25.12 or newer with\n  clickhousectl local use \
+             latest\nthen rerun the query with\n  {command}\nIt signs in as your Cloud user \
+             through a browser; no password is needed."
         );
         CloudErrorDetail {
             code: CloudErrorCode::QueryTimeout,
@@ -858,19 +837,18 @@ fn fd_becomes_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> bool {
 /// Decode SQL at the Query API boundary without replacing invalid bytes.
 ///
 /// This happens before service lookup, so the native fallback deliberately
-/// uses placeholders instead of guessing an endpoint or handling credentials.
+/// uses a service-ID placeholder instead of guessing one.
 fn decode_query_sql(bytes: Vec<u8>, source: &str) -> CloudResult<String> {
     String::from_utf8(bytes).map_err(|_| {
         CloudError::new(format!(
             concat!(
                 "SQL from {} is not valid UTF-8. The Query API accepts only UTF-8 SQL ",
                 "and text-format data; use the native protocol for binary formats such as ",
-                "RowBinary or Native, and for bulk input. Install the client with ",
-                "`clickhousectl local use latest`, then stream the statement and data with:\n  ",
-                "printf 'INSERT INTO <table> FORMAT RowBinary\\n' | cat - <data-file> | ",
-                "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure ",
-                "--user default --password '<password>'\nFind the native host and port with ",
-                "`clickhousectl cloud service get <service-id>`."
+                "RowBinary or Native, and for bulk input. Install ClickHouse 25.12 or newer ",
+                "with `clickhousectl local use latest`, then stream the data with:\n  ",
+                "clickhousectl cloud service client <service-id> --query ",
+                "'INSERT INTO <table> FORMAT RowBinary' < <data-file>\n",
+                "It signs in as your Cloud user through a browser; no password is needed."
             ),
             source
         ))
@@ -1211,74 +1189,55 @@ mod tests {
         }
     }
 
-    /// The gateway timeout names the limit, warns before a rerun, and hands
-    /// over a native-protocol command built from the service's own endpoint
-    /// (#644).
+    /// The gateway timeout warns before a rerun and hands over a
+    /// `cloud service client` command for the same service and org (#644,
+    /// #1154): one that clap accepts, needs no password, and never carries
+    /// the statement.
     #[test]
-    fn query_timeout_error_hints_the_native_endpoint() {
+    fn query_timeout_error_hints_cloud_service_client() {
         let native = NativeEndpoint {
             host: "demo.gcp.clickhouse.cloud".into(),
             port: 9440,
         };
-        let error = query_timeout_error(test_query_target(Some(&native)));
+        for native in [Some(&native), None] {
+            let error = query_timeout_error(test_query_target(native));
 
-        // The gateway's limit, in seconds.
-        assert!(error.message.contains("30"), "{}", error.message);
-        assert!(
-            error
-                .message
-                .contains("SELECT query_id, elapsed FROM system.processes"),
-            "{}",
-            error.message
-        );
-        assert!(
-            error.message.contains("clickhousectl local use latest"),
-            "{}",
-            error.message
-        );
-        assert!(
-            error.message.contains(
-                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 \
-                 --user default --password '<password>' --query '<your SQL>'"
-            ),
-            "{}",
-            error.message
-        );
-        assert!(
-            error
-                .message
-                .contains("clickhousectl cloud service reset-password svc-1"),
-            "{}",
-            error.message
-        );
-        // With a real endpoint there is nothing to look up.
-        assert!(
-            !error.message.contains("cloud service get"),
-            "{}",
-            error.message
-        );
-        assert!(!error.message.contains("<host>"), "{}", error.message);
+            // A timeout is exit code 1 (Generic), never an auth failure, and
+            // the classification is the variant's (#450).
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+            assert_eq!(
+                error.failure,
+                Some(ApiFailure::with_status(FailureKind::Timeout, 500))
+            );
 
-        // A timeout is exit code 1 (Generic), never an auth failure, and the
-        // classification is the variant's (#450).
-        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
-        assert_eq!(
-            error.failure,
-            Some(ApiFailure::with_status(FailureKind::Timeout, 500))
-        );
+            let details = error.details.as_deref().expect("json details");
+            assert_eq!(details.code, CloudErrorCode::QueryTimeout);
+            assert_eq!(details.message, error.message);
+            // The endpoint fields are the API's, or omitted: never guessed.
+            assert_eq!(details.host.as_deref(), native.map(|n| n.host.as_str()));
+            assert_eq!(details.port, native.map(|n| n.port));
 
-        let details = error.details.as_deref().expect("json details");
-        assert_eq!(details.code, CloudErrorCode::QueryTimeout);
-        assert_eq!(details.message, error.message);
-        assert_eq!(details.host.as_deref(), Some("demo.gcp.clickhouse.cloud"));
-        assert_eq!(details.port, Some(9440));
-        assert_eq!(
-            details.command.as_deref(),
-            Some(
-                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 --user \
-                 default --password '<password>' --query '<your SQL>'"
-            )
-        );
+            let command = details.command.as_deref().expect("suggested command");
+            assert!(error.message.contains(command), "{}", error.message);
+            let argv = shlex::split(command).expect("shell-quoted command");
+            assert_eq!(argv[0], "clickhousectl");
+            let cli = <crate::cli::Cli as clap::Parser>::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{command}: {e}"));
+            let crate::cli::Commands::Cloud(cloud) = cli.command else {
+                panic!("expected a cloud command: {command}");
+            };
+            let cloud = *cloud;
+            assert_eq!(cloud.org_id.as_deref(), Some("org-1"));
+            let crate::cloud::cli::CloudCommands::Service {
+                command: crate::cloud::cli::ServiceCommands::Client(args),
+            } = cloud.command
+            else {
+                panic!("expected `cloud service client`: {command}");
+            };
+            assert_eq!(args.service_id.id.as_deref(), Some("svc-1"));
+            assert_eq!(args.query, ["<your SQL>"]);
+            assert!(args.args.is_empty());
+        }
     }
 
     #[test]
@@ -1328,63 +1287,6 @@ mod tests {
             assert!(error.details.is_none());
             assert_eq!(error.failure.unwrap().http_status, Some(status));
             assert_eq!(error.kind, plain.kind);
-        }
-    }
-
-    #[test]
-    fn query_timeout_error_falls_back_to_a_host_placeholder() {
-        let error = query_timeout_error(test_query_target(None));
-
-        assert!(
-            error.message.contains(
-                "clickhouse client --host <host> --secure --port 9440 --user default \
-                 --password '<password>' --query '<your SQL>'"
-            ),
-            "{}",
-            error.message
-        );
-        // No endpoint in the response, so the message says where to get one.
-        assert!(
-            error
-                .message
-                .contains("clickhousectl cloud service get svc-1 --org-id org-1"),
-            "{}",
-            error.message
-        );
-
-        let details = error.details.as_deref().expect("json details");
-        // Absent means omitted: no fabricated host or port.
-        assert_eq!(details.host, None);
-        assert_eq!(details.port, None);
-        assert!(
-            details
-                .command
-                .as_deref()
-                .is_some_and(|command| command.contains("--host <host>")),
-            "{details:?}"
-        );
-        let json = serde_json::to_value(details).expect("details serialize");
-        assert_eq!(json["code"], "query_timeout");
-        assert!(json.get("host").is_none(), "{json}");
-        assert!(json.get("port").is_none(), "{json}");
-    }
-
-    /// The message is rendered from the target and fixed placeholders only,
-    /// so neither the statement nor any credential can reach it.
-    #[test]
-    fn query_timeout_error_never_echoes_sql_or_credentials() {
-        let native = NativeEndpoint {
-            host: "demo.gcp.clickhouse.cloud".into(),
-            port: 9440,
-        };
-        for target in [test_query_target(Some(&native)), test_query_target(None)] {
-            let error = query_timeout_error(target);
-            assert!(error.message.contains("'<your SQL>'"), "{}", error.message);
-            assert!(
-                error.message.contains("--password '<password>'"),
-                "{}",
-                error.message
-            );
         }
     }
 
