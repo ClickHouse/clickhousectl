@@ -59,7 +59,7 @@ fn ignored_env_credentials_notice(
 
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // Local auth subcommands don't need a client; `whoami` takes the normal path.
-    let command = match args.command {
+    let mut command = match args.command {
         CloudCommands::Auth { command } if !command.needs_client() => {
             return auth::run(
                 command,
@@ -73,6 +73,15 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         }
         command => command,
     };
+
+    // Input files that decide whether the invocation is usable are read before
+    // credentials, so their usage (exit 2) and I/O (exit 1) errors never turn
+    // into an auth failure (#1456).
+    if let CloudCommands::ClickPipe { command } = &mut command {
+        command
+            .prepare_create_before_credentials()
+            .map_err(cloud_error_to_top_level)?;
+    }
 
     // Explicit key flags select API-key auth (even an incomplete pair must fail
     // validation without touching OAuth). Otherwise refresh only when no higher

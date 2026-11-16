@@ -311,6 +311,7 @@ impl ClickPipeCommands {
                             args.source.service_account_file.as_deref(),
                         )])
                     })
+                    .and_then(|_| args.destination.validate_explicit_columns())
                     .err(),
             ),
             ClickPipeCreateCommands::Kafka(args) => (
@@ -323,6 +324,7 @@ impl ClickPipeCommands {
                             args.source.protobuf_schema_file.as_deref(),
                         )])
                     })
+                    .and_then(|_| args.destination.validate_explicit_columns())
                     .err(),
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
@@ -335,6 +337,7 @@ impl ClickPipeCommands {
                             args.source.protobuf_schema_file.as_deref(),
                         )])
                     })
+                    .and_then(|_| args.destination.validate_explicit_columns())
                     .err(),
             ),
             ClickPipeCreateCommands::Postgres(args) => {
@@ -359,11 +362,32 @@ impl ClickPipeCommands {
                             args.source.service_account_file.as_deref(),
                         )])
                     })
+                    .and_then(|_| args.destination.validate_explicit_columns())
                     .err(),
             ),
         };
 
         error.map(|error| (source, error.message))
+    }
+
+    /// Read a streaming create's `--columns-from` file before credentials are
+    /// resolved, so a malformed file is a usage error (exit 2) and an
+    /// unreadable one an I/O error (exit 1), whatever the credentials.
+    pub(crate) fn prepare_create_before_credentials(&mut self) -> crate::cloud::client::Result<()> {
+        let ClickPipeCommands::Create { command } = self else {
+            return Ok(());
+        };
+        let destination = match command {
+            ClickPipeCreateCommands::ObjectStorage(args) => &mut args.destination,
+            ClickPipeCreateCommands::Kafka(args) => &mut args.destination,
+            ClickPipeCreateCommands::Kinesis(args) => &mut args.destination,
+            ClickPipeCreateCommands::PubSub(args) => &mut args.destination,
+            ClickPipeCreateCommands::Postgres(_)
+            | ClickPipeCreateCommands::MySQL(_)
+            | ClickPipeCreateCommands::MongoDB(_)
+            | ClickPipeCreateCommands::BigQuery(_) => return Ok(()),
+        };
+        destination.resolve_columns_from_file()
     }
 
     pub(crate) fn clickpipe_schema_discover_validation_error(
@@ -795,6 +819,13 @@ pub struct StreamingDestinationArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
+
+    /// The destination columns resolved from a `--columns-from` file before
+    /// credentials are looked up, so the handler reuses them instead of
+    /// reading the file again. Stdin (`-`) is never read ahead.
+    #[arg(skip)]
+    pub(super) resolved_columns:
+        Option<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>>,
 }
 
 /// Destination-table controls shared by streaming ClickPipe creates.

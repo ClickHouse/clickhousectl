@@ -628,6 +628,7 @@ pub(super) fn kafka_args() -> KafkaCreateArgs {
             columns_from: None,
             destination_table: StreamingDestinationTableArgs::default(),
             destination_roles: DestinationRoleArgs::default(),
+            resolved_columns: None,
         },
     }
 }
