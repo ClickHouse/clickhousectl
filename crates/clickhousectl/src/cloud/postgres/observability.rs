@@ -1,5 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, or_absent, print_human, print_line};
+use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PostgresBackup, PostgresLogEntry, PostgresLogsGetListSeverity, PostgresLogsGetListSortorder,
@@ -494,7 +494,7 @@ pub(super) async fn postgres_slow_query_get(
 
 fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
     if json {
-        print_line(serde_json::to_string_pretty(metrics)?);
+        println!("{}", serde_json::to_string_pretty(metrics)?);
     } else {
         use std::io::Write;
         crate::stdout::stdout().write_all(metrics.as_bytes())?;

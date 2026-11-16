@@ -110,7 +110,7 @@ Run `command` as is: it carries the resolved IDs and `--org-id`, but not credent
 
 | Command | Polls | `field` | `until` | `fail_on` |
 | --- | --- | --- | --- | --- |
-| `service create`, `service start` | `service get` | `state` | `running` | `failed` |
+| `service create`, `service start`, `service wake` | `service get` | `state` | `running` | `failed` |
 | `service stop` | `service get` | `state` | `stopped`, `idle` | `failed`, `terminated` |
 | `service delete` | `service get` | `state` | `terminated`, `softdeleted` (or `resource_not_found`) | `failed` |
 | `postgres create`, `postgres restore`, `postgres read-replica create` | `postgres get` on the new service | `state` | `running` | `deleting` |

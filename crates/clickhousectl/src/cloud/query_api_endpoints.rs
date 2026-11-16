@@ -185,10 +185,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             if json {
                 output(&data, true)
             } else {
-                crate::cloud::output::print_line(format!(
-                    "Deleted Query API endpoint {}",
-                    endpoint_id
-                ));
+                println!("Deleted Query API endpoint {}", endpoint_id);
                 Ok(())
             }
         }

@@ -1932,6 +1932,10 @@ async fn service_wake_sends_awake_with_basic_auth_and_prints_json() {
     let service: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(service["name"], "demo");
     assert_eq!(service["state"], "awaking");
+    assert_eq!(
+        service["next"]["command"],
+        "clickhousectl cloud service get svc-1 --org-id org-1 --json"
+    );
     assert_eq!(mock.received_requests().await.unwrap().len(), 1);
 }
 

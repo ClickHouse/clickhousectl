@@ -2,7 +2,6 @@ use super::config::{load_json_file, load_pg_config_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{
     ABSENT, NextStep, cloud_command, eprint_background_change, json_with_next, or_absent,
-    print_line,
 };
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
@@ -256,35 +255,30 @@ fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
     }
 }
 
-// `print_line`, not `println!`: a closed stdout must not turn a completed
-// operation into a panic (#598).
 pub(super) fn render_postgres_service(svc: &PostgresService) {
-    print_line(format!("  ID: {}", or_absent(svc.id.as_ref())));
-    print_line(format!("  Name: {}", or_absent(svc.name.as_deref())));
-    print_line(format!("  State: {}", state_label(svc.state.as_ref())));
-    print_line(format!("  Provider: {}", enum_label(svc.provider.as_ref())));
-    print_line(format!("  Region: {}", or_absent(svc.region.as_deref())));
-    print_line(format!("  Size: {}", enum_label(svc.size.as_ref())));
-    print_line(format!("  Storage (GB): {}", or_absent(svc.storage_size)));
-    print_line(format!(
+    println!("  ID: {}", or_absent(svc.id.as_ref()));
+    println!("  Name: {}", or_absent(svc.name.as_deref()));
+    println!("  State: {}", state_label(svc.state.as_ref()));
+    println!("  Provider: {}", enum_label(svc.provider.as_ref()));
+    println!("  Region: {}", or_absent(svc.region.as_deref()));
+    println!("  Size: {}", enum_label(svc.size.as_ref()));
+    println!("  Storage (GB): {}", or_absent(svc.storage_size));
+    println!(
         "  PG version: {}",
         enum_label(svc.postgres_version.as_ref())
-    ));
-    print_line(format!("  HA type: {}", enum_label(svc.ha_type.as_ref())));
-    print_line(format!("  Primary: {}", or_absent(svc.is_primary)));
-    print_line(format!(
+    );
+    println!("  HA type: {}", enum_label(svc.ha_type.as_ref()));
+    println!("  Primary: {}", or_absent(svc.is_primary));
+    println!(
         "  Deletion protection: {}",
         or_absent(svc.deletion_protection)
-    ));
-    print_line(format!("  Host: {}", or_absent(svc.hostname.as_deref())));
-    print_line(format!(
-        "  Username: {}",
-        or_absent(svc.username.as_deref())
-    ));
-    print_line(format!(
+    );
+    println!("  Host: {}", or_absent(svc.hostname.as_deref()));
+    println!("  Username: {}", or_absent(svc.username.as_deref()));
+    println!(
         "  Created: {}",
         or_absent(svc.created_at.map(|c| c.to_rfc3339()))
-    ));
+    );
     if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
         let tags: Vec<String> = svc_tags
             .iter()
@@ -293,10 +287,10 @@ pub(super) fn render_postgres_service(svc: &PostgresService) {
                 (key, None) => or_absent(key).to_string(),
             })
             .collect();
-        print_line(format!("  Tags: {}", tags.join(", ")));
+        println!("  Tags: {}", tags.join(", "));
     }
     for line in postgres_restore_and_access_lines(svc) {
-        print_line(line);
+        println!("{}", line);
     }
 }
 
@@ -354,16 +348,14 @@ pub(super) fn render_postgres_connection_guidance(svc: &PostgresService) {
         .filter(|value| !value.is_empty())
         .unwrap_or("<username-from-get>");
 
-    print_line("");
-    print_line(format!(
-        "Connection: host={host} port=5432 database=postgres user={username}"
-    ));
-    print_line(format!(
+    println!();
+    println!("Connection: host={host} port=5432 database=postgres user={username}");
+    println!(
         "Next: clickhousectl cloud postgres get {postgres_id} (wait for state=running and fill any placeholders)"
-    ));
-    print_line(format!(
+    );
+    println!(
         "Verified TLS: clickhousectl cloud postgres certs get {postgres_id} --output ca.pem; see README for psql"
-    ));
+    );
 }
 
 fn merge_tags(
@@ -793,15 +785,10 @@ pub async fn postgres_delete(
 
     client.delete_postgres_service(&org_id, postgres_id).await?;
 
-    // The service is already gone by here, so a closed stdout must not turn a
-    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        print_line(serde_json::to_string_pretty(&svc)?);
+        println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        print_line(format!(
-            "Postgres service {} deletion initiated",
-            postgres_id
-        ));
+        println!("Postgres service {} deletion initiated", postgres_id);
     }
     Ok(())
 }

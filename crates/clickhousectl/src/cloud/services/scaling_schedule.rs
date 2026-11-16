@@ -1,6 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{print_human, print_line};
+use crate::cloud::output::print_human;
 use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
     AutoscalingMode, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,
@@ -207,9 +207,7 @@ pub(super) async fn scaling_schedule_delete(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        print_line(format!(
-            "Scaling schedule deleted from service {service_id}"
-        ));
+        println!("Scaling schedule deleted from service {service_id}");
     }
     Ok(())
 }
