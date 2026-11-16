@@ -656,7 +656,6 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
         wait_timeout,
         ..
     } = request;
-    pg_native::reject_root()?;
     if let Some(password) = &password {
         validate_native_password(password)?;
     }
@@ -678,6 +677,18 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
             return Err(runtime_changed(&user_name));
         }
 
+        // As root, PostgreSQL runs as an unprivileged account. Find out
+        // which, and that it can reach its files, before anything is
+        // downloaded or created.
+        let instance_dir = server::servers_dir_join(&key)?;
+        let run_as = match &prior {
+            Some(_) => pg_native::user_for_existing_instance(&instance_dir, &user_name)?,
+            None => pg_native::user_for_new_instance()?,
+        };
+        if let Some(server_user) = &run_as {
+            pg_native::ensure_searchable(&[&pg_bundle::cache_root()?, &instance_dir], server_user)?;
+        }
+
         let bundle = match &prior {
             // Data directories work across minors of a major, so an existing
             // instance takes the newest installed bundle and needs no network.
@@ -693,6 +704,10 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
             }
         };
 
+        if let Some(server_user) = &run_as {
+            pg_native::ensure_searchable(&[&bundle.dir], server_user)?;
+        }
+
         let metadata_lock = server::lock_metadata()?;
         let (current_tag, current_major) =
             resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
@@ -703,6 +718,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
             continue;
         }
         crate::init::ensure_runtime_gitignore()?;
+        let run_as = run_as.as_ref();
 
         let started = match prior {
             Some(prior) => {
@@ -718,7 +734,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                          over."
                     );
                 }
-                resume_native(prior, &bundle, wait_timeout, metadata_lock).await?
+                resume_native(prior, &bundle, run_as, wait_timeout, metadata_lock).await?
             }
             None => {
                 let host_port = match preflight.host_port {
@@ -744,7 +760,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                     engine: Engine::Postgres,
                     container_id: None,
                 };
-                create_native(info, state, &bundle, wait_timeout, metadata_lock).await?
+                create_native(info, state, &bundle, run_as, wait_timeout, metadata_lock).await?
             }
         };
 
@@ -779,6 +795,7 @@ async fn create_native(
     mut info: ServerInfo,
     state: NativeState,
     bundle: &InstalledBundle,
+    run_as: Option<&pg_native::ServerUser>,
     wait_timeout: Duration,
     metadata_lock: server::MetadataLock,
 ) -> Result<NativeStarted> {
@@ -792,19 +809,20 @@ async fn create_native(
             instance_dir.display()
         )));
     }
-    std::fs::create_dir_all(instance_dir.join("data"))?;
 
     let spawned = async {
+        pg_native::create_instance_dirs(&instance_dir, run_as)?;
         pg_native::initdb(&pg_native::InitOptions {
             bundle,
             instance_dir: &instance_dir,
             name: &display_name,
             user: &state.user,
             password: &state.password,
+            run_as,
         })
         .await?;
         pg_native::save_state(&instance_dir, &state)?;
-        pg_native::spawn_postmaster(bundle, &instance_dir, info.tcp_port)
+        pg_native::spawn_postmaster(bundle, &instance_dir, info.tcp_port, run_as)
     }
     .await;
     let mut child = match spawned {
@@ -930,6 +948,7 @@ fn rollback_native_create(
 async fn resume_native(
     prior: ServerInfo,
     bundle: &InstalledBundle,
+    run_as: Option<&pg_native::ServerUser>,
     wait_timeout: Duration,
     metadata_lock: server::MetadataLock,
 ) -> Result<NativeStarted> {
@@ -950,7 +969,7 @@ async fn resume_native(
         })?;
     ensure_resume_port_free(&display_name, prior.tcp_port)?;
 
-    let mut child = pg_native::spawn_postmaster(bundle, &instance_dir, prior.tcp_port)?;
+    let mut child = pg_native::spawn_postmaster(bundle, &instance_dir, prior.tcp_port, run_as)?;
     let stopped = ServerInfo {
         pid: 0,
         ..prior.clone()

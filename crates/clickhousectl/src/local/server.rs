@@ -453,6 +453,7 @@ fn save_server_info_at_with_sync(
         .and_then(|()| temporary.flush())
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| metadata_write_error(&path, error))?;
+    keep_owner(&path, temporary.path());
     temporary
         .persist(&path)
         .map_err(|error| metadata_write_error(&path, error.error))?;
@@ -460,6 +461,21 @@ fn save_server_info_at_with_sync(
     // must not make callers treat the child as untracked and terminate it.
     let _ = sync(dir, &path);
     Ok(())
+}
+
+/// Give `replacement` the owner of `existing`, the file it is about to
+/// replace. Only root can and needs to: without this, root acting on a
+/// user's project (`sudo clickhousectl ...`) would leave its owner-only
+/// files unreadable to that user. Best effort, and a no-op for a new file or
+/// one this user already owns.
+pub(crate) fn keep_owner(existing: &Path, replacement: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    if let (Ok(existing), Ok(replacement_meta)) =
+        (std::fs::metadata(existing), std::fs::metadata(replacement))
+        && (existing.uid(), existing.gid()) != (replacement_meta.uid(), replacement_meta.gid())
+    {
+        let _ = std::os::unix::fs::chown(replacement, Some(existing.uid()), Some(existing.gid()));
+    }
 }
 
 pub(crate) fn save_server_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
@@ -917,7 +933,7 @@ pub(crate) fn is_server_process(pid: u32, data_dir: &Path) -> bool {
     std::fs::canonicalize(cwd).is_ok_and(|cwd| cwd == data_dir)
 }
 
-fn is_process_alive(pid: u32) -> bool {
+pub(crate) fn is_process_alive(pid: u32) -> bool {
     pid != 0 && i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) == 0 })
 }
 
