@@ -56,6 +56,9 @@ the workflow; those files are the rules.
      or both) with the same fields on each. An undefined `$ref` (`missing_schema_definition`) is an upstream-spec
      defect, not a model to invent locally.
    - Optionality: follow the crate `AGENTS.md` model policy and "Field optionality and the spec".
+   - Request shapes (`request_shape_mismatch`, `request_body_mismatch`, `unsupported_request_schema`): retype the
+     request field, or the method's body argument, to the spec schema's request-position model. A change that
+     alters what is sent for valid input needs the live API to confirm; until then use `request_shape_exemptions`.
    - Enum values: update the variant, its wire name, its `Display`, and any `VALUES` const. Keep data-carrying
      catch-alls.
    - Beta/deprecation: in every API PR that changes Beta operations or deprecated fields, add any split

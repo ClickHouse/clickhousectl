@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 11:
+    if report.get("schema_version") != 12:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -514,6 +514,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Missing operation parameters | {counts['missing_operation_parameter']} |",
         f"| Operation parameter mismatches | {counts['operation_parameter_mismatch']} |",
         f"| Incompatible response shapes | {counts['response_shape_mismatch']} |",
+        f"| Incompatible request shapes and bodies | {total('request_shape_mismatch', 'request_body_mismatch', 'unsupported_request_schema')} |",
         f"| Unsupported success response schemas | {counts['unsupported_response_schema']} |",
         f"| Missing model types | {counts['missing_model_type']} |",
         f"| Missing schema definitions | {counts['missing_schema_definition']} |",
@@ -581,6 +582,9 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         ("operation_parameter_mismatch", "Operation Parameter Mismatches"),
         ("unsupported_response_schema", "Unsupported Success Response Schemas"),
         ("response_shape_mismatch", "Incompatible Operation Response Shapes"),
+        ("request_body_mismatch", "Request Body Argument Mismatches"),
+        ("request_shape_mismatch", "Incompatible Request Shapes"),
+        ("unsupported_request_schema", "Unsupported Request Schemas"),
         ("snapshot_added_response", "New JSON Success Responses Missing From Snapshot"),
         ("snapshot_removed_response", "Removed JSON Success Responses Still In Snapshot"),
         ("snapshot_changed_response", "Changed Operation Response Contracts"),

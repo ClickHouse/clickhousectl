@@ -1,10 +1,13 @@
+//! Shape checking of Rust types against spec schemas, in both directions.
 //! Operation return checking is independent of snapshot and component membership.
 //! Bind generic applications before walking fields; Option is transparent here
-//! because response requiredness is deliberately not a compatibility constraint.
+//! because requiredness is checked separately (request position only).
+//! Request position reuses the same matcher for model fields and body arguments.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::compare::Direction;
 use crate::config::AnalyzerConfig;
 use crate::openapi::{OpenApiInventory, escape_pointer, pascalize};
 use crate::report::{DriftReport, Finding, FindingKind};
@@ -168,7 +171,8 @@ pub(crate) fn compare(
             spec,
             config,
             report,
-            operation: &response.operation,
+            direction: Direction::Response,
+            context: ("operation", &response.operation),
             active: BTreeSet::new(),
         };
         checker.check(
@@ -185,16 +189,218 @@ pub(crate) fn compare(
     }
 }
 
+/// Check one request-position model field against its property schema.
+/// Presence and requiredness are owned by `compare_fields`; this checks shape.
+/// A generic model's fields are checked with its default type arguments.
+/// Returns the findings rather than recording them, so callers can apply
+/// `request_shape_exemptions`.
+pub(crate) fn check_request_field(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    config: &AnalyzerConfig,
+    schema: &str,
+    item: &str,
+    ty: &TypeNode,
+    pointer: &str,
+) -> Vec<Finding> {
+    let Some(property) = spec.document.pointer(pointer).cloned() else {
+        return Vec::new();
+    };
+    let ty = rust
+        .bindings(&TypeNode::Path(schema.to_owned()))
+        .map_or_else(|_| ty.clone(), |bindings| substitute(ty, &bindings));
+    let mut report = DriftReport::default();
+    Checker {
+        rust,
+        spec,
+        config,
+        report: &mut report,
+        direction: Direction::Request,
+        context: ("schema", schema),
+        active: BTreeSet::new(),
+    }
+    .check(&ty, &property, pointer, item, false);
+    report.findings
+}
+
+/// Every operation with a JSON `requestBody` takes it as the one argument no
+/// parameter accounts for, typed as the body schema's request-position model.
+/// An inline object body may instead be passed as one argument per property.
+/// A method whose operation has no `requestBody` takes no such argument.
+pub(crate) fn compare_request_bodies(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    config: &AnalyzerConfig,
+    report: &mut DriftReport,
+) {
+    for (name, operation) in &spec.operations {
+        let Some(method) = rust.client_methods.get(name) else {
+            continue;
+        };
+        let consumed: BTreeSet<&str> = operation
+            .parameters
+            .keys()
+            .filter_map(|(_, wire)| crate::compare::parameter_argument(method, wire, operation))
+            .map(|(argument, _)| argument)
+            .collect();
+        let extra: Vec<(&String, &TypeNode)> = method
+            .arguments
+            .iter()
+            .filter(|(argument, _)| !consumed.contains(argument.as_str()))
+            .collect();
+        let item = |argument: &str| format!("client.rs::Client::{name}::{argument}");
+        let body_pointer = format!("{}/requestBody", operation.pointer);
+        let mismatch = |message: String, pointer: &str, item: String| {
+            Finding::new(FindingKind::RequestBodyMismatch, message)
+                .at_spec(pointer)
+                .at_rust(item)
+                .detail("operation", name)
+        };
+        let Some((pointer, schema)) = request_body_schema(spec, &body_pointer) else {
+            for (argument, ty) in extra {
+                report.findings.push(
+                    mismatch(
+                        format!(
+                            "{name} argument {argument} is neither a parameter nor a request body"
+                        ),
+                        &operation.pointer,
+                        item(argument),
+                    )
+                    .detail("actual", ty.display()),
+                );
+            }
+            continue;
+        };
+        let mut checker = Checker {
+            rust,
+            spec,
+            config,
+            report,
+            direction: Direction::Request,
+            context: ("operation", name),
+            active: BTreeSet::new(),
+        };
+        if let [(argument, ty)] = extra.as_slice() {
+            let resolved = rust.response_type(ty);
+            if resolved
+                .as_ref()
+                .is_ok_and(|resolved| type_name(resolved) == Some("Value"))
+            {
+                checker.finding(
+                    FindingKind::UnsupportedResponseSchema,
+                    format!("{name} request body is untyped"),
+                    &pointer,
+                    &item(argument),
+                    ty,
+                );
+                continue;
+            }
+            if exploded_property(&schema, argument).is_none() {
+                checker.check(ty, &schema, &pointer, &item(argument), false);
+                continue;
+            }
+        }
+        // An inline object body passed property by property.
+        let exploded: Option<Vec<_>> = extra
+            .iter()
+            .map(|(argument, ty)| {
+                exploded_property(&schema, argument).map(|wire| (argument, ty, wire))
+            })
+            .collect();
+        if let Some(exploded) = exploded.filter(|exploded| !exploded.is_empty()) {
+            for (argument, ty, wire) in exploded {
+                checker.check(
+                    ty,
+                    &schema["properties"][wire],
+                    &format!("{pointer}/properties/{}", escape_pointer(wire)),
+                    &item(argument),
+                    false,
+                );
+            }
+            continue;
+        }
+        if extra.len() != 1 {
+            report.findings.push(
+                mismatch(
+                    format!(
+                        "{name} needs exactly one request body argument, found {}",
+                        extra.len()
+                    ),
+                    &pointer,
+                    format!("client.rs::Client::{name}"),
+                )
+                .detail(
+                    "arguments",
+                    extra
+                        .iter()
+                        .map(|(argument, _)| argument.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            );
+        }
+    }
+}
+
+/// Whether a schema admits only `null`.
+fn null_only(schema: &Value) -> bool {
+    schema.get("type").and_then(Value::as_str) == Some("null")
+        || ["oneOf", "anyOf"].iter().any(|composition| {
+            schema
+                .get(*composition)
+                .and_then(Value::as_array)
+                .is_some_and(|branches| !branches.is_empty() && branches.iter().all(null_only))
+        })
+}
+
+/// The inline object body property that `argument` names, if any.
+fn exploded_property<'a>(schema: &'a Value, argument: &str) -> Option<&'a str> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)?
+        .keys()
+        .find(|wire| crate::openapi::camel_to_snake(wire) == argument)
+        .map(String::as_str)
+}
+
+/// The JSON request body schema and its pointer, following one
+/// `#/components/requestBodies` reference.
+fn request_body_schema(spec: &OpenApiInventory, pointer: &str) -> Option<(String, Value)> {
+    let body = spec.document.pointer(pointer)?;
+    let pointer = body
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix('#'))
+        .unwrap_or(pointer);
+    let pointer = format!("{pointer}/content/application~1json/schema");
+    spec.document
+        .pointer(&pointer)
+        .map(|schema| (pointer, schema.clone()))
+}
+
 struct Checker<'a> {
     rust: &'a RustInventory,
     spec: &'a OpenApiInventory,
     config: &'a AnalyzerConfig,
     report: &'a mut DriftReport,
-    operation: &'a str,
+    direction: Direction,
+    /// The detail key and value naming what is checked: the operation for
+    /// responses and request bodies, the owning schema for request fields.
+    context: (&'static str, &'a str),
     active: BTreeSet<(String, String)>,
 }
 
 impl Checker<'_> {
+    /// "response" or "request", for messages.
+    fn side(&self) -> &'static str {
+        match self.direction {
+            Direction::Response => "response",
+            Direction::Request => "request",
+        }
+    }
+
+    /// Findings are raised with their response kinds and mapped here, so the
+    /// matcher states each rule once for both directions.
     fn finding(
         &mut self,
         kind: FindingKind,
@@ -203,6 +409,15 @@ impl Checker<'_> {
         item: &str,
         ty: &TypeNode,
     ) {
+        let kind = match (self.direction, kind) {
+            (Direction::Request, FindingKind::ResponseShapeMismatch) => {
+                FindingKind::RequestShapeMismatch
+            }
+            (Direction::Request, FindingKind::UnsupportedResponseSchema) => {
+                FindingKind::UnsupportedRequestSchema
+            }
+            (_, kind) => kind,
+        };
         if kind == FindingKind::MissingStructField
             && self.report.findings.iter().any(|finding| {
                 finding.kind == kind
@@ -216,7 +431,7 @@ impl Checker<'_> {
             Finding::new(kind, message)
                 .at_spec(pointer)
                 .at_rust(item)
-                .detail("operation", self.operation)
+                .detail(self.context.0, self.context.1)
                 .detail("actual", ty.display()),
         );
     }
@@ -269,10 +484,14 @@ impl Checker<'_> {
         if !root && type_name(ty) == Some("Value") {
             return;
         }
+        // A field the spec pins to null (`anyOf: [{type: null}]`) is unit.
+        if matches!(ty, TypeNode::Other(unit) if unit == "()") && null_only(schema) {
+            return;
+        }
         if matches!(ty, TypeNode::Other(_)) {
             self.finding(
                 FindingKind::UnsupportedResponseSchema,
-                "unsupported Rust response type",
+                format!("unsupported Rust {} type", self.side()),
                 pointer,
                 item,
                 ty,
@@ -296,7 +515,7 @@ impl Checker<'_> {
             let Some(target) = reference.strip_prefix('#') else {
                 self.finding(
                     FindingKind::UnsupportedResponseSchema,
-                    "external response reference",
+                    format!("external {} reference", self.side()),
                     pointer,
                     item,
                     ty,
@@ -306,7 +525,7 @@ impl Checker<'_> {
             let Some(resolved) = self.spec.document.pointer(target).cloned() else {
                 self.finding(
                     FindingKind::UnsupportedResponseSchema,
-                    "unresolved response reference",
+                    format!("unresolved {} reference", self.side()),
                     pointer,
                     item,
                     ty,
@@ -314,19 +533,28 @@ impl Checker<'_> {
                 return;
             };
             if let Some(name) = target.strip_prefix("/components/schemas/") {
-                let expected = crate::compare::response_position_type(
-                    self.rust,
-                    self.spec,
-                    &pascalize(&name.replace("~1", "/").replace("~0", "~")),
-                );
+                let base = pascalize(&name.replace("~1", "/").replace("~0", "~"));
+                let expected = match self.direction {
+                    Direction::Response => {
+                        crate::compare::response_position_type(self.rust, self.spec, &base)
+                    }
+                    Direction::Request => base,
+                };
                 if !root && self.rust.model_types.contains(&expected) {
                     let expected = self.rust.response_type(&TypeNode::Path(expected.clone()));
-                    if expected.as_ref().is_ok_and(|expected| expected != ty) {
+                    // A request type may be generic over a caller-chosen
+                    // parameter (`Request<T>`); its name identifies the model.
+                    let same = |expected: &TypeNode| match (self.direction, type_name(expected)) {
+                        (Direction::Request, Some(name)) => type_name(ty) == Some(name),
+                        _ => expected == ty,
+                    };
+                    if expected.as_ref().is_ok_and(|expected| !same(expected)) {
                         self.finding(
                             FindingKind::ResponseShapeMismatch,
                             format!(
-                                "{} response expects {}, found {}",
-                                self.operation,
+                                "{} {} expects {}, found {}",
+                                self.context.1,
+                                self.side(),
                                 expected.unwrap().display(),
                                 ty.display()
                             ),
@@ -334,6 +562,13 @@ impl Checker<'_> {
                             item,
                             ty,
                         );
+                        return;
+                    }
+                    // A request-position named struct has its own field checks;
+                    // re-walking it here would only duplicate them.
+                    if self.direction == Direction::Request
+                        && type_name(ty).is_some_and(|name| self.rust.structs.contains_key(name))
+                    {
                         return;
                     }
                 }
@@ -367,7 +602,15 @@ impl Checker<'_> {
                         branch.get("type").and_then(Value::as_str) != Some("null")
                     })
                     .collect();
-                if non_null.len() == 1 && non_null.len() < branches.len() {
+                let union = type_name(ty).is_some_and(|name| {
+                    self.rust
+                        .enums
+                        .get(name)
+                        .is_some_and(|info| !info.is_value_enum)
+                });
+                // A nullable or single-branch composition is its one branch;
+                // a one-variant union keeps its own variant checks.
+                if non_null.len() == 1 && (non_null.len() < branches.len() || !union) {
                     let (index, branch) = non_null[0];
                     self.check(
                         ty,
@@ -376,17 +619,12 @@ impl Checker<'_> {
                         item,
                         root,
                     );
-                } else if type_name(ty).is_some_and(|name| {
-                    self.rust
-                        .enums
-                        .get(name)
-                        .is_some_and(|info| !info.is_value_enum)
-                }) {
+                } else if union {
                     // Existing inline union and enum checks own variant coverage.
                 } else {
                     self.finding(
                         FindingKind::UnsupportedResponseSchema,
-                        format!("unsupported response {composition} composition"),
+                        format!("unsupported {} {composition} composition", self.side()),
                         &format!("{pointer}/{composition}"),
                         item,
                         ty,
@@ -434,13 +672,14 @@ impl Checker<'_> {
             }
             Some("integer") => {
                 integer
-                    || self
-                        .config
-                        .fractional_response_exemptions
-                        .iter()
-                        .any(|(name, field)| {
-                            item == format!("models.rs::{name}::{field}") && scalar == "f64"
-                        })
+                    || self.direction == Direction::Response
+                        && self
+                            .config
+                            .fractional_response_exemptions
+                            .iter()
+                            .any(|(name, field)| {
+                                item == format!("models.rs::{name}::{field}") && scalar == "f64"
+                            })
             }
             Some("number") => integer || matches!(scalar, "f32" | "f64"),
             Some("boolean") => scalar == "bool",
@@ -451,7 +690,7 @@ impl Checker<'_> {
                     } else {
                         self.finding(
                             FindingKind::UnsupportedResponseSchema,
-                            "array response has no item schema",
+                            format!("array {} has no item schema", self.side()),
                             pointer,
                             item,
                             ty,
@@ -463,7 +702,15 @@ impl Checker<'_> {
                 }
             }
             Some("object") => {
-                if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+                // `properties: {}` beside `additionalProperties` declares no
+                // named fields, so the dynamic-key rules below apply.
+                if let Some(properties) = schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .filter(|properties| {
+                        !properties.is_empty() || schema.get("additionalProperties").is_none()
+                    })
+                {
                     if !self.rust.structs.contains_key(scalar) {
                         if root {
                             self.finding(
@@ -486,10 +733,16 @@ impl Checker<'_> {
                                 }
                                 Ok(None) => self.finding(
                                     FindingKind::MissingStructField,
-                                    format!(
-                                        "{scalar}.{field} is missing from the {} success response",
-                                        self.operation
-                                    ),
+                                    match self.direction {
+                                        Direction::Response => format!(
+                                            "{scalar}.{field} is missing from the {} success response",
+                                            self.context.1
+                                        ),
+                                        Direction::Request => format!(
+                                            "{scalar}.{field} is missing from the {} request",
+                                            self.context.1
+                                        ),
+                                    },
                                     &pointer,
                                     &item,
                                     ty,
@@ -587,7 +840,7 @@ impl Checker<'_> {
             Some(_) => {
                 self.finding(
                     FindingKind::UnsupportedResponseSchema,
-                    "unsupported response schema type",
+                    format!("unsupported {} schema type", self.side()),
                     pointer,
                     item,
                     ty,
@@ -603,8 +856,9 @@ impl Checker<'_> {
                     FindingKind::ResponseShapeMismatch
                 },
                 format!(
-                    "{} response expects {}, found {}",
-                    self.operation,
+                    "{} {} expects {}, found {}",
+                    self.context.1,
+                    self.side(),
                     kind.unwrap_or("unknown"),
                     ty.display()
                 ),

@@ -19,6 +19,7 @@ pub(crate) fn compare(
         crate::permissions::compare_permissions(rust, spec, snapshot, &mut report);
     }
     compare_parameters(rust, spec, &mut report);
+    crate::responses::compare_request_bodies(rust, spec, config, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
     compare_inline_fields(rust, spec, config, &mut report);
     compare_additional_properties(rust, spec, &mut report);
@@ -169,21 +170,8 @@ fn compare_parameters(rust: &RustInventory, spec: &OpenApiInventory, report: &mu
         for ((location, wire_name), parameter) in &operation.parameters {
             let name = crate::openapi::camel_to_snake(wire_name);
             let schema = parameter.contract.get("schema");
-            // Collection arguments conventionally pluralize the wire name;
-            // an empty collection represents omission without Option.
-            let array = schema
-                .and_then(|schema| schema.get("type"))
-                .is_some_and(|kind| {
-                    kind == "array"
-                        || kind
-                            .as_array()
-                            .is_some_and(|types| types.iter().any(|kind| kind == "array"))
-                });
-            let argument = method.arguments.get(&name).or_else(|| {
-                array
-                    .then(|| method.arguments.get(&format!("{name}s")))
-                    .flatten()
-            });
+            let array = parameter_is_array(parameter);
+            let argument = parameter_argument(method, wire_name, operation).map(|(_, ty)| ty);
             let Some(argument) = argument else {
                 report.findings.push(
                     Finding::new(
@@ -227,6 +215,44 @@ fn compare_parameters(rust: &RustInventory, spec: &OpenApiInventory, report: &mu
             }
         }
     }
+}
+
+fn parameter_is_array(parameter: &crate::openapi::ParameterInfo) -> bool {
+    parameter
+        .contract
+        .get("schema")
+        .and_then(|schema| schema.get("type"))
+        .is_some_and(|kind| {
+            kind == "array"
+                || kind
+                    .as_array()
+                    .is_some_and(|types| types.iter().any(|kind| kind == "array"))
+        })
+}
+
+/// The method argument carrying an operation parameter, by its snake-case
+/// wire name. Collection arguments conventionally pluralize the wire name;
+/// an empty collection represents omission without Option.
+pub(crate) fn parameter_argument<'a>(
+    method: &'a crate::rust_inventory::MethodInfo,
+    wire_name: &str,
+    operation: &crate::openapi::OperationInfo,
+) -> Option<(&'a str, &'a TypeNode)> {
+    let name = crate::openapi::camel_to_snake(wire_name);
+    let array = operation
+        .parameters
+        .iter()
+        .find(|((_, wire), _)| wire == wire_name)
+        .is_some_and(|(_, parameter)| parameter_is_array(parameter));
+    method
+        .arguments
+        .get_key_value(&name)
+        .or_else(|| {
+            array
+                .then(|| method.arguments.get_key_value(&format!("{name}s")))
+                .flatten()
+        })
+        .map(|(name, ty)| (name.as_str(), ty))
 }
 
 fn parameter_is_optional(rust: &RustInventory, ty: &TypeNode) -> bool {
@@ -390,6 +416,7 @@ fn compare_fields(
     report: &mut DriftReport,
 ) {
     let mut optionality_hits = BTreeSet::new();
+    let mut shape_hits = BTreeSet::new();
     for ((schema_name, property_name), property) in &spec.properties {
         for (rust_name, direction) in field_check_targets(rust, spec, schema_name) {
             let Some(struct_info) = rust.structs.get(&rust_name) else {
@@ -412,6 +439,23 @@ fn compare_fields(
                 // Every response field is Option<T> by policy, so requiredness
                 // drift is invisible in response position by design.
                 continue;
+            }
+            let shape = crate::responses::check_request_field(
+                rust,
+                spec,
+                config,
+                &rust_name,
+                &format!("models.rs::{rust_name}::{}", field.rust_name),
+                &field.rust_type,
+                &property.pointer,
+            );
+            if !shape.is_empty() {
+                let key = (rust_name.clone(), property_name.clone());
+                if config.request_shape_exemptions.contains(&key) {
+                    shape_hits.insert(key);
+                } else {
+                    report.findings.extend(shape);
+                }
             }
             let mismatch = property.required_non_nullable == field.rust_type.is_option();
             if mismatch {
@@ -451,6 +495,12 @@ fn compare_fields(
         "optionality",
         &config.optionality_exemptions,
         &optionality_hits,
+        report,
+    );
+    stale_pairs(
+        "request_shape",
+        &config.request_shape_exemptions,
+        &shape_hits,
         report,
     );
 
@@ -2009,7 +2059,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 11,
+                "schema_version": 12,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -2166,14 +2216,21 @@ mod tests {
         } else {
             "Widget"
         };
+        let body = if spec.pointer("/paths/~1widgets/post/requestBody").is_some() {
+            ", body: &Widget"
+        } else {
+            ""
+        };
         let rust = RustInventory::parse(
             &r#"
                 pub struct Client;
                 impl Client {
-                    pub async fn mutate_widget(&self) -> RESPONSE {}
+                    pub async fn mutate_widget(&self BODY) -> RESPONSE {}
                     pub async fn get_widget(&self) -> RESPONSE {}
                 }
-            "#.replace("RESPONSE", response),
+            "#
+            .replace("RESPONSE", response)
+            .replace("BODY", body),
             models,
             "pub const BETA_OPERATIONS: &[&str] = &[]; pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[];",
         )
@@ -2212,7 +2269,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 11);
+        assert_eq!(json["schema_version"], 12);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"
@@ -2465,6 +2522,185 @@ mod tests {
             finding.kind == FindingKind::FieldOptionalityMismatch
                 && finding.rust_item.as_deref() == Some("models.rs::Widget::name")
         }));
+    }
+
+    fn request_widget(models: &str, config: AnalyzerConfig) -> DriftReport {
+        analyze_directional(
+            models,
+            directional_spec(
+                serde_json::json!({
+                    "required": ["count"],
+                    "properties": {
+                        "count": {"type": "integer"},
+                        "unset": {"anyOf": [{"type": "null"}]},
+                        "labels": {"type": "object", "properties": {}, "additionalProperties": {"type": "string"}}
+                    }
+                }),
+                true,
+                false,
+            ),
+            config,
+        )
+    }
+
+    fn kinds(report: &DriftReport) -> Vec<(FindingKind, Option<&str>)> {
+        report
+            .findings
+            .iter()
+            .map(|finding| (finding.kind, finding.rust_item.as_deref()))
+            .collect()
+    }
+
+    #[test]
+    fn request_fields_are_shape_checked_with_exemptions_that_go_stale() {
+        let matching = "pub struct Widget { pub count: i64, pub unset: Option<()>, pub labels: Option<BTreeMap<String, String>> }";
+        let report = request_widget(matching, AnalyzerConfig::default());
+        assert!(!report.has_drift(), "{}", report.render_text());
+
+        let wrong = "pub struct Widget { pub count: String, pub unset: Option<()>, pub labels: Option<BTreeMap<String, String>> }";
+        let report = request_widget(wrong, AnalyzerConfig::default());
+        assert_eq!(
+            kinds(&report),
+            [(
+                FindingKind::RequestShapeMismatch,
+                Some("models.rs::Widget::count")
+            )],
+            "{}",
+            report.render_text()
+        );
+        assert_eq!(
+            report.findings[0].spec_pointer.as_deref(),
+            Some("/components/schemas/Widget/properties/count")
+        );
+
+        let config = AnalyzerConfig {
+            request_shape_exemptions: [("Widget".to_string(), "count".to_string())].into(),
+            ..AnalyzerConfig::default()
+        };
+        assert!(!request_widget(wrong, config.clone()).has_drift());
+        let report = request_widget(matching, config);
+        assert_eq!(
+            kinds(&report),
+            [(
+                FindingKind::StaleExemption,
+                Some("analyzer_config::Widget::count")
+            )],
+            "{}",
+            report.render_text()
+        );
+    }
+
+    fn analyze_bodies(client: &str) -> DriftReport {
+        let config = AnalyzerConfig::default();
+        let spec = serde_json::json!({
+            "paths": {
+                "/widgets/{widgetId}": {"put": {
+                    "operationId": "putWidget",
+                    "parameters": [{"in": "path", "name": "widgetId", "required": true, "schema": {"type": "string"}}],
+                    "requestBody": {"$ref": "#/components/requestBodies/Widget"}
+                }},
+                "/widgets/{widgetId}/attach": {"post": {
+                    "operationId": "attachWidget",
+                    "parameters": [{"in": "path", "name": "widgetId", "required": true, "schema": {"type": "string"}}],
+                    "requestBody": {"content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"version": {"type": "integer"}}
+                    }}}}
+                }},
+                "/widgets": {"get": {"operationId": "listWidgets"}}
+            },
+            "components": {
+                "requestBodies": {"Widget": {"content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/Widget"}
+                }}}},
+                "schemas": {
+                    "Widget": {"required": [], "properties": {"name": {"type": "string"}}},
+                    "Other": {"required": [], "properties": {"name": {"type": "string"}}}
+                }
+            }
+        });
+        let rust = RustInventory::parse(
+            client,
+            "pub struct Widget<T = String> { pub name: Option<T> } pub struct Other { pub name: Option<String> }",
+            "",
+        )
+        .unwrap();
+        let openapi = OpenApiInventory::build(&spec, &config).unwrap();
+        compare(&rust, &openapi, &openapi, &config)
+    }
+
+    fn body_client(put: &str, attach: &str, list: &str) -> String {
+        format!(
+            "pub struct Client; impl Client {{
+                pub async fn put_widget(&self, widget_id: &str{put}) {{}}
+                pub async fn attach_widget(&self, widget_id: &str{attach}) {{}}
+                pub async fn list_widgets(&self{list}) {{}}
+            }}"
+        )
+    }
+
+    #[test]
+    fn request_body_arguments_match_the_operation_request_body() {
+        // Named body (also generic over a caller type), exploded inline body.
+        for put in [", body: &Widget", ", body: &Widget<T>"] {
+            let report = analyze_bodies(&body_client(put, ", version: Option<i64>", ""));
+            assert!(!report.has_drift(), "{}", report.render_text());
+        }
+        for (client, expected) in [
+            (
+                body_client(", body: &Other", ", version: Option<i64>", ""),
+                (
+                    FindingKind::RequestShapeMismatch,
+                    "client.rs::Client::put_widget::body",
+                ),
+            ),
+            (
+                body_client(", body: &serde_json::Value", ", version: Option<i64>", ""),
+                (
+                    FindingKind::UnsupportedRequestSchema,
+                    "client.rs::Client::put_widget::body",
+                ),
+            ),
+            (
+                body_client(", body: &Widget", ", version: Option<String>", ""),
+                (
+                    FindingKind::RequestShapeMismatch,
+                    "client.rs::Client::attach_widget::version",
+                ),
+            ),
+            (
+                body_client("", ", version: Option<i64>", ""),
+                (
+                    FindingKind::RequestBodyMismatch,
+                    "client.rs::Client::put_widget",
+                ),
+            ),
+            (
+                body_client(", body: &Widget, extra: bool", ", version: Option<i64>", ""),
+                (
+                    FindingKind::RequestBodyMismatch,
+                    "client.rs::Client::put_widget",
+                ),
+            ),
+            (
+                body_client(
+                    ", body: &Widget",
+                    ", version: Option<i64>",
+                    ", body: &Widget",
+                ),
+                (
+                    FindingKind::RequestBodyMismatch,
+                    "client.rs::Client::list_widgets::body",
+                ),
+            ),
+        ] {
+            let report = analyze_bodies(&client);
+            assert_eq!(
+                kinds(&report),
+                [(expected.0, Some(expected.1))],
+                "{}",
+                report.render_text()
+            );
+        }
     }
 
     #[test]

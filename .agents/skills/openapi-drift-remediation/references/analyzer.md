@@ -16,6 +16,8 @@ Rust type names but spec/wire field and enum values:
 - `fractional_response_exemptions` — verified fractional runtime measurements declared as integers by the spec,
   keyed by `(RustStructName, specFieldName)`. Only response-only `f64` fields qualify; request fields cannot be
   exempted. Entries become stale when the field, response reachability, Rust type, or upstream integer type changes.
+- `request_shape_exemptions` — request-position fields whose Rust type deliberately differs from the property
+  schema's shape, keyed by `(RustStructName, specFieldName)`. Stale once the field's shape check passes.
 - `extra_field_exemptions` — deliberate code-only fields, keyed by `(RustStructName, specFieldName)`.
 - `deprecated_field_exemptions` — spec-deprecated fields deliberately excluded from hiding, same key shape.
 - `extra_enum_value_exemptions` — intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.
