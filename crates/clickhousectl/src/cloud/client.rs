@@ -2055,24 +2055,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn list_commands_follow_the_scope_except_for_organizations() {
+    /// Every kind, in declaration order (checked below, so a variant added
+    /// mid-enum fails until it is listed here).
+    const ALL_KINDS: [ResourceKind; 25] = [
+        ResourceKind::Service,
+        ResourceKind::PostgresService,
+        ResourceKind::Organization,
+        ResourceKind::Backup,
+        ResourceKind::Snapshot,
+        ResourceKind::ClickPipe,
+        ResourceKind::ReversePrivateEndpoint,
+        ResourceKind::SavedQuery,
+        ResourceKind::QueryApiEndpoint,
+        ResourceKind::ClickHouseSetting,
+        ResourceKind::JwtProvider,
+        ResourceKind::Udf,
+        ResourceKind::Member,
+        ResourceKind::Invitation,
+        ResourceKind::ApiKey,
+        ResourceKind::OrganizationRole,
+        ResourceKind::OrganizationPreview,
+        ResourceKind::Byoc,
+        ResourceKind::Activity,
+        ResourceKind::ClickStackSource,
+        ResourceKind::ClickStackRole,
+        ResourceKind::ClickStackDashboard,
+        ResourceKind::ClickStackAlert,
+        ResourceKind::ClickStackWebhook,
+        ResourceKind::ClickStackSavedSearch,
+    ];
+
+    /// The scope each kind's call sites record. No wildcard: a new kind must
+    /// be given a scope here, next to `ALL_KINDS`.
+    fn call_site_scope(kind: ResourceKind) -> Scope<'static> {
+        use ResourceKind::*;
         let service = Scope::Service {
             org_id: ORG_UUID,
             service_id: NIL_UUID,
         };
-        assert_eq!(
-            ResourceKind::ClickPipe.list_command(service),
-            format!("clickhousectl cloud clickpipe list {NIL_UUID} --org-id {ORG_UUID}")
-        );
-        assert_eq!(
-            ResourceKind::ApiKey.list_command(Scope::Organization(ORG_UUID)),
-            format!("clickhousectl cloud key list --org-id {ORG_UUID}")
-        );
+        match kind {
+            Organization => Scope::Account,
+            Backup
+            | Snapshot
+            | ClickPipe
+            | ReversePrivateEndpoint
+            | SavedQuery
+            | QueryApiEndpoint
+            | ClickHouseSetting
+            | JwtProvider
+            | ClickStackSource
+            | ClickStackRole
+            | ClickStackDashboard
+            | ClickStackAlert
+            | ClickStackWebhook
+            | ClickStackSavedSearch => service,
+            Service | PostgresService | Udf | Member | Invitation | ApiKey | OrganizationRole
+            | OrganizationPreview | Byoc | Activity => Scope::Organization(ORG_UUID),
+        }
+    }
+
+    /// The suggested list command is a real command line: every kind's,
+    /// in the scope its call sites use, parses through clap (#1338).
+    #[test]
+    fn every_list_command_parses_through_clap() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        for (i, kind) in ALL_KINDS.into_iter().enumerate() {
+            assert_eq!(kind as usize, i, "{kind:?} is out of declaration order");
+            let command = kind.list_command(call_site_scope(kind));
+            if let Err(error) = Cli::try_parse_from(command.split_whitespace()) {
+                panic!("{kind:?}: `{command}` does not parse: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn organizations_are_listed_without_a_scope_flag() {
+        let service = Scope::Service {
+            org_id: ORG_UUID,
+            service_id: NIL_UUID,
+        };
         for scope in [Scope::Account, Scope::Organization(ORG_UUID), service] {
             assert_eq!(
                 ResourceKind::Organization.list_command(scope),
-                "clickhousectl cloud org list"
+                ResourceKind::Organization.list_command(Scope::Account)
             );
         }
     }
