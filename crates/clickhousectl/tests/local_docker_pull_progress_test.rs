@@ -88,7 +88,13 @@ fn run_install(tag: &str, pull_response: &str) -> Output {
         .env("HOME", tempdir.path())
         .current_dir(tempdir.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
-        .args(["local", "install", &format!("postgres@{tag}"), "--force"])
+        .args([
+            "local",
+            "install",
+            &format!("postgres@{tag}"),
+            "--force",
+            "--docker",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().expect("run clickhousectl");
