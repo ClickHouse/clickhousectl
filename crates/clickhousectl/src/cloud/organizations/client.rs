@@ -1,15 +1,18 @@
-use super::cli::NotificationListArgs;
-use super::org::NotificationPage;
+use super::cli::{NotificationListArgs, NotificationSettingsListArgs};
+use super::org::CursorPage;
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
+    ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
     ByocInfrastructureDetails, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
     ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
-    ByocInfrastructureValidation, InvitationPostRequest, MemberPatchRequest, NotificationType,
-    Organization, OrganizationPatchRequest, RoleCreateRequest, RoleUpdateRequest,
+    ByocInfrastructureValidation, InvitationPostRequest, MemberNotificationSettingsPatchRequest,
+    MemberNotificationSettingsPatchResponse, MemberPatchRequest, Notification, NotificationSetting,
+    NotificationType, Organization, OrganizationPatchRequest, PublicPreview,
+    PublicPreviewPatchRequest, RoleCreateRequest, RoleUpdateRequest,
 };
 
 impl CloudClient {
@@ -56,7 +59,7 @@ impl CloudClient {
         &self,
         org_id: &str,
         args: &NotificationListArgs,
-    ) -> CloudResult<NotificationPage> {
+    ) -> CloudResult<CursorPage<Notification>> {
         let mut response = self
             .api()
             .notification_get_list(
@@ -76,11 +79,42 @@ impl CloudClient {
             })?;
         let limit = response.limit;
         let next_cursor = response.next_cursor.take();
-        Ok(NotificationPage {
+        Ok(CursorPage {
             result: Self::unwrap_response(response)?,
             limit,
             next_cursor,
         })
+    }
+
+    pub async fn list_public_previews(&self, org_id: &str) -> CloudResult<Vec<PublicPreview>> {
+        let response = self
+            .api()
+            .organization_public_previews_get_list(org_id)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_public_preview(
+        &self,
+        org_id: &str,
+        preview_id: &str,
+        request: &PublicPreviewPatchRequest,
+    ) -> CloudResult<PublicPreview> {
+        // An unknown preview ID is a 404; the body carries only `enabled`.
+        let response = self
+            .api()
+            .organization_public_preview_patch(org_id, preview_id, request)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::OrganizationPreview, preview_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
     }
 
     pub async fn list_notification_types(
@@ -199,6 +233,45 @@ impl CloudClient {
         let response = self
             .api()
             .organization_byoc_infrastructure_tags_get(org_id, byoc_id)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_customer_authorized_access(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> CloudResult<ByocCustomerAuthorizedAccess> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_customer_authorized_access_get(org_id, byoc_id)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_byoc_customer_authorized_access(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+        request: &ByocCustomerAuthorizedAccessPatchRequest,
+    ) -> CloudResult<ByocCustomerAuthorizedAccess> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_customer_authorized_access_update(
+                org_id, byoc_id, request,
+            )
             .await
             .map_err(|error| {
                 self.convert_error_for_resource(
@@ -474,6 +547,55 @@ impl CloudClient {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    pub(super) async fn list_member_notification_settings(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        args: &NotificationSettingsListArgs,
+    ) -> CloudResult<CursorPage<NotificationSetting>> {
+        let mut response = self
+            .api()
+            .member_notification_settings_get_list(
+                org_id,
+                user_id,
+                args.limit,
+                args.cursor.as_deref(),
+                args.notification_type.as_deref(),
+                args.resource_id.as_deref(),
+                args.resource_type.as_deref(),
+            )
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Member, user_id, org_id),
+                )
+            })?;
+        let limit = response.limit;
+        let next_cursor = response.next_cursor.take();
+        Ok(CursorPage {
+            result: Self::unwrap_response(response)?,
+            limit,
+            next_cursor,
+        })
+    }
+
+    pub async fn update_member_notification_settings(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        request: &MemberNotificationSettingsPatchRequest,
+    ) -> CloudResult<MemberNotificationSettingsPatchResponse> {
+        // The body names notification types and resources too, so a 404 is
+        // not proof the member is missing: keep the server's message.
+        let response = self
+            .api()
+            .member_notification_settings_update(org_id, user_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn list_invitations(

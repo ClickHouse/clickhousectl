@@ -62,6 +62,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc access get",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc access update",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
     Permission::api("org role list", &[&op::ORGANIZATION_ROLES_GET_LIST]),
     Permission::api("org role get", &[&op::ORGANIZATION_ROLE_GET]).when(&[Conditional::flag(
         "name",
@@ -75,6 +85,14 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("org role delete", &[&op::ORGANIZATION_ROLE_DELETE]).when(&[
         Conditional::flag("name", &[&op::ORGANIZATION_ROLES_GET_LIST]),
     ]),
+    Permission::api(
+        "org preview list",
+        &[&op::ORGANIZATION_PUBLIC_PREVIEWS_GET_LIST],
+    ),
+    Permission::api(
+        "org preview update",
+        &[&op::ORGANIZATION_PUBLIC_PREVIEW_PATCH],
+    ),
     Permission::api("member list", &[&op::MEMBER_GET_LIST]),
     Permission::api("member get", &[&op::MEMBER_GET])
         .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
@@ -82,6 +100,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
     Permission::api("member remove", &[&op::MEMBER_DELETE])
         .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api(
+        "member notification-settings list",
+        &[&op::MEMBER_NOTIFICATION_SETTINGS_GET_LIST],
+    )
+    .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api(
+        "member notification-settings update",
+        &[&op::MEMBER_NOTIFICATION_SETTINGS_UPDATE],
+    )
+    .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
     Permission::api("invitation list", &[&op::INVITATION_GET_LIST]),
     Permission::api("invitation create", &[&op::INVITATION_CREATE]),
     Permission::api("invitation get", &[&op::INVITATION_GET])
@@ -91,24 +119,27 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    ByocCommands, InvitationCommands, MemberCommands, OrgCommands, PrometheusCommands,
-    QuotaCommands, RoleCommands,
+    ByocAccessCommands, ByocCommands, InvitationCommands, MemberCommands,
+    NotificationSettingsCommands, OrgCommands, PreviewCommands, PrometheusCommands, QuotaCommands,
+    RoleCommands,
 };
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::shared::{NamedResource, resolve_org_id};
 use byoc::{
-    build_byoc_create_request, build_byoc_update_request, build_byoc_validate_request, byoc_create,
-    byoc_delete, byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update,
-    byoc_validate,
+    build_byoc_access_update_request, build_byoc_create_request, build_byoc_update_request,
+    build_byoc_validate_request, byoc_access_get, byoc_access_update, byoc_create, byoc_delete,
+    byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update, byoc_validate,
 };
 use members::{
-    invitation_create, invitation_delete, invitation_get, invitation_list, member_get, member_list,
-    member_remove, member_update,
+    build_notification_settings_update_request, invitation_create, invitation_delete,
+    invitation_get, invitation_list, member_get, member_list, member_remove, member_update,
+    notification_settings_list, notification_settings_update,
 };
 use org::{
     OrgUpdateOptions, org_balance, org_get, org_list, org_notification_types, org_notifications,
-    org_prometheus, org_prometheus_discovery, org_update, org_usage, quota_get, quota_list,
+    org_prometheus, org_prometheus_discovery, org_update, org_usage, preview_list, preview_update,
+    quota_get, quota_list,
 };
 use roles::{
     build_role_create_request, build_role_update_request, role_create, role_delete, role_get,
@@ -128,6 +159,13 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         OrgCommands::NotificationTypes => org_notification_types(client, json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
+        OrgCommands::Preview { command } => match command {
+            PreviewCommands::List => preview_list(client, json).await,
+            PreviewCommands::Update {
+                preview_id,
+                enabled,
+            } => preview_update(client, &preview_id, enabled, json).await,
+        },
         OrgCommands::Update {
             name,
             remove_private_endpoint,
@@ -259,6 +297,35 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             )
             .await
         }
+        ByocCommands::Access { command } => run_byoc_access(client, command, json).await,
+    }
+}
+
+async fn run_byoc_access(
+    client: &CloudClient,
+    command: ByocAccessCommands,
+    json: bool,
+) -> CloudResult<()> {
+    match command {
+        ByocAccessCommands::Get { byoc_id } => {
+            byoc_access_get(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
+        ByocAccessCommands::Update { byoc_id, access } => {
+            // Validate before any lookup, so a bad flag combination sends nothing.
+            let request = build_byoc_access_update_request(&access)?;
+            byoc_access_update(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                request,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -296,6 +363,27 @@ pub async fn run_member(
         MemberCommands::Remove { user_id } => {
             member_remove(client, &user_id.resolve_member(client).await?, json).await
         }
+        MemberCommands::NotificationSettings { command } => match command {
+            NotificationSettingsCommands::List { user_id, page } => {
+                notification_settings_list(
+                    client,
+                    &user_id.resolve_member(client).await?,
+                    page,
+                    json,
+                )
+                .await
+            }
+            NotificationSettingsCommands::Update { user_id, changes } => {
+                let request = build_notification_settings_update_request(&changes)?;
+                notification_settings_update(
+                    client,
+                    &user_id.resolve_member(client).await?,
+                    request,
+                    json,
+                )
+                .await
+            }
+        },
     }
 }
 

@@ -103,6 +103,15 @@ clickhousectl cloud invitation create --email dev@example.com --role-id <role-id
 
 Member/invitation email selectors match exactly, including case. Omitting member role flags preserves assignments; `--clear-roles` removes all and conflicts with `--role-id`.
 
+Member notification settings (Beta) are a member's own overrides of their role's defaults; an empty list means the defaults apply, not that notifications are off. `list` returns one page with the same `result`/`limit`/`nextCursor` contract as `org notifications`. `update` takes either one rule from flags or a whole request body from `--file` (`-` for stdin), never both. A rule applies its `--effect` to every combination of its `--notification` types, `--resource` IDs and `--channel` values (every channel when omitted); `inherit` removes the override. Resources must be named one by one, using the organization ID for organization-level types such as billing. The server applies a request completely or not at all:
+
+```bash
+clickhousectl cloud member notification-settings list <user-id> --type service_backup_failed
+clickhousectl cloud member notification-settings update <user-id> --effect disabled \
+  --notification service_backup_failed --resource <service-id> --channel email
+clickhousectl cloud member notification-settings update --email dev@example.com --file rules.json
+```
+
 Custom organization roles are created/updated with `--file` (`-` for stdin). Updates are partial at the root, but supplied `actors` and `policies` replace their complete lists. Only custom roles can be updated/deleted. Policy `allowDeny` is `ALLOW` or `DENY`; SQL `roleV2` values are `sql-console-readonly` or `sql-console-admin`. Inspect `org role get` and prepare a writable request without unrelated response fields.
 
 ## Read organization notifications
@@ -120,7 +129,7 @@ Use `--type` with a name from `notification-types`, `--severity`, `--resource-id
 
 ## Other organization tasks
 
-Use `cloud org --help` for quotas, credit balance, notifications, notification types, usage, settings, BYOC infrastructure, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
+Use `cloud org --help` for quotas, credit balance, notifications, notification types, preview features, usage, settings, BYOC infrastructure, and Prometheus discovery. `org preview list` shows each preview feature's ID, whether it is on and whether you can switch it; `org preview update <preview-id> --enabled true|false` switches it, and only a feature offered to the organization can be turned on. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
 
 `byoc update` changes only the flags you pass. Its `--tag` flags replace the infrastructure's whole tag set, so read the current set with `byoc tags` first; `byoc private-endpoint-config` shows the private link endpoint service to connect to:
 
@@ -129,6 +138,14 @@ clickhousectl cloud org byoc tags <byoc-id>
 clickhousectl cloud org byoc update <byoc-id> --tag team=data --tag env=prod
 clickhousectl cloud org byoc update <byoc-id> --enable-private-link true
 clickhousectl cloud org byoc private-endpoint-config <byoc-id>
+```
+
+`byoc access` (Beta) controls when ClickHouse personnel may access the infrastructure. `update` replaces the whole setting: `--mode always` allows access, `--mode never` denies it, and `--mode window` allows it for `--duration` seconds from `--start`, which that mode requires and the others reject. The response's `allowed` is the data plane's verdict at request time:
+
+```bash
+clickhousectl cloud org byoc access get <byoc-id>
+clickhousectl cloud org byoc access update <byoc-id> --mode window \
+  --start 2026-11-10T09:00:00Z --duration 14400
 ```
 
 BYO-VPC `--vpc-id` needs `--private-subnet-id` and conflicts with `--vpc-cidr-range`. For private endpoint registration, use the provider's endpoint identity, not an endpoint-service name or ARN; registration affects the organization as well as the service. Removing an organization endpoint requires both provider and region to identify it completely. The CLI's format checks do not prove an endpoint exists or belongs to you.
