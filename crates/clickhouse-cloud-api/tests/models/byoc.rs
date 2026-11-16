@@ -13,7 +13,17 @@ fn serialize_byoc_infrastructure_post_request() {
             ByocAvailabilityZoneSuffix::F,
         ]),
         display_name: Some("My BYOC".to_string()),
-        ..Default::default()
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        region_id: ByocInfrastructurePostRequestRegionid::Ap_northeast_1,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
+        vpc_id: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["accountId"], "123456789012");

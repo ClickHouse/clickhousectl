@@ -121,7 +121,11 @@ async fn create_postgres_service() {
             ("default_pool_size".into(), "16".into()),
             ("future_parameter".into(), "on".into()),
         ])),
-        ..Default::default()
+        ha_type: None,
+        ip_access_list: None,
+        pg_config: None,
+        postgres_version: None,
+        tags: None,
     };
     let resp = c.postgres_service_create("org-1", &body).await.unwrap();
     let pg = resp.result.unwrap();
@@ -444,7 +448,8 @@ async fn create_postgres_read_replica() {
             ("default_pool_size".into(), "16".into()),
             ("future_parameter".into(), "on".into()),
         ])),
-        ..Default::default()
+        pg_config: None,
+        tags: None,
     };
     let resp = c
         .postgres_instance_create_read_replica("org-1", "pg-1", &body)
@@ -480,7 +485,8 @@ async fn restore_postgres_service() {
             ("future_parameter".into(), "on".into()),
         ])),
         restore_target: Utc::now(),
-        ..Default::default()
+        pg_config: None,
+        tags: None,
     };
     let resp = c
         .postgres_instance_restore("org-1", "pg-1", &body)

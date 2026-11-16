@@ -64,7 +64,26 @@ fn serialize_service_post_request() {
             source: "0.0.0.0/0".to_string(),
             description: Some("Anywhere".to_string()),
         }],
-        ..Default::default()
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        release_channel: None,
+        tags: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "new-service");
@@ -84,7 +103,35 @@ fn serialize_service_post_request_horizontal_autoscaling() {
         autoscaling_mode: Some(AutoscalingMode::Horizontal),
         min_replicas: Some(1),
         max_replicas: Some(5),
-        ..Default::default()
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Ap_northeast_1,
+        release_channel: None,
+        tags: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["autoscalingMode"], "horizontal");
@@ -93,7 +140,42 @@ fn serialize_service_post_request_horizontal_autoscaling() {
 
     // Omitted entirely when unset — mutually exclusive with the vertical
     // scaling fields, so they must not serialize as null/defaults.
-    let json = serde_json::to_value(ServicePostRequest::default()).unwrap();
+    let json = serde_json::to_value(ServicePostRequest {
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        name: String::new(),
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Ap_northeast_1,
+        release_channel: None,
+        tags: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
+    })
+    .unwrap();
     assert!(json.get("minReplicas").is_none());
     assert!(json.get("maxReplicas").is_none());
     assert!(json.get("autoscalingMode").is_none());
@@ -424,7 +506,7 @@ fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: Some("https://example.com".to_string()),
         roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
-        ..Default::default()
+        open_api_keys: Vec::new(),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["allowedOrigins"], "https://example.com");
@@ -936,7 +1018,35 @@ fn service_post_request_backup_encryption_config_serialization() {
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
         backup_id: Some(uuid::Uuid::nil()),
-        ..Default::default()
+        autoscaling_mode: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        release_channel: None,
+        tags: None,
+        #[cfg(feature = "deprecated-fields")]
+        tier: None,
     };
     let json = serde_json::to_value(&base).unwrap();
     assert!(json.get("backupEncryptionConfig").is_none());

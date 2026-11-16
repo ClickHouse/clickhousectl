@@ -150,10 +150,9 @@ impl std::fmt::Display for ByocConfigState {
 }
 
 /// Inline enum for `ByocInfrastructurePostRequest.regionId`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ByocInfrastructurePostRequestRegionid {
     #[serde(rename = "ap-northeast-1")]
-    #[default]
     Ap_northeast_1,
     #[serde(rename = "ap-northeast-2")]
     Ap_northeast_2,
@@ -494,10 +493,9 @@ impl std::fmt::Display for ByocInfrastructureProgressStageStatus {
 }
 
 /// Inline enum for `ByocInfrastructureValidatePostRequest.regionId`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ByocInfrastructureValidatePostRequestRegionid {
     #[serde(rename = "ap-northeast-1")]
-    #[default]
     Ap_northeast_1,
     #[serde(rename = "ap-northeast-2")]
     Ap_northeast_2,
@@ -674,7 +672,7 @@ pub struct ByocInfrastructureTagsResponse {
 }
 
 /// `ByocInfrastructurePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ByocInfrastructurePostRequest {
     #[serde(rename = "accountId")]
     pub account_id: String,
@@ -721,7 +719,7 @@ pub struct ByocInfrastructurePostRequest {
 /// `ByocInfrastructureValidatePostRequest` from the ClickHouse Cloud API.
 ///
 /// Preflight-checks cloud account permissions for a BYOC infrastructure without creating it.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ByocInfrastructureValidatePostRequest {
     #[serde(rename = "accountId")]
     pub account_id: String,

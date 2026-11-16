@@ -115,7 +115,7 @@ impl std::fmt::Display for ClickStackNumberTileColorConditionResponse {
 }
 
 /// `ClickStackBackgroundChart` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackBackgroundChart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
@@ -136,7 +136,7 @@ pub struct ClickStackBackgroundChartResponse {
 }
 
 /// `ClickStackBetweenColorCondition` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackBetweenColorCondition {
     pub color: ClickStackChartColor,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,7 +163,7 @@ pub struct ClickStackBetweenColorConditionResponse {
 }
 
 /// `ClickStackEqualityColorCondition` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackEqualityColorCondition {
     pub color: ClickStackChartColor,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,7 +192,7 @@ pub struct ClickStackEqualityColorConditionResponse {
 }
 
 /// `ClickStackNumberFormat` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumberFormat {
     pub average: bool,
     #[serde(rename = "currencySymbol")]
@@ -237,7 +237,7 @@ pub struct ClickStackNumberFormatResponse {
 }
 
 /// `ClickStackNumericColorCondition` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumericColorCondition {
     pub color: ClickStackChartColor,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -264,7 +264,7 @@ pub struct ClickStackNumericColorConditionResponse {
 }
 
 /// `ClickStackPromqlInstantExpression` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPromqlInstantExpression {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -289,7 +289,7 @@ pub struct ClickStackPromqlInstantExpressionResponse {
 }
 
 /// `ClickStackPromqlRangeExpression` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPromqlRangeExpression {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -310,7 +310,7 @@ pub struct ClickStackPromqlRangeExpressionResponse {
 }
 
 /// `ClickStackPromqlReducibleExpression` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPromqlReducibleExpression {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -339,7 +339,7 @@ pub struct ClickStackPromqlReducibleExpressionResponse {
 }
 
 /// `ClickStackSelectItem` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSelectItem {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackSelectItemAggfn,
@@ -393,7 +393,7 @@ pub struct ClickStackSelectItemResponse {
 }
 
 /// `ClickStackFormula` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackFormula {
     #[serde(rename = "expression")]
     pub expression: String,

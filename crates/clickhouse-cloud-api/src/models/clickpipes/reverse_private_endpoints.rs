@@ -27,9 +27,8 @@ impl CreateReversePrivateEndpointMskauthentication {
 }
 
 /// Inline enum for `CreateReversePrivateEndpoint.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CreateReversePrivateEndpointType {
-    #[default]
     VPC_ENDPOINT_SERVICE,
     VPC_RESOURCE,
     MSK_MULTI_VPC,
@@ -166,7 +165,7 @@ impl std::fmt::Display for ReversePrivateEndpointDnsTargetKind {
 }
 
 /// `CreateReversePrivateEndpoint` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",

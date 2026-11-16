@@ -86,7 +86,7 @@ fn serialize_invitation_post_request() {
         email: "alice@example.com".to_string(),
         #[cfg(feature = "deprecated-fields")]
         role: Some(InvitationPostRequestRole::Developer),
-        ..Default::default()
+        assigned_role_ids: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["email"], "alice@example.com");

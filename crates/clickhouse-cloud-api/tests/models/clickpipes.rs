@@ -2,7 +2,22 @@ use clickhouse_cloud_api::models::*;
 
 #[test]
 fn clickpipe_new_request_fields_preserve_omission_and_wire_names() {
-    let mut request = ClickPipePostRequest::default();
+    let mut request = ClickPipePostRequest {
+        destination: ClickPipeMutateDestination {
+            columns: None,
+            database: String::new(),
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
+        },
+        field_mappings: None,
+        name: String::new(),
+        scaling: None,
+        settings: None,
+        source: ClickPipePostSource::default(),
+        start_paused: None,
+    };
     assert!(
         serde_json::to_value(&request)
             .unwrap()
@@ -12,13 +27,32 @@ fn clickpipe_new_request_fields_preserve_omission_and_wire_names() {
     request.start_paused = Some(true);
     assert_eq!(serde_json::to_value(&request).unwrap()["startPaused"], true);
 
-    let mut table = ClickPipeDestinationTableDefinition::default();
+    let mut table = ClickPipeDestinationTableDefinition {
+        engine: ClickPipeDestinationTableEngine {
+            column_ids: Vec::new(),
+            r#type: ClickPipeDestinationTableEngineType::default(),
+            version_column_id: None,
+        },
+        partition_by: String::new(),
+        primary_key: String::new(),
+        sorting_key: Vec::new(),
+        ttl: String::new(),
+    };
     assert!(serde_json::to_value(&table).unwrap().get("ttl").is_none());
     table.ttl = "event_time + INTERVAL 30 DAY".to_string();
     let serialized = serde_json::to_value(&table).unwrap();
     assert_eq!(serialized["ttl"], table.ttl);
 
-    let mut settings = ClickPipeMongoDBPipeSettings::default();
+    let mut settings = ClickPipeMongoDBPipeSettings {
+        initial_load_parallelism: None,
+        delete_on_merge: None,
+        pull_batch_size: None,
+        replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::default(),
+        snapshot_num_rows_per_partition: None,
+        snapshot_number_of_parallel_tables: None,
+        sync_interval_seconds: None,
+        use_json_native_format: None,
+    };
     assert!(
         serde_json::to_value(&settings)
             .unwrap()
@@ -213,7 +247,14 @@ fn serialize_clickpipe_patch_request() {
 fn serialize_create_reverse_private_endpoint() {
     let req = CreateReversePrivateEndpoint {
         description: "Test RPE".to_string(),
-        ..Default::default()
+        custom_private_dns_mappings: None,
+        gcp_service_attachment: None,
+        msk_authentication: None,
+        msk_cluster_arn: None,
+        r#type: CreateReversePrivateEndpointType::VPC_ENDPOINT_SERVICE,
+        vpc_endpoint_service_name: None,
+        vpc_resource_configuration_id: None,
+        vpc_resource_share_arn: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["description"], "Test RPE");
@@ -225,14 +266,46 @@ fn serialize_clickpipe_object_storage_ingestion_controls() {
         url: "https://bucket.s3.amazonaws.com/events/*.json".to_string(),
         skip_initial_load: Some(true),
         start_after: Some("events/2026-06-01/".to_string()),
-        ..Default::default()
+        access_key: None,
+        authentication: None,
+        azure_container_name: None,
+        compression: None,
+        connection_string: None,
+        delimiter: None,
+        format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
+        iam_role: None,
+        is_continuous: None,
+        path: None,
+        queue_url: None,
+        service_account_key: None,
+        skip_first_lines: None,
+        r#type: ClickPipePostObjectStorageSourceType::S3,
     };
     let json = serde_json::to_value(&source).unwrap();
     assert_eq!(json["skipInitialLoad"], true);
     assert_eq!(json["startAfter"], "events/2026-06-01/");
 
     // Omitted from the wire when unset.
-    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource {
+        access_key: None,
+        authentication: None,
+        azure_container_name: None,
+        compression: None,
+        connection_string: None,
+        delimiter: None,
+        format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
+        iam_role: None,
+        is_continuous: None,
+        path: None,
+        queue_url: None,
+        service_account_key: None,
+        skip_first_lines: None,
+        skip_initial_load: None,
+        start_after: None,
+        r#type: ClickPipePostObjectStorageSourceType::S3,
+        url: String::new(),
+    })
+    .unwrap();
     assert!(json.get("skipInitialLoad").is_none());
     assert!(json.get("startAfter").is_none());
 }
@@ -248,7 +321,25 @@ fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
         host: "postgres.example".to_string(),
         port: 5432,
         database: "source-db".to_string(),
-        ..Default::default()
+        ca_certificate: None,
+        disable_tls: false,
+        settings: ClickPipePostgresPipeSettings {
+            allow_nullable_columns: false,
+            delete_on_merge: false,
+            enable_failover_slots: false,
+            initial_load_parallelism: None,
+            publication_name: None,
+            pull_batch_size: None,
+            replication_mode: ClickPipePostgresPipeSettingsReplicationmode::default(),
+            replication_slot_name: None,
+            snapshot_num_rows_per_partition: None,
+            snapshot_number_of_parallel_tables: None,
+            sync_interval_seconds: None,
+        },
+        skip_cert_verification: false,
+        table_mappings: Vec::new(),
+        tls_host: None,
+        r#type: None,
     };
     let json = serde_json::to_value(&iam_role).unwrap();
     assert!(
@@ -409,7 +500,13 @@ fn reverse_private_endpoint_request_rejects_a_missing_required_field() {
     let body = CreateReversePrivateEndpoint {
         description: "New RPE".to_string(),
         r#type: CreateReversePrivateEndpointType::MSK_MULTI_VPC,
-        ..Default::default()
+        custom_private_dns_mappings: None,
+        gcp_service_attachment: None,
+        msk_authentication: None,
+        msk_cluster_arn: None,
+        vpc_endpoint_service_name: None,
+        vpc_resource_configuration_id: None,
+        vpc_resource_share_arn: None,
     };
     assert_eq!(
         serde_json::to_value(&body).unwrap(),
@@ -588,7 +685,23 @@ fn click_pipe_schema_discovery_response_round_trip() {
 fn click_pipe_schema_discovery_request_kafka_source() {
     let req = ClickPipeSchemaDiscoveryRequest {
         source: ClickPipeSchemaDiscoverySource {
-            kafka: Some(ClickPipePostKafkaSource::default()),
+            kafka: Some(ClickPipePostKafkaSource {
+                protobuf_schema: None,
+                authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+                brokers: String::new(),
+                ca_certificate: None,
+                consumer_group: None,
+                credentials: None,
+                exactly_once: None,
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                iam_role: None,
+                offset: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                topics: String::new(),
+                tombstone_mode: None,
+                r#type: ClickPipePostKafkaSourceType::Kafka,
+            }),
             kinesis: None,
             object_storage: None,
             pubsub: None,
@@ -666,14 +779,53 @@ fn click_pipe_settings_put_request_omits_absent_kafka_read_committed() {
 fn click_pipe_schema_discovery_request_supports_new_sources() {
     let object_storage = ClickPipeSchemaDiscoveryRequest {
         source: ClickPipeSchemaDiscoverySource {
-            object_storage: Some(ClickPipePostObjectStorageSource::default()),
-            ..Default::default()
+            object_storage: Some(ClickPipePostObjectStorageSource {
+                access_key: None,
+                authentication: None,
+                azure_container_name: None,
+                compression: None,
+                connection_string: None,
+                delimiter: None,
+                format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
+                iam_role: None,
+                is_continuous: None,
+                path: None,
+                queue_url: None,
+                service_account_key: None,
+                skip_first_lines: None,
+                skip_initial_load: None,
+                start_after: None,
+                r#type: ClickPipePostObjectStorageSourceType::S3,
+                url: String::new(),
+            }),
+            kafka: None,
+            kinesis: None,
+            pubsub: None,
         },
     };
     let pubsub = ClickPipeSchemaDiscoveryRequest {
         source: ClickPipeSchemaDiscoverySource {
-            pubsub: Some(ClickPipePostPubSubSource::default()),
-            ..Default::default()
+            pubsub: Some(
+                ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(
+                    ClickPipePostPubSubServiceAccountSource {
+                        format: ClickPipePostPubSubSourceFormat::JSONEachRow,
+                        project_id: String::new(),
+                        topic: String::new(),
+                        authentication: ClickPipePostPubSubSourceAuthentication::ServiceAccount,
+                        seek_type: ClickPipePostPubSubSourceSeektype::Latest,
+                        seek_timestamp: None,
+                        filter: None,
+                        enable_ordering: None,
+                        ack_deadline: None,
+                        service_account_key: ServiceAccount {
+                            service_account_file: String::new(),
+                        },
+                    },
+                ),
+            ),
+            kafka: None,
+            kinesis: None,
+            object_storage: None,
         },
     };
 
@@ -683,7 +835,10 @@ fn click_pipe_schema_discovery_request_supports_new_sources() {
 
 #[test]
 fn click_pipe_schema_discovery_request_default_omits_sources() {
-    let v = serde_json::to_value(ClickPipeSchemaDiscoveryRequest::default()).unwrap();
+    let v = serde_json::to_value(ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource::default(),
+    })
+    .unwrap();
     assert!(v["source"].get("kafka").is_none());
     assert!(v["source"].get("kinesis").is_none());
 }
@@ -760,7 +915,14 @@ fn clickpipe_postgres_table_mapping_partition_by_expr_round_trip() {
     // types it as `String` and always sends it.
     let mapping = ClickPipePostgresPipeTableMapping {
         partition_by_expr: "toYYYYMM(created_at)".to_string(),
-        ..Default::default()
+        excluded_columns: Vec::new(),
+        partition_key: String::new(),
+        sorting_keys: Vec::new(),
+        source_schema_name: String::new(),
+        source_table: String::new(),
+        table_engine: ClickPipePostgresPipeTableMappingTableengine::default(),
+        target_table: String::new(),
+        use_custom_sorting_key: false,
     };
     let v = serde_json::to_value(&mapping).unwrap();
     assert_eq!(v["partitionByExpr"], "toYYYYMM(created_at)");
@@ -1098,7 +1260,23 @@ fn bigquery_service_account_allows_omitted_authentication() {
 // credentials body (IAM_ROLE) and an explicit empty endpoint list stay on the wire.
 #[test]
 fn kafka_post_source_credentials_and_endpoints_are_optional() {
-    let absent = ClickPipePostKafkaSource::default();
+    let absent = ClickPipePostKafkaSource {
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
+    };
     assert_eq!(absent.credentials, None);
     assert_eq!(absent.reverse_private_endpoint_ids, None);
     let wire = serde_json::to_value(&absent).unwrap();
@@ -1112,7 +1290,18 @@ fn kafka_post_source_credentials_and_endpoints_are_optional() {
         authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
         credentials: Some(serde_json::Value::Null),
         reverse_private_endpoint_ids: Some(vec![]),
-        ..Default::default()
+        protobuf_schema: None,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     let wire = serde_json::to_value(&explicit).unwrap();
     assert_eq!(wire.get("credentials"), Some(&serde_json::Value::Null));
@@ -1120,7 +1309,20 @@ fn kafka_post_source_credentials_and_endpoints_are_optional() {
 
     let endpoints = ClickPipePostKafkaSource {
         reverse_private_endpoint_ids: Some(vec!["rpe-1".to_string()]),
-        ..Default::default()
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     let wire = serde_json::to_value(&endpoints).unwrap();
     assert_eq!(
@@ -1133,7 +1335,20 @@ fn kafka_post_source_credentials_and_endpoints_are_optional() {
 fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
     let json_source = ClickPipePostKafkaSource {
         format: ClickPipePostKafkaSourceFormat::JSONEachRow,
-        ..Default::default()
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     assert!(
         serde_json::to_value(json_source)
@@ -1144,15 +1359,53 @@ fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
     let inline = ClickPipePostKafkaSource {
         format: ClickPipePostKafkaSourceFormat::Protobuf,
         protobuf_schema: Some("c3ludGF4".into()),
-        ..Default::default()
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     let wire = serde_json::to_value(inline).unwrap();
     assert_eq!(wire["protobufSchema"], "c3ludGF4");
     assert!(wire.get("schemaRegistry").is_none());
     let registry = ClickPipePostKafkaSource {
         format: ClickPipePostKafkaSourceFormat::Protobuf,
-        schema_registry: Some(ClickPipeMutateKafkaSchemaRegistry::default()),
-        ..Default::default()
+        schema_registry: Some(
+            ClickPipeMutateKafkaSchemaRegistry::ClickPipeMutateKafkaConfluentSchemaRegistry(
+                ClickPipeMutateKafkaConfluentSchemaRegistry {
+                    r#type: None,
+                    authentication:
+                        ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
+                    ca_certificate: None,
+                    credentials: ClickPipeKafkaSchemaRegistryCredentials {
+                        password: String::new(),
+                        username: String::new(),
+                    },
+                    url: String::new(),
+                },
+            ),
+        ),
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     let wire = serde_json::to_value(registry).unwrap();
     assert!(wire.get("protobufSchema").is_none());
@@ -1234,7 +1487,19 @@ fn clickpipe_patch_nested_objects_preserve_omission_and_explicit_empty_values() 
 
 #[test]
 fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
-    let json_source = ClickPipePostKinesisSource::default();
+    let json_source = ClickPipePostKinesisSource {
+        access_key: None,
+        authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
+        format: ClickPipePostKinesisSourceFormat::JSONEachRow,
+        iam_role: None,
+        iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+        region: String::new(),
+        schema_registry: None,
+        stream_name: String::new(),
+        timestamp: None,
+        use_enhanced_fan_out: None,
+        protobuf_schema: None,
+    };
     let wire = serde_json::to_value(&json_source).unwrap();
     assert!(wire.get("protobufSchema").is_none());
     assert_eq!(
@@ -1245,7 +1510,15 @@ fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
     let protobuf = ClickPipePostKinesisSource {
         format: ClickPipePostKinesisSourceFormat::Protobuf,
         protobuf_schema: Some("c3ludGF4".into()),
-        ..Default::default()
+        access_key: None,
+        authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
+        iam_role: None,
+        iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+        region: String::new(),
+        schema_registry: None,
+        stream_name: String::new(),
+        timestamp: None,
+        use_enhanced_fan_out: None,
     };
     let wire = serde_json::to_value(&protobuf).unwrap();
     assert_eq!(wire["format"], "Protobuf");
@@ -1498,7 +1771,20 @@ fn kafka_schema_registry_requests_serialize_each_variant_wire_shape() {
     );
     let source = ClickPipePostKafkaSource {
         schema_registry: Some(glue),
-        ..Default::default()
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     assert_eq!(
         serde_json::to_value(source).unwrap()["schemaRegistry"]["type"],
@@ -1566,7 +1852,23 @@ fn kafka_glue_registry_conversion_reports_missing_fields() {
 
 #[test]
 fn kafka_tombstone_mode_is_lossless_and_optional() {
-    let request = ClickPipePostKafkaSource::default();
+    let request = ClickPipePostKafkaSource {
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        tombstone_mode: None,
+        r#type: ClickPipePostKafkaSourceType::Kafka,
+    };
     assert!(
         serde_json::to_value(request)
             .unwrap()
@@ -1582,7 +1884,20 @@ fn kafka_tombstone_mode_is_lossless_and_optional() {
     );
     let request = ClickPipePostKafkaSource {
         tombstone_mode: Some(ClickPipePostKafkaSourceTombstonemode::Delete),
-        ..Default::default()
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     assert_eq!(
         serde_json::to_value(request).unwrap()["tombstoneMode"],
@@ -1609,7 +1924,19 @@ fn kafka_tombstone_mode_is_lossless_and_optional() {
 
 #[test]
 fn kinesis_sources_omit_missing_or_null_registry() {
-    let request = ClickPipePostKinesisSource::default();
+    let request = ClickPipePostKinesisSource {
+        access_key: None,
+        authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
+        format: ClickPipePostKinesisSourceFormat::JSONEachRow,
+        iam_role: None,
+        iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+        region: String::new(),
+        schema_registry: None,
+        stream_name: String::new(),
+        timestamp: None,
+        use_enhanced_fan_out: None,
+        protobuf_schema: None,
+    };
     assert!(
         serde_json::to_value(request)
             .unwrap()
@@ -1645,7 +1972,20 @@ fn kafka_tombstone_mode_soft_delete_round_trips() {
     assert_eq!(parsed.to_string(), "soft_delete");
     let request = ClickPipePostKafkaSource {
         tombstone_mode: Some(ClickPipePostKafkaSourceTombstonemode::Soft_delete),
-        ..Default::default()
+        protobuf_schema: None,
+        authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+        brokers: String::new(),
+        ca_certificate: None,
+        consumer_group: None,
+        credentials: None,
+        exactly_once: None,
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        iam_role: None,
+        offset: None,
+        reverse_private_endpoint_ids: None,
+        schema_registry: None,
+        topics: String::new(),
+        r#type: ClickPipePostKafkaSourceType::Kafka,
     };
     assert_eq!(
         serde_json::to_value(request).unwrap()["tombstoneMode"],
@@ -1717,9 +2057,14 @@ fn mongodb_structured_ingestion_request_is_strict_and_omits_unset_fields() {
         target_table: "mydb_users".to_string(),
         structured_ingestion: Some(ClickPipeMongoDBStructuredIngestion {
             enabled: true,
-            ..Default::default()
+            columns: None,
+            drop_unexpected_values: None,
+            excluded_columns: None,
+            partition_by_expr: None,
+            sorting_keys: None,
         }),
-        ..Default::default()
+        mongo_config: None,
+        table_engine: None,
     };
     assert_eq!(
         serde_json::to_value(&minimal).unwrap(),
@@ -1788,7 +2133,8 @@ fn mongodb_table_config_request_is_strict_and_round_trips() {
         mongo_config: Some(ClickPipeMongoDBTableConfig {
             persist_deleted_documents: true,
         }),
-        ..Default::default()
+        structured_ingestion: None,
+        table_engine: None,
     };
     let wire = serde_json::json!({
         "sourceDatabaseName": "mydb",
@@ -1805,7 +2151,10 @@ fn mongodb_table_config_request_is_strict_and_round_trips() {
     // `persistDeletedDocuments` is required in request position, so an
     // explicit `false` is sent and an empty config is rejected.
     assert_eq!(
-        serde_json::to_value(ClickPipeMongoDBTableConfig::default()).unwrap(),
+        serde_json::to_value(ClickPipeMongoDBTableConfig {
+            persist_deleted_documents: false,
+        })
+        .unwrap(),
         serde_json::json!({ "persistDeletedDocuments": false })
     );
     assert!(serde_json::from_str::<ClickPipeMongoDBTableConfig>("{}").is_err());
@@ -1966,7 +2315,16 @@ fn bigquery_sync_cron_round_trips_writes_back_and_tolerates_absence() {
 
     let unset = ClickPipeBigQueryPipeSettings {
         replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
-        ..Default::default()
+        allow_nullable_columns: None,
+        initial_load_parallelism: None,
+        snapshot_num_rows_per_partition: None,
+        snapshot_number_of_parallel_tables: None,
+        pull_window_size_seconds: None,
+        query_cdc_pull_sync_parallelism: None,
+        replication_method: None,
+        sync_cron: None,
+        sync_delay_seconds: None,
+        sync_interval_seconds: None,
     };
     assert_eq!(
         serde_json::to_value(&unset).unwrap(),
@@ -2064,10 +2422,42 @@ fn click_pipe_object_storage_skip_first_lines_round_trips() {
         url: "https://bucket.s3.amazonaws.com/events/*.tsv".to_string(),
         format: ClickPipePostObjectStorageSourceFormat::TabSeparatedWithNames,
         skip_first_lines: Some(2),
-        ..Default::default()
+        access_key: None,
+        authentication: None,
+        azure_container_name: None,
+        compression: None,
+        connection_string: None,
+        delimiter: None,
+        iam_role: None,
+        is_continuous: None,
+        path: None,
+        queue_url: None,
+        service_account_key: None,
+        skip_initial_load: None,
+        start_after: None,
+        r#type: ClickPipePostObjectStorageSourceType::S3,
     };
     assert_eq!(serde_json::to_value(&source).unwrap()["skipFirstLines"], 2);
-    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource {
+        access_key: None,
+        authentication: None,
+        azure_container_name: None,
+        compression: None,
+        connection_string: None,
+        delimiter: None,
+        format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
+        iam_role: None,
+        is_continuous: None,
+        path: None,
+        queue_url: None,
+        service_account_key: None,
+        skip_first_lines: None,
+        skip_initial_load: None,
+        start_after: None,
+        r#type: ClickPipePostObjectStorageSourceType::S3,
+        url: String::new(),
+    })
+    .unwrap();
     assert!(json.get("skipFirstLines").is_none());
 
     let present: ClickPipeObjectStorageSource =

@@ -383,7 +383,11 @@ async fn run_variant(
             // destination table.
             destination: ClickPipeMutateDestination {
                 database: "default".to_string(),
-                ..Default::default()
+                columns: None,
+                managed_table: None,
+                roles: None,
+                table: None,
+                table_definition: None,
             },
             source: ClickPipePostSource {
                 postgres: Some(ClickPipeMutatePostgresSource {
@@ -401,7 +405,15 @@ async fn run_variant(
                     settings: ClickPipePostgresPipeSettings {
                         replication_mode: variant.replication_mode.clone(),
                         publication_name: variant.publication_name.map(str::to_string),
-                        ..Default::default()
+                        allow_nullable_columns: false,
+                        delete_on_merge: false,
+                        enable_failover_slots: false,
+                        initial_load_parallelism: None,
+                        pull_batch_size: None,
+                        replication_slot_name: None,
+                        snapshot_num_rows_per_partition: None,
+                        snapshot_number_of_parallel_tables: None,
+                        sync_interval_seconds: None,
                     },
                     table_mappings: variant
                         .mappings
@@ -412,14 +424,23 @@ async fn run_variant(
                             target_table: (*dst).to_string(),
                             table_engine:
                                 ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
-                            ..Default::default()
+                            excluded_columns: Vec::new(),
+                            partition_by_expr: String::new(),
+                            partition_key: String::new(),
+                            sorting_keys: Vec::new(),
+                            use_custom_sorting_key: false,
                         })
                         .collect(),
-                    ..Default::default()
+                    disable_tls: false,
+                    iam_role: None,
+                    skip_cert_verification: false,
                 }),
                 ..Default::default()
             },
-            ..Default::default()
+            field_mappings: None,
+            scaling: None,
+            settings: None,
+            start_paused: None,
         };
 
         let _ = create_pipe_and_wait_running(

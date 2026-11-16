@@ -128,7 +128,11 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             region: ctx.region.clone(),
             size: PgSize::R8gd_medium,
             tags: Some(ctx.clickpipe_run_tags()),
-            ..Default::default()
+            ha_type: None,
+            ip_access_list: None,
+            pg_bouncer_config: None,
+            pg_config: None,
+            postgres_version: None,
         };
 
         let ch_create_body = ServicePostRequest {
@@ -149,7 +153,30 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
                 description: Some("clickpipe-cdc integration test".to_string()),
             }],
             tags: Some(ctx.clickpipe_run_tags()),
-            ..Default::default()
+            autoscaling_mode: None,
+            backup_id: None,
+            backup_encryption_config: None,
+            byoc_id: None,
+            compliance_type: None,
+            data_warehouse_id: None,
+            enable_core_dumps: None,
+            endpoints: None,
+            has_transparent_data_encryption: None,
+            idle_timeout_minutes: None,
+            is_readonly: None,
+            max_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            max_total_memory_gb: None,
+            min_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            min_total_memory_gb: None,
+            #[cfg(feature = "deprecated-fields")]
+            private_endpoint_ids: None,
+            private_preview_terms_checked: None,
+            profile: None,
+            release_channel: None,
+            #[cfg(feature = "deprecated-fields")]
+            tier: None,
         };
 
         log_step("provision Postgres + ClickHouse in parallel");

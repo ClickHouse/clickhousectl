@@ -20,7 +20,7 @@ pub struct JwtProvider {
 }
 
 /// `JwtProviderPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JwtProviderPostRequest {
     /// Unique within the service: lowercase letters, digits and hyphens, at
     /// most 59 characters.
@@ -44,7 +44,7 @@ pub struct JwtProviderPostRequest {
 /// `JwtProviderPutRequest` from the ClickHouse Cloud API.
 ///
 /// Replaces the whole provider configuration; the name is the path parameter.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JwtProviderPutRequest {
     /// Expected `iss` claim of the tokens.
     #[serde(rename = "issuer")]

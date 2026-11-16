@@ -266,7 +266,12 @@ fn serialize_postgres_service_post_request() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
-        ..Default::default()
+        ha_type: None,
+        ip_access_list: None,
+        pg_bouncer_config: None,
+        pg_config: None,
+        postgres_version: None,
+        tags: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "pg-new");
@@ -302,7 +307,9 @@ fn serialize_postgres_service_set_password() {
 fn serialize_postgres_read_replica_request() {
     let req = PostgresServiceReadReplicaRequest {
         name: "pg-replica".to_string(),
-        ..Default::default()
+        pg_bouncer_config: None,
+        pg_config: None,
+        tags: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "pg-replica");
@@ -368,7 +375,11 @@ fn serialize_postgres_instance_config_always_includes_both_nested() {
 #[test]
 fn serialize_postgres_instance_config_default_envelope() {
     // Default envelope serializes to the minimal accepted body shape.
-    let json = serde_json::to_value(PostgresInstanceConfig::default()).unwrap();
+    let json = serde_json::to_value(PostgresInstanceConfig {
+        pg_bouncer_config: PgBouncerConfig::default(),
+        pg_config: PgConfig::default(),
+    })
+    .unwrap();
     assert_eq!(
         json,
         serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
@@ -812,7 +823,8 @@ fn postgres_ip_access_list_request_types_are_strict() {
     let entry = PostgresIpAccessListEntry {
         source: "203.0.113.0/24".to_string(),
         port_range: "5432".to_string(),
-        ..Default::default()
+        description: None,
+        id: None,
     };
     assert_eq!(
         serde_json::to_value(&entry).unwrap(),
@@ -858,7 +870,12 @@ fn postgres_service_post_request_distinguishes_omitted_and_empty_access_list() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
-        ..Default::default()
+        ha_type: None,
+        ip_access_list: None,
+        pg_bouncer_config: None,
+        pg_config: None,
+        postgres_version: None,
+        tags: None,
     };
     // Omitted allows all IPv4 and IPv6 addresses.
     let omitted = serde_json::to_value(&base).unwrap();
@@ -876,7 +893,8 @@ fn postgres_service_post_request_distinguishes_omitted_and_empty_access_list() {
         ip_access_list: Some(vec![PostgresIpAccessListEntry {
             source: "203.0.113.0/24".to_string(),
             port_range: "5432".to_string(),
-            ..Default::default()
+            description: None,
+            id: None,
         }]),
         ..base
     };

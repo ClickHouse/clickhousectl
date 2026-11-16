@@ -4,7 +4,7 @@ use std::path::Path;
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
 use clickhouse_openapi_analyzer::{
     AnalysisInput, analyze, integer_model_fields_typed_as_float, model_fields_with_serde_default,
-    model_types, response_tree,
+    model_structs_with_default_and_required_fields, model_types, response_tree,
 };
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -125,6 +125,43 @@ fn models_carry_no_serde_default() {
     assert!(
         offenders.is_empty(),
         "remove #[serde(default)] from: {offenders:?}"
+    );
+}
+
+/// Structs outside the response tree deliberately allowed to implement
+/// `Default` despite a non-`Option` field. Empty: an entry needs the same bar as
+/// an analyzer exemption.
+const REQUIRED_FIELD_DEFAULT_EXCEPTIONS: &[&str] = &[];
+
+/// A request struct with a required field must not implement `Default`. The
+/// required field is the compiler's guard that a caller supplies a value;
+/// `..Default::default()` would fill a newly added one with `""`, `0`, `false`
+/// or the first enum variant and still compile — the fabrication the
+/// `#[serde(default)]` ban prevents, moved to the constructor. All-`Option`
+/// request structs and response types keep `Default`.
+#[test]
+fn strict_models_do_not_implement_default() {
+    let defaults =
+        model_structs_with_default_and_required_fields(Path::new(RUST_SOURCE_ROOT)).unwrap();
+    let tree = response_tree(Path::new(RUST_SOURCE_ROOT)).unwrap();
+    let strict_outside_tree = defaults
+        .strict
+        .iter()
+        .filter(|name| !tree.types.contains(*name))
+        .count();
+    assert!(
+        strict_outside_tree >= 150,
+        "vacuous test: only {strict_outside_tree} strict structs outside the response tree"
+    );
+    let offenders = defaults
+        .with_default
+        .iter()
+        .filter(|name| !tree.types.contains(*name))
+        .filter(|name| !REQUIRED_FIELD_DEFAULT_EXCEPTIONS.contains(&name.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "remove Default from structs with required fields: {offenders:?}"
     );
 }
 

@@ -19,7 +19,13 @@ fn deserialize_api_key() {
 fn serialize_api_key_post_request() {
     let req = ApiKeyPostRequest {
         name: "test-key".to_string(),
-        ..Default::default()
+        assigned_role_ids: None,
+        expire_at: None,
+        hash_data: None,
+        ip_access_list: None,
+        #[cfg(feature = "deprecated-fields")]
+        roles: None,
+        state: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "test-key");

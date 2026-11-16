@@ -311,22 +311,7 @@ fn clickstack_alert_channel_changed_field_shape_is_unknown() {
 }
 
 #[test]
-fn clickstack_alert_channel_default_round_trips_to_the_same_variant() {
-    // Both alert-channel variants declare the same `enum: ["webhook", "email"]`
-    // for their discriminating `type`, so the email variant's default must name
-    // `email`: `channel` is defaulted on the alert response, and a default that
-    // named `webhook` would come back from its own union as the webhook variant
-    // and could be PUT back as a webhook channel with no `webhookId`.
-    let default = ClickStackAlertChannel::default();
-    assert!(matches!(
-        default,
-        ClickStackAlertChannel::ClickStackAlertChannelEmail(_)
-    ));
-    let json = serde_json::to_string(&default).unwrap();
-    assert_eq!(json, r#"{"emailRecipients":[],"type":"email"}"#);
-    let round_tripped: ClickStackAlertChannel = serde_json::from_str(&json).unwrap();
-    assert_eq!(round_tripped, default);
-
+fn clickstack_alert_response_without_channel_surfaces_absence() {
     // A response that drops `channel` entirely surfaces the absence instead of
     // fabricating a default channel.
     let response: ClickStackAlertResponse = serde_json::from_str(r#"{"name":"my-alert"}"#).unwrap();
@@ -618,6 +603,9 @@ fn clickstack_source_unknown_kind_round_trips() {
 #[test]
 fn clickstack_source_serializes_as_inner_log_struct() {
     let log = ClickStackLogSource {
+        highlighted_row_attribute_expressions: None,
+        highlighted_trace_attribute_expressions: None,
+        use_text_index_for_implicit_column: None,
         kind: ClickStackLogSourceKind::Log,
         name: "logs".to_string(),
         connection: "conn-1".to_string(),
@@ -627,7 +615,29 @@ fn clickstack_source_serializes_as_inner_log_struct() {
             table_name: "logs".to_string(),
         },
         timestamp_value_expression: "ts".to_string(),
-        ..Default::default()
+        service_version_expression: None,
+        body_expression: None,
+        disabled: None,
+        displayed_timestamp_value_expression: None,
+        event_attributes_expression: None,
+        event_name_expression: None,
+        filter_settings: None,
+        id: None,
+        implicit_column_expression: None,
+        known_columns_list_expression: None,
+        materialized_views: None,
+        metadata_materialized_views: None,
+        metric_source_id: None,
+        order_by_expression: None,
+        query_settings: None,
+        resource_attributes_expression: None,
+        section: None,
+        service_name_expression: None,
+        severity_number_expression: None,
+        severity_text_expression: None,
+        span_id_expression: None,
+        trace_id_expression: None,
+        trace_source_id: None,
     };
     let source = ClickStackSource::ClickStackLogSource(log.clone());
     assert_eq!(
@@ -1319,11 +1329,51 @@ fn clickstack_alert_num_consecutive_windows_present_and_absent() {
 fn clickstack_create_alert_num_consecutive_windows_round_trip() {
     let v = serde_json::to_value(ClickStackCreateAlertRequest {
         num_consecutive_windows: Some(5),
-        ..Default::default()
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackCreateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
     })
     .unwrap();
     assert_eq!(v["numConsecutiveWindows"], 5);
-    let v = serde_json::to_value(ClickStackCreateAlertRequest::default()).unwrap();
+    let v = serde_json::to_value(ClickStackCreateAlertRequest {
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackCreateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
+    })
+    .unwrap();
     assert!(v.get("numConsecutiveWindows").is_none());
 }
 
@@ -1331,11 +1381,51 @@ fn clickstack_create_alert_num_consecutive_windows_round_trip() {
 fn clickstack_update_alert_num_consecutive_windows_round_trip() {
     let v = serde_json::to_value(ClickStackUpdateAlertRequest {
         num_consecutive_windows: Some(7),
-        ..Default::default()
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackUpdateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackUpdateAlertRequestThresholdtype::Above,
+        tile_id: None,
     })
     .unwrap();
     assert_eq!(v["numConsecutiveWindows"], 7);
-    let v = serde_json::to_value(ClickStackUpdateAlertRequest::default()).unwrap();
+    let v = serde_json::to_value(ClickStackUpdateAlertRequest {
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackUpdateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackUpdateAlertRequestThresholdtype::Above,
+        tile_id: None,
+    })
+    .unwrap();
     assert!(v.get("numConsecutiveWindows").is_none());
 }
 
@@ -1362,7 +1452,23 @@ fn clickstack_filter_applies_to_source_ids_round_trip() {
     assert_eq!(v["appliesToSourceIds"][1], "src-2");
 
     // Absent -> None -> dropped.
-    let filter = ClickStackQueryExpressionFilter::default();
+    let filter = ClickStackQueryExpressionFilter {
+        applies_to_source_ids: None,
+        expression: String::new(),
+        id: String::new(),
+        is_broadcast_enabled: None,
+        is_global_requirement: None,
+        is_variable_enabled: None,
+        max_selections: None,
+        min_selections: None,
+        name: String::new(),
+        source_id: String::new(),
+        source_metric_type: None,
+        r#type: ClickStackQueryExpressionFilterInputType::default(),
+        variable_name: None,
+        r#where: None,
+        where_language: None,
+    };
     assert_eq!(filter.applies_to_source_ids, None);
     let v = serde_json::to_value(&filter).unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
@@ -1388,7 +1494,23 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
     let v = serde_json::to_value(&filter).unwrap();
     assert_eq!(v["appliesToSourceIds"][0], "src-9");
 
-    let v = serde_json::to_value(ClickStackQueryExpressionFilterInput::default()).unwrap();
+    let v = serde_json::to_value(ClickStackQueryExpressionFilterInput {
+        applies_to_source_ids: None,
+        expression: String::new(),
+        is_broadcast_enabled: None,
+        is_global_requirement: None,
+        is_variable_enabled: None,
+        max_selections: None,
+        min_selections: None,
+        name: String::new(),
+        source_id: String::new(),
+        source_metric_type: None,
+        r#type: ClickStackQueryExpressionFilterInputType::default(),
+        variable_name: None,
+        r#where: None,
+        where_language: None,
+    })
+    .unwrap();
     assert!(v.get("appliesToSourceIds").is_none());
 }
 
@@ -2334,7 +2456,17 @@ fn clickstack_number_builder_chart_config_color_fields_round_trip() {
     assert_eq!(v["backgroundChart"]["type"], "line");
 
     // The three new fields are optional and dropped when absent.
-    let v = serde_json::to_value(ClickStackNumberBuilderChartConfig::default()).unwrap();
+    let v = serde_json::to_value(ClickStackNumberBuilderChartConfig {
+        formulas: None,
+        background_chart: None,
+        color: None,
+        color_rules: None,
+        display_type: ClickStackNumberBuilderChartConfigDisplaytype::default(),
+        number_format: None,
+        select: Vec::new(),
+        source_id: String::new(),
+    })
+    .unwrap();
     assert!(v.get("color").is_none());
     assert!(v.get("colorRules").is_none());
     assert!(v.get("backgroundChart").is_none());
@@ -2354,7 +2486,17 @@ fn clickstack_number_raw_sql_chart_config_color_round_trip() {
     let v = serde_json::to_value(&cfg).unwrap();
     assert_eq!(v["color"], "chart-purple");
 
-    let v = serde_json::to_value(ClickStackNumberRawSqlChartConfig::default()).unwrap();
+    let v = serde_json::to_value(ClickStackNumberRawSqlChartConfig {
+        color: None,
+        color_rules: None,
+        config_type: ClickStackNumberRawSqlChartConfigConfigtype::default(),
+        connection_id: String::new(),
+        display_type: ClickStackNumberRawSqlChartConfigDisplaytype::default(),
+        number_format: None,
+        source_id: None,
+        sql_template: String::new(),
+    })
+    .unwrap();
     assert!(v.get("color").is_none());
 }
 
@@ -2391,7 +2533,8 @@ fn serialize_clickstack_create_connection_request_omits_none() {
         host: "https://clickhouse.example.com:8443".to_string(),
         username: "default".to_string(),
         password: Some("my-secret-password".to_string()),
-        ..Default::default()
+        hyperdx_setting_prefix: None,
+        is_prometheus_endpoint: None,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["name"], "Production ClickHouse");
@@ -2613,25 +2756,6 @@ fn clickstack_casl_permission_round_trips_in_both_positions() {
             ClickStackCASLPermissionResponse::Unknown(_)
         ));
         assert_eq!(serde_json::to_value(&response).unwrap(), payload);
-    }
-}
-
-#[test]
-fn clickstack_casl_permission_variant_defaults_round_trip_to_their_own_variant() {
-    // Each variant's `integration` defaults to its own wire value, so a
-    // default-built request variant still carries its discriminator.
-    let clickhouse = ClickStackCASLPermission::ClickStackClickHouseCASLPermission(
-        ClickStackClickHouseCASLPermission::default(),
-    );
-    let mongodb = ClickStackCASLPermission::ClickStackMongoDBCASLPermission(
-        ClickStackMongoDBCASLPermission::default(),
-    );
-    for permission in [clickhouse, mongodb] {
-        let json = serde_json::to_value(&permission).unwrap();
-        assert_eq!(
-            serde_json::from_value::<ClickStackCASLPermission>(json).unwrap(),
-            permission
-        );
     }
 }
 
@@ -2916,7 +3040,10 @@ fn serialize_clickstack_casl_permission_omits_none() {
         ClickStackMongoDBCASLPermission {
             action: ClickStackCASLPermissionAction::Read,
             subject: ClickStackCASLPermissionSubject::Dashboard,
-            ..Default::default()
+            conditions: None,
+            fields: None,
+            integration: ClickStackMongoDBCASLPermissionIntegration::default(),
+            inverted: None,
         },
     );
     assert_eq!(
@@ -2927,7 +3054,10 @@ fn serialize_clickstack_casl_permission_omits_none() {
         ClickStackClickHouseCASLPermission {
             action: ClickStackCASLPermissionAction::Read,
             subject: ClickStackCASLPermissionSubject::All,
-            ..Default::default()
+            conditions: None,
+            fields: None,
+            integration: ClickStackClickHouseCASLPermissionIntegration::default(),
+            inverted: None,
         },
     );
     assert_eq!(
@@ -2941,7 +3071,7 @@ fn serialize_clickstack_create_role_request_omits_none() {
     let req = ClickStackCreateRoleRequest {
         name: "Deploy Bot".to_string(),
         permissions: vec![serde_json::from_value(mongodb_casl_permission_json()).unwrap()],
-        ..Default::default()
+        description: None,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["name"], "Deploy Bot");
@@ -2953,7 +3083,8 @@ fn serialize_clickstack_create_role_request_omits_none() {
 fn serialize_clickstack_update_role_request_omits_none() {
     let req = ClickStackUpdateRoleRequest {
         permissions: vec![serde_json::from_value(clickhouse_casl_permission_json()).unwrap()],
-        ..Default::default()
+        description: None,
+        name: None,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["permissions"][0], clickhouse_casl_permission_json());
@@ -3017,7 +3148,12 @@ fn serialize_clickstack_saved_search_input_minimal_omits_optionals() {
     let input = ClickStackSavedSearchInput {
         name: "Production Errors".to_string(),
         source_id: "507f1f77bcf86cd799439012".to_string(),
-        ..Default::default()
+        filters: None,
+        order_by: None,
+        select: None,
+        tags: None,
+        r#where: None,
+        where_language: None,
     };
     let v = serde_json::to_value(&input).unwrap();
     assert_eq!(v["name"], "Production Errors");
@@ -3077,7 +3213,10 @@ fn serialize_clickstack_webhook_input_minimal_omits_optionals() {
         name: "Slack Alerts".to_string(),
         service: ClickStackWebhookInputService::Slack,
         url: "https://hooks.slack.com/services/T/B/X".to_string(),
-        ..Default::default()
+        body: None,
+        description: None,
+        headers: None,
+        query_params: None,
     };
     let v = serde_json::to_value(&input).unwrap();
     assert_eq!(v["name"], "Slack Alerts");
@@ -3291,10 +3430,41 @@ fn clickstack_source_expression_fields_missing_or_null_are_none() {
 #[test]
 fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
     let log = ClickStackLogSource {
+        highlighted_row_attribute_expressions: None,
+        highlighted_trace_attribute_expressions: None,
+        use_text_index_for_implicit_column: None,
         event_name_expression: Some("EventName".to_string()),
         order_by_expression: Some("Timestamp DESC".to_string()),
         severity_number_expression: Some("SeverityNumber".to_string()),
-        ..Default::default()
+        service_version_expression: None,
+        body_expression: None,
+        connection: String::new(),
+        default_table_select_expression: String::new(),
+        disabled: None,
+        displayed_timestamp_value_expression: None,
+        event_attributes_expression: None,
+        filter_settings: None,
+        from: ClickStackSourceFrom {
+            database_name: String::new(),
+            table_name: String::new(),
+        },
+        id: None,
+        implicit_column_expression: None,
+        kind: ClickStackLogSourceKind::default(),
+        known_columns_list_expression: None,
+        materialized_views: None,
+        metadata_materialized_views: None,
+        metric_source_id: None,
+        name: String::new(),
+        query_settings: None,
+        resource_attributes_expression: None,
+        section: None,
+        service_name_expression: None,
+        severity_text_expression: None,
+        span_id_expression: None,
+        timestamp_value_expression: String::new(),
+        trace_id_expression: None,
+        trace_source_id: None,
     };
     let v = serde_json::to_value(&log).unwrap();
     assert_eq!(v["eventNameExpression"], "EventName");
@@ -3303,17 +3473,66 @@ fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
 
     let session = ClickStackSessionSource {
         resource_attributes_expression: Some("ResourceAttributes".to_string()),
-        ..Default::default()
+        connection: String::new(),
+        disabled: None,
+        from: ClickStackSourceFrom {
+            database_name: String::new(),
+            table_name: String::new(),
+        },
+        id: None,
+        kind: ClickStackSessionSourceKind::default(),
+        name: String::new(),
+        query_settings: None,
+        section: None,
+        timestamp_value_expression: None,
+        trace_source_id: String::new(),
     };
     let v = serde_json::to_value(&session).unwrap();
     assert_eq!(v["resourceAttributesExpression"], "ResourceAttributes");
 
     let trace = ClickStackTraceSource {
+        highlighted_row_attribute_expressions: None,
+        highlighted_trace_attribute_expressions: None,
+        use_text_index_for_implicit_column: None,
         displayed_timestamp_value_expression: Some("Timestamp".to_string()),
         order_by_expression: Some("Timestamp DESC".to_string()),
         sample_rate_expression: Some("SampleRate".to_string()),
         span_links_value_expression: Some("Links".to_string()),
-        ..Default::default()
+        service_version_expression: None,
+        connection: String::new(),
+        default_table_select_expression: String::new(),
+        disabled: None,
+        duration_expression: String::new(),
+        duration_precision: 0,
+        event_attributes_expression: None,
+        filter_settings: None,
+        from: ClickStackSourceFrom {
+            database_name: String::new(),
+            table_name: String::new(),
+        },
+        id: None,
+        implicit_column_expression: None,
+        kind: ClickStackTraceSourceKind::default(),
+        known_columns_list_expression: None,
+        log_source_id: None,
+        materialized_views: None,
+        metadata_materialized_views: None,
+        metric_source_id: None,
+        name: String::new(),
+        parent_span_id_expression: String::new(),
+        query_settings: None,
+        resource_attributes_expression: None,
+        section: None,
+        service_name_expression: None,
+        session_source_id: None,
+        span_events_value_expression: None,
+        span_id_expression: String::new(),
+        span_kind_expression: String::new(),
+        span_name_expression: String::new(),
+        status_code_expression: None,
+        status_message_expression: None,
+        timestamp_value_expression: String::new(),
+        trace_id_expression: String::new(),
     };
     let v = serde_json::to_value(&trace).unwrap();
     assert_eq!(v["displayedTimestampValueExpression"], "Timestamp");
@@ -3609,9 +3828,35 @@ fn saved_filter_and_formula_writeback_reports_required_wire_fields() {
 fn new_clickstack_channels_and_chart_fields_round_trip() {
     let request = ClickStackCreateAlertRequest {
         interval: ClickStackCreateAlertRequestInterval::Value30s,
-        channel: Some(ClickStackAlertChannel::default()),
-        channels: Some(vec![ClickStackAlertChannel::default()]),
-        ..Default::default()
+        channel: Some(ClickStackAlertChannel::ClickStackAlertChannelEmail(
+            ClickStackAlertChannelEmail {
+                email_recipients: Vec::new(),
+                r#type: ClickStackAlertChannelEmailType::default(),
+            },
+        )),
+        channels: Some(vec![ClickStackAlertChannel::ClickStackAlertChannelEmail(
+            ClickStackAlertChannelEmail {
+                email_recipients: Vec::new(),
+                r#type: ClickStackAlertChannelEmailType::default(),
+            },
+        )]),
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
     };
     let wire = serde_json::to_value(&request).unwrap();
     assert_eq!(wire["channels"].as_array().unwrap().len(), 1);
@@ -4335,7 +4580,23 @@ fn clickstack_tiles_carry_a_description() {
         tile.description.as_deref(),
         Some("Share of API requests that returned a 5xx response.")
     );
-    let v = serde_json::to_value(ClickStackTileInput::default()).unwrap();
+    let v = serde_json::to_value(ClickStackTileInput {
+        #[cfg(feature = "deprecated-fields")]
+        as_ratio: None,
+        config: None,
+        container_id: None,
+        description: None,
+        h: 0,
+        id: None,
+        name: String::new(),
+        #[cfg(feature = "deprecated-fields")]
+        series: None,
+        tab_id: None,
+        w: 0,
+        x: 0,
+        y: 0,
+    })
+    .unwrap();
     assert!(v.get("description").is_none());
 
     let output: ClickStackTileOutput =
@@ -4753,8 +5014,52 @@ fn clickstack_alert_requests_send_inline_chart_configs_display_names_and_tags() 
 fn clickstack_alert_requests_omit_unset_source_and_channels_but_stay_strict() {
     // `source`, `channel` and `channels` are no longer required, so an unset
     // value is omitted from the wire rather than defaulted.
-    let create = serde_json::to_value(ClickStackCreateAlertRequest::default()).unwrap();
-    let update = serde_json::to_value(ClickStackUpdateAlertRequest::default()).unwrap();
+    let create = serde_json::to_value(ClickStackCreateAlertRequest {
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackCreateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::Above,
+        tile_id: None,
+    })
+    .unwrap();
+    let update = serde_json::to_value(ClickStackUpdateAlertRequest {
+        channels: None,
+        channel: None,
+        chart_config: None,
+        dashboard_id: None,
+        display_name: None,
+        group_by: None,
+        interval: ClickStackUpdateAlertRequestInterval::_1m,
+        message: None,
+        name: None,
+        note: None,
+        num_consecutive_windows: None,
+        saved_search_id: None,
+        schedule_offset_minutes: None,
+        schedule_start_at: None,
+        source: None,
+        tags: None,
+        threshold: 0.0,
+        threshold_max: None,
+        threshold_type: ClickStackUpdateAlertRequestThresholdtype::Above,
+        tile_id: None,
+    })
+    .unwrap();
     for wire in [&create, &update] {
         for key in [
             "source",

@@ -174,7 +174,11 @@ async fn run_inner(
         // level. The per-mapping `targetTable` carries the destination table.
         destination: ClickPipeMutateDestination {
             database: "default".to_string(),
-            ..Default::default()
+            columns: None,
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
         },
         source: ClickPipePostSource {
             mongodb: Some(ClickPipeMutateMongoDBSource {
@@ -187,7 +191,13 @@ async fn run_inner(
                 read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
                 settings: ClickPipeMongoDBPipeSettings {
                     replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
-                    ..Default::default()
+                    initial_load_parallelism: None,
+                    delete_on_merge: None,
+                    pull_batch_size: None,
+                    snapshot_num_rows_per_partition: None,
+                    snapshot_number_of_parallel_tables: None,
+                    sync_interval_seconds: None,
+                    use_json_native_format: None,
                 },
                 table_mappings: vec![ClickPipeMongoDBPipeTableMapping {
                     source_database_name: db_name.clone(),
@@ -197,11 +207,16 @@ async fn run_inner(
                     structured_ingestion: None,
                     mongo_config: None,
                 }],
-                ..Default::default()
+                disable_tls: None,
+                skip_cert_verification: None,
+                tls_host: None,
             }),
             ..Default::default()
         },
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
 
     let _ = create_pipe_and_wait_running(

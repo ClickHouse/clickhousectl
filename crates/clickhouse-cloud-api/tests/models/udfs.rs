@@ -105,7 +105,16 @@ fn udf_create_request_variants_keep_required_fields_strict() {
         runtime: UdfRuntime::Native,
         r#type: UdfCreateRequestV1Type::Executable,
         upload_id: "upload-1".to_string(),
-        ..Default::default()
+        deterministic: None,
+        memory_limit_mib: None,
+        command_read_timeout: None,
+        command_write_timeout: None,
+        format: None,
+        max_command_execution_time: None,
+        pool_size: None,
+        return_name: None,
+        sandbox_type: None,
+        send_chunk_header: None,
     };
     assert_eq!(
         serde_json::to_value(request).unwrap(),

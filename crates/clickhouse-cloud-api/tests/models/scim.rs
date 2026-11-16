@@ -3,8 +3,53 @@ use clickhouse_cloud_api::models::*;
 #[test]
 fn scim_user_enterprise_extension_uses_the_exact_wire_name() {
     let user = ScimUser {
-        enterprise_user: Some(ScimEnterpriseUser::default()),
-        ..Default::default()
+        enterprise_user: Some(ScimEnterpriseUser {
+            cost_center: String::new(),
+            department: String::new(),
+            division: String::new(),
+            employee_number: String::new(),
+            manager: ScimEnterpriseManager {
+                display_name: String::new(),
+                value: String::new(),
+            },
+            organization: String::new(),
+        }),
+        active: false,
+        addresses: None,
+        display_name: None,
+        emails: Vec::new(),
+        entitlements: None,
+        external_id: None,
+        groups: None,
+        id: String::new(),
+        ims: None,
+        locale: None,
+        meta: ScimUserMeta {
+            created: chrono::DateTime::<chrono::Utc>::default(),
+            last_modified: chrono::DateTime::<chrono::Utc>::default(),
+            location: None,
+            resource_type: String::new(),
+        },
+        name: ScimUserName {
+            family_name: String::new(),
+            formatted: String::new(),
+            given_name: String::new(),
+            honorific_prefix: String::new(),
+            honorific_suffix: String::new(),
+            middle_name: String::new(),
+        },
+        nick_name: None,
+        phone_numbers: None,
+        photos: None,
+        preferred_language: None,
+        profile_url: None,
+        roles: None,
+        schemas: Vec::new(),
+        timezone: None,
+        title: None,
+        user_name: String::new(),
+        user_type: None,
+        x509_certificates: None,
     };
     let json = serde_json::to_value(&user).unwrap();
     let extension = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
@@ -93,12 +138,42 @@ fn scim_request_echoed_id_and_meta_round_trip() {
 
     let user = ScimUserPostRequest {
         user_name: "ada".to_string(),
-        ..Default::default()
+        active: None,
+        addresses: None,
+        display_name: None,
+        emails: Vec::new(),
+        entitlements: None,
+        external_id: None,
+        groups: None,
+        id: None,
+        ims: None,
+        locale: None,
+        meta: None,
+        name: None,
+        nick_name: None,
+        password: None,
+        phone_numbers: None,
+        photos: None,
+        preferred_language: None,
+        profile_url: None,
+        roles: None,
+        schemas: Vec::new(),
+        timezone: None,
+        title: None,
+        urn_ietf_params_scim_schemas_extension_enterprise_2_0_user: None,
+        user_type: None,
+        x509_certificates: None,
     };
     let v = serde_json::to_value(&user).unwrap();
     assert!(v.get("id").is_none());
     assert!(v.get("meta").is_none());
-    let v = serde_json::to_value(ScimPatchOp::default()).unwrap();
+    let v = serde_json::to_value(ScimPatchOp {
+        operations: Vec::new(),
+        id: None,
+        meta: None,
+        schemas: Vec::new(),
+    })
+    .unwrap();
     assert!(v.get("id").is_none());
     assert!(v.get("meta").is_none());
 }

@@ -553,7 +553,9 @@ async fn create_backup_bucket() {
         BackupBucketPostRequest::AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1 {
             bucket_path: "s3://new-bucket".to_string(),
             iam_role_external_id: Some("trust-policy-id".to_string()),
-            ..Default::default()
+            bucket_provider: AwsBackupBucketPostRequestV1Bucketprovider::AWS,
+            iam_role_arn: String::new(),
+            iam_role_session_name: String::new(),
         });
     let resp = c
         .backup_bucket_create("org-1", "svc-1", &body)
@@ -583,7 +585,9 @@ async fn update_backup_bucket() {
         BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1 {
             bucket_path: "s3://updated-bucket".to_string(),
             iam_role_external_id: Some(None),
-            ..Default::default()
+            bucket_provider: AwsBackupBucketPatchRequestV1Bucketprovider::AWS,
+            iam_role_arn: String::new(),
+            iam_role_session_name: None,
         });
     let resp = c
         .backup_bucket_update("org-1", "svc-1", &body)

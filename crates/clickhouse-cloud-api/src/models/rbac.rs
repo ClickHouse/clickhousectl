@@ -21,9 +21,8 @@ impl std::fmt::Display for RBACPolicyAllowdeny {
 }
 
 /// Inline enum for `RBACPolicyCreateRequest.allowDeny`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RBACPolicyCreateRequestAllowdeny {
-    #[default]
     ALLOW,
     DENY,
     /// Catch-all for unknown or newly-added values.
@@ -107,7 +106,7 @@ pub struct RBACPolicy {
 }
 
 /// `RBACPolicyCreateRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RBACPolicyCreateRequest {
     #[serde(rename = "allowDeny")]
     pub allow_deny: RBACPolicyCreateRequestAllowdeny,
@@ -163,7 +162,7 @@ pub struct RBACRole {
 }
 
 /// `RoleCreateRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleCreateRequest {
     pub actors: Vec<String>,
     pub name: String,

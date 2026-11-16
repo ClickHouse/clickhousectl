@@ -143,7 +143,33 @@ async fn cloud_udf_list_lifecycle() -> TestResult<()> {
             region:ServicePostRequestRegion::Unknown(ctx.region.clone()),
             min_replica_memory_gb:Some(8.0), max_replica_memory_gb:Some(8.0), num_replicas:Some(1),
             // The lifecycle needs no SQL ingress.
-            ip_access_list:vec![], ..Default::default()
+            ip_access_list:vec![],
+            autoscaling_mode: None,
+            backup_id: None,
+            backup_encryption_config: None,
+            byoc_id: None,
+            compliance_type: None,
+            data_warehouse_id: None,
+            enable_core_dumps: None,
+            endpoints: None,
+            has_transparent_data_encryption: None,
+            idle_scaling: None,
+            idle_timeout_minutes: None,
+            is_readonly: None,
+            max_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            max_total_memory_gb: None,
+            min_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            min_total_memory_gb: None,
+            #[cfg(feature = "deprecated-fields")]
+            private_endpoint_ids: None,
+            private_preview_terms_checked: None,
+            profile: None,
+            release_channel: None,
+            tags: None,
+            #[cfg(feature = "deprecated-fields")]
+            tier: None,
         }).await?.result.ok_or("service create omitted result")?;
         let id = created.service.and_then(|service| service.id).ok_or("service create omitted ID")?.to_string();
         cleanup.register_service(id.clone());

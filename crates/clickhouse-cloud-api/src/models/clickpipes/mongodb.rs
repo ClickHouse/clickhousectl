@@ -92,10 +92,9 @@ impl std::fmt::Display for ClickPipeMongoDBSourceReadpreference {
 }
 
 /// Inline enum for `ClickPipeMutateMongoDBSource.readPreference`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipeMutateMongoDBSourceReadpreference {
     #[serde(rename = "primary")]
-    #[default]
     Primary,
     #[serde(rename = "primaryPreferred")]
     PrimaryPreferred,
@@ -189,7 +188,7 @@ impl std::fmt::Display for ClickPipePatchMongoDBSourceReadpreference {
 }
 
 /// `ClickPipeMongoDBPipeSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeSettings {
     /// Parallel workers per collection during the initial snapshot.
     #[serde(
@@ -267,7 +266,7 @@ pub struct ClickPipeMongoDBPipeSettingsResponse {
 }
 
 /// `ClickPipeMongoDBPipeTableMapping` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeTableMapping {
     #[serde(rename = "mongoConfig", skip_serializing_if = "Option::is_none")]
     pub mongo_config: Option<ClickPipeMongoDBTableConfig>,
@@ -313,7 +312,7 @@ pub struct ClickPipeMongoDBPipeTableMappingResponse {
 
 /// `ClickPipeMongoDBTableConfig` from the ClickHouse Cloud API: per-collection
 /// MongoDB replication options.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBTableConfig {
     /// Persist the full document as it was right before it was deleted,
     /// instead of only its `_id`. Requires `changeStreamPreAndPostImages` on
@@ -341,7 +340,7 @@ pub struct ClickPipeMongoDBTableConfigResponse {
 ///
 /// Replicates a collection into typed ClickHouse columns instead of a single
 /// JSON document column.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBStructuredIngestion {
     #[serde(rename = "columns", skip_serializing_if = "Option::is_none")]
     pub columns: Option<Vec<ClickPipeMongoDBPipeColumn>>,
@@ -387,7 +386,7 @@ pub struct ClickPipeMongoDBStructuredIngestionResponse {
 
 /// `ClickPipeMongoDBPipeColumn` from the ClickHouse Cloud API: a top-level
 /// document field and the ClickHouse type it is replicated as.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeColumn {
     #[serde(rename = "name")]
     pub name: String,
@@ -434,7 +433,7 @@ pub struct ClickPipeMongoDBSource {
 }
 
 /// `ClickPipeMutateMongoDBSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMutateMongoDBSource {
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,

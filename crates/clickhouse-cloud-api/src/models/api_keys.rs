@@ -96,7 +96,7 @@ pub struct ApiKey {
 }
 
 /// `ApiKeyHashData` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiKeyHashData {
     #[serde(rename = "keyIdHash")]
     pub key_id_hash: String,
@@ -158,7 +158,7 @@ impl<'de> Deserialize<'de> for ApiKeyPatchRequest {
 }
 
 /// `ApiKeyPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiKeyPostRequest {
     #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<uuid::Uuid>>,

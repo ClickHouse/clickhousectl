@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use clickhouse_cloud_api as api;
 
 #[test]
@@ -9,7 +11,7 @@ fn snapshot_and_udf_output_types_are_available_through_both_public_paths() {
     assert_eq!(compatible, api::models::UdfArgumentResponse::default());
 }
 
-fn assert_same_type<T>(_: T, _: T) {}
+fn assert_same_type<T>(_: PhantomData<T>, _: PhantomData<T>) {}
 
 #[cfg(feature = "deprecated-fields")]
 #[test]
@@ -25,7 +27,12 @@ fn deprecated_api_key_roles_preserve_string_source_and_wire_compatibility() {
     };
     let post = api::ApiKeyPostRequest {
         roles: Some(roles),
-        ..Default::default()
+        assigned_role_ids: None,
+        expire_at: None,
+        hash_data: None,
+        ip_access_list: None,
+        name: String::new(),
+        state: None,
     };
     let response_wire = serde_json::to_value(&response).unwrap();
     let patch_wire = serde_json::to_value(&patch).unwrap();
@@ -50,376 +57,397 @@ fn deprecated_api_key_roles_preserve_string_source_and_wire_compatibility() {
 #[test]
 fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(
-        api::SnapshotConfiguration::default(),
-        api::models::SnapshotConfiguration::default(),
+        PhantomData::<api::SnapshotConfiguration>,
+        PhantomData::<api::models::SnapshotConfiguration>,
     );
     assert_same_type(
-        api::SnapshotConfigurationPatchRequest::default(),
-        api::models::SnapshotConfigurationPatchRequest::default(),
+        PhantomData::<api::SnapshotConfigurationPatchRequest>,
+        PhantomData::<api::models::SnapshotConfigurationPatchRequest>,
     );
     assert_same_type(
-        api::UdfAttachResponse424::default(),
-        api::models::UdfAttachResponse424::default(),
+        PhantomData::<api::UdfAttachResponse424>,
+        PhantomData::<api::models::UdfAttachResponse424>,
     );
     assert_same_type(
-        api::UdfAttachErrorCode::ServiceIdle,
-        api::models::UdfAttachErrorCode::ServiceIdle,
+        PhantomData::<api::UdfAttachErrorCode>,
+        PhantomData::<api::models::UdfAttachErrorCode>,
     );
     assert_same_type(
-        api::ActiveBalances::default(),
-        api::models::ActiveBalances::default(),
+        PhantomData::<api::ActiveBalances>,
+        PhantomData::<api::models::ActiveBalances>,
     );
     assert_same_type(
-        api::OrganizationCapabilities::default(),
-        api::models::OrganizationCapabilities::default(),
+        PhantomData::<api::OrganizationCapabilities>,
+        PhantomData::<api::models::OrganizationCapabilities>,
     );
     assert_same_type(
-        api::ClickPipeKinesisSchemaRegistry::default(),
-        api::models::ClickPipeKinesisSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeKinesisSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeKinesisSchemaRegistry>,
     );
     assert_same_type(
-        api::ClickPipeKinesisSchemaRegistryResponse::default(),
-        api::models::ClickPipeKinesisSchemaRegistryResponse::default(),
+        PhantomData::<api::ClickPipeKinesisSchemaRegistryResponse>,
+        PhantomData::<api::models::ClickPipeKinesisSchemaRegistryResponse>,
     );
     assert_same_type(
-        api::ClickPipeKafkaSchemaRegistry::default(),
-        api::models::ClickPipeKafkaSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeKafkaSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeKafkaSchemaRegistry>,
     );
     assert_same_type(
-        api::ClickPipeKafkaConfluentSchemaRegistry::default(),
-        api::models::ClickPipeKafkaConfluentSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeKafkaConfluentSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeKafkaConfluentSchemaRegistry>,
     );
     assert_same_type(
-        api::ClickPipeKafkaGlueSchemaRegistry::default(),
-        api::models::ClickPipeKafkaGlueSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeKafkaGlueSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeKafkaGlueSchemaRegistry>,
     );
     assert_same_type(
-        api::ClickPipeKafkaGlueSchemaRegistryResponse::default(),
-        api::models::ClickPipeKafkaGlueSchemaRegistryResponse::default(),
+        PhantomData::<api::ClickPipeKafkaGlueSchemaRegistryResponse>,
+        PhantomData::<api::models::ClickPipeKafkaGlueSchemaRegistryResponse>,
     );
     assert_same_type(
-        api::ClickPipeMutateKafkaSchemaRegistry::default(),
-        api::models::ClickPipeMutateKafkaSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeMutateKafkaSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeMutateKafkaSchemaRegistry>,
     );
     assert_same_type(
-        api::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
-        api::models::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
+        PhantomData::<api::ClickPipeMutateKafkaConfluentSchemaRegistry>,
+        PhantomData::<api::models::ClickPipeMutateKafkaConfluentSchemaRegistry>,
     );
     assert_same_type(
-        api::PostgresBackup::default(),
-        api::models::PostgresBackup::default(),
+        PhantomData::<api::PostgresBackup>,
+        PhantomData::<api::models::PostgresBackup>,
     );
     assert_same_type(
-        api::PostgresIpAccessListEntry::default(),
-        api::models::PostgresIpAccessListEntry::default(),
+        PhantomData::<api::PostgresIpAccessListEntry>,
+        PhantomData::<api::models::PostgresIpAccessListEntry>,
     );
     assert_same_type(
-        api::PostgresIpAccessListEntryResponse::default(),
-        api::models::PostgresIpAccessListEntryResponse::default(),
+        PhantomData::<api::PostgresIpAccessListEntryResponse>,
+        PhantomData::<api::models::PostgresIpAccessListEntryResponse>,
     );
     assert_same_type(
-        api::PostgresIpAccessListPatch::default(),
-        api::models::PostgresIpAccessListPatch::default(),
+        PhantomData::<api::PostgresIpAccessListPatch>,
+        PhantomData::<api::models::PostgresIpAccessListPatch>,
     );
     assert_same_type(
-        api::PostgresIpAccessListRuleReference::default(),
-        api::models::PostgresIpAccessListRuleReference::default(),
+        PhantomData::<api::PostgresIpAccessListRuleReference>,
+        PhantomData::<api::models::PostgresIpAccessListRuleReference>,
     );
     assert_same_type(
-        api::JwtProvider::default(),
-        api::models::JwtProvider::default(),
+        PhantomData::<api::JwtProvider>,
+        PhantomData::<api::models::JwtProvider>,
     );
     assert_same_type(
-        api::JwtProviderPostRequest::default(),
-        api::models::JwtProviderPostRequest::default(),
+        PhantomData::<api::JwtProviderPostRequest>,
+        PhantomData::<api::models::JwtProviderPostRequest>,
     );
     assert_same_type(
-        api::JwtProviderPutRequest::default(),
-        api::models::JwtProviderPutRequest::default(),
+        PhantomData::<api::JwtProviderPutRequest>,
+        PhantomData::<api::models::JwtProviderPutRequest>,
     );
     assert_same_type(
-        api::WhoamiUser::default(),
-        api::models::WhoamiUser::default(),
+        PhantomData::<api::WhoamiUser>,
+        PhantomData::<api::models::WhoamiUser>,
     );
     assert_same_type(
-        api::WhoamiApiKey::default(),
-        api::models::WhoamiApiKey::default(),
+        PhantomData::<api::WhoamiApiKey>,
+        PhantomData::<api::models::WhoamiApiKey>,
     );
     assert_same_type(
-        api::WhoamiOrganization::default(),
-        api::models::WhoamiOrganization::default(),
+        PhantomData::<api::WhoamiOrganization>,
+        PhantomData::<api::models::WhoamiOrganization>,
     );
     assert_same_type(
-        api::WhoamiUserActortype::default(),
-        api::models::WhoamiUserActortype::default(),
+        PhantomData::<api::WhoamiUserActortype>,
+        PhantomData::<api::models::WhoamiUserActortype>,
     );
     assert_same_type(
-        api::WhoamiApiKeyActortype::default(),
-        api::models::WhoamiApiKeyActortype::default(),
+        PhantomData::<api::WhoamiApiKeyActortype>,
+        PhantomData::<api::models::WhoamiApiKeyActortype>,
     );
     assert_same_type(
-        api::Whoami::Unknown(serde_json::Value::Null),
-        api::models::Whoami::Unknown(serde_json::Value::Null),
+        PhantomData::<api::Whoami>,
+        PhantomData::<api::models::Whoami>,
     );
-    assert_same_type(api::Activity::default(), api::models::Activity::default());
-    assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(
-        api::BackupBucket::default(),
-        api::models::BackupBucket::default(),
+        PhantomData::<api::Activity>,
+        PhantomData::<api::models::Activity>,
     );
     assert_same_type(
-        api::ByocConfig::default(),
-        api::models::ByocConfig::default(),
+        PhantomData::<api::ApiKey>,
+        PhantomData::<api::models::ApiKey>,
     );
     assert_same_type(
-        api::ByocAvailabilityZoneSuffix::default(),
-        api::models::ByocAvailabilityZoneSuffix::default(),
+        PhantomData::<api::BackupBucket>,
+        PhantomData::<api::models::BackupBucket>,
     );
     assert_same_type(
-        api::NotificationType::default(),
-        api::models::NotificationType::default(),
+        PhantomData::<api::ByocConfig>,
+        PhantomData::<api::models::ByocConfig>,
     );
     assert_same_type(
-        api::NotificationTypeSeverity::default(),
-        api::models::NotificationTypeSeverity::default(),
+        PhantomData::<api::ByocAvailabilityZoneSuffix>,
+        PhantomData::<api::models::ByocAvailabilityZoneSuffix>,
     );
     assert_same_type(
-        api::ReplicaAwareRouting::default(),
-        api::models::ReplicaAwareRouting::default(),
+        PhantomData::<api::NotificationType>,
+        PhantomData::<api::models::NotificationType>,
     );
     assert_same_type(
-        api::ReplicaAwareRoutingPatchRequest::default(),
-        api::models::ReplicaAwareRoutingPatchRequest::default(),
+        PhantomData::<api::NotificationTypeSeverity>,
+        PhantomData::<api::models::NotificationTypeSeverity>,
     );
     assert_same_type(
-        api::ByocInfrastructurePrivateEndpointConfig::default(),
-        api::models::ByocInfrastructurePrivateEndpointConfig::default(),
+        PhantomData::<api::ReplicaAwareRouting>,
+        PhantomData::<api::models::ReplicaAwareRouting>,
     );
     assert_same_type(
-        api::ByocInfrastructureTagsResponse::default(),
-        api::models::ByocInfrastructureTagsResponse::default(),
+        PhantomData::<api::ReplicaAwareRoutingPatchRequest>,
+        PhantomData::<api::models::ReplicaAwareRoutingPatchRequest>,
     );
     assert_same_type(
-        api::ClickStackChartColor::default(),
-        api::models::ClickStackChartColor::default(),
+        PhantomData::<api::ByocInfrastructurePrivateEndpointConfig>,
+        PhantomData::<api::models::ByocInfrastructurePrivateEndpointConfig>,
     );
     assert_same_type(
-        api::ClickStackDashboardResponse::default(),
-        api::models::ClickStackDashboardResponse::default(),
+        PhantomData::<api::ByocInfrastructureTagsResponse>,
+        PhantomData::<api::models::ByocInfrastructureTagsResponse>,
     );
     assert_same_type(
-        api::ClickStackFilter::default(),
-        api::models::ClickStackFilter::default(),
+        PhantomData::<api::ClickStackChartColor>,
+        PhantomData::<api::models::ClickStackChartColor>,
     );
     assert_same_type(
-        api::ClickStackFilterResponse::Unknown(serde_json::Value::Null),
-        api::models::ClickStackFilterResponse::Unknown(serde_json::Value::Null),
+        PhantomData::<api::ClickStackDashboardResponse>,
+        PhantomData::<api::models::ClickStackDashboardResponse>,
     );
     assert_same_type(
-        api::ClickStackQueryExpressionFilterInput::default(),
-        api::models::ClickStackQueryExpressionFilterInput::default(),
+        PhantomData::<api::ClickStackFilter>,
+        PhantomData::<api::models::ClickStackFilter>,
     );
     assert_same_type(
-        api::ClickStackStaticListFilter::default(),
-        api::models::ClickStackStaticListFilter::default(),
+        PhantomData::<api::ClickStackFilterResponse>,
+        PhantomData::<api::models::ClickStackFilterResponse>,
     );
     assert_same_type(
-        api::ClickStackPrometheusLabelFilterResponse::default(),
-        api::models::ClickStackPrometheusLabelFilterResponse::default(),
+        PhantomData::<api::ClickStackQueryExpressionFilterInput>,
+        PhantomData::<api::models::ClickStackQueryExpressionFilterInput>,
     );
     assert_same_type(
-        api::ClickStackSourceFilterInput::default(),
-        api::models::ClickStackSourceFilterInput::default(),
+        PhantomData::<api::ClickStackStaticListFilter>,
+        PhantomData::<api::models::ClickStackStaticListFilter>,
     );
     assert_same_type(
-        api::ClickStackFilterMinSelections::default(),
-        api::models::ClickStackFilterMinSelections::default(),
+        PhantomData::<api::ClickStackPrometheusLabelFilterResponse>,
+        PhantomData::<api::models::ClickStackPrometheusLabelFilterResponse>,
     );
     assert_same_type(
-        api::ClickStackFilterMaxSelections::default(),
-        api::models::ClickStackFilterMaxSelections::default(),
+        PhantomData::<api::ClickStackSourceFilterInput>,
+        PhantomData::<api::models::ClickStackSourceFilterInput>,
     );
     assert_same_type(
-        api::ClickStackHeatmapChartConfig::default(),
-        api::models::ClickStackHeatmapChartConfig::default(),
+        PhantomData::<api::ClickStackFilterMinSelections>,
+        PhantomData::<api::models::ClickStackFilterMinSelections>,
     );
     assert_same_type(
-        api::ClickStackHeatmapSeriesChartConfigResponse::default(),
-        api::models::ClickStackHeatmapSeriesChartConfigResponse::default(),
+        PhantomData::<api::ClickStackFilterMaxSelections>,
+        PhantomData::<api::models::ClickStackFilterMaxSelections>,
     );
     assert_same_type(
-        api::ClickStackHeatmapPromqlChartConfigResponse::default(),
-        api::models::ClickStackHeatmapPromqlChartConfigResponse::default(),
+        PhantomData::<api::ClickStackHeatmapChartConfig>,
+        PhantomData::<api::models::ClickStackHeatmapChartConfig>,
     );
     assert_same_type(
-        api::ClickStackAlertLinePromqlChartConfig::default(),
-        api::models::ClickStackAlertLinePromqlChartConfig::default(),
+        PhantomData::<api::ClickStackHeatmapSeriesChartConfigResponse>,
+        PhantomData::<api::models::ClickStackHeatmapSeriesChartConfigResponse>,
     );
     assert_same_type(
-        api::ClickStackPromqlReducibleExpression::default(),
-        api::models::ClickStackPromqlReducibleExpression::default(),
+        PhantomData::<api::ClickStackHeatmapPromqlChartConfigResponse>,
+        PhantomData::<api::models::ClickStackHeatmapPromqlChartConfigResponse>,
     );
     assert_same_type(
-        api::ClickStackPromqlReducibleExpressionReducer::default(),
-        api::models::ClickStackPromqlReducibleExpressionReducer::default(),
+        PhantomData::<api::ClickStackAlertLinePromqlChartConfig>,
+        PhantomData::<api::models::ClickStackAlertLinePromqlChartConfig>,
     );
     assert_same_type(
-        api::ClickStackStackedLineChartConfig::default(),
-        api::models::ClickStackStackedLineChartConfig::default(),
+        PhantomData::<api::ClickStackPromqlReducibleExpression>,
+        PhantomData::<api::models::ClickStackPromqlReducibleExpression>,
     );
     assert_same_type(
-        api::ClickStackStackedLineRawSqlChartConfigResponse::default(),
-        api::models::ClickStackStackedLineRawSqlChartConfigResponse::default(),
+        PhantomData::<api::ClickStackPromqlReducibleExpressionReducer>,
+        PhantomData::<api::models::ClickStackPromqlReducibleExpressionReducer>,
     );
     assert_same_type(
-        api::ClickStackValidateWebhookResponse::default(),
-        api::models::ClickStackValidateWebhookResponse::default(),
+        PhantomData::<api::ClickStackStackedLineChartConfig>,
+        PhantomData::<api::models::ClickStackStackedLineChartConfig>,
     );
     assert_same_type(
-        api::ClickStackValidateWebhookResponseErrorsItem::default(),
-        api::models::ClickStackValidateWebhookResponseErrorsItem::default(),
+        PhantomData::<api::ClickStackStackedLineRawSqlChartConfigResponse>,
+        PhantomData::<api::models::ClickStackStackedLineRawSqlChartConfigResponse>,
     );
-    assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
-        api::ReversePrivateEndpoint::default(),
-        api::models::ReversePrivateEndpoint::default(),
+        PhantomData::<api::ClickStackValidateWebhookResponse>,
+        PhantomData::<api::models::ClickStackValidateWebhookResponse>,
     );
     assert_same_type(
-        api::ReversePrivateEndpointDnsTarget::default(),
-        api::models::ReversePrivateEndpointDnsTarget::default(),
+        PhantomData::<api::ClickStackValidateWebhookResponseErrorsItem>,
+        PhantomData::<api::models::ClickStackValidateWebhookResponseErrorsItem>,
     );
     assert_same_type(
-        api::ReversePrivateEndpointDnsTargetKind::default(),
-        api::models::ReversePrivateEndpointDnsTargetKind::default(),
+        PhantomData::<api::ClickPipe>,
+        PhantomData::<api::models::ClickPipe>,
     );
     assert_same_type(
-        api::ReversePrivateEndpointPrivateDnsMapping::default(),
-        api::models::ReversePrivateEndpointPrivateDnsMapping::default(),
+        PhantomData::<api::ReversePrivateEndpoint>,
+        PhantomData::<api::models::ReversePrivateEndpoint>,
     );
-    assert_same_type(api::PLAIN::default(), api::models::PLAIN::default());
     assert_same_type(
-        api::Invitation::default(),
-        api::models::Invitation::default(),
+        PhantomData::<api::ReversePrivateEndpointDnsTarget>,
+        PhantomData::<api::models::ReversePrivateEndpointDnsTarget>,
     );
-    assert_same_type(api::Member::default(), api::models::Member::default());
     assert_same_type(
-        api::OrganizationPrivateEndpoint::default(),
-        api::models::OrganizationPrivateEndpoint::default(),
+        PhantomData::<api::ReversePrivateEndpointDnsTargetKind>,
+        PhantomData::<api::models::ReversePrivateEndpointDnsTargetKind>,
     );
     assert_same_type(
-        api::Organization::default(),
-        api::models::Organization::default(),
+        PhantomData::<api::ReversePrivateEndpointPrivateDnsMapping>,
+        PhantomData::<api::models::ReversePrivateEndpointPrivateDnsMapping>,
     );
+    assert_same_type(PhantomData::<api::PLAIN>, PhantomData::<api::models::PLAIN>);
     assert_same_type(
-        api::OrganizationQuota::default(),
-        api::models::OrganizationQuota::default(),
+        PhantomData::<api::Invitation>,
+        PhantomData::<api::models::Invitation>,
     );
     assert_same_type(
-        api::PostgresInstanceConfig::default(),
-        api::models::PostgresInstanceConfig::default(),
+        PhantomData::<api::Member>,
+        PhantomData::<api::models::Member>,
     );
     assert_same_type(
-        api::PgConfigDefaultToastCompression::default(),
-        api::models::PgConfigDefaultToastCompression::default(),
+        PhantomData::<api::OrganizationPrivateEndpoint>,
+        PhantomData::<api::models::OrganizationPrivateEndpoint>,
     );
     assert_same_type(
-        api::PgConfigEnableParallelHash::default(),
-        api::models::PgConfigEnableParallelHash::default(),
+        PhantomData::<api::Organization>,
+        PhantomData::<api::models::Organization>,
     );
     assert_same_type(
-        api::PgConfigIoMethod::default(),
-        api::models::PgConfigIoMethod::default(),
+        PhantomData::<api::OrganizationQuota>,
+        PhantomData::<api::models::OrganizationQuota>,
     );
     assert_same_type(
-        api::PgConfigLogLockWaits::default(),
-        api::models::PgConfigLogLockWaits::default(),
+        PhantomData::<api::PostgresInstanceConfig>,
+        PhantomData::<api::models::PostgresInstanceConfig>,
     );
     assert_same_type(
-        api::PostgresLogEntry::default(),
-        api::models::PostgresLogEntry::default(),
+        PhantomData::<api::PgConfigDefaultToastCompression>,
+        PhantomData::<api::models::PgConfigDefaultToastCompression>,
     );
     assert_same_type(
-        api::PostgresLogsGetListSeverity::default(),
-        api::models::PostgresLogsGetListSeverity::default(),
+        PhantomData::<api::PgConfigEnableParallelHash>,
+        PhantomData::<api::models::PgConfigEnableParallelHash>,
     );
     assert_same_type(
-        api::PostgresLogsGetListSortorder::default(),
-        api::models::PostgresLogsGetListSortorder::default(),
+        PhantomData::<api::PgConfigIoMethod>,
+        PhantomData::<api::models::PgConfigIoMethod>,
     );
     assert_same_type(
-        api::SlowQueryPatternsGetListSortby::default(),
-        api::models::SlowQueryPatternsGetListSortby::default(),
+        PhantomData::<api::PgConfigLogLockWaits>,
+        PhantomData::<api::models::PgConfigLogLockWaits>,
     );
     assert_same_type(
-        api::SlowQueryPatternsGetListSortorder::default(),
-        api::models::SlowQueryPatternsGetListSortorder::default(),
+        PhantomData::<api::PostgresLogEntry>,
+        PhantomData::<api::models::PostgresLogEntry>,
     );
     assert_same_type(
-        api::PrometheusDiscoveryTargetGroup::default(),
-        api::models::PrometheusDiscoveryTargetGroup::default(),
+        PhantomData::<api::PostgresLogsGetListSeverity>,
+        PhantomData::<api::models::PostgresLogsGetListSeverity>,
     );
-    assert_same_type(api::RBACRole::default(), api::models::RBACRole::default());
-    assert_same_type(api::ScimUser::default(), api::models::ScimUser::default());
     assert_same_type(
-        api::ApiResponse::<()>::default(),
-        api::models::ApiResponse::<()>::default(),
+        PhantomData::<api::PostgresLogsGetListSortorder>,
+        PhantomData::<api::models::PostgresLogsGetListSortorder>,
     );
-    assert_same_type(api::Service::default(), api::models::Service::default());
     assert_same_type(
-        api::QueryEndpointRole::default(),
-        api::models::QueryEndpointRole::default(),
+        PhantomData::<api::SlowQueryPatternsGetListSortby>,
+        PhantomData::<api::models::SlowQueryPatternsGetListSortby>,
     );
     assert_same_type(
-        api::UpgradeWindowDuration::default(),
-        api::models::UpgradeWindowDuration::default(),
+        PhantomData::<api::SlowQueryPatternsGetListSortorder>,
+        PhantomData::<api::models::SlowQueryPatternsGetListSortorder>,
     );
     assert_same_type(
-        api::UpgradeWindowStartHourUtc::default(),
-        api::models::UpgradeWindowStartHourUtc::default(),
+        PhantomData::<api::PrometheusDiscoveryTargetGroup>,
+        PhantomData::<api::models::PrometheusDiscoveryTargetGroup>,
     );
-    assert_same_type(api::Udf::default(), api::models::Udf::default());
+    assert_same_type(
+        PhantomData::<api::RBACRole>,
+        PhantomData::<api::models::RBACRole>,
+    );
+    assert_same_type(
+        PhantomData::<api::ScimUser>,
+        PhantomData::<api::models::ScimUser>,
+    );
+    assert_same_type(
+        PhantomData::<api::ApiResponse<()>>,
+        PhantomData::<api::models::ApiResponse<()>>,
+    );
+    assert_same_type(
+        PhantomData::<api::Service>,
+        PhantomData::<api::models::Service>,
+    );
+    assert_same_type(
+        PhantomData::<api::QueryEndpointRole>,
+        PhantomData::<api::models::QueryEndpointRole>,
+    );
+    assert_same_type(
+        PhantomData::<api::UpgradeWindowDuration>,
+        PhantomData::<api::models::UpgradeWindowDuration>,
+    );
+    assert_same_type(
+        PhantomData::<api::UpgradeWindowStartHourUtc>,
+        PhantomData::<api::models::UpgradeWindowStartHourUtc>,
+    );
+    assert_same_type(PhantomData::<api::Udf>, PhantomData::<api::models::Udf>);
 }
 
 #[test]
 fn notification_is_available_through_both_public_paths() {
     assert_same_type(
-        api::Notification::default(),
-        api::models::Notification::default(),
+        PhantomData::<api::Notification>,
+        PhantomData::<api::models::Notification>,
     );
 }
 
 #[test]
 fn org_preview_notification_setting_and_byoc_access_models_keep_both_public_paths() {
     assert_same_type(
-        api::ByocCustomerAuthorizedAccess::default(),
-        api::models::ByocCustomerAuthorizedAccess::default(),
+        PhantomData::<api::ByocCustomerAuthorizedAccess>,
+        PhantomData::<api::models::ByocCustomerAuthorizedAccess>,
     );
     assert_same_type(
-        api::ByocCustomerAuthorizedAccessPatchRequest::default(),
-        api::models::ByocCustomerAuthorizedAccessPatchRequest::default(),
+        PhantomData::<api::ByocCustomerAuthorizedAccessPatchRequest>,
+        PhantomData::<api::models::ByocCustomerAuthorizedAccessPatchRequest>,
     );
     assert_same_type(
-        api::NotificationSetting::default(),
-        api::models::NotificationSetting::default(),
+        PhantomData::<api::NotificationSetting>,
+        PhantomData::<api::models::NotificationSetting>,
     );
     assert_same_type(
-        api::NotificationSettingRule::default(),
-        api::models::NotificationSettingRule::default(),
+        PhantomData::<api::NotificationSettingRule>,
+        PhantomData::<api::models::NotificationSettingRule>,
     );
     assert_same_type(
-        api::MemberNotificationSettingsPatchRequest::default(),
-        api::models::MemberNotificationSettingsPatchRequest::default(),
+        PhantomData::<api::MemberNotificationSettingsPatchRequest>,
+        PhantomData::<api::models::MemberNotificationSettingsPatchRequest>,
     );
     assert_same_type(
-        api::MemberNotificationSettingsPatchResponse::default(),
-        api::models::MemberNotificationSettingsPatchResponse::default(),
+        PhantomData::<api::MemberNotificationSettingsPatchResponse>,
+        PhantomData::<api::models::MemberNotificationSettingsPatchResponse>,
     );
     assert_same_type(
-        api::PublicPreview::default(),
-        api::models::PublicPreview::default(),
+        PhantomData::<api::PublicPreview>,
+        PhantomData::<api::models::PublicPreview>,
     );
     assert_same_type(
-        api::PublicPreviewPatchRequest::default(),
-        api::models::PublicPreviewPatchRequest::default(),
+        PhantomData::<api::PublicPreviewPatchRequest>,
+        PhantomData::<api::models::PublicPreviewPatchRequest>,
     );
 }

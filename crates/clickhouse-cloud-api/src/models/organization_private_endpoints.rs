@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 /// Inline enum for `OrganizationPatchPrivateEndpoint.cloudProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OrganizationPatchPrivateEndpointCloudprovider {
     #[serde(rename = "gcp")]
-    #[default]
     Gcp,
     #[serde(rename = "aws")]
     Aws,
@@ -26,10 +25,9 @@ impl std::fmt::Display for OrganizationPatchPrivateEndpointCloudprovider {
 }
 
 /// Inline enum for `OrganizationPatchPrivateEndpoint.region`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OrganizationPatchPrivateEndpointRegion {
     #[serde(rename = "ap-northeast-1")]
-    #[default]
     Ap_northeast_1,
     #[serde(rename = "ap-northeast-2")]
     Ap_northeast_2,
@@ -237,7 +235,7 @@ pub struct OrganizationCloudRegionPrivateEndpointConfig {
 }
 
 /// `OrganizationPatchPrivateEndpoint` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrganizationPatchPrivateEndpoint {
     #[serde(rename = "cloudProvider")]
     pub cloud_provider: OrganizationPatchPrivateEndpointCloudprovider,
@@ -261,7 +259,7 @@ pub struct OrganizationPrivateEndpoint {
 }
 
 /// `OrganizationPrivateEndpointsPatch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpointsPatch {
     #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none")]

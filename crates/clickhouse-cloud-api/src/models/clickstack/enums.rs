@@ -708,10 +708,9 @@ impl std::fmt::Display for ClickStackClickHouseCASLPermissionConditionsWherelang
 }
 
 /// Inline enum for `ClickStackCreateAlertRequest.interval`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackCreateAlertRequestInterval {
     #[serde(rename = "1m")]
-    #[default]
     _1m,
     #[serde(rename = "5m")]
     _5m,
@@ -778,10 +777,9 @@ impl std::fmt::Display for ClickStackCreateAlertRequestSource {
 }
 
 /// Inline enum for `ClickStackCreateAlertRequest.thresholdType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackCreateAlertRequestThresholdtype {
     #[serde(rename = "above")]
-    #[default]
     Above,
     #[serde(rename = "below")]
     Below,
@@ -1515,10 +1513,9 @@ impl std::fmt::Display for ClickStackMarkdownChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackMarkdownChartSeries.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackMarkdownChartSeriesType {
     #[serde(rename = "markdown")]
-    #[default]
     Markdown,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -1657,10 +1654,9 @@ impl std::fmt::Display for ClickStackNumberBuilderChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.aggFn`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackNumberChartSeriesAggfn {
     #[serde(rename = "avg")]
-    #[default]
     Avg,
     #[serde(rename = "count")]
     Count,
@@ -1736,10 +1732,9 @@ impl std::fmt::Display for ClickStackNumberChartSeriesMetricdatatype {
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackNumberChartSeriesType {
     #[serde(rename = "number")]
-    #[default]
     Number,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -1756,10 +1751,9 @@ impl std::fmt::Display for ClickStackNumberChartSeriesType {
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackNumberChartSeriesWherelanguage {
     #[serde(rename = "sql")]
-    #[default]
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
@@ -2712,10 +2706,9 @@ impl std::fmt::Display for ClickStackSearchChartConfigWherelanguage {
 }
 
 /// Inline enum for `ClickStackSearchChartSeries.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackSearchChartSeriesType {
     #[serde(rename = "search")]
-    #[default]
     Search,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -2732,10 +2725,9 @@ impl std::fmt::Display for ClickStackSearchChartSeriesType {
 }
 
 /// Inline enum for `ClickStackSearchChartSeries.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackSearchChartSeriesWherelanguage {
     #[serde(rename = "sql")]
-    #[default]
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
@@ -3208,10 +3200,9 @@ impl std::fmt::Display for ClickStackTableBuilderChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackTableChartSeries.aggFn`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTableChartSeriesAggfn {
     #[serde(rename = "avg")]
-    #[default]
     Avg,
     #[serde(rename = "count")]
     Count,
@@ -3310,10 +3301,9 @@ impl std::fmt::Display for ClickStackTableChartSeriesSortorder {
 }
 
 /// Inline enum for `ClickStackTableChartSeries.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTableChartSeriesType {
     #[serde(rename = "table")]
-    #[default]
     Table,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -3330,10 +3320,9 @@ impl std::fmt::Display for ClickStackTableChartSeriesType {
 }
 
 /// Inline enum for `ClickStackTableChartSeries.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTableChartSeriesWherelanguage {
     #[serde(rename = "sql")]
-    #[default]
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
@@ -3433,10 +3422,9 @@ impl std::fmt::Display for ClickStackTableRawSqlChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.aggFn`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTimeChartSeriesAggfn {
     #[serde(rename = "avg")]
-    #[default]
     Avg,
     #[serde(rename = "count")]
     Count,
@@ -3538,10 +3526,9 @@ impl std::fmt::Display for ClickStackTimeChartSeriesMetricdatatype {
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.type`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTimeChartSeriesType {
     #[serde(rename = "time")]
-    #[default]
     Time,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -3558,10 +3545,9 @@ impl std::fmt::Display for ClickStackTimeChartSeriesType {
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.whereLanguage`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackTimeChartSeriesWherelanguage {
     #[serde(rename = "sql")]
-    #[default]
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
@@ -3627,10 +3613,9 @@ impl std::fmt::Display for ClickStackTraceSourceUsetextindexforimplicitcolumn {
 }
 
 /// Inline enum for `ClickStackUpdateAlertRequest.interval`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackUpdateAlertRequestInterval {
     #[serde(rename = "1m")]
-    #[default]
     _1m,
     #[serde(rename = "5m")]
     _5m,
@@ -3697,10 +3682,9 @@ impl std::fmt::Display for ClickStackUpdateAlertRequestSource {
 }
 
 /// Inline enum for `ClickStackUpdateAlertRequest.thresholdType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackUpdateAlertRequestThresholdtype {
     #[serde(rename = "above")]
-    #[default]
     Above,
     #[serde(rename = "below")]
     Below,
@@ -3761,10 +3745,9 @@ impl std::fmt::Display for ClickStackUpdateDashboardRequestSavedquerylanguage {
 }
 
 /// Inline enum for `ClickStackWebhookInput.service`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickStackWebhookInputService {
     #[serde(rename = "slack")]
-    #[default]
     Slack,
     #[serde(rename = "incidentio")]
     Incidentio,

@@ -154,7 +154,11 @@ fn database_destination() -> ClickPipeMutateDestination {
     // table/columns/managedTable/tableDefinition group entirely.
     ClickPipeMutateDestination {
         database: "default".to_string(),
-        ..Default::default()
+        columns: None,
+        managed_table: None,
+        roles: None,
+        table: None,
+        table_definition: None,
     }
 }
 
@@ -176,12 +180,15 @@ fn managed_destination(table: &str) -> ClickPipeMutateDestination {
         table_definition: Some(ClickPipeDestinationTableDefinition {
             engine: ClickPipeDestinationTableEngine {
                 r#type: ClickPipeDestinationTableEngineType::MergeTree,
-                ..Default::default()
+                column_ids: Vec::new(),
+                version_column_id: None,
             },
             primary_key: "id".to_string(),
-            ..Default::default()
+            partition_by: String::new(),
+            sorting_key: Vec::new(),
+            ttl: String::new(),
         }),
-        ..Default::default()
+        roles: None,
     }
 }
 
@@ -195,7 +202,7 @@ async fn cloud_clickpipe_create_kafka_sasl_smoke() -> TestResult<()> {
         name: ctx.pipe_name("kafka-sasl"),
         source: ClickPipePostSource {
             kafka: Some(ClickPipePostKafkaSource {
-                r#type: ClickPipePostKafkaSourceType::default(),
+                r#type: ClickPipePostKafkaSourceType::Kafka,
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers: "broker.invalid:9092".to_string(),
                 topics: "smoke-topic".to_string(),
@@ -209,12 +216,21 @@ async fn cloud_clickpipe_create_kafka_sasl_smoke() -> TestResult<()> {
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
                 }),
-                ..Default::default()
+                protobuf_schema: None,
+                ca_certificate: None,
+                exactly_once: None,
+                iam_role: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                tombstone_mode: None,
             }),
             ..Default::default()
         },
         destination: managed_destination("smoke_kafka"),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -227,7 +243,7 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
         name: ctx.pipe_name("kafka-msk"),
         source: ClickPipePostSource {
             kafka: Some(ClickPipePostKafkaSource {
-                r#type: ClickPipePostKafkaSourceType::default(),
+                r#type: ClickPipePostKafkaSourceType::Kafka,
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers: "msk.invalid:9098".to_string(),
                 topics: "smoke-topic".to_string(),
@@ -238,12 +254,21 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
                 }),
-                ..Default::default()
+                protobuf_schema: None,
+                ca_certificate: None,
+                consumer_group: None,
+                exactly_once: None,
+                reverse_private_endpoint_ids: None,
+                schema_registry: None,
+                tombstone_mode: None,
             }),
             ..Default::default()
         },
         destination: managed_destination("smoke_kafka_msk"),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -264,13 +289,20 @@ async fn cloud_clickpipe_create_kinesis_iam_user_smoke() -> TestResult<()> {
                 format: ClickPipePostKinesisSourceFormat::JSONEachRow,
                 region: "us-east-1".to_string(),
                 stream_name: "smoke-stream".to_string(),
-                iterator_type: ClickPipePostKinesisSourceIteratortype::default(),
-                ..Default::default()
+                iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+                iam_role: None,
+                schema_registry: None,
+                timestamp: None,
+                use_enhanced_fan_out: None,
+                protobuf_schema: None,
             }),
             ..Default::default()
         },
         destination: managed_destination("smoke_kinesis"),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -283,7 +315,7 @@ async fn cloud_clickpipe_create_s3_iam_user_smoke() -> TestResult<()> {
         name: ctx.pipe_name("s3-user"),
         source: ClickPipePostSource {
             object_storage: Some(ClickPipePostObjectStorageSource {
-                r#type: ClickPipePostObjectStorageSourceType::default(),
+                r#type: ClickPipePostObjectStorageSourceType::S3,
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
                 url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
                 authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER),
@@ -291,12 +323,26 @@ async fn cloud_clickpipe_create_s3_iam_user_smoke() -> TestResult<()> {
                     access_key_id: "AKIAFAKEKEYFORSMOKE".to_string(),
                     secret_key: "fake/secret/for/smoke/test/0000000000000000".to_string(),
                 }),
-                ..Default::default()
+                azure_container_name: None,
+                compression: None,
+                connection_string: None,
+                delimiter: None,
+                iam_role: None,
+                is_continuous: None,
+                path: None,
+                queue_url: None,
+                service_account_key: None,
+                skip_first_lines: None,
+                skip_initial_load: None,
+                start_after: None,
             }),
             ..Default::default()
         },
         destination: managed_destination("smoke_s3_user"),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -309,17 +355,31 @@ async fn cloud_clickpipe_create_s3_iam_role_smoke() -> TestResult<()> {
         name: ctx.pipe_name("s3-role"),
         source: ClickPipePostSource {
             object_storage: Some(ClickPipePostObjectStorageSource {
-                r#type: ClickPipePostObjectStorageSourceType::default(),
+                r#type: ClickPipePostObjectStorageSourceType::S3,
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
                 url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
                 authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
                 iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
-                ..Default::default()
+                access_key: None,
+                azure_container_name: None,
+                compression: None,
+                connection_string: None,
+                delimiter: None,
+                is_continuous: None,
+                path: None,
+                queue_url: None,
+                service_account_key: None,
+                skip_first_lines: None,
+                skip_initial_load: None,
+                start_after: None,
             }),
             ..Default::default()
         },
         destination: managed_destination("smoke_s3_role"),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -358,13 +418,27 @@ async fn cloud_clickpipe_create_bigquery_snapshot_smoke() -> TestResult<()> {
                     snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
                     settings: ClickPipeBigQueryPipeSettings {
                         replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
-                        ..Default::default()
+                        allow_nullable_columns: None,
+                        initial_load_parallelism: None,
+                        snapshot_num_rows_per_partition: None,
+                        snapshot_number_of_parallel_tables: None,
+                        pull_window_size_seconds: None,
+                        query_cdc_pull_sync_parallelism: None,
+                        replication_method: None,
+                        sync_cron: None,
+                        sync_delay_seconds: None,
+                        sync_interval_seconds: None,
                     },
                     table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
                         source_dataset_name: "smoke_dataset".to_string(),
                         source_table: "smoke_source".to_string(),
                         target_table: "smoke_target".to_string(),
-                        ..Default::default()
+                        excluded_columns: None,
+                        sorting_keys: None,
+                        table_engine: None,
+                        use_custom_sorting_key: None,
+                        events_function: None,
+                        query_cdc_watermark_column: None,
                     }],
                 }
                 .into(),
@@ -372,7 +446,10 @@ async fn cloud_clickpipe_create_bigquery_snapshot_smoke() -> TestResult<()> {
             ..Default::default()
         },
         destination: database_destination(),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -395,20 +472,41 @@ async fn cloud_clickpipe_create_mysql_cdc_smoke() -> TestResult<()> {
                 port: 3306,
                 settings: ClickPipeMySQLPipeSettings {
                     replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Cdc,
-                    ..Default::default()
+                    allow_nullable_columns: None,
+                    delete_on_merge: None,
+                    initial_load_parallelism: None,
+                    pull_batch_size: None,
+                    replication_mechanism: None,
+                    snapshot_num_rows_per_partition: None,
+                    snapshot_number_of_parallel_tables: None,
+                    sync_interval_seconds: None,
+                    use_compression: None,
                 },
                 table_mappings: vec![ClickPipeMySQLPipeTableMapping {
                     source_schema_name: "smoke_db".to_string(),
                     source_table: "smoke_source".to_string(),
                     target_table: "smoke_target".to_string(),
-                    ..Default::default()
+                    partition_by_expr: None,
+                    excluded_columns: None,
+                    partition_key: None,
+                    sorting_keys: None,
+                    table_engine: None,
+                    use_custom_sorting_key: None,
                 }],
-                ..Default::default()
+                ca_certificate: None,
+                disable_tls: None,
+                iam_role: None,
+                server_id: None,
+                skip_cert_verification: None,
+                tls_host: None,
             }),
             ..Default::default()
         },
         destination: database_destination(),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }
@@ -429,7 +527,13 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                 read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
                 settings: ClickPipeMongoDBPipeSettings {
                     replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
-                    ..Default::default()
+                    initial_load_parallelism: None,
+                    delete_on_merge: None,
+                    pull_batch_size: None,
+                    snapshot_num_rows_per_partition: None,
+                    snapshot_number_of_parallel_tables: None,
+                    sync_interval_seconds: None,
+                    use_json_native_format: None,
                 },
                 table_mappings: vec![ClickPipeMongoDBPipeTableMapping {
                     source_database_name: "smoke_db".to_string(),
@@ -439,12 +543,18 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                     structured_ingestion: None,
                     mongo_config: None,
                 }],
-                ..Default::default()
+                ca_certificate: None,
+                disable_tls: None,
+                skip_cert_verification: None,
+                tls_host: None,
             }),
             ..Default::default()
         },
         destination: database_destination(),
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     };
     assert_create_shape_accepted(&ctx, request).await
 }

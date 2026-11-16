@@ -65,7 +65,11 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             region: ctx.region.clone(),
             size: size.clone(),
             tags: Some(ctx.postgres_run_tags()),
-            ..Default::default()
+            ha_type: None,
+            ip_access_list: None,
+            pg_bouncer_config: None,
+            pg_config: None,
+            postgres_version: None,
         };
 
         let created = failures
@@ -633,7 +637,8 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                     let body = PostgresServiceReadReplicaRequest {
                         name: ctx.postgres_replica_name(),
                         tags: Some(replica_tags.clone()),
-                        ..Default::default()
+                        pg_bouncer_config: None,
+                        pg_config: None,
                     };
                     let timeout = ctx.steady_state_timeout;
                     let interval = ctx.poll_interval;

@@ -72,7 +72,34 @@ async fn create_service() {
         region: ServicePostRequestRegion::Us_east_1,
         #[cfg(feature = "deprecated-fields")]
         tier: Some(ServicePostRequestTier::Production),
-        ..Default::default()
+        autoscaling_mode: None,
+        backup_id: None,
+        backup_encryption_config: None,
+        byoc_id: None,
+        compliance_type: None,
+        data_warehouse_id: None,
+        enable_core_dumps: None,
+        endpoints: None,
+        has_transparent_data_encryption: None,
+        idle_scaling: None,
+        idle_timeout_minutes: None,
+        ip_access_list: Vec::new(),
+        is_readonly: None,
+        max_replica_memory_gb: None,
+        max_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        max_total_memory_gb: None,
+        min_replica_memory_gb: None,
+        min_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        min_total_memory_gb: None,
+        num_replicas: None,
+        #[cfg(feature = "deprecated-fields")]
+        private_endpoint_ids: None,
+        private_preview_terms_checked: None,
+        profile: None,
+        release_channel: None,
+        tags: None,
     };
     let resp = client.instance_create("org-123", &body).await.unwrap();
     let result = resp.result.unwrap();
@@ -454,7 +481,7 @@ async fn upsert_query_endpoint() {
     let body = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: Some("https://example.com".to_string()),
         roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
-        ..Default::default()
+        open_api_keys: Vec::new(),
     };
     let resp = c
         .instance_query_endpoint_upsert("org-1", "svc-1", &body)

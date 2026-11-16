@@ -163,7 +163,7 @@ pub struct ClickPipeDestination {
 }
 
 /// `ClickPipeDestinationColumn` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeDestinationColumn {
     pub name: String,
     pub r#type: String,
@@ -184,7 +184,7 @@ pub struct ClickPipeDestinationColumnResponse {
 }
 
 /// `ClickPipeDestinationTableDefinition` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeDestinationTableDefinition {
     pub engine: ClickPipeDestinationTableEngine,
     // API rejects empty strings / empty arrays for these keys. Spec has no
@@ -222,7 +222,7 @@ pub struct ClickPipeDestinationTableDefinitionResponse {
 }
 
 /// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeDestinationTableEngine {
     // columnIds only valid for SummingMergeTree. Skip when empty to avoid API
     // rejection for MergeTree/ReplacingMergeTree/Null engines. Spec has no
@@ -252,7 +252,7 @@ pub struct ClickPipeDestinationTableEngineResponse {
 }
 
 /// `ClickPipeFieldMapping` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeFieldMapping {
     #[serde(rename = "destinationField")]
     pub destination_field: String,
@@ -274,7 +274,7 @@ pub struct ClickPipeFieldMappingResponse {
 }
 
 /// `ClickPipeMutateDestination` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMutateDestination {
     // The spec describes `columns`, `managedTable`, `table`, and
     // `tableDefinition` as "Required field for all pipe types except database
@@ -294,7 +294,7 @@ pub struct ClickPipeMutateDestination {
 }
 
 /// `ClickPipePatchDestination` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePatchDestination {
     pub columns: Vec<ClickPipeDestinationColumn>,
 }
@@ -336,7 +336,7 @@ pub struct ClickPipePatchSource {
 }
 
 /// `ClickPipePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostRequest {
     pub destination: ClickPipeMutateDestination,
     #[serde(rename = "fieldMappings", skip_serializing_if = "Option::is_none")]
@@ -382,7 +382,7 @@ pub struct ClickPipePostSource {
 }
 
 /// `ClickPipeScaling` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeScaling {
     #[cfg(feature = "deprecated-fields")]
     pub concurrency: i64,
@@ -602,7 +602,7 @@ pub struct ClickPipesCdcScalingPatchRequest {
 }
 
 /// `MskIamUser` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MskIamUser {
     #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
@@ -611,14 +611,14 @@ pub struct MskIamUser {
 }
 
 /// `PLAIN` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PLAIN {
     pub password: String,
     pub username: String,
 }
 
 /// `ServiceAccount` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceAccount {
     #[serde(rename = "serviceAccountFile")]
     pub service_account_file: String,

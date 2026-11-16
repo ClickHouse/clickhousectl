@@ -250,7 +250,11 @@ fn build_pipe_request(
         // level. The per-mapping `targetTable` carries the destination table.
         destination: ClickPipeMutateDestination {
             database: "default".to_string(),
-            ..Default::default()
+            columns: None,
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
         },
         source: ClickPipePostSource {
             mysql: Some(ClickPipeMutateMySQLSource {
@@ -266,7 +270,14 @@ fn build_pipe_request(
                 settings: ClickPipeMySQLPipeSettings {
                     replication_mode: variant.replication_mode.clone(),
                     replication_mechanism: variant.replication_mechanism.clone(),
-                    ..Default::default()
+                    allow_nullable_columns: None,
+                    delete_on_merge: None,
+                    initial_load_parallelism: None,
+                    pull_batch_size: None,
+                    snapshot_num_rows_per_partition: None,
+                    snapshot_number_of_parallel_tables: None,
+                    sync_interval_seconds: None,
+                    use_compression: None,
                 },
                 table_mappings: vec![ClickPipeMySQLPipeTableMapping {
                     // For MySQL, `sourceSchemaName` is the database name.
@@ -276,12 +287,23 @@ fn build_pipe_request(
                     table_engine: Some(
                         ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree,
                     ),
-                    ..Default::default()
+                    partition_by_expr: None,
+                    excluded_columns: None,
+                    partition_key: None,
+                    sorting_keys: None,
+                    use_custom_sorting_key: None,
                 }],
-                ..Default::default()
+                disable_tls: None,
+                iam_role: None,
+                server_id: None,
+                skip_cert_verification: None,
+                tls_host: None,
             }),
             ..Default::default()
         },
-        ..Default::default()
+        field_mappings: None,
+        scaling: None,
+        settings: None,
+        start_paused: None,
     }
 }

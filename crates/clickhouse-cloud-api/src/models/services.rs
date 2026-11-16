@@ -630,10 +630,9 @@ impl std::fmt::Display for ServiceEndpointProtocol {
 }
 
 /// Inline enum for `ServiceEndpointChange.protocol`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServiceEndpointChangeProtocol {
     #[serde(rename = "mysql")]
-    #[default]
     Mysql,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -756,10 +755,9 @@ impl ServicePostRequestProfile {
 }
 
 /// Inline enum for `ServicePostRequest.provider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServicePostRequestProvider {
     #[serde(rename = "aws")]
-    #[default]
     Aws,
     #[serde(rename = "gcp")]
     Gcp,
@@ -787,10 +785,9 @@ impl ServicePostRequestProvider {
 }
 
 /// Inline enum for `ServicePostRequest.region`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServicePostRequestRegion {
     #[serde(rename = "ap-northeast-1")]
-    #[default]
     Ap_northeast_1,
     #[serde(rename = "ap-northeast-2")]
     Ap_northeast_2,
@@ -1387,14 +1384,14 @@ pub struct InstancePrivateEndpoint {
 }
 
 /// `InstancePrivateEndpointsPatch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstancePrivateEndpointsPatch {
     pub add: Vec<String>,
     pub remove: Vec<String>,
 }
 
 /// `InstanceServiceQueryApiEndpointsPostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstanceServiceQueryApiEndpointsPostRequest {
     #[serde(rename = "allowedOrigins", skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<String>,
@@ -1404,7 +1401,7 @@ pub struct InstanceServiceQueryApiEndpointsPostRequest {
 }
 
 /// `InstanceTagsPatch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstanceTagsPatch {
     pub add: Vec<ResourceTagsV1>,
     pub remove: Vec<ResourceTagsV1>,
@@ -1481,7 +1478,7 @@ pub struct ScalingScheduleEntry {
 }
 
 /// `ScalingScheduleEntryRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalingScheduleEntryRequest {
     #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
@@ -1508,13 +1505,13 @@ pub struct ScalingScheduleEntryRequest {
 }
 
 /// `ScalingSchedulePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalingSchedulePostRequest {
     pub entries: Vec<ScalingScheduleEntryRequest>,
 }
 
 /// `ServicPrivateEndpointePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServicPrivateEndpointePostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -1763,7 +1760,7 @@ pub struct ServiceEndpoint {
 }
 
 /// `ServiceEndpointChange` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceEndpointChange {
     pub enabled: bool,
     pub protocol: ServiceEndpointChangeProtocol,
@@ -1816,7 +1813,7 @@ pub struct ServicePatchRequest {
 pub type BackupEncryptionConfig = std::collections::BTreeMap<String, serde_json::Value>;
 
 /// `ServicePostRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServicePostRequest {
     #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
@@ -2098,7 +2095,7 @@ pub struct UpgradeWindow {
 }
 
 /// `UpgradeWindowPutRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpgradeWindowPutRequest {
     #[serde(rename = "startHourUtc")]
     pub start_hour_utc: UpgradeWindowStartHourUtc,

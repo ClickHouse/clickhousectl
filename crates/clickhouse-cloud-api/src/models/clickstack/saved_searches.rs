@@ -34,7 +34,7 @@ pub struct ClickStackSavedSearch {
 }
 
 /// `ClickStackSavedSearchFilter` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSavedSearchFilter {
     pub condition: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,7 +55,7 @@ pub struct ClickStackSavedSearchFilterResponse {
 }
 
 /// `ClickStackSavedSearchInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSavedSearchInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackSavedSearchFilter>>,

@@ -151,7 +151,7 @@ impl std::fmt::Display for ClickStackFilterInput {
 pub type ClickStackValidateDashboardResponseNormalized = serde_json::Value;
 
 /// `ClickStackCreateDashboardRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCreateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub containers: Option<Vec<ClickStackDashboardContainer>>,
@@ -170,7 +170,7 @@ pub struct ClickStackCreateDashboardRequest {
 }
 
 /// `ClickStackDashboardContainer` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackDashboardContainer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bordered: Option<bool>,
@@ -205,7 +205,7 @@ pub struct ClickStackDashboardContainerResponse {
 }
 
 /// `ClickStackDashboardContainerTab` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackDashboardContainerTab {
     pub id: String,
     pub title: String,
@@ -251,7 +251,7 @@ pub struct ClickStackDashboardResponse {
 }
 
 /// `ClickStackPrometheusLabelFilterInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPrometheusLabelFilterInput {
     #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
     pub is_broadcast_enabled: Option<bool>,
@@ -282,7 +282,7 @@ pub struct ClickStackPrometheusLabelFilterInput {
 ///
 /// The spec defines it as `allOf` [`ClickStackPrometheusLabelFilterInput`]
 /// and a required `id`, so it carries every field of the input type plus `id`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPrometheusLabelFilter {
     pub id: String,
     #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
@@ -347,7 +347,7 @@ pub struct ClickStackPrometheusLabelFilterResponse {
 }
 
 /// `ClickStackQueryExpressionFilterInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackQueryExpressionFilterInput {
     #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
@@ -384,7 +384,7 @@ pub struct ClickStackQueryExpressionFilterInput {
 ///
 /// The spec defines it as `allOf` [`ClickStackQueryExpressionFilterInput`]
 /// and a required `id`, so it carries every field of the input type plus `id`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackQueryExpressionFilter {
     #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
@@ -475,11 +475,6 @@ discriminated_union! {
         none unless "name" | "values" => ClickStackSqlSavedFilterValue,
     }
 }
-impl Default for ClickStackSavedFilterValue {
-    fn default() -> Self {
-        Self::ClickStackSqlSavedFilterValue(ClickStackSqlSavedFilterValue::default())
-    }
-}
 impl std::fmt::Display for ClickStackSavedFilterValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -525,7 +520,7 @@ impl std::fmt::Display for ClickStackSavedFilterValueResponse {
 }
 
 /// `ClickStackSourceFilterInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSourceFilterInput {
     #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
@@ -556,7 +551,7 @@ pub struct ClickStackSourceFilterInput {
 ///
 /// The spec defines it as `allOf` [`ClickStackSourceFilterInput`]
 /// and a required `id`, so it carries every field of the input type plus `id`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSourceFilter {
     #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
@@ -621,7 +616,7 @@ pub struct ClickStackSourceFilterResponse {
 }
 
 /// `ClickStackStaticListFilterInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackStaticListFilterInput {
     #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
     pub is_broadcast_enabled: Option<bool>,
@@ -648,7 +643,7 @@ pub struct ClickStackStaticListFilterInput {
 ///
 /// The spec defines it as `allOf` [`ClickStackStaticListFilterInput`]
 /// and a required `id`, so it carries every field of the input type plus `id`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackStaticListFilter {
     pub id: String,
     #[serde(rename = "isBroadcastEnabled", skip_serializing_if = "Option::is_none")]
@@ -705,7 +700,7 @@ pub struct ClickStackStaticListFilterResponse {
 }
 
 /// `ClickStackUpdateDashboardRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackUpdateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub containers: Option<Vec<ClickStackDashboardContainer>>,
@@ -749,20 +744,8 @@ pub struct ClickStackValidateDashboardResponse {
     pub valid: Option<bool>,
 }
 
-impl Default for ClickStackFilter {
-    fn default() -> Self {
-        Self::ClickStackQueryExpressionFilter(ClickStackQueryExpressionFilter::default())
-    }
-}
-
-impl Default for ClickStackFilterInput {
-    fn default() -> Self {
-        Self::ClickStackQueryExpressionFilterInput(ClickStackQueryExpressionFilterInput::default())
-    }
-}
-
 /// `ClickStackSqlSavedFilterValue` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSqlSavedFilterValue {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickStackSavedFilterValueType>,
@@ -780,7 +763,7 @@ pub struct ClickStackSqlSavedFilterValueResponse {
 }
 
 /// `ClickStackVariableSavedFilterValue` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackVariableSavedFilterValue {
     #[serde(rename = "type")]
     pub r#type: ClickStackVariableSavedFilterValueType,

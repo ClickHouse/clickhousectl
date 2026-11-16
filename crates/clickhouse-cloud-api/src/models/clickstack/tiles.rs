@@ -127,14 +127,6 @@ discriminated_union! {
     }
 }
 
-impl Default for ClickStackCategoricalBarChartConfig {
-    fn default() -> Self {
-        Self::ClickStackCategoricalBarBuilderChartConfig(
-            ClickStackCategoricalBarBuilderChartConfig::default(),
-        )
-    }
-}
-
 impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1200,7 +1192,7 @@ impl std::fmt::Display for ClickStackTileConfigResponse {
 }
 
 /// `ClickStackBarBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackBarBuilderChartConfig {
     #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
     pub show_operand_series: Option<bool>,
@@ -1263,7 +1255,7 @@ pub struct ClickStackBarBuilderChartConfigResponse {
 }
 
 /// `ClickStackBarPromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackBarPromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1322,7 +1314,7 @@ pub struct ClickStackBarPromqlChartConfigResponse {
 }
 
 /// `ClickStackBarRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackBarRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1374,7 +1366,7 @@ pub struct ClickStackBarRawSqlChartConfigResponse {
 }
 
 /// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarBuilderChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackCategoricalBarBuilderChartConfigDisplaytype,
@@ -1415,7 +1407,7 @@ pub struct ClickStackCategoricalBarBuilderChartConfigResponse {
 }
 
 /// `ClickStackCategoricalBarPromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarPromqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackCategoricalBarPromqlChartConfigConfigtype,
@@ -1460,7 +1452,7 @@ pub struct ClickStackCategoricalBarPromqlChartConfigResponse {
 }
 
 /// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarRawSqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackCategoricalBarRawSqlChartConfigConfigtype,
@@ -1498,7 +1490,7 @@ pub struct ClickStackCategoricalBarRawSqlChartConfigResponse {
 }
 
 /// `ClickStackEventPatternsChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackEventPatternsChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackEventPatternsChartConfigDisplaytype,
@@ -1532,7 +1524,7 @@ pub struct ClickStackEventPatternsChartConfigResponse {
 }
 
 /// `ClickStackHeatmapDistributionChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackHeatmapDistributionChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackHeatmapDistributionChartConfigDisplaytype,
@@ -1573,7 +1565,7 @@ pub struct ClickStackHeatmapDistributionChartConfigResponse {
 }
 
 /// `ClickStackHeatmapPromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackHeatmapPromqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackHeatmapPromqlChartConfigConfigtype,
@@ -1622,7 +1614,7 @@ pub struct ClickStackHeatmapPromqlChartConfigResponse {
 }
 
 /// `ClickStackHeatmapSelectItem` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackHeatmapSelectItem {
     #[serde(rename = "countExpression", skip_serializing_if = "Option::is_none")]
     pub count_expression: Option<String>,
@@ -1648,7 +1640,7 @@ pub struct ClickStackHeatmapSelectItemResponse {
 }
 
 /// `ClickStackHeatmapSeriesChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackHeatmapSeriesChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackHeatmapSeriesChartConfigDisplaytype,
@@ -1685,7 +1677,7 @@ pub struct ClickStackHeatmapSeriesChartConfigResponse {
 }
 
 /// `ClickStackLineBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackLineBuilderChartConfig {
     #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
     pub show_operand_series: Option<bool>,
@@ -1766,7 +1758,7 @@ pub struct ClickStackLineBuilderChartConfigResponse {
 }
 
 /// `ClickStackLinePromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackLinePromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1839,7 +1831,7 @@ pub struct ClickStackLinePromqlChartConfigResponse {
 }
 
 /// `ClickStackLineRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackLineRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -1909,7 +1901,7 @@ pub struct ClickStackLineRawSqlChartConfigResponse {
 }
 
 /// `ClickStackMarkdownChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMarkdownChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackMarkdownChartConfigDisplaytype,
@@ -1931,14 +1923,14 @@ pub struct ClickStackMarkdownChartConfigResponse {
 }
 
 /// `ClickStackMarkdownChartSeries` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMarkdownChartSeries {
     pub content: String,
     pub r#type: ClickStackMarkdownChartSeriesType,
 }
 
 /// `ClickStackNumberBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumberBuilderChartConfig {
     #[serde(rename = "formulas", skip_serializing_if = "Option::is_none")]
     pub formulas: Option<Vec<ClickStackFormula>>,
@@ -1983,7 +1975,7 @@ pub struct ClickStackNumberBuilderChartConfigResponse {
 }
 
 /// `ClickStackNumberChartSeries` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumberChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackNumberChartSeriesAggfn,
@@ -2008,7 +2000,7 @@ pub struct ClickStackNumberChartSeries {
 }
 
 /// `ClickStackNumberPromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumberPromqlChartConfig {
     #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
     pub background_chart: Option<ClickStackBackgroundChart>,
@@ -2057,7 +2049,7 @@ pub struct ClickStackNumberPromqlChartConfigResponse {
 }
 
 /// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackNumberRawSqlChartConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
@@ -2103,7 +2095,7 @@ pub struct ClickStackNumberRawSqlChartConfigResponse {
 }
 
 /// `ClickStackOnClickDashboard` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickDashboard {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
@@ -2135,7 +2127,7 @@ pub struct ClickStackOnClickDashboardResponse {
 }
 
 /// `ClickStackOnClickExternal` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickExternal {
     pub r#type: ClickStackOnClickExternalType,
     #[serde(rename = "urlTemplate")]
@@ -2156,7 +2148,7 @@ pub struct ClickStackOnClickExternalResponse {
 }
 
 /// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickFilterTemplate {
     pub expression: String,
     pub kind: ClickStackOnClickFilterTemplateKind,
@@ -2179,7 +2171,7 @@ pub struct ClickStackOnClickFilterTemplateResponse {
 }
 
 /// `ClickStackOnClickSearch` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickSearch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
@@ -2211,7 +2203,7 @@ pub struct ClickStackOnClickSearchResponse {
 }
 
 /// `ClickStackOnClickTargetIdVariant` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickTargetIdVariant {
     pub id: String,
     pub mode: ClickStackOnClickTargetIdVariantMode,
@@ -2231,7 +2223,7 @@ pub struct ClickStackOnClickTargetIdVariantResponse {
 }
 
 /// `ClickStackOnClickTargetTemplateVariant` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackOnClickTargetTemplateVariant {
     pub mode: ClickStackOnClickTargetTemplateVariantMode,
     pub template: String,
@@ -2251,7 +2243,7 @@ pub struct ClickStackOnClickTargetTemplateVariantResponse {
 }
 
 /// `ClickStackPieBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPieBuilderChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackPieBuilderChartConfigDisplaytype,
@@ -2292,7 +2284,7 @@ pub struct ClickStackPieBuilderChartConfigResponse {
 }
 
 /// `ClickStackPiePromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPiePromqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackPiePromqlChartConfigConfigtype,
@@ -2337,7 +2329,7 @@ pub struct ClickStackPiePromqlChartConfigResponse {
 }
 
 /// `ClickStackPieRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPieRawSqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackPieRawSqlChartConfigConfigtype,
@@ -2375,7 +2367,7 @@ pub struct ClickStackPieRawSqlChartConfigResponse {
 }
 
 /// `ClickStackSearchChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSearchChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackSearchChartConfigDisplaytype,
@@ -2408,7 +2400,7 @@ pub struct ClickStackSearchChartConfigResponse {
 }
 
 /// `ClickStackSearchChartSeries` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSearchChartSeries {
     pub fields: Vec<String>,
     #[serde(rename = "sourceId")]
@@ -2420,7 +2412,7 @@ pub struct ClickStackSearchChartSeries {
 }
 
 /// `ClickStackStackedLineBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackStackedLineBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -2487,7 +2479,7 @@ pub struct ClickStackStackedLineBuilderChartConfigResponse {
 }
 
 /// `ClickStackStackedLinePromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackStackedLinePromqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -2550,7 +2542,7 @@ pub struct ClickStackStackedLinePromqlChartConfigResponse {
 }
 
 /// `ClickStackStackedLineRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackStackedLineRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
@@ -2606,7 +2598,7 @@ pub struct ClickStackStackedLineRawSqlChartConfigResponse {
 }
 
 /// `ClickStackTableBuilderChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTableBuilderChartConfig {
     #[serde(rename = "showOperandSeries", skip_serializing_if = "Option::is_none")]
     pub show_operand_series: Option<bool>,
@@ -2673,7 +2665,7 @@ pub struct ClickStackTableBuilderChartConfigResponse {
 }
 
 /// `ClickStackTableChartSeries` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTableChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackTableChartSeriesAggfn,
@@ -2702,7 +2694,7 @@ pub struct ClickStackTableChartSeries {
 }
 
 /// `ClickStackTablePromqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTablePromqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackTablePromqlChartConfigConfigtype,
@@ -2739,7 +2731,7 @@ pub struct ClickStackTablePromqlChartConfigResponse {
 }
 
 /// `ClickStackTableRawSqlChartConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTableRawSqlChartConfig {
     #[serde(rename = "configType")]
     pub config_type: ClickStackTableRawSqlChartConfigConfigtype,
@@ -2781,7 +2773,7 @@ pub struct ClickStackTableRawSqlChartConfigResponse {
 }
 
 /// `ClickStackTileInput` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTileInput {
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
@@ -2835,7 +2827,7 @@ pub struct ClickStackTileOutput {
 }
 
 /// `ClickStackTimeChartSeries` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTimeChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackTimeChartSeriesAggfn,
@@ -2861,62 +2853,4 @@ pub struct ClickStackTimeChartSeries {
     pub r#where: String,
     #[serde(rename = "whereLanguage")]
     pub where_language: ClickStackTimeChartSeriesWherelanguage,
-}
-
-impl Default for ClickStackBarChartConfig {
-    fn default() -> Self {
-        Self::ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackDashboardChartSeries {
-    fn default() -> Self {
-        Self::ClickStackTimeChartSeries(ClickStackTimeChartSeries::default())
-    }
-}
-
-impl Default for ClickStackHeatmapChartConfig {
-    fn default() -> Self {
-        Self::ClickStackHeatmapDistributionChartConfig(
-            ClickStackHeatmapDistributionChartConfig::default(),
-        )
-    }
-}
-
-impl Default for ClickStackLineChartConfig {
-    fn default() -> Self {
-        Self::ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackNumberChartConfig {
-    fn default() -> Self {
-        Self::ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackPieChartConfig {
-    fn default() -> Self {
-        Self::ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackStackedLineChartConfig {
-    fn default() -> Self {
-        Self::ClickStackStackedLineBuilderChartConfig(
-            ClickStackStackedLineBuilderChartConfig::default(),
-        )
-    }
-}
-
-impl Default for ClickStackTableChartConfig {
-    fn default() -> Self {
-        Self::ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig::default())
-    }
-}
-
-impl Default for ClickStackTileConfig {
-    fn default() -> Self {
-        Self::ClickStackLineChartConfig(ClickStackLineChartConfig::default())
-    }
 }

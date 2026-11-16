@@ -128,9 +128,8 @@ impl std::fmt::Display for AwsBackupBucketBucketprovider {
 }
 
 /// Inline enum for `AwsBackupBucketPatchRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AwsBackupBucketPatchRequestV1Bucketprovider {
-    #[default]
     AWS,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -147,9 +146,8 @@ impl std::fmt::Display for AwsBackupBucketPatchRequestV1Bucketprovider {
 }
 
 /// Inline enum for `AwsBackupBucketPostRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AwsBackupBucketPostRequestV1Bucketprovider {
-    #[default]
     AWS,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -166,9 +164,8 @@ impl std::fmt::Display for AwsBackupBucketPostRequestV1Bucketprovider {
 }
 
 /// Inline enum for `AwsBackupBucketProperties.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AwsBackupBucketPropertiesBucketprovider {
-    #[default]
     AWS,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -204,9 +201,8 @@ impl std::fmt::Display for AzureBackupBucketBucketprovider {
 }
 
 /// Inline enum for `AzureBackupBucketPatchRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AzureBackupBucketPatchRequestV1Bucketprovider {
-    #[default]
     AZURE,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -223,9 +219,8 @@ impl std::fmt::Display for AzureBackupBucketPatchRequestV1Bucketprovider {
 }
 
 /// Inline enum for `AzureBackupBucketPostRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AzureBackupBucketPostRequestV1Bucketprovider {
-    #[default]
     AZURE,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -242,9 +237,8 @@ impl std::fmt::Display for AzureBackupBucketPostRequestV1Bucketprovider {
 }
 
 /// Inline enum for `AzureBackupBucketProperties.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AzureBackupBucketPropertiesBucketprovider {
-    #[default]
     AZURE,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -329,9 +323,8 @@ impl std::fmt::Display for GcpBackupBucketBucketprovider {
 }
 
 /// Inline enum for `GcpBackupBucketPatchRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GcpBackupBucketPatchRequestV1Bucketprovider {
-    #[default]
     GCP,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -348,9 +341,8 @@ impl std::fmt::Display for GcpBackupBucketPatchRequestV1Bucketprovider {
 }
 
 /// Inline enum for `GcpBackupBucketPostRequestV1.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GcpBackupBucketPostRequestV1Bucketprovider {
-    #[default]
     GCP,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -367,9 +359,8 @@ impl std::fmt::Display for GcpBackupBucketPostRequestV1Bucketprovider {
 }
 
 /// Inline enum for `GcpBackupBucketProperties.bucketProvider`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GcpBackupBucketPropertiesBucketprovider {
-    #[default]
     GCP,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -549,7 +540,7 @@ pub struct AwsBackupBucket {
 }
 
 /// `AwsBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AwsBackupBucketPatchRequestV1 {
     #[serde(rename = "bucketPath")]
     pub bucket_path: String,
@@ -619,7 +610,7 @@ impl<'de> Deserialize<'de> for AwsBackupBucketPatchRequestV1 {
 }
 
 /// `AwsBackupBucketPostRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AwsBackupBucketPostRequestV1 {
     #[serde(rename = "bucketPath")]
     pub bucket_path: String,
@@ -635,7 +626,7 @@ pub struct AwsBackupBucketPostRequestV1 {
 }
 
 /// `AwsBackupBucketProperties` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AwsBackupBucketProperties {
     #[serde(rename = "bucketPath")]
     pub bucket_path: String,
@@ -661,7 +652,7 @@ pub struct AzureBackupBucket {
 }
 
 /// `AzureBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AzureBackupBucketPatchRequestV1 {
     #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPatchRequestV1Bucketprovider,
@@ -672,7 +663,7 @@ pub struct AzureBackupBucketPatchRequestV1 {
 }
 
 /// `AzureBackupBucketPostRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AzureBackupBucketPostRequestV1 {
     #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPostRequestV1Bucketprovider,
@@ -683,7 +674,7 @@ pub struct AzureBackupBucketPostRequestV1 {
 }
 
 /// `AzureBackupBucketProperties` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AzureBackupBucketProperties {
     #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPropertiesBucketprovider,
@@ -774,7 +765,7 @@ pub struct GcpBackupBucket {
 }
 
 /// `GcpBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GcpBackupBucketPatchRequestV1 {
     #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
@@ -787,7 +778,7 @@ pub struct GcpBackupBucketPatchRequestV1 {
 }
 
 /// `GcpBackupBucketPostRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GcpBackupBucketPostRequestV1 {
     #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
@@ -800,7 +791,7 @@ pub struct GcpBackupBucketPostRequestV1 {
 }
 
 /// `GcpBackupBucketProperties` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GcpBackupBucketProperties {
     #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
@@ -821,23 +812,5 @@ impl Default for BackupBucket {
             bucket_provider: Some(AwsBackupBucketBucketprovider::default()),
             ..AwsBackupBucket::default()
         })
-    }
-}
-
-impl Default for BackupBucketPatchRequest {
-    fn default() -> Self {
-        Self::AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1::default())
-    }
-}
-
-impl Default for BackupBucketPostRequest {
-    fn default() -> Self {
-        Self::AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1::default())
-    }
-}
-
-impl Default for BackupBucketProperties {
-    fn default() -> Self {
-        Self::AwsBackupBucketProperties(AwsBackupBucketProperties::default())
     }
 }

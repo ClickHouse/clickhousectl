@@ -2,10 +2,9 @@ use super::PLAIN;
 use serde::{Deserialize, Serialize};
 
 /// Inline enum for `ClickPipeMutatePostgresSource.authentication`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipeMutatePostgresSourceAuthentication {
     #[serde(rename = "basic")]
-    #[default]
     Basic,
     IAM_ROLE,
     #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
@@ -229,7 +228,7 @@ impl std::fmt::Display for ClickPipePostgresSourceType {
 }
 
 /// `ClickPipeMutatePostgresSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeMutatePostgresSource {
     pub authentication: ClickPipeMutatePostgresSourceAuthentication,
     // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side — sending
@@ -331,7 +330,7 @@ pub struct ClickPipePatchPostgresSource {
 }
 
 /// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostgresPipeSettings {
     #[serde(rename = "allowNullableColumns")]
     pub allow_nullable_columns: bool,
@@ -426,7 +425,7 @@ pub struct ClickPipePostgresPipeSettingsResponse {
 }
 
 /// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostgresPipeTableMapping {
     #[serde(rename = "excludedColumns")]
     pub excluded_columns: Vec<String>,

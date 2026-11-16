@@ -102,7 +102,7 @@ impl std::fmt::Display for ClickStackSourceResponse {
 }
 
 /// `ClickStackAggregatedColumn` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackAggregatedColumn {
     #[serde(rename = "aggFn")]
     pub agg_fn: String,
@@ -158,7 +158,7 @@ pub struct ClickStackConnection {
 }
 
 /// `ClickStackCreateConnectionRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackCreateConnectionRequest {
     pub host: String,
     #[serde(
@@ -178,7 +178,7 @@ pub struct ClickStackCreateConnectionRequest {
 }
 
 /// `ClickStackFilterSettingsColumn` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackFilterSettingsColumn {
     #[serde(rename = "valueExpression", skip_serializing_if = "Option::is_none")]
     pub value_expression: Option<String>,
@@ -206,7 +206,7 @@ pub struct ClickStackFilterSettingsColumnResponse {
 }
 
 /// `ClickStackHighlightedAttributeExpression` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackHighlightedAttributeExpression {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
@@ -232,7 +232,7 @@ pub struct ClickStackHighlightedAttributeExpressionResponse {
 }
 
 /// `ClickStackLogSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackLogSource {
     #[serde(
         rename = "serviceVersionExpression",
@@ -466,7 +466,7 @@ pub struct ClickStackLogSourceResponse {
 }
 
 /// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackLogSourceMetadataMaterializedViews {
     pub granularity: String,
     #[serde(rename = "keyRollupTable")]
@@ -491,7 +491,7 @@ pub struct ClickStackLogSourceMetadataMaterializedViewsResponse {
 }
 
 /// `ClickStackMaterializedView` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMaterializedView {
     #[serde(rename = "aggregatedColumns")]
     pub aggregated_columns: Vec<ClickStackAggregatedColumn>,
@@ -533,7 +533,7 @@ pub struct ClickStackMaterializedViewResponse {
 }
 
 /// `ClickStackMetricSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMetricSource {
     pub connection: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -597,7 +597,7 @@ pub struct ClickStackMetricSourceResponse {
 }
 
 /// `ClickStackMetricSourceFrom` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMetricSourceFrom {
     #[serde(rename = "databaseName")]
     pub database_name: String,
@@ -619,7 +619,7 @@ pub struct ClickStackMetricSourceFromResponse {
 }
 
 /// `ClickStackMetricTables` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackMetricTables {
     #[serde(rename = "exponential histogram")]
     pub exponential_histogram: String,
@@ -652,7 +652,7 @@ pub struct ClickStackMetricTablesResponse {
 }
 
 /// `ClickStackPromqlSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackPromqlSource {
     pub connection: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -701,7 +701,7 @@ pub struct ClickStackPromqlSourceResponse {
 }
 
 /// `ClickStackQuerySetting` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackQuerySetting {
     pub setting: String,
     pub value: String,
@@ -721,7 +721,7 @@ pub struct ClickStackQuerySettingResponse {
 }
 
 /// `ClickStackSessionSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSessionSource {
     pub connection: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -787,7 +787,7 @@ pub struct ClickStackSessionSourceResponse {
 }
 
 /// `ClickStackSourceFilterSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSourceFilterSettings {
     pub columns: Vec<ClickStackFilterSettingsColumn>,
     #[serde(rename = "databaseName")]
@@ -812,7 +812,7 @@ pub struct ClickStackSourceFilterSettingsResponse {
 }
 
 /// `ClickStackSourceFrom` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackSourceFrom {
     #[serde(rename = "databaseName")]
     pub database_name: String,
@@ -834,7 +834,7 @@ pub struct ClickStackSourceFromResponse {
 }
 
 /// `ClickStackTraceSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTraceSource {
     #[serde(
         rename = "serviceVersionExpression",
@@ -1111,7 +1111,7 @@ pub struct ClickStackTraceSourceResponse {
 }
 
 /// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackTraceSourceMetadataMaterializedViews {
     pub granularity: String,
     #[serde(rename = "keyRollupTable")]
@@ -1136,7 +1136,7 @@ pub struct ClickStackTraceSourceMetadataMaterializedViewsResponse {
 }
 
 /// `ClickStackUpdateConnectionRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickStackUpdateConnectionRequest {
     pub host: String,
     #[serde(
@@ -1153,10 +1153,4 @@ pub struct ClickStackUpdateConnectionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     pub username: String,
-}
-
-impl Default for ClickStackSource {
-    fn default() -> Self {
-        Self::ClickStackLogSource(ClickStackLogSource::default())
-    }
 }

@@ -94,12 +94,15 @@ pub fn managed_destination_users(table: &str) -> ClickPipeMutateDestination {
         table_definition: Some(ClickPipeDestinationTableDefinition {
             engine: ClickPipeDestinationTableEngine {
                 r#type: ClickPipeDestinationTableEngineType::MergeTree,
-                ..Default::default()
+                column_ids: Vec::new(),
+                version_column_id: None,
             },
             primary_key: "id".to_string(),
-            ..Default::default()
+            partition_by: String::new(),
+            sorting_key: Vec::new(),
+            ttl: String::new(),
         }),
-        ..Default::default()
+        roles: None,
     }
 }
 

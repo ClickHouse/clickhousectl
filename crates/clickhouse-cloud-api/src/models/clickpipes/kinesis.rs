@@ -92,9 +92,8 @@ impl std::fmt::Display for ClickPipePatchKinesisSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.authentication`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKinesisSourceAuthentication {
-    #[default]
     IAM_ROLE,
     IAM_USER,
     /// Catch-all for unknown or newly-added values.
@@ -113,9 +112,8 @@ impl std::fmt::Display for ClickPipePostKinesisSourceAuthentication {
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.format`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKinesisSourceFormat {
-    #[default]
     JSONEachRow,
     Avro,
     AvroConfluent,
@@ -138,9 +136,8 @@ impl std::fmt::Display for ClickPipePostKinesisSourceFormat {
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.iteratorType`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipePostKinesisSourceIteratortype {
-    #[default]
     TRIM_HORIZON,
     LATEST,
     AT_TIMESTAMP,
@@ -203,7 +200,7 @@ impl std::fmt::Display for ClickPipeKinesisSchemaRegistryType {
 }
 
 /// `ClickPipeKinesisSchemaRegistry` for Kinesis create requests.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeKinesisSchemaRegistry {
     #[serde(rename = "type")]
     pub r#type: ClickPipeKinesisSchemaRegistryType,
@@ -241,7 +238,7 @@ pub struct ClickPipePatchKinesisSource {
 }
 
 /// `ClickPipePostKinesisSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipePostKinesisSource {
     #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
