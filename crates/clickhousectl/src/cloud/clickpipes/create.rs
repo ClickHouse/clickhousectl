@@ -80,13 +80,11 @@ pub(super) fn build_create_request_args(
                     "--memory-gb must be in the range 0.5..=8",
                 ));
             }
-            Some(clickhouse_cloud_api::models::ClickPipeScaling {
-                replicas: i64::from(replicas),
-                replica_cpu_millicores: i64::from(cpu),
-                replica_memory_gb: memory,
-                #[cfg(feature = "deprecated-fields")]
-                concurrency: 0,
-            })
+            Some(clickhouse_cloud_api::models::ClickPipeScaling::new(
+                i64::from(replicas),
+                i64::from(cpu),
+                memory,
+            ))
         }
         _ => {
             return Err(CloudError::usage(

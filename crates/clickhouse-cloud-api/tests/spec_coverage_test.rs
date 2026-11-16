@@ -4,7 +4,8 @@ use std::path::Path;
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
 use clickhouse_openapi_analyzer::{
     AnalysisInput, analyze, integer_model_fields_typed_as_float, model_fields_with_serde_default,
-    model_structs_with_default_and_required_fields, model_types, response_tree,
+    model_structs_with_default_and_required_fields,
+    model_structs_with_deprecated_fields_and_constructors, model_types, response_tree,
 };
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -162,6 +163,36 @@ fn strict_models_do_not_implement_default() {
     assert!(
         offenders.is_empty(),
         "remove Default from structs with required fields: {offenders:?}"
+    );
+}
+
+/// A strict struct (no `Default`) with a `#[cfg(feature = "deprecated-fields")]`
+/// field can otherwise only be built from an exhaustive literal, which stops
+/// compiling when any crate in the dependency graph enables `deprecated-fields`.
+/// Each one defines `pub fn new` taking only its required fields, so the
+/// feature stays additive.
+#[test]
+fn strict_models_with_deprecated_fields_define_new() {
+    let constructors =
+        model_structs_with_deprecated_fields_and_constructors(Path::new(RUST_SOURCE_ROOT)).unwrap();
+    let tree = response_tree(Path::new(RUST_SOURCE_ROOT)).unwrap();
+    let gated = constructors
+        .gated
+        .iter()
+        .filter(|name| !tree.types.contains(*name))
+        .collect::<Vec<_>>();
+    assert!(
+        gated.len() >= 6,
+        "vacuous test: only {} strict structs carry a deprecated field",
+        gated.len()
+    );
+    let offenders = gated
+        .into_iter()
+        .filter(|name| !constructors.with_new.contains(*name))
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "add `pub fn new(<required fields>) -> Self` to: {offenders:?}"
     );
 }
 

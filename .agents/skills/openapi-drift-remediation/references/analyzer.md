@@ -69,5 +69,5 @@ New report fields or semantics require a report `schema_version` change; never m
 reparsing Rust or OpenAPI.
 
 Repository-policy checks that compare Rust source with a rule rather than with the spec are narrow public
-functions, not `FindingKind`s: `model_fields_with_serde_default`, `model_structs_with_default_and_required_fields`
-and `model_types_with_manual_default_impl`. Each backs one library test and keeps `syn` out of the published crate.
+functions, not `FindingKind`s: `model_fields_with_serde_default`, `model_structs_with_default_and_required_fields`,
+`model_structs_with_deprecated_fields_and_constructors` and `model_types_with_manual_default_impl`. Each backs one library test and keeps `syn` out of the published crate.

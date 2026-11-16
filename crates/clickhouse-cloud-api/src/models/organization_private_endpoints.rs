@@ -266,3 +266,15 @@ pub struct OrganizationPrivateEndpointsPatch {
     pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
 }
+
+impl OrganizationPrivateEndpointsPatch {
+    /// A patch with only the required fields set. Prefer this to a struct
+    /// literal: it keeps compiling when `deprecated-fields` is enabled.
+    pub fn new(remove: Vec<OrganizationPatchPrivateEndpoint>) -> Self {
+        Self {
+            #[cfg(feature = "deprecated-fields")]
+            add: None,
+            remove,
+        }
+    }
+}

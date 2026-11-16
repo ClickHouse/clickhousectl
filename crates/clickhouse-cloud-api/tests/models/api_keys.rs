@@ -118,3 +118,14 @@ fn api_key_patch_deserialization_preserves_deprecated_roles() {
     let request: ApiKeyPatchRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
 }
+
+/// `new` sets only the required field, so the body is the same with or without
+/// `deprecated-fields`.
+#[test]
+fn api_key_post_request_new_sends_only_required_fields() {
+    let req = ApiKeyPostRequest::new("test-key".to_string());
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({"name": "test-key"})
+    );
+}

@@ -99,6 +99,11 @@ reachability from return types across the client module tree, so a newly wired o
 - `models_carry_no_serde_default` — via the analyzer's `model_fields_with_serde_default()`.
 - `strict_models_do_not_implement_default` — via `model_structs_with_default_and_required_fields()`: no struct
   outside the response tree with a non-`Option` field implements `Default`. Empty exception list, vacuity guard.
+- `strict_models_with_deprecated_fields_define_new` — via
+  `model_structs_with_deprecated_fields_and_constructors()`: every struct outside the response tree that has no
+  `Default` and has a `deprecated-fields` field defines an inherent `pub fn new` that takes only its required
+  fields. Without it, callers can only use an exhaustive literal, which breaks when Cargo feature unification enables
+  `deprecated-fields`. Vacuity guard.
 - `scim_models_are_outside_the_response_tree` — the 40 `Scim*` schemas have no spec path and no `Client` method,
   so they are legitimately strict; the test fails if one becomes response-reachable.
 - `integer_schema_fields_are_not_typed_as_float` — integer schemas do not use floating-point Rust fields, except
@@ -135,8 +140,8 @@ workflow, from reproducing the findings and splitting API and CLI pull requests 
 - Field *presence* (missing/extra) and enum values are checked in **both** directions.
 - A both-directions schema resolves to `{Name}` in request position and `{Name}Response` in response position,
   falling back to `{Name}` when no split type exists. An orphan schema resolves in request position, so it stays strict.
-- Requiredness semantics in `openapi.rs`: PATCH request schemas are all-optional; nullable fields are always
-  `Option<T>`; schemas with `required[]` use it; schemas without it use the `"Optional"` description convention.
+- Requiredness semantics in `openapi.rs`: PATCH request schemas are all-optional; nullable and `deprecated` fields
+  are always `Option<T>`; schemas with `required[]` use it; schemas without it use the `"Optional"` description convention.
   A schema whose `required[]` is known to be partial uses the union of both and must be listed in
   `partial_required_schemas`. A schema without `required[]` whose every request field is optional is listed in
   `optional_request_schemas`.
@@ -152,7 +157,10 @@ Exemptions, acknowledgements, enum value mapping and analyzer extension rules li
   update both the variant and the const or CI fails.
 - A spec-deprecated field is listed in `meta.rs::DEPRECATED_FIELDS` and gated with
   `#[cfg(feature = "deprecated-fields")]`, once per Rust type (`{Name}` and `{Name}Response`). Both feature
-  configurations of the CLI must compile. The analyzer's `--generate-stability-lists` prints `DEPRECATED_FIELDS`
+  configurations of the CLI must compile. A deprecated field is never required (`Option<T>` +
+  `skip_serializing_if`), so the feature stays additive on the wire; a strict struct that gains one needs `pub fn new`
+  (see above), and callers build it with `new` or `..Default::default()`, never an exhaustive literal with cfg arms.
+  The analyzer's `--generate-stability-lists` prints `DEPRECATED_FIELDS`
   and `BETA_OPERATIONS`; never edit either list by hand.
 
 ## Tests

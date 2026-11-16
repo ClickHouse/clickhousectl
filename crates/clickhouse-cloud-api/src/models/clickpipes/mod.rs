@@ -385,12 +385,27 @@ pub struct ClickPipePostSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClickPipeScaling {
     #[cfg(feature = "deprecated-fields")]
-    pub concurrency: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<i64>,
     #[serde(rename = "replicaCpuMillicores")]
     pub replica_cpu_millicores: i64,
     #[serde(rename = "replicaMemoryGb")]
     pub replica_memory_gb: f64,
     pub replicas: i64,
+}
+
+impl ClickPipeScaling {
+    /// A request with only the required fields set. Prefer this to a struct
+    /// literal: it keeps compiling when `deprecated-fields` is enabled.
+    pub fn new(replicas: i64, replica_cpu_millicores: i64, replica_memory_gb: f64) -> Self {
+        Self {
+            #[cfg(feature = "deprecated-fields")]
+            concurrency: None,
+            replica_cpu_millicores,
+            replica_memory_gb,
+            replicas,
+        }
+    }
 }
 
 /// `ClickPipeScaling` from the ClickHouse Cloud API, in response position.

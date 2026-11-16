@@ -2798,6 +2798,30 @@ pub struct ClickStackTileInput {
     pub y: i64,
 }
 
+impl ClickStackTileInput {
+    /// A tile with only the required name and grid position set. Prefer this
+    /// to a struct literal: it keeps compiling when `deprecated-fields` is
+    /// enabled.
+    pub fn new(name: String, x: i64, y: i64, w: i64, h: i64) -> Self {
+        Self {
+            #[cfg(feature = "deprecated-fields")]
+            as_ratio: None,
+            config: None,
+            container_id: None,
+            description: None,
+            h,
+            id: None,
+            name,
+            #[cfg(feature = "deprecated-fields")]
+            series: None,
+            tab_id: None,
+            w,
+            x,
+            y,
+        }
+    }
+}
+
 /// `ClickStackTileOutput` from the ClickHouse Cloud API.
 ///
 /// Used in response position only: every field is `Option<T>`, so a field the

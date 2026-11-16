@@ -1103,3 +1103,27 @@ fn serialize_replica_aware_routing_patch_request() {
         serde_json::json!({"httpEnabled": true, "nativeEnabled": false})
     );
 }
+
+/// `new` leaves every optional and deprecated field unset, so the body is the
+/// same with or without `deprecated-fields`.
+#[test]
+fn service_post_request_new_sends_only_required_fields() {
+    let req = ServicePostRequest::new(
+        "new-service".to_string(),
+        ServicePostRequestProvider::Aws,
+        ServicePostRequestRegion::Us_east_1,
+        vec![IpAccessListEntry {
+            source: "0.0.0.0/0".to_string(),
+            description: None,
+        }],
+    );
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({
+            "name": "new-service",
+            "provider": "aws",
+            "region": "us-east-1",
+            "ipAccessList": [{"source": "0.0.0.0/0"}]
+        })
+    );
+}

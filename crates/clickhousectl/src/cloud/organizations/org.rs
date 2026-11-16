@@ -138,11 +138,7 @@ fn parse_org_private_endpoints_patch(
         .map(|value| parse_org_private_endpoint_remove(value))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Some(OrganizationPrivateEndpointsPatch {
-        #[cfg(feature = "deprecated-fields")]
-        add: None,
-        remove: endpoints,
-    }))
+    Ok(Some(OrganizationPrivateEndpointsPatch::new(endpoints)))
 }
 
 fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<OrganizationPatchRequest> {

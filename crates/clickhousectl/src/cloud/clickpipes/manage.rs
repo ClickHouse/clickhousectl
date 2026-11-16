@@ -266,12 +266,14 @@ pub(super) async fn clickpipe_scale(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
+    // `..Default::default()` fills the `deprecated-fields`-gated fields; without the
+    // feature every field is listed, so the update is needless only in that build.
+    #[allow(clippy::needless_update)]
     let request = clickhouse_cloud_api::models::ClickPipeScalingPatchRequest {
         replicas: replicas.map(i64::from),
         replica_cpu_millicores: cpu_millicores.map(i64::from),
         replica_memory_gb: memory_gb,
-        #[cfg(feature = "deprecated-fields")]
-        concurrency: None,
+        ..Default::default()
     };
     let clickpipe = client
         .update_clickpipe_scaling(&org_id, service_id, clickpipe_id, &request)

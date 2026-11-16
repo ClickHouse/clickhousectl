@@ -5692,3 +5692,14 @@ fn clickstack_alert_promql_chart_configs_route_to_their_own_arm() {
         ClickStackLinePromqlChartConfigConfigtype::Promql
     );
 }
+
+/// `new` leaves the deprecated `asRatio` and `series` unset, so the body is the
+/// same with or without `deprecated-fields`.
+#[test]
+fn clickstack_tile_input_new_sends_only_required_fields() {
+    let tile = ClickStackTileInput::new("Error Rate".to_string(), 1, 2, 6, 3);
+    assert_eq!(
+        serde_json::to_value(&tile).unwrap(),
+        serde_json::json!({"name": "Error Rate", "x": 1, "y": 2, "w": 6, "h": 3})
+    );
+}

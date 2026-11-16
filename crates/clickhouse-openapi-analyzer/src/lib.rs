@@ -37,7 +37,7 @@ use config::AnalyzerConfig;
 use openapi::OpenApiInventory;
 use report::DriftReport;
 use rust_inventory::RustInventory;
-pub use rust_inventory::StrictModelDefaults;
+pub use rust_inventory::{DeprecatedFieldConstructors, StrictModelDefaults};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +188,22 @@ pub fn model_structs_with_default_and_required_fields(
     rust_source_root: &Path,
 ) -> Result<StrictModelDefaults, AnalyzeError> {
     Ok(load_rust_inventory(rust_source_root)?.strict_model_defaults())
+}
+
+/// Lists the public model structs without `Default` that carry a
+/// `#[cfg(feature = "deprecated-fields")]` field, and the subset of them that
+/// defines an inherent `pub fn new`.
+///
+/// Such a struct can only be built from an exhaustive literal, which breaks
+/// when any crate in the dependency graph enables `deprecated-fields` (Cargo
+/// unifies features). A `new` taking only the required fields keeps the
+/// feature additive. Backs a policy test in `clickhouse-cloud-api`'s
+/// `spec_coverage_test.rs`; like [`model_structs_with_default_and_required_fields`],
+/// it is a repository-policy check rather than a drift `FindingKind`.
+pub fn model_structs_with_deprecated_fields_and_constructors(
+    rust_source_root: &Path,
+) -> Result<DeprecatedFieldConstructors, AnalyzeError> {
+    Ok(load_rust_inventory(rust_source_root)?.deprecated_field_constructors())
 }
 
 /// Lists every public struct, enum, and type alias in the model module tree.

@@ -81,6 +81,8 @@ Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachme
 
 The OpenAPI spec marks some response fields as deprecated (e.g. `Service.tier`, `ApiKey.roles`, `Member.role`). In almost all cases, these are not needed. The Cloud API library disables them by default, gated by a Cargo feature flag `deprecated-fields`. Enable this feature if you need to consume deprecated fields.
 
+Cargo unifies features across the build, so another crate can turn on `deprecated-fields` for you. Code that has to compile either way should not name every field of a request struct that has a gated field. Use `new` with the required fields on structs without `Default` (`ServicePostRequest::new(name, provider, region, ip_access_list)`, `ApiKeyPostRequest::new(name)` and so on), or `..Default::default()` on all-`Option` structs. Then set optional fields with struct update syntax.
+
 ## Postgres Query API
 
 `Client::run_postgres_query_bearer(org_id, service_id, &RunPostgresQueryRequest)`

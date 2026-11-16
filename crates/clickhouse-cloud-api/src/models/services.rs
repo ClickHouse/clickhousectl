@@ -1889,6 +1889,53 @@ pub struct ServicePostRequest {
     pub tier: Option<ServicePostRequestTier>,
 }
 
+impl ServicePostRequest {
+    /// A request with only the required fields set. Prefer this to a struct
+    /// literal: it keeps compiling when `deprecated-fields` is enabled.
+    pub fn new(
+        name: String,
+        provider: ServicePostRequestProvider,
+        region: ServicePostRequestRegion,
+        ip_access_list: Vec<IpAccessListEntry>,
+    ) -> Self {
+        Self {
+            autoscaling_mode: None,
+            backup_id: None,
+            backup_encryption_config: None,
+            byoc_id: None,
+            compliance_type: None,
+            data_warehouse_id: None,
+            enable_core_dumps: None,
+            endpoints: None,
+            has_transparent_data_encryption: None,
+            idle_scaling: None,
+            idle_timeout_minutes: None,
+            ip_access_list,
+            is_readonly: None,
+            max_replica_memory_gb: None,
+            max_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            max_total_memory_gb: None,
+            min_replica_memory_gb: None,
+            min_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            min_total_memory_gb: None,
+            name,
+            num_replicas: None,
+            #[cfg(feature = "deprecated-fields")]
+            private_endpoint_ids: None,
+            private_preview_terms_checked: None,
+            profile: None,
+            provider,
+            region,
+            release_channel: None,
+            tags: None,
+            #[cfg(feature = "deprecated-fields")]
+            tier: None,
+        }
+    }
+}
+
 /// `ServicePostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostResponse {

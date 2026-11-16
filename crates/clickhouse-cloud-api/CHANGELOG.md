@@ -29,6 +29,34 @@ required one. All-`Option` structs, such as PATCH bodies, and every response
 type keep `Default`. Older entries below that offer `..Default::default()`
 apply only to types that still implement it.
 
+The six request structs without `Default` that carry a `deprecated-fields`
+field gain a `new` constructor that takes only the required fields and leaves
+every other field `None`: `ApiKeyPostRequest::new(name)`,
+`ClickPipeScaling::new(replicas, replica_cpu_millicores, replica_memory_gb)`,
+`ClickStackTileInput::new(name, x, y, w, h)`,
+`InvitationPostRequest::new(email)`,
+`OrganizationPrivateEndpointsPatch::new(remove)` and
+`ServicePostRequest::new(name, provider, region, ip_access_list)`. A struct
+literal must name every field, including the gated ones, so it stops compiling
+when any crate in the build enables `deprecated-fields` (Cargo unifies features).
+Build these structs with `new` and set optional fields with struct update syntax,
+for example `ServicePostRequest { num_replicas: Some(3), ..ServicePostRequest::new(...) }`.
+For the all-`Option` PATCH bodies with a gated field (`ApiKeyPatchRequest`,
+`ClickPipeScalingPatchRequest`, `MemberPatchRequest`), use `..Default::default()`.
+
+With `deprecated-fields` enabled, `ClickPipeScaling.concurrency` is now
+`Option<i64>` and is omitted when `None`. It used to be a required `i64`, so
+every scaling request sent `"concurrency": 0`, which the default build never
+sent. Replace `concurrency: 0` with `concurrency: None`, or use
+`ClickPipeScaling::new`. The analyzer no longer treats a deprecated property
+as required.
+
+The crate re-exports `reqwest` as `clickhouse_cloud_api::reqwest`, so a
+prebuilt client passed to `Client::with_http_client` or
+`Client::with_http_client_bearer` uses the same version as this crate. No
+change is needed; callers can drop their own `reqwest` dependency if they only
+used it for this.
+
 ClickStack chart configs gain a PromQL variant that queries a `promql` source.
 Each of the line, stacked-bar, stacked-line, categorical-bar, table, number,
 pie and heatmap chart config unions (and their `*Response` unions) adds a
