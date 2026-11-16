@@ -463,20 +463,27 @@ async fn update_click_pipe_settings() {
         .and(path(
             "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/settings",
         ))
-        .and(body_partial_json(serde_json::json!({})))
-        .respond_with(ok_json(serde_json::json!({})))
+        .and(body_partial_json(serde_json::json!({
+            "object_storage_max_file_size": 536_870_912_000_i64
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "object_storage_max_file_size": 536_870_912_000_i64
+        })))
         .mount(&s)
         .await;
 
     let body = ClickPipeSettingsPutRequest {
-        kafka_read_committed: Some(true),
+        object_storage_max_file_size: Some(536_870_912_000),
         ..Default::default()
     };
     let resp = c
         .click_pipe_settings_update("org-1", "svc-1", "pipe-1", &body)
         .await
         .unwrap();
-    assert!(resp.result.is_some());
+    assert_eq!(
+        resp.result.unwrap().object_storage_max_file_size,
+        Some(536_870_912_000)
+    );
 }
 
 // ===========================================================================

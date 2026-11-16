@@ -2659,6 +2659,7 @@ fn build_object_storage_source(
             None
         },
         start_after: args.start_after.clone(),
+        skip_first_lines: None,
     })
 }
 
@@ -4541,6 +4542,7 @@ fn build_create_request_args(
                     .settings
                     .object_storage_max_file_count
                     .map(i64::from),
+                object_storage_max_file_size: None,
                 clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
                 clickhouse_max_insert_threads: args
                     .settings
@@ -4674,6 +4676,7 @@ fn build_clickpipe_settings_request(
             .object_storage_max_insert_bytes
             .map(|value| value as i64),
         object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
+        object_storage_max_file_size: None,
         clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
         clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function: values.object_storage_use_cluster_function,

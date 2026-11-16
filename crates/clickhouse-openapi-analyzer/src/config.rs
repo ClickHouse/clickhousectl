@@ -86,6 +86,11 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // other formats; the schema has no required[], and the legacy requiredness
     // heuristic misses that condition.
     ("ClickPipePostKinesisSource", "protobufSchema"),
+    // skipFirstLines applies only to TabSeparated and TabSeparatedWithNames
+    // (per its own description); the schema has no required[] and the field is
+    // not nullable, so the description fallback marks it required for every
+    // format. Omission is how a JSON, CSV or Parquet create leaves it out.
+    ("ClickPipePostObjectStorageSource", "skipFirstLines"),
     // Non-Postgres pipe requests must be able to omit the Postgres union arm.
     ("ClickPipePostSource", "postgres"),
     ("ClickPipePatchSource", "postgres"),
@@ -186,6 +191,11 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
         "ClickPipeSettingsPutRequest",
         "object_storage_max_file_count",
     ),
+    // Also a private-preview setting that orgs must have enabled by support.
+    (
+        "ClickPipeSettingsPutRequest",
+        "object_storage_max_file_size",
+    ),
     (
         "ClickPipeSettingsPutRequest",
         "object_storage_max_insert_bytes",
@@ -206,6 +216,11 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // create request: on 2026-09-05 an object-storage create with the key set
     // to false was rejected, while omitting it succeeded.
     ("ClickPipeSettings", "kafka_read_committed"),
+    // object_storage_max_file_size is object-storage-only and private preview
+    // ("Contact support to enable it"), and can only lower the server's limit,
+    // so a create must be able to leave it out. The schema has no required[]
+    // and the field is not nullable, unlike its nullable neighbours.
+    ("ClickPipeSettings", "object_storage_max_file_size"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),

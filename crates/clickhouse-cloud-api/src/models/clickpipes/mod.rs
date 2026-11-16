@@ -458,6 +458,8 @@ pub struct ClickPipeSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_file_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_file_size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_insert_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_polling_interval_ms: Option<i64>,
@@ -496,6 +498,8 @@ pub struct ClickPipeSettingsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_file_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_file_size: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_insert_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_polling_interval_ms: Option<i64>,
@@ -533,6 +537,8 @@ pub struct ClickPipeSettingsPutRequest {
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_file_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_file_size: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_insert_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

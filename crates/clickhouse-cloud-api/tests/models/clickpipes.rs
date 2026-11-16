@@ -337,6 +337,7 @@ fn reverse_private_endpoint_dns_targets_and_mappings_tolerate_dropped_and_null_f
         r#"{
             "customPrivateDnsMappings":[{"privateDnsName":"db.example.com","targetId":"rcfg-1"}],
             "dnsTargets":[{"id":"rcfg-1","kind":"RESOURCE_CONFIGURATION","internalDnsName":"a.on.aws"},
+                          {"id":"use1-az1","kind":"AVAILABILITY_ZONE"},
                           {"id":"rcfg-2","kind":"FUTURE_KIND"}],
             "privateDnsMappings":[{"privateDnsName":"my.example.com","internalDnsName":"b.on.aws"}]
         }"#,
@@ -355,6 +356,11 @@ fn reverse_private_endpoint_dns_targets_and_mappings_tolerate_dropped_and_null_f
                 id: Some("rcfg-1".to_string()),
                 internal_dns_name: Some("a.on.aws".to_string()),
                 kind: Some(ReversePrivateEndpointDnsTargetKind::RESOURCE_CONFIGURATION),
+            },
+            ReversePrivateEndpointDnsTarget {
+                id: Some("use1-az1".to_string()),
+                internal_dns_name: None,
+                kind: Some(ReversePrivateEndpointDnsTargetKind::AVAILABILITY_ZONE),
             },
             ReversePrivateEndpointDnsTarget {
                 id: Some("rcfg-2".to_string()),
@@ -2013,4 +2019,63 @@ fn bigquery_replication_modes_cover_cdc_and_preserve_future_values() {
         ClickPipeBigQueryPipeSettingsReplicationmode::VALUES,
         &["snapshot", "cdc", "cdc_only"]
     );
+}
+
+// `object_storage_max_file_size` reaches 536870912000, beyond `i32`, and is
+// omitted from both request types when unset.
+#[test]
+fn click_pipe_settings_object_storage_max_file_size_round_trips() {
+    let put = ClickPipeSettingsPutRequest {
+        object_storage_max_file_size: Some(536_870_912_000),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&put).unwrap(),
+        serde_json::json!({ "object_storage_max_file_size": 536_870_912_000_i64 })
+    );
+    let create = ClickPipeSettings {
+        object_storage_max_file_size: Some(1_048_576),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&create).unwrap(),
+        serde_json::json!({ "object_storage_max_file_size": 1_048_576 })
+    );
+    for empty in [
+        serde_json::to_value(ClickPipeSettingsPutRequest::default()).unwrap(),
+        serde_json::to_value(ClickPipeSettings::default()).unwrap(),
+    ] {
+        assert!(empty.get("object_storage_max_file_size").is_none());
+    }
+
+    let present: ClickPipeSettingsResponse =
+        serde_json::from_str(r#"{"object_storage_max_file_size": 536870912000}"#).unwrap();
+    assert_eq!(present.object_storage_max_file_size, Some(536_870_912_000));
+    let missing: ClickPipeSettingsResponse = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipeSettingsResponse =
+        serde_json::from_str(r#"{"object_storage_max_file_size": null}"#).unwrap();
+    assert_eq!(missing.object_storage_max_file_size, None);
+    assert_eq!(nulled.object_storage_max_file_size, None);
+}
+
+#[test]
+fn click_pipe_object_storage_skip_first_lines_round_trips() {
+    let source = ClickPipePostObjectStorageSource {
+        url: "https://bucket.s3.amazonaws.com/events/*.tsv".to_string(),
+        format: ClickPipePostObjectStorageSourceFormat::TabSeparatedWithNames,
+        skip_first_lines: Some(2),
+        ..Default::default()
+    };
+    assert_eq!(serde_json::to_value(&source).unwrap()["skipFirstLines"], 2);
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    assert!(json.get("skipFirstLines").is_none());
+
+    let present: ClickPipeObjectStorageSource =
+        serde_json::from_str(r#"{"skipFirstLines": 1}"#).unwrap();
+    assert_eq!(present.skip_first_lines, Some(1));
+    let missing: ClickPipeObjectStorageSource = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipeObjectStorageSource =
+        serde_json::from_str(r#"{"skipFirstLines": null}"#).unwrap();
+    assert_eq!(missing.skip_first_lines, None);
+    assert_eq!(nulled.skip_first_lines, None);
 }
