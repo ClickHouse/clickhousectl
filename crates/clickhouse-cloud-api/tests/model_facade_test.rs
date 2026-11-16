@@ -387,3 +387,39 @@ fn notification_is_available_through_both_public_paths() {
         api::models::Notification::default(),
     );
 }
+
+#[test]
+fn org_preview_notification_setting_and_byoc_access_models_keep_both_public_paths() {
+    assert_same_type(
+        api::ByocCustomerAuthorizedAccess::default(),
+        api::models::ByocCustomerAuthorizedAccess::default(),
+    );
+    assert_same_type(
+        api::ByocCustomerAuthorizedAccessPatchRequest::default(),
+        api::models::ByocCustomerAuthorizedAccessPatchRequest::default(),
+    );
+    assert_same_type(
+        api::NotificationSetting::default(),
+        api::models::NotificationSetting::default(),
+    );
+    assert_same_type(
+        api::NotificationSettingRule::default(),
+        api::models::NotificationSettingRule::default(),
+    );
+    assert_same_type(
+        api::MemberNotificationSettingsPatchRequest::default(),
+        api::models::MemberNotificationSettingsPatchRequest::default(),
+    );
+    assert_same_type(
+        api::MemberNotificationSettingsPatchResponse::default(),
+        api::models::MemberNotificationSettingsPatchResponse::default(),
+    );
+    assert_same_type(
+        api::PublicPreview::default(),
+        api::models::PublicPreview::default(),
+    );
+    assert_same_type(
+        api::PublicPreviewPatchRequest::default(),
+        api::models::PublicPreviewPatchRequest::default(),
+    );
+}

@@ -336,6 +336,8 @@ pub enum ActivityType {
     Organization_approved_domain_verify,
     #[serde(rename = "organization_update_public_preview")]
     Organization_update_public_preview,
+    #[serde(rename = "byoc_infrastructure_update_customer_authorized_access")]
+    Byoc_infrastructure_update_customer_authorized_access,
     #[serde(rename = "organization_update_saml_query_ownership_migration")]
     Organization_update_saml_query_ownership_migration,
     #[serde(rename = "postgres_action")]
@@ -570,6 +572,9 @@ impl std::fmt::Display for ActivityType {
             }
             Self::Organization_update_public_preview => {
                 write!(f, "organization_update_public_preview")
+            }
+            Self::Byoc_infrastructure_update_customer_authorized_access => {
+                write!(f, "byoc_infrastructure_update_customer_authorized_access")
             }
             Self::Organization_update_saml_query_ownership_migration => {
                 write!(f, "organization_update_saml_query_ownership_migration")

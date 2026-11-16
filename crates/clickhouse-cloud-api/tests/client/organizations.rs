@@ -659,3 +659,110 @@ async fn notification_get_list_surfaces_api_errors() {
         matches!(error, clickhouse_cloud_api::Error::Api { status: 400, message } if message == "invalid cursor")
     );
 }
+
+// ===========================================================================
+// Organization public previews
+// ===========================================================================
+
+#[tokio::test]
+async fn list_organization_public_previews() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/previews"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "id": "preview-1",
+                "name": "Feature",
+                "description": "Does a thing.",
+                "docsUrl": "https://clickhouse.com/docs",
+                "enabled": false,
+                "canToggle": true
+            },
+            {"id": "preview-2", "enabled": null}
+        ])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let previews = c
+        .organization_public_previews_get_list("org-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(previews.len(), 2);
+    assert_eq!(previews[0].id.as_deref(), Some("preview-1"));
+    assert_eq!(
+        previews[0].docs_url.as_deref(),
+        Some("https://clickhouse.com/docs")
+    );
+    assert_eq!(previews[0].enabled, Some(false));
+    assert_eq!(previews[0].can_toggle, Some(true));
+    assert_eq!(previews[1].enabled, None);
+    assert_eq!(previews[1].can_toggle, None);
+}
+
+#[tokio::test]
+async fn patch_organization_public_preview_sends_enabled() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/preview-1"))
+        .and(basic_auth("key", "secret"))
+        .and(wiremock::matchers::body_json(
+            serde_json::json!({"enabled": true}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "preview-1",
+            "enabled": true,
+            "canToggle": true
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let preview = c
+        .organization_public_preview_patch(
+            "org-1",
+            "preview-1",
+            &PublicPreviewPatchRequest {
+                enabled: Some(true),
+            },
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(preview.id.as_deref(), Some("preview-1"));
+    assert_eq!(preview.enabled, Some(true));
+}
+
+#[tokio::test]
+async fn patch_organization_public_preview_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/previews/preview-1"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "cannot toggle"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c
+        .organization_public_preview_patch(
+            "org-1",
+            "preview-1",
+            &PublicPreviewPatchRequest {
+                enabled: Some(false),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "cannot toggle")
+    );
+}

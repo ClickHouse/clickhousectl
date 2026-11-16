@@ -170,7 +170,8 @@ pub use backups::{
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
-    ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
+    ByocConfigState, ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
+    ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
     ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
     ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePostRequestRegionid, ByocInfrastructurePrivateEndpointConfig,
@@ -186,7 +187,11 @@ pub use invitations::{
     Invitation, InvitationPostRequest, InvitationPostRequestRole, InvitationRole,
 };
 pub use jwt_providers::{JwtProvider, JwtProviderPostRequest, JwtProviderPutRequest};
-pub use members::{Member, MemberPatchRequest, MemberPatchRequestRole, MemberRole};
+pub use members::{
+    Member, MemberNotificationSettingsPatchRequest, MemberNotificationSettingsPatchResponse,
+    MemberPatchRequest, MemberPatchRequestRole, MemberRole, NotificationSetting,
+    NotificationSettingRule,
+};
 pub use organization_private_endpoints::{
     OrganizationCloudRegionPrivateEndpointConfig, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
@@ -197,6 +202,7 @@ pub use organizations::{
     ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Notification,
     NotificationType, NotificationTypeSeverity, Organization, OrganizationCapabilities,
     OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
+    PublicPreview, PublicPreviewPatchRequest,
 };
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,

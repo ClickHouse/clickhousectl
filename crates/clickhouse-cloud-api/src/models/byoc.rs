@@ -886,3 +886,42 @@ pub struct ByocInfrastructureValidationCheck {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
+
+/// `ByocCustomerAuthorizedAccess` from the ClickHouse Cloud API (Beta).
+///
+/// When ClickHouse personnel may access a BYOC infrastructure. `mode` is an open
+/// set on the wire (currently `always`, `never` or `window`), so it stays a string.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocCustomerAuthorizedAccess {
+    /// Whether the data plane allows ClickHouse personnel access at request time.
+    #[serde(rename = "allowed", skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<bool>,
+    /// Length of the access window in seconds; present only for `window` mode.
+    #[serde(rename = "durationSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i64>,
+    /// `always` when the setting has never been configured.
+    #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Start of the access window; present only for `window` mode.
+    #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
+    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// End of the current access window; present only while access is allowed
+    /// until a deadline.
+    #[serde(rename = "windowEndTimestamp", skip_serializing_if = "Option::is_none")]
+    pub window_end_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `ByocCustomerAuthorizedAccessPatchRequest` from the ClickHouse Cloud API (Beta).
+///
+/// The server requires `mode` (an open set, currently `always`, `never` or
+/// `window`). `start_timestamp` and `duration_seconds` (1 to 172800) are required
+/// with `window` and rejected otherwise.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocCustomerAuthorizedAccessPatchRequest {
+    #[serde(rename = "durationSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i64>,
+    #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
+    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}

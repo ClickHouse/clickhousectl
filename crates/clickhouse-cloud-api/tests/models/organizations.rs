@@ -386,3 +386,104 @@ fn notification_tolerates_missing_null_and_future_values() {
     assert_eq!(future.severity.as_deref(), Some("future.severity"));
     assert_eq!(future.resource_type.as_deref(), Some("future.resource"));
 }
+
+#[test]
+fn public_preview_missing_and_null_fields_are_none() {
+    let missing: PublicPreview = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, PublicPreview::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: PublicPreview = serde_json::from_value(serde_json::json!({
+        "id": null, "name": null, "description": null, "docsUrl": null,
+        "enabled": null, "canToggle": null, "futureField": 1
+    }))
+    .unwrap();
+    assert_eq!(null, PublicPreview::default());
+}
+
+#[test]
+fn public_preview_patch_request_serializes_enabled() {
+    let request = PublicPreviewPatchRequest {
+        enabled: Some(false),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"enabled": false})
+    );
+    assert_eq!(
+        serde_json::to_value(PublicPreviewPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn notification_setting_missing_and_null_fields_are_none() {
+    let missing: NotificationSetting = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, NotificationSetting::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: NotificationSetting = serde_json::from_value(serde_json::json!({
+        "type": null, "resourceType": null, "resourceId": null,
+        "channelType": null, "effect": null, "futureField": 1
+    }))
+    .unwrap();
+    assert_eq!(null, NotificationSetting::default());
+}
+
+#[test]
+fn member_notification_settings_patch_response_missing_and_null_fields_are_none() {
+    let missing: MemberNotificationSettingsPatchResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, MemberNotificationSettingsPatchResponse::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: MemberNotificationSettingsPatchResponse =
+        serde_json::from_value(serde_json::json!({"settings": null})).unwrap();
+    assert_eq!(null, MemberNotificationSettingsPatchResponse::default());
+}
+
+#[test]
+fn notification_setting_rule_is_strict_on_required_fields() {
+    let minimal = NotificationSettingRule {
+        effect: "inherit".into(),
+        notifications: vec!["service_backup_failed".into()],
+        resources: vec!["service-1".into()],
+        channels: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&minimal).unwrap(),
+        serde_json::json!({
+            "effect": "inherit",
+            "notifications": ["service_backup_failed"],
+            "resources": ["service-1"]
+        })
+    );
+
+    let request = MemberNotificationSettingsPatchRequest {
+        rules: Some(vec![NotificationSettingRule {
+            channels: Some(vec!["email".into()]),
+            ..minimal
+        }]),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"rules": [{
+            "effect": "inherit",
+            "notifications": ["service_backup_failed"],
+            "resources": ["service-1"],
+            "channels": ["email"]
+        }]})
+    );
+    assert_eq!(
+        serde_json::to_value(MemberNotificationSettingsPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
