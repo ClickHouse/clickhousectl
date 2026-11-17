@@ -64,6 +64,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             provider: PgProvider::Unknown(ctx.provider.clone()),
             region: ctx.region.clone(),
             size: size.clone(),
+            standby_count: None,
             tags: Some(ctx.postgres_run_tags()),
             ha_type: None,
             ip_access_list: None,
@@ -193,6 +194,31 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                 .any(|s| s.id.is_some_and(|id| id.to_string() == postgres_id)),
             "created postgres service was not visible in list"
         );
+
+        // A service created without haType or standbyCount gets haType "none",
+        // whose only (and default) standby count is 0.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "postgres get reports the default standby count",
+                || {
+                    let ha_type = ready.ha_type.clone();
+                    let standby_count = ready.standby_count;
+                    async move {
+                        if ha_type == Some(PgHaType::None)
+                            && standby_count != Some(PgStandbyCount::Zero)
+                        {
+                            return Err(format!(
+                                "expected standbyCount 0 for haType none, got {standby_count:?}"
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
 
         // ── Certificates ────────────────────────────────────────────
 

@@ -133,6 +133,7 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             provider: PgProvider::Unknown(ctx.provider.clone()),
             region: ctx.region.clone(),
             size: PgSize::R8gd_medium,
+            standby_count: None,
             tags: Some(ctx.clickpipe_run_tags()),
             ha_type: None,
             ip_access_list: None,

@@ -188,6 +188,22 @@ the request body is unchanged, and `ClickPipeSettings` remains as a type alias
 of `ClickPipeSettingsPutRequest`: existing code compiles unchanged. Responses
 still use `ClickPipeSettingsResponse`.
 
+`PostgresService`, `PostgresServiceListItem`, `PostgresServicePostRequest` and
+`PostgresServicePatchRequest` gain optional `standby_count` (`standbyCount`),
+typed by the new `PgStandbyCount` integer enum (`Zero`, `One`, `Two`, and an
+`Unknown(i64)` catch-all; it serializes as a JSON number). The values accepted
+depend on `ha_type`: `none` takes 0, `async` takes 1, and `sync` takes 1 or 2;
+when it is omitted, the default for the HA type applies (0, 1 and 2
+respectively), including when `ha_type` changes on update. The orphan
+`BasePostgresService` gains a required `standby_count: PgStandbyCount`.
+Struct-literal callers need `standby_count: None` (or a value for
+`BasePostgresService`), or `..Default::default()` for the PATCH body.
+
+The Postgres service, configuration, metrics, Prometheus, logs, backups,
+certificates, read-replica, restore, password, state and slow-query
+operations are no longer Beta: 19 entries leave `meta::BETA_OPERATIONS`, so
+`meta::is_beta_operation` returns `false` for them.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

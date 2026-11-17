@@ -635,6 +635,8 @@ fn build_postgres_create_request(
         pg_config,
         pg_bouncer_config,
         ip_access_list: postgres_create_ip_access_list(opts.ip_allow, opts.block_public_access),
+        // Not exposed by `cloud postgres create` yet: never sent.
+        standby_count: None,
     })
 }
 
@@ -695,6 +697,8 @@ pub(super) fn build_postgres_update_request(
         ha_type,
         tags,
         ip_access_list,
+        // Not exposed by `cloud postgres update` yet: never sent.
+        standby_count: None,
     }
 }
 
@@ -1074,6 +1078,7 @@ pub(super) mod tests {
         assert!(req.deletion_protection.is_none());
         assert!(req.tags.is_none());
         assert!(req.ip_access_list.is_none());
+        assert!(req.standby_count.is_none());
         assert_eq!(serde_json::to_value(req).unwrap(), serde_json::json!({}));
     }
 
@@ -1247,6 +1252,7 @@ pub(super) mod tests {
         assert!(req.pg_config.is_none());
         assert!(req.pg_bouncer_config.is_none());
         assert!(req.ip_access_list.is_none());
+        assert!(req.standby_count.is_none());
         assert!(
             serde_json::to_value(&req)
                 .unwrap()
