@@ -335,6 +335,7 @@ fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
             snapshot_num_rows_per_partition: None,
             snapshot_number_of_parallel_tables: None,
             sync_interval_seconds: None,
+            use_json_native_format: None,
         },
         skip_cert_verification: false,
         table_mappings: Vec::new(),
@@ -2520,4 +2521,58 @@ fn clickpipe_scaling_new_sends_only_required_fields() {
         serde_json::to_value(&scaling).unwrap(),
         serde_json::json!({"replicas": 2, "replicaCpuMillicores": 500, "replicaMemoryGb": 1.5})
     );
+}
+
+#[test]
+fn cdc_pipe_settings_send_use_json_native_format_only_when_set() {
+    let postgres = ClickPipePostgresPipeSettings {
+        allow_nullable_columns: false,
+        delete_on_merge: false,
+        enable_failover_slots: false,
+        initial_load_parallelism: None,
+        publication_name: None,
+        pull_batch_size: None,
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
+        replication_slot_name: None,
+        snapshot_num_rows_per_partition: None,
+        snapshot_number_of_parallel_tables: None,
+        sync_interval_seconds: None,
+        use_json_native_format: None,
+    };
+    let unset = serde_json::to_value(&postgres).unwrap();
+    assert!(unset.get("useJsonNativeFormat").is_none());
+    let set = serde_json::to_value(ClickPipePostgresPipeSettings {
+        use_json_native_format: Some(true),
+        ..postgres
+    })
+    .unwrap();
+    assert_eq!(set["useJsonNativeFormat"], serde_json::json!(true));
+
+    let mysql = ClickPipeMySQLPipeSettings {
+        allow_nullable_columns: None,
+        delete_on_merge: None,
+        initial_load_parallelism: None,
+        pull_batch_size: None,
+        replication_mechanism: None,
+        replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Cdc,
+        snapshot_num_rows_per_partition: None,
+        snapshot_number_of_parallel_tables: None,
+        sync_interval_seconds: None,
+        use_compression: None,
+        use_json_native_format: Some(false),
+    };
+    assert_eq!(
+        serde_json::to_value(&mysql).unwrap()["useJsonNativeFormat"],
+        serde_json::json!(false)
+    );
+}
+
+#[test]
+fn cdc_pipe_settings_responses_read_use_json_native_format() {
+    let postgres: ClickPipePostgresPipeSettingsResponse =
+        serde_json::from_value(serde_json::json!({"useJsonNativeFormat": true})).unwrap();
+    assert_eq!(postgres.use_json_native_format, Some(true));
+    let mysql: ClickPipeMySQLPipeSettingsResponse =
+        serde_json::from_value(serde_json::json!({"useJsonNativeFormat": null})).unwrap();
+    assert_eq!(mysql.use_json_native_format, None);
 }

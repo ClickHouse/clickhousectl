@@ -253,6 +253,14 @@ from the response type for writing a fetched list back. Get needs
 `control-plane:postgres-service:view`; the others need
 `control-plane:postgres-service:manage`.
 
+`ClickPipeMySQLPipeSettings`, `ClickPipePostgresPipeSettings` and their
+`*Response` types gain optional `use_json_native_format`
+(`useJsonNativeFormat`). `Some(true)` stores JSON columns in native
+ClickHouse JSON format (ClickHouse 25.3+) instead of `String`; for Postgres,
+`json[]` and `jsonb[]` become `Array(JSON)`. It can be set only on create, and
+only in organizations with the feature enabled, so `None` omits it.
+Struct-literal callers need `use_json_native_format: None`.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

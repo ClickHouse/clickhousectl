@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1443100",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1443919",
       "email": "support@clickhouse.com"
     }
   },
@@ -30456,6 +30456,11 @@
             "description": "Enable hard delete behavior in ReplacingMergeTree for PostgreSQL DELETE operations.",
             "type": "boolean",
             "example": false
+          },
+          "useJsonNativeFormat": {
+            "description": "Store json and jsonb columns in native ClickHouse JSON format (requires ClickHouse 25.3+). Non-object values are wrapped as {\"_value\": ...}, and json[]/jsonb[] become Array(JSON). When disabled, JSON data is stored as String. Can only be set at creation. Must be enabled for your organization.",
+            "type": "boolean",
+            "example": false
           }
         }
       },
@@ -30929,6 +30934,11 @@
           },
           "deleteOnMerge": {
             "description": "Enable hard delete behavior in ReplacingMergeTree for MySQL DELETE operations.",
+            "type": "boolean",
+            "example": false
+          },
+          "useJsonNativeFormat": {
+            "description": "Store JSON columns in native ClickHouse JSON format (requires ClickHouse 25.3+). Non-object values are wrapped as {\"_value\": ...}. When disabled, JSON data is stored as String. Can only be set at creation. Must be enabled for your organization.",
             "type": "boolean",
             "example": false
           }

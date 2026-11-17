@@ -148,6 +148,12 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // make AWS create impossible in those orgs. Omission is the only valid input.
     // https://github.com/ClickHouse/clickhousectl/issues/1245
     ("AwsBackupBucketPostRequestV1", "iamRoleExternalId"),
+    // useJsonNativeFormat is create-only and must be enabled for the
+    // organization. ClickPipePostgresPipeSettings has no required[], so the
+    // description fallback marks it required, which would send `false` from
+    // every caller, including organizations without the feature; as with
+    // iamRoleExternalId, omission must stay possible. Not yet verified live.
+    ("ClickPipePostgresPipeSettings", "useJsonNativeFormat"),
     // Kinesis requires protobufSchema only for Protobuf and forbids it for
     // other formats; the schema has no required[], and the legacy requiredness
     // heuristic misses that condition.

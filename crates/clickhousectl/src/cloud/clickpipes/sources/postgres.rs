@@ -290,6 +290,7 @@ fn build_postgres_pipe_settings(
             allow_nullable_columns: args.allow_nullable_columns.unwrap_or(false),
             delete_on_merge: args.delete_on_merge.unwrap_or(false),
             enable_failover_slots: args.enable_failover_slots.unwrap_or(false),
+            use_json_native_format: None,
         },
     )
 }

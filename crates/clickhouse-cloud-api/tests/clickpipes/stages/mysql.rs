@@ -278,6 +278,7 @@ fn build_pipe_request(
                     snapshot_number_of_parallel_tables: None,
                     sync_interval_seconds: None,
                     use_compression: None,
+                    use_json_native_format: None,
                 },
                 table_mappings: vec![ClickPipeMySQLPipeTableMapping {
                     // For MySQL, `sourceSchemaName` is the database name.
