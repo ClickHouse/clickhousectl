@@ -280,6 +280,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/client/organizations.rs",
                 "crates/clickhouse-cloud-api/tests/client/postgres.rs",
                 "crates/clickhouse-cloud-api/tests/client/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/tests/client/rbac.rs",
                 "crates/clickhouse-cloud-api/tests/client/saved_queries.rs",
                 "crates/clickhouse-cloud-api/tests/client/services.rs",
                 "crates/clickhouse-cloud-api/tests/client/udfs.rs",

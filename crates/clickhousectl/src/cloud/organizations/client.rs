@@ -402,7 +402,7 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::RBACRole>> {
         let response = self
             .api()
-            .organization_roles_get_list(org_id)
+            .organization_roles_get_list(org_id, None, None)
             .await
             .map_err(|error| {
                 self.convert_error_for_resource(error, ResourceLookup::organization(org_id))

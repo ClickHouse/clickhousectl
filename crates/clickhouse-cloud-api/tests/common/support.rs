@@ -38,6 +38,33 @@ pub async fn list_all_api_keys(client: &Client, org_id: &str) -> TestResult<Vec<
     }
 }
 
+/// Role assertions must see every role, including roles beyond the first page.
+/// A small `limit` exercises the cursor walk against the live API.
+pub async fn list_all_org_roles(
+    client: &Client,
+    org_id: &str,
+    limit: Option<i64>,
+) -> TestResult<Vec<RBACRole>> {
+    let mut roles = Vec::new();
+    let mut cursor = None;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let response = client
+            .organization_roles_get_list(org_id, limit, cursor.as_deref())
+            .await?;
+        roles.extend(response.result.ok_or("roles list returned no result")?);
+        match response.next_cursor {
+            None => return Ok(roles),
+            Some(next) => {
+                if !seen.insert(next.clone()) {
+                    return Err("roles list returned a repeated cursor".into());
+                }
+                cursor = Some(next);
+            }
+        }
+    }
+}
+
 const DEFAULT_CREATE_TIMEOUT_SECS: u64 = 1_800;
 const DEFAULT_DELETE_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_STEADY_STATE_TIMEOUT_SECS: u64 = 1_800;

@@ -11,6 +11,7 @@ mod members;
 mod organizations;
 mod postgres;
 mod query_api_endpoints;
+mod rbac;
 mod saved_queries;
 mod services;
 mod udfs;
