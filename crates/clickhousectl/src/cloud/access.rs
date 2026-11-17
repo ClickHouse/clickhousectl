@@ -614,6 +614,14 @@ async fn request(
     );
 
     let code = wait_for_redirect(pending, listener, &state).await?;
+    // The approval wait can outlast the Bearer captured at filing, so refresh
+    // it when near expiry. The code is single-use and already approved: any
+    // refresh failure, or a login now for another API URL, keeps the filing
+    // Bearer rather than dropping the code without trying the exchange.
+    let auth = match CloudClient::for_access(url_override).await {
+        Ok(fresh) if fresh.base_url() == base_url => fresh.request_auth(),
+        _ => auth,
+    };
     let issued = exchange_code(
         &http,
         &token_url,
