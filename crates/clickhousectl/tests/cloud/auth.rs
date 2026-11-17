@@ -1088,7 +1088,7 @@ async fn custom_oauth_login_pins_config_through_refresh_and_relogin() {
         saved = serde_json::from_slice(&std::fs::read(&token_path).unwrap()).unwrap();
         assert_eq!(saved["auth_config"], config_a);
         assert_eq!(saved["refresh_token"], "rotated-a");
-        assert!(saved["expires_at"].as_i64().unwrap() > chrono::Utc::now().timestamp());
+        assert!(saved["expires_at"].as_i64().unwrap() > jiff::Timestamp::now().as_second());
         assert!(issuer_b.received_requests().await.unwrap().is_empty());
     }
 

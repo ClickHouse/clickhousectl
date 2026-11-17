@@ -209,8 +209,7 @@ pub(super) fn build_byoc_access_update_request(
         .start
         .as_deref()
         .map(|start| {
-            chrono::DateTime::parse_from_rfc3339(start)
-                .map(|start| start.with_timezone(&chrono::Utc))
+            crate::cloud::shared::parse_rfc3339(start)
                 .map_err(|error| CloudError::usage(format!("invalid --start '{start}': {error}")))
         })
         .transpose()?;
@@ -753,11 +752,7 @@ pub(super) mod tests {
         assert_eq!(request.mode.as_deref(), Some("window"));
         assert_eq!(
             request.start_timestamp,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-11-10T07:00:00Z")
-                    .unwrap()
-                    .with_timezone(&chrono::Utc)
-            )
+            Some("2026-11-10T07:00:00Z".parse::<jiff::Timestamp>().unwrap())
         );
         assert_eq!(request.duration_seconds, Some(14400));
     }

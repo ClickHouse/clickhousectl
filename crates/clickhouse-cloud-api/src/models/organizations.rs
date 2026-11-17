@@ -7,7 +7,7 @@ pub struct ActiveBalance {
     #[serde(rename = "amountSpent", skip_serializing_if = "Option::is_none")]
     pub amount_spent: Option<f64>,
     #[serde(rename = "expirationDate", skip_serializing_if = "Option::is_none")]
-    pub expiration_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub expiration_date: Option<jiff::Timestamp>,
     #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
     #[serde(
@@ -16,7 +16,7 @@ pub struct ActiveBalance {
     )]
     pub remaining_prepaid_credits: Option<f64>,
     #[serde(rename = "startDate", skip_serializing_if = "Option::is_none")]
-    pub start_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub start_date: Option<jiff::Timestamp>,
     #[serde(rename = "totalAmount", skip_serializing_if = "Option::is_none")]
     pub total_amount: Option<f64>,
 }
@@ -93,7 +93,7 @@ pub struct Organization {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<OrganizationCapabilities>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +186,7 @@ pub struct Notification {
     #[serde(rename = "resourceName", skip_serializing_if = "Option::is_none")]
     pub resource_name: Option<String>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "title", skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
@@ -234,9 +234,9 @@ pub struct CreditBalance {
     #[serde(rename = "amountSpent", skip_serializing_if = "Option::is_none")]
     pub amount_spent: Option<f64>,
     #[serde(rename = "startDate", skip_serializing_if = "Option::is_none")]
-    pub start_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub start_date: Option<jiff::Timestamp>,
     #[serde(rename = "expirationDate", skip_serializing_if = "Option::is_none")]
-    pub expiration_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub expiration_date: Option<jiff::Timestamp>,
 }
 
 /// `CreditBalances` from the ClickHouse Cloud API.

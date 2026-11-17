@@ -147,7 +147,7 @@ pub struct Udf {
     )]
     pub command_write_timeout: Option<i64>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,7 +180,7 @@ pub struct Udf {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<UdfType>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<i64>,
 }
@@ -490,7 +490,7 @@ pub struct UdfListResponse {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UdfUploadSession {
     #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expires_at: Option<jiff::Timestamp>,
     #[serde(rename = "uploadId", skip_serializing_if = "Option::is_none")]
     pub upload_id: Option<String>,
     #[serde(rename = "uploadUrl", skip_serializing_if = "Option::is_none")]

@@ -54,7 +54,7 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(rename = "joinedAt", skip_serializing_if = "Option::is_none")]
-    pub joined_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub joined_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]

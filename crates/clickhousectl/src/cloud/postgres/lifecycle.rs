@@ -278,7 +278,7 @@ pub(super) fn render_postgres_service(svc: &PostgresService) {
     println!("  Username: {}", or_absent(svc.username.as_deref()));
     println!(
         "  Created: {}",
-        or_absent(svc.created_at.map(|c| c.to_rfc3339()))
+        or_absent(svc.created_at.map(crate::cloud::shared::format_rfc3339))
     );
     if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
         let tags: Vec<String> = svc_tags
@@ -301,7 +301,10 @@ pub(super) fn render_postgres_service(svc: &PostgresService) {
 fn postgres_restore_and_access_lines(svc: &PostgresService) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(at) = svc.earliest_restore_time {
-        lines.push(format!("  Earliest restore: {}", at.to_rfc3339()));
+        lines.push(format!(
+            "  Earliest restore: {}",
+            crate::cloud::shared::format_rfc3339(at)
+        ));
     }
     let Some(rules) = svc.ip_access_list.as_ref() else {
         return lines;

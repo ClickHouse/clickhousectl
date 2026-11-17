@@ -75,9 +75,9 @@ pub struct ApiKey {
     #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
     pub assigned_roles: Option<Vec<AssignedRole>>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expire_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
     #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
@@ -92,7 +92,7 @@ pub struct ApiKey {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ApiKeyState>,
     #[serde(rename = "usedAt", skip_serializing_if = "Option::is_none")]
-    pub used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub used_at: Option<jiff::Timestamp>,
 }
 
 /// `ApiKeyHashData` from the ClickHouse Cloud API.
@@ -113,7 +113,7 @@ pub struct ApiKeyPatchRequest {
     pub assigned_role_ids: Option<Vec<uuid::Uuid>>,
     /// `None` preserves the expiry, `Some(Some(time))` sets it, and `Some(None)` clears it.
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    pub expire_at: Option<Option<jiff::Timestamp>>,
     #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessListEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,7 +163,7 @@ pub struct ApiKeyPostRequest {
     #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<uuid::Uuid>>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expire_at: Option<jiff::Timestamp>,
     #[serde(rename = "hashData", skip_serializing_if = "Option::is_none")]
     pub hash_data: Option<ApiKeyHashData>,
     #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]

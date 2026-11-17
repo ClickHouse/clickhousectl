@@ -1197,7 +1197,7 @@ impl PgConfigLogLockWaits {
 }
 
 /// Type alias for `pgCreatedAtProperty`.
-pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
+pub type PgCreatedAtProperty = jiff::Timestamp;
 
 /// Type alias for `pgDeletionProtectionProperty`.
 pub type PgDeletionProtectionProperty = bool;
@@ -1215,7 +1215,7 @@ pub type PgNameProperty = String;
 pub type PgPassword = String;
 
 /// Type alias for `pgPitrRestoreTargetProperty`.
-pub type PgPitrRestoreTargetProperty = chrono::DateTime<chrono::Utc>;
+pub type PgPitrRestoreTargetProperty = jiff::Timestamp;
 
 /// Type alias for `pgRegion`.
 pub type PgRegion = String;
@@ -1267,7 +1267,7 @@ pub struct PostgresService {
         rename = "earliestRestoreTime",
         skip_serializing_if = "Option::is_none"
     )]
-    pub earliest_restore_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub earliest_restore_time: Option<jiff::Timestamp>,
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1508,7 +1508,7 @@ pub struct PostgresServiceSetState {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresLogEntry {
     #[serde(rename = "timestamp", skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub timestamp: Option<jiff::Timestamp>,
     #[serde(rename = "severity", skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
     #[serde(rename = "body", skip_serializing_if = "Option::is_none")]
@@ -2031,7 +2031,7 @@ pub struct PostgresBackup {
     pub key: Option<String>,
     /// Time the backup was last written to.
     #[serde(rename = "lastModified", skip_serializing_if = "Option::is_none")]
-    pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_modified: Option<jiff::Timestamp>,
     /// Status of the backup. Only completed backups are listed, so the API
     /// documents this as always `ready`; the spec does not constrain it to an
     /// enum.

@@ -30,7 +30,7 @@ serde_json = "1"
 thiserror = "2"
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
-chrono = { version = "0.4", features = ["serde"] }
+jiff = { version = "1.0.0", default-features = false, features = ["std", "serde"] }
 
 [dev-dependencies]
 # `credentials-login` lets the default credential chain read `aws login` sessions.
@@ -45,7 +45,6 @@ aws-sdk-iam = { version = "1.108.1", default-features = false, features = ["defa
 aws-sdk-kinesis = { version = "1.104.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1.132.0", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a", "http-1x"] }
 base64 = "0.23"
-chrono = "0.4"
 rcgen = "0.14.8"
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -93,7 +93,7 @@ pub struct Snapshot {
     #[serde(rename = "durationInSeconds", skip_serializing_if = "Option::is_none")]
     pub duration_in_seconds: Option<f64>,
     #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub finished_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
     #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
@@ -101,7 +101,7 @@ pub struct Snapshot {
     #[serde(rename = "sizeInBytes", skip_serializing_if = "Option::is_none")]
     pub size_in_bytes: Option<f64>,
     #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub started_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<SnapshotStatus>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
@@ -692,7 +692,7 @@ pub struct Backup {
     #[serde(rename = "durationInSeconds", skip_serializing_if = "Option::is_none")]
     pub duration_in_seconds: Option<f64>,
     #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub finished_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
     #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
@@ -700,7 +700,7 @@ pub struct Backup {
     #[serde(rename = "sizeInBytes", skip_serializing_if = "Option::is_none")]
     pub size_in_bytes: Option<f64>,
     #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub started_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<BackupStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]

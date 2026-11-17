@@ -3,7 +3,6 @@ use crate::cloud::client::{
 };
 use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
 use crate::failure::{ApiFailure, FailureKind};
-use chrono::{DateTime, FixedOffset, NaiveDate};
 use clap::builder::NonEmptyStringValueParser;
 use clickhouse_cloud_api::models::{IpAccessListEntry, ResourceTagsV1};
 use std::net::IpAddr;
@@ -481,15 +480,80 @@ pub(super) fn parse_ip_access_entries(
 }
 
 pub(super) fn parse_date_only(value: &str) -> Result<String, String> {
-    if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
+    if jiff::civil::Date::strptime("%Y-%m-%d", value).is_err() {
         return Err(format!("invalid date '{}': expected YYYY-MM-DD", value));
     }
 
     Ok(value.to_string())
 }
 
+/// Parse an RFC 3339 timestamp.
+///
+/// jiff also reads wider ISO 8601 and RFC 9557 forms (no seconds, basic format,
+/// `[zone]` annotations) that the Cloud API rejects, so check the shape first.
+/// Fraction digits beyond nanoseconds are dropped, not rejected.
+pub(super) fn parse_rfc3339(value: &str) -> Result<jiff::Timestamp, String> {
+    let fraction_end = rfc3339_fraction_end(value)
+        .ok_or_else(|| "expected a date, a time and a UTC offset".to_string())?;
+    let kept = fraction_end.min(RFC3339_SECONDS_END + 1 + 9);
+    let trimmed = [&value[..kept], &value[fraction_end..]].concat();
+    trimmed
+        .parse::<jiff::Timestamp>()
+        .map_err(|error| error.to_string())
+}
+
+/// Length of `YYYY-MM-DDTHH:MM:SS`.
+const RFC3339_SECONDS_END: usize = 19;
+
+/// The byte offset where the fraction ends (where the offset starts), if
+/// `value` has the RFC 3339 shape. Field ranges are left to jiff.
+fn rfc3339_fraction_end(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let shape = b"dddd-dd-ddTdd:dd:dd";
+    if bytes.len() <= shape.len() {
+        return None;
+    }
+    for (byte, expected) in bytes.iter().zip(shape) {
+        let matches = match expected {
+            b'd' => byte.is_ascii_digit(),
+            b'T' => matches!(byte, b'T' | b't' | b' '),
+            other => byte == other,
+        };
+        if !matches {
+            return None;
+        }
+    }
+    let mut end = shape.len();
+    if bytes[end] == b'.' {
+        let digits = bytes[end + 1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            return None;
+        }
+        end += 1 + digits;
+    }
+    let offset = &bytes[end..];
+    let numeric = offset.len() == 6
+        && matches!(offset[0], b'+' | b'-')
+        && offset[3] == b':'
+        && [1, 2, 4, 5].iter().all(|&i| offset[i].is_ascii_digit());
+    (numeric || matches!(offset, b"Z" | b"z")).then_some(end)
+}
+
+/// A timestamp as RFC 3339 in UTC, with 0, 3, 6 or 9 fraction digits.
+pub(super) fn format_rfc3339(timestamp: jiff::Timestamp) -> String {
+    match timestamp.subsec_nanosecond() {
+        0 => format!("{timestamp:.0}"),
+        nanos if nanos % 1_000_000 == 0 => format!("{timestamp:.3}"),
+        nanos if nanos % 1_000 == 0 => format!("{timestamp:.6}"),
+        _ => format!("{timestamp:.9}"),
+    }
+}
+
 pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
-    if DateTime::<FixedOffset>::parse_from_rfc3339(value).is_err() {
+    if parse_rfc3339(value).is_err() {
         return Err(format!(
             "invalid datetime '{}': expected ISO 8601 / RFC 3339",
             value
@@ -503,6 +567,50 @@ pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::cloud::client::CloudErrorKind;
+
+    #[test]
+    fn parse_rfc3339_accepts_only_the_rfc_3339_shape() {
+        let instant = parse_rfc3339("2026-04-16T12:00:00Z").unwrap();
+        for same in [
+            "2026-04-16t12:00:00z",
+            "2026-04-16 12:00:00Z",
+            "2026-04-16T14:00:00+02:00",
+            "2026-04-16T12:00:00.000000000000Z",
+        ] {
+            assert_eq!(parse_rfc3339(same).unwrap(), instant, "{same}");
+        }
+        // Forms jiff reads but RFC 3339 does not allow, and plain junk.
+        for rejected in [
+            "",
+            "2026-04-16",
+            "2026-04-16T12:00:00",
+            "2026-04-16T12:00Z",
+            "20260416T120000Z",
+            "2026-04-16T12:00:00.Z",
+            "2026-04-16T12:00:00+0200",
+            "2026-04-16T12:00:00+02",
+            "2026-04-16T12:00:00Z[UTC]",
+            "2026-13-16T12:00:00Z",
+            "2026-04-16T12:00:00Zé",
+        ] {
+            assert!(parse_rfc3339(rejected).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn format_rfc3339_uses_utc_and_whole_groups_of_fraction_digits() {
+        for (input, expected) in [
+            ("2026-09-15T10:34:56+02:00", "2026-09-15T08:34:56Z"),
+            ("2026-09-15T08:34:56.1Z", "2026-09-15T08:34:56.100Z"),
+            ("2026-09-15T08:34:56.1234Z", "2026-09-15T08:34:56.123400Z"),
+            (
+                "2026-09-15T08:34:56.1234567Z",
+                "2026-09-15T08:34:56.123456700Z",
+            ),
+        ] {
+            assert_eq!(format_rfc3339(parse_rfc3339(input).unwrap()), expected);
+        }
+    }
 
     #[test]
     fn parse_tag_rejects_empty_keys() {

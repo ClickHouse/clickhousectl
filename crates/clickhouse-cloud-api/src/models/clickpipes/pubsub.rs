@@ -217,7 +217,7 @@ pub struct ClickPipePubSubSource {
     #[serde(rename = "projectId", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
-    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub seek_timestamp: Option<jiff::Timestamp>,
     #[serde(rename = "seekType", skip_serializing_if = "Option::is_none")]
     pub seek_type: Option<ClickPipePubSubSourceSeektype>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,7 +238,7 @@ pub struct ClickPipePostPubSubServiceAccountSource {
     #[serde(rename = "seekType")]
     pub seek_type: ClickPipePostPubSubSourceSeektype,
     #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
-    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub seek_timestamp: Option<jiff::Timestamp>,
     #[serde(rename = "filter", skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
@@ -280,7 +280,7 @@ pub struct ClickPipePostPubSubWorkloadIdentitySource {
     #[serde(rename = "seekType")]
     pub seek_type: ClickPipePostPubSubSourceSeektype,
     #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
-    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub seek_timestamp: Option<jiff::Timestamp>,
     #[serde(rename = "filter", skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]

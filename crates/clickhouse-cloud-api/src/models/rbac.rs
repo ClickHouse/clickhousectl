@@ -144,7 +144,7 @@ pub struct RBACRole {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actors: Option<Vec<String>>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +158,7 @@ pub struct RBACRole {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<RBACRoleType>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `RoleCreateRequest` from the ClickHouse Cloud API.

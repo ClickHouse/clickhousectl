@@ -49,9 +49,7 @@ fn api_key_minimal_response() {
 
 #[test]
 fn api_key_patch_expiry_preserves_omit_set_and_clear() {
-    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
-        .unwrap()
-        .with_timezone(&chrono::Utc);
+    let timestamp = "2030-01-02T03:04:05Z".parse::<jiff::Timestamp>().unwrap();
     for (expire_at, wire) in [
         (None, serde_json::json!({})),
         (

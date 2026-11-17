@@ -1535,7 +1535,7 @@ pub struct Service {
     #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<ServiceCompliancetype>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
     pub current_scaling: Option<CurrentScaling>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
@@ -2059,7 +2059,7 @@ pub struct ServiceScalingPatchResponse {
     #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<ServiceScalingPatchResponseCompliancetype>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
     pub current_scaling: Option<CurrentScaling>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]

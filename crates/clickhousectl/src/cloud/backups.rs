@@ -805,8 +805,8 @@ fn format_bytes(bytes: f64) -> String {
     }
 }
 
-fn format_backup_created(value: Option<chrono::DateTime<chrono::Utc>>) -> String {
-    or_absent(value.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)))
+fn format_backup_created(value: Option<jiff::Timestamp>) -> String {
+    or_absent(value.map(crate::cloud::shared::format_rfc3339))
 }
 
 impl CloudClient {
@@ -1201,14 +1201,14 @@ mod tests {
 
     #[test]
     fn formats_backup_created_as_utc_with_subseconds_and_missing_values() {
-        let offset = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:34:56+02:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let offset = "2026-09-15T10:34:56+02:00"
+            .parse::<jiff::Timestamp>()
+            .unwrap();
         assert_eq!(format_backup_created(Some(offset)), "2026-09-15T08:34:56Z");
 
-        let subsecond = chrono::DateTime::parse_from_rfc3339("2026-09-15T08:34:56.123Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let subsecond = "2026-09-15T08:34:56.123Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap();
         assert_eq!(
             format_backup_created(Some(subsecond)),
             "2026-09-15T08:34:56.123Z"

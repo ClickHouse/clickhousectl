@@ -606,7 +606,7 @@ pub struct Activity {
     #[serde(rename = "actorType", skip_serializing_if = "Option::is_none")]
     pub actor_type: Option<ActivityActortype>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(rename = "keyUpdateType", skip_serializing_if = "Option::is_none")]

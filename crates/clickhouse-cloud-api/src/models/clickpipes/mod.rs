@@ -124,7 +124,7 @@ impl std::fmt::Display for ClickPipeStatePatchRequestCommand {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipe {
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<ClickPipeDestination>,
     #[serde(rename = "fieldMappings", skip_serializing_if = "Option::is_none")]
@@ -144,7 +144,7 @@ pub struct ClickPipe {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ClickPipeState>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `ClickPipeDestination` from the ClickHouse Cloud API.

@@ -258,7 +258,7 @@ pub struct ClickStackMongoDBCASLPermissionRegexCondition {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackRole {
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,7 +270,7 @@ pub struct ClickStackRole {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permissions: Option<Vec<ClickStackCASLPermissionResponse>>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `ClickStackUpdateRoleRequest` from the ClickHouse Cloud API.
