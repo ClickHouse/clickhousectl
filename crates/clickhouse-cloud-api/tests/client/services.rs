@@ -78,6 +78,7 @@ async fn create_service() {
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,
@@ -197,6 +198,107 @@ async fn update_service() {
     let resp = c.instance_update("org-1", "svc-1", &body).await.unwrap();
     let svc = resp.result.unwrap();
     assert_eq!(svc.name.as_deref(), Some("renamed-svc"));
+}
+
+#[tokio::test]
+async fn create_service_sends_and_reads_deletion_protection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_partial_json(serde_json::json!({
+            "name": "protected",
+            "deletionProtection": true
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "service": {"id": "11111111-2222-3333-4444-555555555555", "name": "protected", "deletionProtection": true},
+            "password": "pw"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let mut body = ServicePostRequest::new(
+        "protected".to_string(),
+        ServicePostRequestProvider::Aws,
+        ServicePostRequestRegion::Us_east_1,
+        Vec::new(),
+    );
+    body.deletion_protection = Some(true);
+    let resp = c.instance_create("org-1", &body).await.unwrap();
+    let service = resp.result.unwrap().service.unwrap();
+    assert_eq!(service.deletion_protection, Some(true));
+}
+
+#[tokio::test]
+async fn update_service_toggles_deletion_protection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .and(body_json(serde_json::json!({"deletionProtection": false})))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "11111111-2222-3333-4444-555555555555",
+            "deletionProtection": false
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ServicePatchRequest {
+        deletion_protection: Some(false),
+        ..Default::default()
+    };
+    let resp = c.instance_update("org-1", "svc-1", &body).await.unwrap();
+    assert_eq!(resp.result.unwrap().deletion_protection, Some(false));
+}
+
+/// The spec documents a 409 from delete while deletion protection is on.
+#[tokio::test]
+async fn delete_protected_service_surfaces_409() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "status": 409,
+            "error": "deletion protection is enabled"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    match c.instance_delete("org-1", "svc-1").await {
+        Err(clickhouse_cloud_api::Error::Api { status, .. }) => assert_eq!(status, 409),
+        other => panic!("expected a 409 API error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn scaling_update_reads_deletion_protection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaScaling",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "11111111-2222-3333-4444-555555555555",
+            "deletionProtection": true
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .instance_replica_scaling_update(
+            "org-1",
+            "svc-1",
+            &ServiceReplicaScalingPatchRequest::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().deletion_protection, Some(true));
 }
 
 #[tokio::test]

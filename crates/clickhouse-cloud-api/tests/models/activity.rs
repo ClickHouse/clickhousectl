@@ -41,6 +41,10 @@ fn activity_type_new_wire_values_deserialize_to_typed_variants() {
         ("role_update", ActivityType::Role_update),
         ("service_mcp_enabled", ActivityType::Service_mcp_enabled),
         ("udf_create", ActivityType::Udf_create),
+        (
+            "service_update_deletion_protection",
+            ActivityType::Service_update_deletion_protection,
+        ),
     ];
     for (wire, expected) in cases {
         let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
@@ -100,4 +104,20 @@ fn activity_type_postgres_action_round_trips() {
     assert_eq!(parsed, ActivityType::Postgres_action);
     assert_eq!(parsed.to_string(), "postgres_action");
     assert_eq!(serde_json::to_value(&parsed).unwrap(), "postgres_action");
+}
+
+/// The spec now types `Activity.type` as an open string ("treat unknown values
+/// as valid"), so any value outside the known list must still deserialize.
+#[test]
+fn activity_type_accepts_unlisted_values() {
+    let activity: Activity =
+        serde_json::from_value(serde_json::json!({"type": "some_future_activity"})).unwrap();
+    assert_eq!(
+        activity.r#type,
+        Some(ActivityType::Unknown("some_future_activity".to_string()))
+    );
+    assert_eq!(
+        serde_json::to_value(&activity).unwrap(),
+        serde_json::json!({"type": "some_future_activity"})
+    );
 }

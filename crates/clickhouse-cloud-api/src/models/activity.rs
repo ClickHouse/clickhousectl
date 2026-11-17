@@ -78,7 +78,11 @@ impl std::fmt::Display for ActivityKeyupdatetype {
     }
 }
 
-/// Inline enum for `Activity.type`.
+/// Known values of `Activity.type`.
+///
+/// The spec types the field as an open string and lists these values in its
+/// description ("New values may be added; treat unknown values as valid"), so
+/// any other value deserializes into [`ActivityType::Unknown`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ActivityType {
     #[serde(rename = "create_organization")]
@@ -186,6 +190,8 @@ pub enum ActivityType {
     Service_maintenance_end,
     #[serde(rename = "service_update_core_dump")]
     Service_update_core_dump,
+    #[serde(rename = "service_update_deletion_protection")]
+    Service_update_deletion_protection,
     #[serde(rename = "backup_delete")]
     Backup_delete,
     #[serde(rename = "backup_bucket_archive")]
@@ -426,6 +432,9 @@ impl std::fmt::Display for ActivityType {
             Self::Service_maintenance_start => write!(f, "service_maintenance_start"),
             Self::Service_maintenance_end => write!(f, "service_maintenance_end"),
             Self::Service_update_core_dump => write!(f, "service_update_core_dump"),
+            Self::Service_update_deletion_protection => {
+                write!(f, "service_update_deletion_protection")
+            }
             Self::Backup_delete => write!(f, "backup_delete"),
             Self::Backup_bucket_archive => write!(f, "backup_bucket_archive"),
             Self::Backup_bucket_create => write!(f, "backup_bucket_create"),

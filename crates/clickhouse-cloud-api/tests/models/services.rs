@@ -70,6 +70,7 @@ fn serialize_service_post_request() {
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,
@@ -108,6 +109,7 @@ fn serialize_service_post_request_horizontal_autoscaling() {
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,
@@ -147,6 +149,7 @@ fn serialize_service_post_request_horizontal_autoscaling() {
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,
@@ -1023,6 +1026,7 @@ fn service_post_request_backup_encryption_config_serialization() {
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,
@@ -1126,4 +1130,76 @@ fn service_post_request_new_sends_only_required_fields() {
             "ipAccessList": [{"source": "0.0.0.0/0"}]
         })
     );
+}
+
+#[test]
+fn service_deletion_protection_tolerates_missing_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"deletionProtection": null}),
+    ] {
+        let service: Service = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(service.deletion_protection, None);
+        assert_eq!(
+            serde_json::to_value(service).unwrap(),
+            serde_json::json!({})
+        );
+
+        let scaled: ServiceScalingPatchResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(scaled.deletion_protection, None);
+        assert_eq!(serde_json::to_value(scaled).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn service_deletion_protection_round_trips_both_values() {
+    for value in [true, false] {
+        let wire = serde_json::json!({"deletionProtection": value});
+
+        let service: Service = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(service.deletion_protection, Some(value));
+        assert_eq!(serde_json::to_value(service).unwrap(), wire);
+
+        let scaled: ServiceScalingPatchResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(scaled.deletion_protection, Some(value));
+        assert_eq!(serde_json::to_value(scaled).unwrap(), wire);
+    }
+}
+
+/// Unset deletion protection is omitted, so a create or update that does not
+/// mention it leaves the server default (create) or current value (update).
+#[test]
+fn service_requests_send_deletion_protection_only_when_set() {
+    let mut create = ServicePostRequest::new(
+        "protected".to_string(),
+        ServicePostRequestProvider::Aws,
+        ServicePostRequestRegion::Us_east_1,
+        Vec::new(),
+    );
+    assert!(
+        serde_json::to_value(&create)
+            .unwrap()
+            .get("deletionProtection")
+            .is_none()
+    );
+    create.deletion_protection = Some(true);
+    assert_eq!(
+        serde_json::to_value(&create).unwrap()["deletionProtection"],
+        true
+    );
+
+    assert_eq!(
+        serde_json::to_value(ServicePatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    for value in [true, false] {
+        assert_eq!(
+            serde_json::to_value(ServicePatchRequest {
+                deletion_protection: Some(value),
+                ..Default::default()
+            })
+            .unwrap(),
+            serde_json::json!({"deletionProtection": value})
+        );
+    }
 }
