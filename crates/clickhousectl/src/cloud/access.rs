@@ -529,8 +529,12 @@ fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
 /// `Authorization` header on cross-origin redirects does not protect those
 /// body fields. Reject redirects instead of forwarding secrets or replaying
 /// the exchange POST.
+///
+/// Both steps go only to the Cloud API, so like every other Cloud call it
+/// carries the agent session/trace headers; with redirects disabled they
+/// cannot be forwarded to another host.
 fn handshake_client() -> CloudResult<reqwest::Client> {
-    crate::http::client_builder()
+    crate::http::clickhouse_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| CloudError::new(format!("failed to build HTTP client: {error}")))
