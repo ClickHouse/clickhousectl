@@ -147,8 +147,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && command.is_write_command() {
-        return Err(Error::AuthRequired(
-            "This command requires API key authentication. \
+        const BASE: &str = "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
              To authenticate with an API key:\n  \
              clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
@@ -156,9 +155,19 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
              export CLICKHOUSE_CLOUD_API_KEY=your-key\n  \
              export CLICKHOUSE_CLOUD_API_SECRET=your-secret\n\n\
              Learn how to create API keys:\n  \
-             https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl"
-                .into(),
-        ));
+             https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl";
+        // The scoped-access flow exists only when compiled with the
+        // `experimental-access-negotiation` feature, so a default binary must
+        // not advertise commands it does not carry.
+        #[cfg(feature = "experimental-access-negotiation")]
+        const ACCESS_HINT: &str = "\n\n\
+             Or request a short-lived, human-approved scoped key, with no \
+             long-lived API key to manage:\n  \
+             clickhousectl cloud access roles   # list the roles you can request\n  \
+             clickhousectl cloud access request --perms role:<UUID>";
+        #[cfg(not(feature = "experimental-access-negotiation"))]
+        const ACCESS_HINT: &str = "";
+        return Err(Error::AuthRequired(format!("{BASE}{ACCESS_HINT}")));
     }
 
     // `service client` ends in an `exec()` of the local client, and its
