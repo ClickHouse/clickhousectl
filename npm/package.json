@@ -1,7 +1,7 @@
 {
   "name": "clickhousectl",
   "version": "0.6.0",
-  "description": "The CLI for ClickHouse: local and cloud.",
+  "description": "The CLI for ClickHouse and Postgres: local and cloud.",
   "homepage": "https://github.com/ClickHouse/clickhousectl",
   "repository": {
     "type": "git",

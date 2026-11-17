@@ -283,7 +283,7 @@ CONTEXT FOR AGENTS:
   Idempotent — re-running only creates what is missing.
   Initializes the current directory: inside another project it creates a nested one, which then
   wins for this directory and below. With CLICKHOUSECTL_PROJECT_DIR set, initializes that instead.
-  Next: `clickhousectl local clickhouse start`")]
+  Next: `clickhousectl local clickhouse start`, `clickhousectl local postgres start` (needs Docker)")]
     Init,
 
     /// Manage local ClickHouse servers

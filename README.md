@@ -15,7 +15,7 @@
 [![Follow on X](https://img.shields.io/badge/X-Follow_ClickHouseDB-000000)](https://x.com/ClickHouseDB)
 [![YouTube videos](https://img.shields.io/badge/YouTube-Watch_ClickHouseDB-FF0000)](https://www.youtube.com/@ClickHouseDB)
 
-`clickhousectl` (`chctl`) is the official CLI for ClickHouse, from local development to ClickHouse Cloud.
+`clickhousectl` (`chctl`) is the official CLI for ClickHouse and Postgres, from local development to ClickHouse Cloud.
 
 
 ## What can the CLI do?
