@@ -172,6 +172,13 @@ pub struct MySqlCreateArgs {
     #[arg(long, value_name = "true|false")]
     pub use_compression: Option<bool>,
 
+    /// Store JSON columns as native ClickHouse JSON (create-time only)
+    ///
+    /// Needs ClickHouse 25.3+ and the feature enabled for the organization;
+    /// otherwise JSON is stored as String.
+    #[arg(long, value_name = "true|false")]
+    pub use_json_native_format: Option<bool>,
+
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
 
@@ -339,7 +346,7 @@ fn build_mysql_request(
             snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
             sync_interval_seconds: args.sync_interval_seconds,
             use_compression: args.use_compression,
-            use_json_native_format: None,
+            use_json_native_format: args.use_json_native_format,
         },
         table_mappings,
     };
@@ -450,6 +457,8 @@ mod tests {
             "true",
             "--use-compression",
             "false",
+            "--use-json-native-format",
+            "true",
             "--destination-database",
             "analytics",
             "--org-id",
@@ -485,6 +494,7 @@ mod tests {
         assert_eq!(args.allow_nullable_columns, Some(false));
         assert_eq!(args.delete_on_merge, Some(true));
         assert_eq!(args.use_compression, Some(false));
+        assert_eq!(args.use_json_native_format, Some(true));
         assert_eq!(args.destination.destination_database, "analytics");
 
         let ClickPipeCommands::Create {
@@ -532,6 +542,7 @@ mod tests {
         assert_eq!(args.allow_nullable_columns, None);
         assert_eq!(args.delete_on_merge, None);
         assert_eq!(args.use_compression, None);
+        assert_eq!(args.use_json_native_format, None);
         assert_eq!(args.destination.destination_database, "default");
 
         for invalid in ["0", "4294967296"] {
@@ -780,6 +791,7 @@ mod tests {
             allow_nullable_columns: None,
             delete_on_merge: None,
             use_compression: None,
+            use_json_native_format: None,
             destination: DatabaseDestinationArgs {
                 destination_database: "default".into(),
             },
@@ -830,6 +842,7 @@ mod tests {
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
         assert_eq!(source.settings.sync_interval_seconds, None);
         assert_eq!(source.settings.use_compression, None);
+        assert_eq!(source.settings.use_json_native_format, None);
         assert_eq!(source.table_mappings.len(), 1);
         assert_eq!(source.table_mappings[0].source_schema_name, "source");
         assert_eq!(source.table_mappings[0].source_table, "events");
@@ -869,6 +882,7 @@ mod tests {
         args.allow_nullable_columns = Some(false);
         args.delete_on_merge = Some(true);
         args.use_compression = Some(false);
+        args.use_json_native_format = Some(true);
         args.destination.destination_database = "analytics".into();
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into()],
@@ -919,6 +933,7 @@ mod tests {
         assert_eq!(source.settings.allow_nullable_columns, Some(false));
         assert_eq!(source.settings.delete_on_merge, Some(true));
         assert_eq!(source.settings.use_compression, Some(false));
+        assert_eq!(source.settings.use_json_native_format, Some(true));
         assert_eq!(source.table_mappings.len(), 2);
         let mapping = &source.table_mappings[1];
         assert_eq!(mapping.source_schema_name, "sales");
