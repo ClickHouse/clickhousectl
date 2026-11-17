@@ -2038,3 +2038,122 @@ pub struct PostgresBackup {
     #[serde(rename = "status", skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
 }
+
+/// `PostgresPrivateEndpoint` from the ClickHouse Cloud API: the AWS private
+/// endpoint service of a Postgres service.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes as `None`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpoint {
+    /// VPC endpoints approved to connect.
+    #[serde(
+        rename = "allowedVpcEndpoints",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allowed_vpc_endpoints: Option<Vec<PostgresPrivateEndpointVpcEndpointResponse>>,
+    /// ID of the AWS endpoint service. Absent until the service is created.
+    #[serde(rename = "endpointServiceId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_service_id: Option<String>,
+    /// Name of the AWS endpoint service: the service name to use when creating
+    /// a VPC endpoint. Absent until the service is created.
+    #[serde(
+        rename = "endpointServiceName",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub endpoint_service_name: Option<String>,
+    /// ID of the private endpoint service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// IP address type of the endpoint service, such as `dual`.
+    #[serde(rename = "ipAddressType", skip_serializing_if = "Option::is_none")]
+    pub ip_address_type: Option<String>,
+    /// Ports the endpoint service forwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ports: Option<Vec<PostgresPrivateEndpointPort>>,
+    /// Private DNS name of the endpoint service. Absent until it is assigned.
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
+    pub private_dns_name: Option<String>,
+    /// Verification state of the private DNS name. Absent until it is assigned.
+    #[serde(
+        rename = "privateDnsVerificationState",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub private_dns_verification_state: Option<String>,
+    /// Hostname that resolves to the Postgres service from an approved VPC
+    /// endpoint. Absent until the service is available.
+    #[serde(rename = "privateHostname", skip_serializing_if = "Option::is_none")]
+    pub private_hostname: Option<String>,
+    /// `creating`, `available` or `deleting`; the API may add more states. It
+    /// is `creating` for about 5 to 10 minutes after creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// AWS region IDs, other than the service region, from which VPC endpoints
+    /// can connect.
+    #[serde(rename = "supportedRegions", skip_serializing_if = "Option::is_none")]
+    pub supported_regions: Option<Vec<String>>,
+}
+
+/// `PostgresPrivateEndpointPort` from the ClickHouse Cloud API: one port the
+/// endpoint service forwards. Used in response position only.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpointPort {
+    /// Port exposed by the endpoint service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    /// Port on the Postgres service it forwards to.
+    #[serde(rename = "targetPort", skip_serializing_if = "Option::is_none")]
+    pub target_port: Option<i64>,
+}
+
+/// `PostgresPrivateEndpointVpcEndpoint` from the ClickHouse Cloud API: one VPC
+/// endpoint approved to connect, as sent in
+/// [`PostgresPrivateEndpointPatchRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpointVpcEndpoint {
+    /// Optional description, at most 255 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// ID of the AWS VPC endpoint, such as `vpce-0123456789abcdef0`.
+    #[serde(rename = "vpcEndpointId")]
+    pub vpc_endpoint_id: String,
+}
+
+/// `PostgresPrivateEndpointVpcEndpoint` in response position: one approved VPC
+/// endpoint of [`PostgresPrivateEndpoint`]. Every field is `Option<T>`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpointVpcEndpointResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "vpcEndpointId", skip_serializing_if = "Option::is_none")]
+    pub vpc_endpoint_id: Option<String>,
+}
+
+/// `PostgresPrivateEndpointPostRequest` from the ClickHouse Cloud API: the body
+/// that creates a Postgres private endpoint service.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpointPostRequest {
+    /// AWS region IDs, other than the service region, from which VPC endpoints
+    /// can connect, such as `us-west-2`. Requires cross-region private
+    /// endpoints to be enabled for the organization.
+    #[serde(rename = "supportedRegions", skip_serializing_if = "Option::is_none")]
+    pub supported_regions: Option<Vec<String>>,
+}
+
+/// `PostgresPrivateEndpointPatchRequest` from the ClickHouse Cloud API.
+///
+/// Set at least one field. Each one set replaces the existing list in full, so
+/// include every entry to keep; `None` leaves that list unchanged.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresPrivateEndpointPatchRequest {
+    /// Every VPC endpoint approved to connect, at most 50, each ID once.
+    /// Endpoints not listed can no longer connect.
+    #[serde(
+        rename = "allowedVpcEndpoints",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allowed_vpc_endpoints: Option<Vec<PostgresPrivateEndpointVpcEndpoint>>,
+    /// Every supported region, other than the service region.
+    #[serde(rename = "supportedRegions", skip_serializing_if = "Option::is_none")]
+    pub supported_regions: Option<Vec<String>>,
+}

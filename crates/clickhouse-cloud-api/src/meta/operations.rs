@@ -1203,6 +1203,42 @@ pub const POSTGRES_ORG_PROMETHEUS_GET: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `DELETE /v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint` (`postgresPrivateEndpointDelete`).
+pub const POSTGRES_PRIVATE_ENDPOINT_DELETE: OperationMetadata = OperationMetadata {
+    operation_id: "postgresPrivateEndpointDelete",
+    rust_method: "postgres_private_endpoint_delete",
+    method: "DELETE",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint",
+    required_permissions: &["control-plane:postgres-service:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint` (`postgresPrivateEndpointGet`).
+pub const POSTGRES_PRIVATE_ENDPOINT_GET: OperationMetadata = OperationMetadata {
+    operation_id: "postgresPrivateEndpointGet",
+    rust_method: "postgres_private_endpoint_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint",
+    required_permissions: &["control-plane:postgres-service:view"],
+};
+
+/// `PATCH /v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint` (`postgresPrivateEndpointPatch`).
+pub const POSTGRES_PRIVATE_ENDPOINT_PATCH: OperationMetadata = OperationMetadata {
+    operation_id: "postgresPrivateEndpointPatch",
+    rust_method: "postgres_private_endpoint_patch",
+    method: "PATCH",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint",
+    required_permissions: &["control-plane:postgres-service:manage"],
+};
+
+/// `POST /v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint` (`postgresPrivateEndpointPost`).
+pub const POSTGRES_PRIVATE_ENDPOINT_POST: OperationMetadata = OperationMetadata {
+    operation_id: "postgresPrivateEndpointPost",
+    rust_method: "postgres_private_endpoint_post",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint",
+    required_permissions: &["control-plane:postgres-service:manage"],
+};
+
 /// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/backups` (`postgresServiceBackupGetList`).
 pub const POSTGRES_SERVICE_BACKUP_GET_LIST: OperationMetadata = OperationMetadata {
     operation_id: "postgresServiceBackupGetList",
@@ -1814,6 +1850,10 @@ pub const ALL: &[OperationMetadata] = &[
     POSTGRES_INSTANCE_RESTORE,
     POSTGRES_LOGS_GET_LIST,
     POSTGRES_ORG_PROMETHEUS_GET,
+    POSTGRES_PRIVATE_ENDPOINT_DELETE,
+    POSTGRES_PRIVATE_ENDPOINT_GET,
+    POSTGRES_PRIVATE_ENDPOINT_PATCH,
+    POSTGRES_PRIVATE_ENDPOINT_POST,
     POSTGRES_SERVICE_BACKUP_GET_LIST,
     POSTGRES_SERVICE_CERTS_GET,
     POSTGRES_SERVICE_CREATE,

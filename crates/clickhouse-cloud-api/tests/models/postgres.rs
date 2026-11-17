@@ -1136,3 +1136,74 @@ fn postgres_requests_send_standby_count_only_when_set() {
     create.standby_count = Some(PgStandbyCount::Two);
     assert_eq!(serde_json::to_value(&create).unwrap()["standbyCount"], 2);
 }
+
+#[test]
+fn postgres_private_endpoint_vpc_endpoint_requires_its_id() {
+    let missing: Result<PostgresPrivateEndpointVpcEndpoint, _> =
+        serde_json::from_value(serde_json::json!({"description": "Production VPC"}));
+    assert!(missing.is_err());
+
+    let endpoint = PostgresPrivateEndpointVpcEndpoint {
+        vpc_endpoint_id: "vpce-0123456789abcdef0".into(),
+        description: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&endpoint).unwrap(),
+        serde_json::json!({"vpcEndpointId": "vpce-0123456789abcdef0"})
+    );
+}
+
+#[test]
+fn postgres_private_endpoint_vpc_endpoint_response_converts_back_into_a_request_entry() {
+    let endpoint =
+        PostgresPrivateEndpointVpcEndpoint::try_from(PostgresPrivateEndpointVpcEndpointResponse {
+            vpc_endpoint_id: Some("vpce-0123456789abcdef0".into()),
+            description: Some("Production VPC".into()),
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&endpoint).unwrap(),
+        serde_json::json!({
+            "vpcEndpointId": "vpce-0123456789abcdef0", "description": "Production VPC"
+        })
+    );
+
+    let missing =
+        PostgresPrivateEndpointVpcEndpoint::try_from(PostgresPrivateEndpointVpcEndpointResponse {
+            description: Some("Production VPC".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(missing.fields(), ["vpcEndpointId"]);
+}
+
+#[test]
+fn postgres_private_endpoint_response_tolerates_missing_and_null_fields() {
+    let endpoint: PostgresPrivateEndpoint = serde_json::from_value(serde_json::json!({
+        "id": "ps0123456789abcdefghjkmnpq",
+        "state": "creating",
+        "endpointServiceName": null,
+        "ports": [{"port": 5432}],
+        "allowedVpcEndpoints": [{"description": "no id"}]
+    }))
+    .unwrap();
+    assert_eq!(endpoint.endpoint_service_name, None);
+    assert_eq!(endpoint.supported_regions, None);
+    assert_eq!(endpoint.ports.unwrap()[0].target_port, None);
+    assert_eq!(
+        endpoint.allowed_vpc_endpoints.unwrap()[0].vpc_endpoint_id,
+        None
+    );
+}
+
+#[test]
+fn postgres_private_endpoint_patch_request_omits_unset_lists() {
+    assert_eq!(
+        serde_json::to_value(PostgresPrivateEndpointPatchRequest {
+            supported_regions: Some(vec![]),
+            ..Default::default()
+        })
+        .unwrap(),
+        serde_json::json!({"supportedRegions": []})
+    );
+}

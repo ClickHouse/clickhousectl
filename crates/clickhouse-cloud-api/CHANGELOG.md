@@ -234,6 +234,25 @@ more pages remain and `ApiResponse::limit` echoes the page size. Migrate
 the request sent is unchanged, but an organization with more than 250 roles
 now needs to follow `next_cursor` to see them all.
 
+The beta Postgres private endpoint methods are `postgres_private_endpoint_get`,
+`postgres_private_endpoint_post`, `postgres_private_endpoint_patch` and
+`postgres_private_endpoint_delete`. They manage the AWS private endpoint
+service of a Postgres service, available only for AWS services in
+organizations with the feature enabled. Reads, create and patch return
+`PostgresPrivateEndpoint` (state, endpoint service name and ID, private
+hostname and DNS name, ports, supported regions and approved VPC endpoints);
+get returns `Error::Api { status: 404, .. }` before one is created, and
+delete returns no `result`. Create takes `PostgresPrivateEndpointPostRequest`
+(optional `supported_regions`) and stays `creating` for about 5 to 10
+minutes. Patch takes `PostgresPrivateEndpointPatchRequest`: each list set
+(`allowed_vpc_endpoints`, `supported_regions`) replaces the existing one in
+full. An approved endpoint is `PostgresPrivateEndpointVpcEndpoint` (required
+`vpc_endpoint_id`, optional `description`) in requests and
+`PostgresPrivateEndpointVpcEndpointResponse` in responses, with `TryFrom`
+from the response type for writing a fetched list back. Get needs
+`control-plane:postgres-service:view`; the others need
+`control-plane:postgres-service:manage`.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

@@ -922,6 +922,172 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?;
         cleanup.unregister_postgres_replica(&replica_id);
 
+        // ── Private endpoint ────────────────────────────────────────
+
+        // Private endpoints exist only for AWS Postgres services in
+        // organizations with the feature enabled, and creation takes 5 to 10
+        // minutes, so the phase runs only when the test org opts in. Deleting
+        // the service also removes an endpoint left behind by a failed step.
+        if ctx.provider == "aws"
+            && env::var("CLICKHOUSE_CLOUD_POSTGRES_PRIVATE_ENDPOINT")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .is_some()
+        {
+            log_phase("Private endpoint");
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "get postgres private endpoint before create is 404",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            match client
+                                .postgres_private_endpoint_get(&org_id, &postgres_id)
+                                .await
+                            {
+                                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(()),
+                                Err(error) => Err(error.into()),
+                                Ok(_) => Err("private endpoint exists before create".into()),
+                            }
+                        }
+                    },
+                )
+                .await?;
+
+            let created = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "create postgres private endpoint",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            let resp = client
+                                .postgres_private_endpoint_post(
+                                    &org_id,
+                                    &postgres_id,
+                                    &PostgresPrivateEndpointPostRequest::default(),
+                                )
+                                .await?;
+                            resp.result
+                                .ok_or_else(|| "private endpoint create returned no result".into())
+                        }
+                    },
+                )
+                .await?;
+
+            if created.is_some() {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "wait for postgres private endpoint available",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let postgres_id = postgres_id.clone();
+                            let timeout = ctx.create_timeout;
+                            let interval = ctx.poll_interval;
+                            async move {
+                                let endpoint = poll_until(
+                                    "postgres private endpoint available",
+                                    timeout,
+                                    interval,
+                                    || {
+                                        let client = client.clone();
+                                        let org_id = org_id.clone();
+                                        let postgres_id = postgres_id.clone();
+                                        async move {
+                                            let endpoint = client
+                                                .postgres_private_endpoint_get(
+                                                    &org_id,
+                                                    &postgres_id,
+                                                )
+                                                .await?
+                                                .result
+                                                .ok_or("private endpoint get returned no result")?;
+                                            Ok((endpoint.state.as_deref() == Some("available"))
+                                                .then_some(endpoint))
+                                        }
+                                    },
+                                )
+                                .await?;
+                                if endpoint.endpoint_service_name.is_none() {
+                                    return Err(
+                                        "available private endpoint has no endpointServiceName"
+                                            .into(),
+                                    );
+                                }
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "patch postgres private endpoint lists",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let postgres_id = postgres_id.clone();
+                            async move {
+                                // Empty lists are valid in every org: no VPC
+                                // endpoint has to exist and no cross-region
+                                // feature is needed.
+                                let body = PostgresPrivateEndpointPatchRequest {
+                                    allowed_vpc_endpoints: Some(vec![]),
+                                    supported_regions: Some(vec![]),
+                                };
+                                let endpoint = client
+                                    .postgres_private_endpoint_patch(&org_id, &postgres_id, &body)
+                                    .await?
+                                    .result
+                                    .ok_or("private endpoint patch returned no result")?;
+                                if !endpoint
+                                    .allowed_vpc_endpoints
+                                    .unwrap_or_default()
+                                    .is_empty()
+                                {
+                                    return Err(
+                                        "allowedVpcEndpoints not empty after patch".into()
+                                    );
+                                }
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "delete postgres private endpoint",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let postgres_id = postgres_id.clone();
+                            async move {
+                                client
+                                    .postgres_private_endpoint_delete(&org_id, &postgres_id)
+                                    .await?;
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+            }
+        }
+
         // ── Delete ──────────────────────────────────────────────────
 
         log_phase("Delete");

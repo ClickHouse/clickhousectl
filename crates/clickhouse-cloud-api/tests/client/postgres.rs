@@ -754,3 +754,211 @@ async fn postgres_service_backup_get_list_propagates_api_errors() {
         );
     }
 }
+
+// ===========================================================================
+// Postgres private endpoints
+// ===========================================================================
+
+fn private_endpoint_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": "ps0123456789abcdefghjkmnpq",
+        "state": "available",
+        "endpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
+        "endpointServiceId": "vpce-svc-0123456789abcdef0",
+        "privateHostname": "pg-1.private.example",
+        "ipAddressType": "dual",
+        "ports": [{"port": 5432, "targetPort": 5432}],
+        "supportedRegions": ["us-west-2"],
+        "allowedVpcEndpoints": [
+            {"vpcEndpointId": "vpce-0123456789abcdef0", "description": "Production VPC"}
+        ]
+    })
+}
+
+#[tokio::test]
+async fn get_postgres_private_endpoint() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(private_endpoint_json()))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let endpoint = c
+        .postgres_private_endpoint_get("org-1", "pg-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(endpoint.state.as_deref(), Some("available"));
+    assert_eq!(
+        endpoint.endpoint_service_name.as_deref(),
+        Some("com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0")
+    );
+    assert_eq!(
+        endpoint.ports,
+        Some(vec![PostgresPrivateEndpointPort {
+            port: Some(5432),
+            target_port: Some(5432),
+        }])
+    );
+    assert_eq!(endpoint.supported_regions, Some(vec!["us-west-2".into()]));
+    assert_eq!(
+        endpoint.allowed_vpc_endpoints,
+        Some(vec![PostgresPrivateEndpointVpcEndpointResponse {
+            vpc_endpoint_id: Some("vpce-0123456789abcdef0".into()),
+            description: Some("Production VPC".into()),
+        }])
+    );
+}
+
+#[tokio::test]
+async fn get_postgres_private_endpoint_not_created_is_a_404() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404, "error": "Private endpoint not found"
+        })))
+        .mount(&s)
+        .await;
+
+    let error = c
+        .postgres_private_endpoint_get("org-1", "pg-1")
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        clickhouse_cloud_api::Error::Api { status: 404, .. }
+    ));
+}
+
+#[tokio::test]
+async fn create_postgres_private_endpoint() {
+    let (s, c) = setup().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "supportedRegions": ["us-west-2"]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "ps0123456789abcdefghjkmnpq",
+            "state": "creating",
+            "ipAddressType": "dual",
+            "ports": [],
+            "supportedRegions": ["us-west-2"],
+            "allowedVpcEndpoints": []
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let endpoint = c
+        .postgres_private_endpoint_post(
+            "org-1",
+            "pg-1",
+            &PostgresPrivateEndpointPostRequest {
+                supported_regions: Some(vec!["us-west-2".into()]),
+            },
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(endpoint.state.as_deref(), Some("creating"));
+    assert_eq!(endpoint.endpoint_service_name, None);
+}
+
+#[tokio::test]
+async fn create_postgres_private_endpoint_without_regions_sends_an_empty_object() {
+    let (s, c) = setup().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .respond_with(ok_json(serde_json::json!({"state": "creating"})))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    c.postgres_private_endpoint_post(
+        "org-1",
+        "pg-1",
+        &PostgresPrivateEndpointPostRequest::default(),
+    )
+    .await
+    .unwrap();
+    let requests = s.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body, serde_json::json!({}));
+}
+
+#[tokio::test]
+async fn patch_postgres_private_endpoint() {
+    let (s, c) = setup().await;
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .respond_with(ok_json(private_endpoint_json()))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let endpoint = c
+        .postgres_private_endpoint_patch(
+            "org-1",
+            "pg-1",
+            &PostgresPrivateEndpointPatchRequest {
+                allowed_vpc_endpoints: Some(vec![PostgresPrivateEndpointVpcEndpoint {
+                    vpc_endpoint_id: "vpce-0123456789abcdef0".into(),
+                    description: Some("Production VPC".into()),
+                }]),
+                supported_regions: None,
+            },
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(endpoint.state.as_deref(), Some("available"));
+    // `supportedRegions: None` is omitted, so the server keeps that list.
+    let requests = s.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "allowedVpcEndpoints": [
+                {"vpcEndpointId": "vpce-0123456789abcdef0", "description": "Production VPC"}
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+async fn delete_postgres_private_endpoint() {
+    let (s, c) = setup().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/privateEndpoint",
+        ))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .postgres_private_endpoint_delete("org-1", "pg-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200));
+    assert_eq!(resp.result, None);
+}
