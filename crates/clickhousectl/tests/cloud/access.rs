@@ -1245,6 +1245,7 @@ async fn access_organization_resolution_reads_complete_user_memberships() {
         "ambiguous-name",
         "repeat",
         "no-progress",
+        "empty-progress",
         "page-error",
         "missing-result",
         "missing-id",
@@ -1266,6 +1267,7 @@ async fn access_organization_resolution_reads_complete_user_memberships() {
             "ambiguous-name",
             "repeat",
             "no-progress",
+            "empty-progress",
             "page-error",
             "missing-result",
             "missing-id",
@@ -1290,6 +1292,7 @@ async fn access_organization_resolution_reads_complete_user_memberships() {
                 "no-progress" => {
                     serde_json::json!({"result": [{"id": ONE}], "nextCursor": "different"})
                 }
+                "empty-progress" => serde_json::json!({"result": [], "nextCursor": "different"}),
                 "missing-result" => serde_json::json!({"nextCursor": null}),
                 "missing-id" => serde_json::json!({"result": [{"name": "Second"}]}),
                 "ambiguous-name" => {
