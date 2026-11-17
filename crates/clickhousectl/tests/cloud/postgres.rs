@@ -1458,6 +1458,7 @@ fn postgres_list_response() -> ResponseTemplate {
                 "provider": "aws",
                 "isPrimary": true,
                 "deletionProtection": true,
+                "standbyCount": 1,
             },
             {
                 "id": "66666666-7777-8888-9999-000000000000",
@@ -1517,7 +1518,7 @@ async fn postgres_list_applies_supported_filters_client_side() {
 }
 
 #[tokio::test]
-async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
+async fn postgres_list_shows_provider_and_standbys_in_human_output_and_preserves_json() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres"))
@@ -1551,15 +1552,18 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
             "Size",
             "PG",
             "HA",
+            "Standbys",
             "Primary",
             "Deletion protection"
         ]
     );
     assert_eq!(row_cells("primary-pg")[3], "aws");
     assert_eq!(row_cells("unknown-pg")[3], "-");
-    assert_eq!(row_cells("primary-pg")[9], "yes");
-    assert_eq!(row_cells("replica-pg")[9], "no");
-    assert_eq!(row_cells("unknown-pg")[9], "-");
+    assert_eq!(row_cells("primary-pg")[8], "1");
+    assert_eq!(row_cells("unknown-pg")[8], "-");
+    assert_eq!(row_cells("primary-pg")[10], "yes");
+    assert_eq!(row_cells("replica-pg")[10], "no");
+    assert_eq!(row_cells("unknown-pg")[10], "-");
 
     let json = invoke_cli_with_cloud_credentials(&mock, &["postgres", "list", "--org-id", "org-1"]);
     assert_success(&json);
@@ -1574,6 +1578,7 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
                 "provider": "aws",
                 "isPrimary": true,
                 "deletionProtection": true,
+                "standbyCount": 1,
             },
             {
                 "id": "66666666-7777-8888-9999-000000000000",

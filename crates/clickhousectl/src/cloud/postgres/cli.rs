@@ -136,6 +136,12 @@ CONTEXT FOR AGENTS:
         /// High-availability type
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
+        /// Number of hot standbys; the default depends on --ha-type
+        ///
+        /// HA type none takes 0, async takes 1, and sync takes 1 or 2; the
+        /// default is the highest count the HA type takes.
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..=2))]
+        standby_count: Option<i64>,
         /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
         tag: Vec<String>,
@@ -163,8 +169,8 @@ CONTEXT FOR AGENTS:
     /// Update a Postgres service's settings, tags or access rules
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --size/--ha-type: exit 0 means accepted; both take minutes. Poll `cloud postgres get <id> --json`
-    until `size` changes; `haType` flips at once, so check `pg_stat_replication` on the primary (psql).
+  --size/--ha-type/--standby-count: exit 0 means accepted; each takes minutes. Poll `cloud postgres
+    get <id> --json` until `size` changes; HA fields flip at once, so check the primary's `pg_stat_replication`.
   --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.
   --remove-ip-allow takes rule IDs from `cloud postgres get`; removals apply before additions.
   Access rule changes can partially succeed: after a failure, read the rules with
@@ -185,6 +191,12 @@ CONTEXT FOR AGENTS:
         /// New high-availability type
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
+        /// New number of hot standbys
+        ///
+        /// HA type none takes 0, async takes 1, and sync takes 1 or 2. A new
+        /// --ha-type without this flag gets that type's default count.
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..=2))]
+        standby_count: Option<i64>,
         /// Turn deletion protection on or off
         ///
         /// Only for organizations with deletion protection enabled.
@@ -1449,6 +1461,53 @@ mod tests {
         "--size",
         "m7i.2xlarge",
     ];
+
+    #[test]
+    fn parses_postgres_standby_count_from_zero_to_two() {
+        const UPDATE_ARGS: [&str; 5] = ["clickhousectl", "cloud", "postgres", "update", "pg-1"];
+        let PostgresCommands::Create { standby_count, .. } = parse_postgres(&CREATE_ARGS) else {
+            panic!("expected create");
+        };
+        assert_eq!(standby_count, None);
+        let PostgresCommands::Update { standby_count, .. } = parse_postgres(&UPDATE_ARGS) else {
+            panic!("expected update");
+        };
+        assert_eq!(standby_count, None);
+
+        for count in ["0", "1", "2"] {
+            let create: Vec<&str> = CREATE_ARGS
+                .into_iter()
+                .chain(["--standby-count", count])
+                .collect();
+            let PostgresCommands::Create { standby_count, .. } = parse_postgres(&create) else {
+                panic!("expected create");
+            };
+            assert_eq!(standby_count, Some(count.parse().unwrap()));
+
+            let update: Vec<&str> = UPDATE_ARGS
+                .into_iter()
+                .chain(["--standby-count", count])
+                .collect();
+            let PostgresCommands::Update { standby_count, .. } = parse_postgres(&update) else {
+                panic!("expected update");
+            };
+            assert_eq!(standby_count, Some(count.parse().unwrap()));
+        }
+
+        for base in [&CREATE_ARGS[..], &UPDATE_ARGS[..]] {
+            for count in ["-1", "3", "one"] {
+                let args: Vec<&str> = base
+                    .iter()
+                    .copied()
+                    .chain(["--standby-count", count])
+                    .collect();
+                let error = Cli::try_parse_from(args)
+                    .err()
+                    .expect("out-of-range standby count must be rejected by clap");
+                assert_eq!(error.exit_code(), 2, "{count}");
+            }
+        }
+    }
 
     #[test]
     fn parses_postgres_create_access_rule_flags() {
