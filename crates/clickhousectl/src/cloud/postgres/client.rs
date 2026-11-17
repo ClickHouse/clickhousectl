@@ -7,11 +7,12 @@ use crate::cloud::client::{
 use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
     PostgresInstanceConfig, PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse,
-    PostgresLogEntry, PostgresMetrics, PostgresService, PostgresServiceListItem,
-    PostgresServicePasswordResource, PostgresServicePatchRequest, PostgresServicePostRequest,
-    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
-    PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
-    PostgresSlowQueryPatternDetail,
+    PostgresLogEntry, PostgresMetrics, PostgresPrivateEndpoint,
+    PostgresPrivateEndpointPatchRequest, PostgresPrivateEndpointPostRequest, PostgresService,
+    PostgresServiceListItem, PostgresServicePasswordResource, PostgresServicePatchRequest,
+    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
+    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
 };
 
 impl CloudClient {
@@ -482,5 +483,78 @@ impl CloudClient {
             )
             .await?;
         Self::unwrap_response(response)
+    }
+
+    /// Get the private endpoint service of a Postgres service.
+    pub(super) async fn get_postgres_private_endpoint(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<PostgresPrivateEndpoint> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_private_endpoint_get(org_id, postgres_id)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Create the private endpoint service of a Postgres service.
+    pub(super) async fn create_postgres_private_endpoint(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresPrivateEndpointPostRequest,
+    ) -> CloudResult<PostgresPrivateEndpoint> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_private_endpoint_post(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Replace the approved VPC endpoints or supported regions it is given.
+    pub(super) async fn update_postgres_private_endpoint(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        request: &PostgresPrivateEndpointPatchRequest,
+    ) -> CloudResult<PostgresPrivateEndpoint> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_private_endpoint_patch(org_id, postgres_id, request)
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Delete the private endpoint service of a Postgres service.
+    pub(super) async fn delete_postgres_private_endpoint(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<()> {
+        self.convert_postgres_by_id_result(
+            self.api()
+                .postgres_private_endpoint_delete(org_id, postgres_id)
+                .await,
+            org_id,
+            postgres_id,
+        )
+        .await?;
+        Ok(())
     }
 }

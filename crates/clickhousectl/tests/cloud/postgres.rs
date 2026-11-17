@@ -3162,3 +3162,152 @@ async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
         assert!(stdout.contains(expected), "missing {expected}: {stdout}");
     }
 }
+
+// ── Postgres private endpoint (issue #1485) ───────────────────────────────
+
+const PG_PRIVATE_ENDPOINT_PATH: &str = "/v1/organizations/org-1/postgres/pg-1/privateEndpoint";
+
+fn private_endpoint_envelope(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200, "requestId": "stub-pg-private-endpoint", "result": result
+    }))
+}
+
+fn approved_endpoint() -> Value {
+    serde_json::json!({
+        "id": "ps-1",
+        "state": "available",
+        "endpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
+        "supportedRegions": ["us-west-2"],
+        "allowedVpcEndpoints": [
+            {"vpcEndpointId": "vpce-0123456789abcdef0", "description": "prod"}
+        ]
+    })
+}
+
+#[tokio::test]
+async fn postgres_private_endpoint_create_sends_regions() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(PG_PRIVATE_ENDPOINT_PATH))
+        .and(body_json(
+            serde_json::json!({"supportedRegions": ["us-west-2"]}),
+        ))
+        .respond_with(private_endpoint_envelope(
+            serde_json::json!({"id": "ps-1", "state": "creating"}),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "private-endpoint",
+            "create",
+            "pg-1",
+            "--supported-region",
+            "us-west-2",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let endpoint: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(endpoint["state"], "creating");
+}
+
+/// The PATCH replaces each list in full, so update reads the endpoint first and
+/// writes back the approvals it keeps; regions it was not asked to change are
+/// not sent.
+#[tokio::test]
+async fn postgres_private_endpoint_update_merges_into_the_current_approvals() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(PG_PRIVATE_ENDPOINT_PATH))
+        .respond_with(private_endpoint_envelope(approved_endpoint()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(PG_PRIVATE_ENDPOINT_PATH))
+        .and(body_json(serde_json::json!({
+            "allowedVpcEndpoints": [
+                {"vpcEndpointId": "vpce-0123456789abcdef0", "description": "prod"},
+                {"vpcEndpointId": "vpce-0123456789abcdef1", "description": "staging"}
+            ]
+        })))
+        .respond_with(private_endpoint_envelope(approved_endpoint()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "private-endpoint",
+            "update",
+            "pg-1",
+            "--add-vpc-endpoint",
+            "vpce-0123456789abcdef1=staging",
+            "--remove-vpc-endpoint",
+            "vpce-00000000000000000",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("vpce-00000000000000000"), "{stderr}");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".to_string(), PG_PRIVATE_ENDPOINT_PATH.to_string()),
+            ("PATCH".to_string(), PG_PRIVATE_ENDPOINT_PATH.to_string()),
+        ]
+    );
+}
+
+/// Delete returns no `result`, so the command prints the endpoint it read first.
+#[tokio::test]
+async fn postgres_private_endpoint_delete_prints_the_deleted_endpoint() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(PG_PRIVATE_ENDPOINT_PATH))
+        .respond_with(private_endpoint_envelope(approved_endpoint()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(PG_PRIVATE_ENDPOINT_PATH))
+        .respond_with(successful_delete_response(
+            "stub-pg-private-endpoint-delete",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "private-endpoint",
+            "delete",
+            "pg-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let endpoint: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(endpoint["id"], "ps-1");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".to_string(), PG_PRIVATE_ENDPOINT_PATH.to_string()),
+            ("DELETE".to_string(), PG_PRIVATE_ENDPOINT_PATH.to_string()),
+        ]
+    );
+}

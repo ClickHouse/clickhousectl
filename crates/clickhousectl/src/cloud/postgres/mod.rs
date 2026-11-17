@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod lifecycle;
 mod observability;
+mod private_endpoint;
 mod query;
 mod topology;
 
@@ -111,6 +112,44 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         CONFIRM_POSTGRES_SERVICE,
     ]),
+    Permission::api(
+        "postgres private-endpoint get",
+        &[&op::POSTGRES_PRIVATE_ENDPOINT_GET],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api(
+        "postgres private-endpoint create",
+        &[&op::POSTGRES_PRIVATE_ENDPOINT_POST],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api(
+        "postgres private-endpoint update",
+        &[
+            &op::POSTGRES_PRIVATE_ENDPOINT_GET,
+            &op::POSTGRES_PRIVATE_ENDPOINT_PATCH,
+        ],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api(
+        "postgres private-endpoint delete",
+        &[
+            &op::POSTGRES_PRIVATE_ENDPOINT_GET,
+            &op::POSTGRES_PRIVATE_ENDPOINT_DELETE,
+        ],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
     Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
         Conditional::new("Reading access rules", &[&op::POSTGRES_SERVICE_GET]),
@@ -137,8 +176,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    CertsCommands, ConfigCommands, PostgresBackupCommands, PostgresCommands, PrometheusCommands,
-    ReadReplicaCommands, SlowQueryCommands,
+    CertsCommands, ConfigCommands, PostgresBackupCommands, PostgresCommands,
+    PrivateEndpointCommands, PrometheusCommands, ReadReplicaCommands, SlowQueryCommands,
 };
 
 use crate::cloud::client::{CloudClient, Result as CloudResult};
@@ -154,6 +193,10 @@ use observability::{
     SlowQueryDetailInput, SlowQueryListInput, build_postgres_logs_query, postgres_backup_list,
     postgres_logs, postgres_metrics, postgres_prometheus_org, postgres_prometheus_service,
     postgres_slow_queries_list, postgres_slow_query_get,
+};
+use private_endpoint::{
+    PrivateEndpointUpdate, private_endpoint_create, private_endpoint_delete, private_endpoint_get,
+    private_endpoint_update,
 };
 use query::postgres_query;
 use topology::{
@@ -440,6 +483,37 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         }) => {
             let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
             postgres_backup_list(client, &postgres_id, cursor.as_deref(), limit, json).await
+        }
+        PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Get { postgres_id }) => {
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            private_endpoint_get(client, &postgres_id, json).await
+        }
+        PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Create {
+            postgres_id,
+            supported_region,
+        }) => {
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            private_endpoint_create(client, &postgres_id, &supported_region, json).await
+        }
+        PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Update {
+            postgres_id,
+            add_vpc_endpoint,
+            remove_vpc_endpoint,
+            add_region,
+            remove_region,
+        }) => {
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            let update = PrivateEndpointUpdate {
+                add_vpc_endpoint: &add_vpc_endpoint,
+                remove_vpc_endpoint: &remove_vpc_endpoint,
+                add_region: &add_region,
+                remove_region: &remove_region,
+            };
+            private_endpoint_update(client, &postgres_id, update, json).await
+        }
+        PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Delete { postgres_id }) => {
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            private_endpoint_delete(client, &postgres_id, json).await
         }
         PostgresCommands::Restore {
             postgres_id,

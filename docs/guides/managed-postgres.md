@@ -46,6 +46,24 @@ clickhousectl cloud postgres update <postgres-id> \
 
 A rule update can partially succeed. After a failure, run `get` and compare the rules before retrying, so a retry does not repeat a change that already applied.
 
+## Connect privately over AWS PrivateLink (Beta)
+
+An AWS Postgres service can have a private endpoint service, in organizations with private endpoints enabled. Creating it takes about 5 to 10 minutes; `get` shows `state: creating` until it is `available` and then shows `endpointServiceName`:
+
+```bash
+clickhousectl cloud postgres private-endpoint create <postgres-id>
+clickhousectl cloud postgres private-endpoint get <postgres-id>
+```
+
+Create an interface VPC endpoint in your AWS account with `endpointServiceName` as its service name. **It cannot connect until you approve its ID.** Then connect to `privateHostname` from that VPC:
+
+```bash
+clickhousectl cloud postgres private-endpoint update <postgres-id> \
+  --add-vpc-endpoint 'vpce-0123456789abcdef0=Production VPC'
+```
+
+`--remove-vpc-endpoint <vpce-id>` revokes an approval, and `--add-region`/`--remove-region` change the other AWS regions that may connect, which needs cross-region private endpoints. Each flag changes only what it names; the other approvals and regions stay. `private-endpoint delete` stops every connection through it, and a new endpoint service has a new name, so VPC endpoints must be recreated.
+
 ## Run read-only SQL with OAuth
 
 This route needs no database password or local `psql`, but accepts **only OAuth**. Remove higher-priority key flags, project credentials, environment variables, and `.env` key values before logging in. Clearing the credentials file does not delete keys in the organization; see [authentication](../reference/authentication.md).
