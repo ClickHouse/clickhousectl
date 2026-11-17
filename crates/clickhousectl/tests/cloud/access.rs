@@ -795,8 +795,15 @@ async fn access_request_perms_files_canonical_proposal_once_without_grant_or_sub
                 "--purpose",
                 "bounded proposal",
             ]);
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
         if json {
-            command.arg("--json");
+            // Under a detected agent (which also forces JSON), the handshake
+            // carries the agent session/trace headers like other Cloud calls.
+            command
+                .arg("--json")
+                .env("AGENT", "claude-code")
+                .env("CLAUDE_CODE_SESSION_ID", "sess-access")
+                .env("TRACEPARENT", traceparent);
         }
         let output = command.output().unwrap();
         // A 403 is a refusal, not missing authentication.
@@ -815,6 +822,21 @@ async fn access_request_perms_files_canonical_proposal_once_without_grant_or_sub
         assert_eq!(std::fs::read(&credentials_path).unwrap(), before);
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1, "no role catalog lookup or subset retry");
+        let agent_header = |name: &str| {
+            requests[0]
+                .headers
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        if json {
+            assert_eq!(
+                agent_header("agent-session-id").as_deref(),
+                Some("sess-access")
+            );
+            assert_eq!(agent_header("traceparent").as_deref(), Some(traceparent));
+        } else {
+            assert_eq!(agent_header("agent-session-id"), None);
+        }
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["requestedRoleIds"], serde_json::json!([first, system]));
         assert_eq!(body["keyName"], "proposed-key");
