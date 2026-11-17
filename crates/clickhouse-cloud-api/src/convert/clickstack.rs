@@ -338,6 +338,7 @@ impl TryFrom<ClickStackMetricSourceResponse> for ClickStackMetricSource {
                 kind,
                 log_source_id: value.log_source_id,
                 metric_tables: metric_tables.try_into()?,
+                min_auto_granularity: value.min_auto_granularity,
                 name,
                 query_settings: value
                     .query_settings
@@ -441,6 +442,7 @@ impl TryFrom<ClickStackPromqlSourceResponse> for ClickStackPromqlSource {
                 from: from.try_into()?,
                 id: value.id,
                 kind,
+                min_auto_granularity: value.min_auto_granularity,
                 name,
                 query_settings: value
                     .query_settings

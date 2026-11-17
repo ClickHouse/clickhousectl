@@ -546,6 +546,11 @@ pub struct ClickStackMetricSource {
     pub log_source_id: Option<String>,
     #[serde(rename = "metricTables")]
     pub metric_tables: ClickStackMetricTables,
+    /// Floor for the auto-inferred chart granularity, in the SQL interval
+    /// format (for example `1 minute`). Set it to the metrics' scrape or report
+    /// interval; it only constrains "Auto" granularity. `None` sets no minimum.
+    #[serde(rename = "minAutoGranularity", skip_serializing_if = "Option::is_none")]
+    pub min_auto_granularity: Option<String>,
     pub name: String,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
@@ -578,6 +583,11 @@ pub struct ClickStackMetricSourceResponse {
     pub log_source_id: Option<String>,
     #[serde(rename = "metricTables", skip_serializing_if = "Option::is_none")]
     pub metric_tables: Option<ClickStackMetricTablesResponse>,
+    /// Floor for the auto-inferred chart granularity, in the SQL interval
+    /// format (for example `1 minute`). Set it to the metrics' scrape or report
+    /// interval; it only constrains "Auto" granularity. `None` sets no minimum.
+    #[serde(rename = "minAutoGranularity", skip_serializing_if = "Option::is_none")]
+    pub min_auto_granularity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
@@ -661,6 +671,12 @@ pub struct ClickStackPromqlSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: ClickStackPromqlSourceKind,
+    /// Floor for the auto-inferred chart granularity, and the scrape interval
+    /// `$__rate_interval` is computed from, in the SQL interval format (for
+    /// example `1 minute`). It only constrains "Auto" granularity. `None` sets
+    /// no minimum.
+    #[serde(rename = "minAutoGranularity", skip_serializing_if = "Option::is_none")]
+    pub min_auto_granularity: Option<String>,
     pub name: String,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
@@ -687,6 +703,12 @@ pub struct ClickStackPromqlSourceResponse {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<ClickStackPromqlSourceKind>,
+    /// Floor for the auto-inferred chart granularity, and the scrape interval
+    /// `$__rate_interval` is computed from, in the SQL interval format (for
+    /// example `1 minute`). It only constrains "Auto" granularity. `None` sets
+    /// no minimum.
+    #[serde(rename = "minAutoGranularity", skip_serializing_if = "Option::is_none")]
+    pub min_auto_granularity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]

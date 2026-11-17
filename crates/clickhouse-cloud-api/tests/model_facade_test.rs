@@ -123,6 +123,14 @@ fn extracted_models_keep_root_and_models_paths() {
         PhantomData::<api::models::PgStandbyCount>,
     );
     assert_same_type(
+        PhantomData::<api::ClickStackListAlertsSource>,
+        PhantomData::<api::models::ClickStackListAlertsSource>,
+    );
+    assert_same_type(
+        PhantomData::<api::ClickStackListAlertsState>,
+        PhantomData::<api::models::ClickStackListAlertsState>,
+    );
+    assert_same_type(
         PhantomData::<api::PostgresBackup>,
         PhantomData::<api::models::PostgresBackup>,
     );

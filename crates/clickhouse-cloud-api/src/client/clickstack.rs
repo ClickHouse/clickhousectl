@@ -8,12 +8,30 @@ impl Client {
     ///
     /// The API defaults to 1,000 records from offset zero. Request successive
     /// pages with `limit` (1–1,000) and `offset` until a page is shorter than the limit.
+    ///
+    /// The optional filters narrow the result set, and `totalCount` counts only
+    /// the matching alerts. An empty slice or `None` sends no filter:
+    ///
+    /// - `tag`: alerts that have any of these tags (at most 50, each at most 32
+    ///   characters). Matches the tags stored on the alert, not tags inherited
+    ///   from the linked dashboard or saved search.
+    /// - `search`: alerts whose stored display name contains this text,
+    ///   case-insensitively (at most 512 characters).
+    /// - `source`: alerts of any of these sources.
+    /// - `state`: alerts in any of these states.
+    ///
+    /// Each slice element is sent as its own repeated query parameter.
+    #[allow(clippy::too_many_arguments)]
     pub async fn click_stack_list_alerts(
         &self,
         organization_id: &str,
         service_id: &str,
         limit: Option<i64>,
         offset: Option<i64>,
+        tag: &[&str],
+        search: Option<&str>,
+        source: &[ClickStackListAlertsSource],
+        state: &[ClickStackListAlertsState],
     ) -> Result<ApiResponse<Vec<ClickStackAlertResponse>>, Error> {
         let mut req = self.request(
             &operations::CLICK_STACK_LIST_ALERTS,
@@ -24,6 +42,18 @@ impl Client {
         }
         if let Some(offset) = offset {
             req = req.query(&[("offset", offset)]);
+        }
+        for value in tag {
+            req = req.query(&[("tag", value)]);
+        }
+        if let Some(value) = search {
+            req = req.query(&[("search", value)]);
+        }
+        for value in source {
+            req = req.query(&[("source", value)]);
+        }
+        for value in state {
+            req = req.query(&[("state", value)]);
         }
         let resp = req.send().await?;
         let status = resp.status();

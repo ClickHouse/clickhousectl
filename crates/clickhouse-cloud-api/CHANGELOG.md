@@ -204,6 +204,27 @@ certificates, read-replica, restore, password, state and slow-query
 operations are no longer Beta: 19 entries leave `meta::BETA_OPERATIONS`, so
 `meta::is_beta_operation` returns `false` for them.
 
+Breaking: `click_stack_list_alerts` takes four more arguments after `offset`,
+for the spec's new alert filters: `tag: &[&str]` (alerts with any of these
+tags), `search: Option<&str>` (case-insensitive display-name substring),
+`source: &[ClickStackListAlertsSource]` and
+`state: &[ClickStackListAlertsState]` (alerts of any of these sources or
+states). Each slice element is sent as a repeated query parameter, and
+`totalCount` counts only the matching alerts. The two new enums carry a
+`VALUES` const and an `Unknown(String)` catch-all. Migrate
+`click_stack_list_alerts(org, service, limit, offset)` to
+`click_stack_list_alerts(org, service, limit, offset, &[], None, &[], &[])`;
+the request sent is unchanged.
+
+`ClickStackMetricSource`, `ClickStackPromqlSource` and their `*Response`
+types gain optional `min_auto_granularity` (`minAutoGranularity`), a floor for
+the auto-inferred chart granularity in SQL interval format such as
+`"1 minute"` (for PromQL sources it is also the scrape interval
+`$__rate_interval` is computed from). `TryFrom` carries it back to the request
+type. Struct-literal callers need `min_auto_granularity: None`.
+`ClickStackCASLPermissionSubject` adds `App`; exhaustive matches without a
+wildcard arm need the new variant.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

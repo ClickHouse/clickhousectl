@@ -229,6 +229,73 @@ impl std::fmt::Display for ClickStackAlertResponseState {
     }
 }
 
+/// Inline enum for the `clickStackListAlerts` `source` query parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClickStackListAlertsSource {
+    #[serde(rename = "saved_search")]
+    Saved_search,
+    #[serde(rename = "tile")]
+    Tile,
+    #[serde(rename = "inline")]
+    Inline,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackListAlertsSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saved_search => write!(f, "saved_search"),
+            Self::Tile => write!(f, "tile"),
+            Self::Inline => write!(f, "inline"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl ClickStackListAlertsSource {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["saved_search", "tile", "inline"];
+}
+
+/// Inline enum for the `clickStackListAlerts` `state` query parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClickStackListAlertsState {
+    #[serde(rename = "ALERT")]
+    Alert,
+    #[serde(rename = "OK")]
+    Ok,
+    #[serde(rename = "INSUFFICIENT_DATA")]
+    Insufficient_data,
+    #[serde(rename = "DISABLED")]
+    Disabled,
+    #[serde(rename = "PENDING")]
+    Pending,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackListAlertsState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Alert => write!(f, "ALERT"),
+            Self::Ok => write!(f, "OK"),
+            Self::Insufficient_data => write!(f, "INSUFFICIENT_DATA"),
+            Self::Disabled => write!(f, "DISABLED"),
+            Self::Pending => write!(f, "PENDING"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl ClickStackListAlertsState {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] =
+        &["ALERT", "OK", "INSUFFICIENT_DATA", "DISABLED", "PENDING"];
+}
+
 /// Inline enum for `ClickStackAlertResponse.thresholdType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackAlertResponseThresholdtype {
@@ -477,6 +544,8 @@ pub enum ClickStackCASLPermissionSubject {
     Notebook,
     #[serde(rename = "SchemaMigration")]
     SchemaMigration,
+    #[serde(rename = "App")]
+    App,
     #[serde(rename = "all")]
     All,
     /// Catch-all for unknown or newly-added values.
@@ -498,6 +567,7 @@ impl std::fmt::Display for ClickStackCASLPermissionSubject {
             Self::Role => write!(f, "Role"),
             Self::Notebook => write!(f, "Notebook"),
             Self::SchemaMigration => write!(f, "SchemaMigration"),
+            Self::App => write!(f, "App"),
             Self::All => write!(f, "all"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
