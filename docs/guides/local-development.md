@@ -58,6 +58,8 @@ clickhousectl local list
 clickhousectl local list --remote
 ```
 
+Resolving `stable`, `lts`, a series or an exact version, and `local list --remote`, can query the GitHub API, which limits unauthenticated requests to 60 per hour per IP address. On CI runners or shared networks, set `GH_TOKEN` or `GITHUB_TOKEN` (in GitHub Actions, `${{ github.token }}`); `GH_TOKEN` takes precedence, and the token is sent only to `api.github.com`.
+
 `local use` installs if needed and sets the default for future server starts. `clickhouse start --version` chooses a version for that start without changing the default.
 
 A bare start installs `latest` if no version or default is available, without setting a default. Pin a version or use `local use stable` to avoid tracking master. Reusing `latest` requires a successful remote freshness check; an unavailable server is an error, not a fallback to an unverified build.

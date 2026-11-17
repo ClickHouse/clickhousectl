@@ -48,6 +48,37 @@ pub(crate) fn client(
         .map_err(|_| NetworkFailure::new(stage, url, NetworkCategory::Transport))
 }
 
+/// Environment variables that may hold a GitHub token, in the GitHub CLI's order of precedence.
+const GITHUB_TOKEN_VARS: [&str; 2] = ["GH_TOKEN", "GITHUB_TOKEN"];
+const GITHUB_API_HOST: &str = "api.github.com";
+
+/// A GET request to the GitHub REST API. Unauthenticated requests share a
+/// 60-per-hour limit per IP address, which CI runners and shared networks
+/// exhaust quickly, so a token from `GH_TOKEN` or `GITHUB_TOKEN` is sent when set.
+pub(crate) fn github_api_get(client: &Client, url: &str) -> RequestBuilder {
+    let token = github_token_from(|name| std::env::var(name).ok());
+    with_github_token(client.get(url), url, token.as_deref())
+}
+
+fn github_token_from(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    GITHUB_TOKEN_VARS
+        .iter()
+        .filter_map(|name| lookup(name))
+        .map(|token| token.trim().to_string())
+        .find(|token| !token.is_empty())
+}
+
+/// Attach the token only to HTTPS requests for the GitHub API host, so it never
+/// reaches another host. reqwest drops it on a redirect to another host.
+fn with_github_token(request: RequestBuilder, url: &str, token: Option<&str>) -> RequestBuilder {
+    let is_github_api = reqwest::Url::parse(url)
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some(GITHUB_API_HOST));
+    match token {
+        Some(token) if is_github_api => request.bearer_auth(token),
+        _ => request,
+    }
+}
+
 pub(crate) async fn send(
     request: RequestBuilder,
     stage: NetworkStage,
@@ -158,6 +189,57 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
+
+    fn authorization(url: &str, token: Option<&str>) -> Option<String> {
+        let request = with_github_token(Client::new().get(url), url, token)
+            .build()
+            .unwrap();
+        request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .map(|value| value.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn github_api_requests_carry_the_token_as_a_bearer() {
+        let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
+        assert_eq!(
+            authorization(url, Some("ghs_x")).as_deref(),
+            Some("Bearer ghs_x")
+        );
+        assert_eq!(authorization(url, None), None);
+    }
+
+    #[test]
+    fn the_token_never_reaches_another_host_or_plain_http() {
+        for url in [
+            "https://github.com/ClickHouse/ClickHouse/releases/download/v1/clickhouse",
+            "https://builds.clickhouse.com/master/amd64/clickhouse",
+            "https://api.github.com.example.test/repos",
+            "http://api.github.com/repos",
+            "http://127.0.0.1:8080/refs",
+        ] {
+            assert_eq!(authorization(url, Some("ghs_x")), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn gh_token_takes_precedence_and_blank_values_are_skipped() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        let both = env(&[("GH_TOKEN", "gh"), ("GITHUB_TOKEN", "github")]);
+        assert_eq!(github_token_from(both).as_deref(), Some("gh"));
+        let blank_gh = env(&[("GH_TOKEN", " "), ("GITHUB_TOKEN", "github")]);
+        assert_eq!(github_token_from(blank_gh).as_deref(), Some("github"));
+        assert_eq!(github_token_from(env(&[("GITHUB_TOKEN", "")])), None);
+        assert_eq!(github_token_from(env(&[])), None);
+    }
 
     fn short_policy() -> RequestPolicy {
         RequestPolicy {

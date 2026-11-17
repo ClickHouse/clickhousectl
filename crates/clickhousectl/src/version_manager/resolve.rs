@@ -327,7 +327,12 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
         NetworkStage::VersionFallback,
         &url,
     )?;
-    let response = network::send(client.get(&url), NetworkStage::VersionFallback, &url).await?;
+    let response = network::send(
+        network::github_api_get(&client, &url),
+        NetworkStage::VersionFallback,
+        &url,
+    )
+    .await?;
     let response = network::ensure_success(response, NetworkStage::VersionFallback, &url)?;
     let refs: Vec<GitRef> = network::json(response, NetworkStage::VersionFallback, &url).await?;
     parse_exact_channel(&refs, version)
@@ -419,7 +424,12 @@ fn matching_refs_url(prefix: &str) -> String {
 
 async fn find_version_by_refs_url(prefix: &str, url: &str) -> Result<VersionEntry> {
     let client = network::client(network::METADATA_POLICY, NetworkStage::VersionFallback, url)?;
-    let response = network::send(client.get(url), NetworkStage::VersionFallback, url).await?;
+    let response = network::send(
+        network::github_api_get(&client, url),
+        NetworkStage::VersionFallback,
+        url,
+    )
+    .await?;
     let response = network::ensure_success(response, NetworkStage::VersionFallback, url)?;
     let refs: Vec<GitRef> = network::json(response, NetworkStage::VersionFallback, url).await?;
     parse_version_refs(&refs, prefix)
