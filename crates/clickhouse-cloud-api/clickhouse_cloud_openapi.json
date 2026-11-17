@@ -43500,6 +43500,7 @@
         "type": "string",
         "title": "Postgres major version",
         "enum": [
+          "19",
           "18",
           "17"
         ]

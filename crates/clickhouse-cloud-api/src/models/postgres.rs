@@ -881,6 +881,8 @@ impl std::fmt::Display for PgStateProperty {
 /// `pgVersion` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgVersion {
+    #[serde(rename = "19")]
+    _19,
     #[serde(rename = "18")]
     #[default]
     _18,
@@ -894,6 +896,7 @@ pub enum PgVersion {
 impl std::fmt::Display for PgVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::_19 => write!(f, "19"),
             Self::_18 => write!(f, "18"),
             Self::_17 => write!(f, "17"),
             Self::Unknown(s) => write!(f, "{s}"),
@@ -903,7 +906,7 @@ impl std::fmt::Display for PgVersion {
 
 impl PgVersion {
     /// Wire values accepted by the API, excluding the catch-all.
-    pub const VALUES: &'static [&'static str] = &["18", "17"];
+    pub const VALUES: &'static [&'static str] = &["19", "18", "17"];
 }
 
 /// Inline enum for `PostgresServiceSetState.command`.
