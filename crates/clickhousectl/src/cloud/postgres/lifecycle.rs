@@ -1,7 +1,7 @@
 use super::config::{load_json_file, load_pg_config_file};
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{
-    ABSENT, NextStep, cloud_command, eprint_background_change, json_with_next, or_absent,
+    ABSENT, NextStep, cloud_command, eprint_background_change, json_with_next, or_absent, yes_no,
 };
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
@@ -472,14 +472,6 @@ pub async fn postgres_list(
         primary: String,
         #[tabled(rename = "Deletion protection")]
         deletion_protection: String,
-    }
-
-    fn yes_no(value: Option<bool>) -> String {
-        match value {
-            Some(true) => "yes".to_string(),
-            Some(false) => "no".to_string(),
-            None => ABSENT.to_string(),
-        }
     }
 
     let rows: Vec<Row> = filtered

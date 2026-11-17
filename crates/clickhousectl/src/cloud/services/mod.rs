@@ -160,19 +160,28 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service create", &[&op::INSTANCE_CREATE]).when(&[Conditional::new(
-        "Dynamic BYOC profile",
-        &[&op::SERVICE_PROFILES_LIST],
-    )]),
+    Permission::api("service create", &[&op::INSTANCE_CREATE])
+        .when(&[Conditional::new(
+            "Dynamic BYOC profile",
+            &[&op::SERVICE_PROFILES_LIST],
+        )])
+        .authorization(
+            "--deletion-protection also needs control-plane:service:delete on every service in \
+             the organization.",
+        ),
     Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
         Conditional::new("Diagnosing a rejected delete", &[&op::INSTANCE_GET]),
     ]),
-    Permission::api("service update", &[&op::INSTANCE_UPDATE]).when(&[
-        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
-        Conditional::new("Removing IPs/endpoints/tags", &[&op::INSTANCE_GET]),
-    ]),
+    Permission::api("service update", &[&op::INSTANCE_UPDATE])
+        .when(&[
+            Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+            Conditional::new("Removing IPs/endpoints/tags", &[&op::INSTANCE_GET]),
+        ])
+        .authorization(
+            "Changing --deletion-protection also needs control-plane:service:delete on the service.",
+        ),
     Permission::api("service query", &[])
         .when(&[
             Conditional::new("service ID", &[&op::INSTANCE_GET]),
@@ -363,6 +372,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
+            deletion_protection,
             dotenv,
         } => {
             let options = CreateServiceOptions {
@@ -396,6 +406,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 disable_endpoints: disable_endpoint,
                 private_preview_terms_checked,
                 enable_core_dumps,
+                deletion_protection,
             };
             service_create(client, options, dotenv.as_deref(), json).await
         }
@@ -446,6 +457,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             add_tag,
             remove_tag,
             enable_core_dumps,
+            deletion_protection,
         } => {
             let options = ServiceUpdateOptions {
                 name,
@@ -460,6 +472,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 add_tags: add_tag,
                 remove_tags: remove_tag,
                 enable_core_dumps,
+                deletion_protection,
             };
             service_update(
                 client,

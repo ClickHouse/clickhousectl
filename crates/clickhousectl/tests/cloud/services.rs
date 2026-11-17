@@ -474,6 +474,106 @@ async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
     assert!(message.ends_with("opaque conflict response"), "{message}");
 }
 
+// ── Deletion protection (issue #1470) ─────────────────────────────────────
+
+async fn mount_protected_service_get(mock: &MockServer, state: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": TEST_SERVICE_ID,
+                "name": "demo",
+                "state": state,
+                "deletionProtection": true,
+            },
+            "status": 200,
+            "requestId": "stub-service-get",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+/// The error names the update that turns protection off, re-parsed as argv.
+fn assert_deletion_protected(output: &std::process::Output) {
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    let error = cloud_runtime_error(output);
+    assert_eq!(error["code"], "deletion_protected");
+    let command = shlex::split(error["command"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        command,
+        [
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            TEST_SERVICE_ID,
+            "--deletion-protection",
+            "false",
+            "--org-id",
+            "org-1",
+        ]
+    );
+}
+
+/// `--force` reads the service first; a protected one is refused before the
+/// stop, so it is neither stopped nor sent a DELETE.
+#[tokio::test]
+async fn forced_service_delete_refuses_a_protected_service_without_stopping_it() {
+    let mock = MockServer::start().await;
+    mount_protected_service_get(&mock, "running").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_service_delete(&mock, dir.path(), true);
+    assert_deletion_protected(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![(
+            "GET".to_string(),
+            format!("/v1/organizations/org-1/services/{TEST_SERVICE_ID}")
+        )]
+    );
+}
+
+/// Without `--force` the DELETE is sent; its 409 is diagnosed by a read, so a
+/// protected service is not reported as one that needs stopping.
+#[tokio::test]
+async fn service_delete_conflict_on_a_protected_service_reports_deletion_protection() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "status": 409,
+            "error": "opaque conflict response"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    mount_protected_service_get(&mock, "stopped").await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_service_delete(&mock, dir.path(), false);
+    assert_deletion_protected(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/services/{TEST_SERVICE_ID}")
+            ),
+            (
+                "GET".to_string(),
+                format!("/v1/organizations/org-1/services/{TEST_SERVICE_ID}")
+            ),
+        ]
+    );
+}
+
 const DELETE_TEST_API_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
 fn write_service_query_key(root: &Path, organization_id: Option<&str>, api_key_id: Option<&str>) {

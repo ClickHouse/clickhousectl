@@ -102,6 +102,9 @@ pub enum CloudErrorCode {
     /// `update` downloaded an archive that the release's `SHA256SUMS` does
     /// not list or whose digest differs, and replaced nothing (#1307).
     VerificationFailed,
+    /// `cloud service delete` found the service's deletion protection on, so
+    /// nothing was deleted or stopped; `command` turns protection off.
+    DeletionProtected,
     /// `cloud service client` was pointed at a ClickHouse build whose version
     /// is malformed; the same code `local client` reports (#1443).
     InvalidVersion,
@@ -178,6 +181,7 @@ impl CloudErrorCode {
         Self::ClickPipeStartNoEffect,
         Self::PackageManaged,
         Self::VerificationFailed,
+        Self::DeletionProtected,
         Self::InvalidVersion,
         Self::VersionNotInstalled,
         Self::VersionSelectionRequired,
@@ -332,6 +336,15 @@ impl NextStep {
 
 /// `clickhousectl cloud <args> --org-id <org_id>`, each argument shell-quoted
 /// when it needs to be.
+/// `yes`/`no` for an optional flag in a list table; [`ABSENT`] when missing.
+pub(crate) fn yes_no(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "yes".to_string(),
+        Some(false) => "no".to_string(),
+        None => ABSENT.to_string(),
+    }
+}
+
 pub(crate) fn cloud_command(args: &[&str], org_id: &str) -> String {
     let quote = |arg: &str| {
         shlex::try_quote(arg)
@@ -864,6 +877,7 @@ mod tests {
                 "clickpipe_start_no_effect",
                 "package_managed",
                 "verification_failed",
+                "deletion_protected",
                 "invalid_version",
                 "version_not_installed",
                 "version_selection_required",

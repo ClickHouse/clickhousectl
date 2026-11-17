@@ -211,6 +211,10 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_core_dumps: Option<bool>,
 
+        /// Turn on deletion protection: delete fails until it is turned off
+        #[arg(long)]
+        deletion_protection: bool,
+
         /// Write connection settings and the password to FILE (.env if no FILE)
         ///
         /// An existing file is edited in place: only the CLICKHOUSE_* keys written are replaced.
@@ -227,6 +231,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Irreversible. A running service cannot be deleted: stop it first, or pass --force.
+  A service with deletion protection on is refused, and --force does not stop it: turn it off
+    first (`cloud service update <id> --deletion-protection false`).
   --force stops the service and waits up to 10 minutes for the stop, with progress lines on stderr.
   If the wait times out (code `timeout`) or the service leaves the stop path, nothing is deleted:
     check `cloud service get <id>`, then rerun.")]
@@ -340,6 +346,12 @@ CONTEXT FOR AGENTS:
         /// Enable or disable service core dump collection
         #[arg(long)]
         enable_core_dumps: Option<bool>,
+
+        /// Turn deletion protection on or off
+        ///
+        /// Not for ClickStack services: change theirs in the console.
+        #[arg(long)]
+        deletion_protection: Option<bool>,
     },
 
     /// Update service scaling and idle behaviour
@@ -496,7 +508,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Enterprise tier only; a service has at most 5 providers.
   Token holders sign in as the `default` user with the roles listed in the token's roles claim.
-  Create and update fetch the JWKS URL first: it must be public https:// with an RS256 key."
+  Create and update fetch the JWKS URL first: it must be public https:// with an RS256 key,
+    or on ClickHouse 26.8+ an ES256/ES384/ES512 (EC) key."
     )]
     JwtProvider {
         #[command(subcommand)]
@@ -1276,6 +1289,7 @@ mod tests {
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
+            deletion_protection,
             dotenv,
         } = command
         else {
@@ -1283,6 +1297,7 @@ mod tests {
         };
 
         assert!(dotenv.is_none());
+        assert!(!deletion_protection);
         assert_eq!(name, "default-service");
         assert_eq!(provider, "aws");
         assert_eq!(region, "us-east-1");
@@ -1368,6 +1383,7 @@ mod tests {
             "--private-preview-terms-checked",
             "--enable-core-dumps",
             "false",
+            "--deletion-protection",
             "--org-id",
             "org-1",
         ]);
@@ -1397,6 +1413,7 @@ mod tests {
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
+            deletion_protection,
             ..
         } = command
         else {
@@ -1430,6 +1447,7 @@ mod tests {
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert!(private_preview_terms_checked);
         assert_eq!(enable_core_dumps, Some(false));
+        assert!(deletion_protection);
         assert!(custom_region.is_none());
     }
 
@@ -2386,6 +2404,8 @@ mod tests {
             "team=analytics",
             "--enable-core-dumps",
             "false",
+            "--deletion-protection",
+            "false",
             "--org-id",
             "org-1",
         ]);
@@ -2403,12 +2423,14 @@ mod tests {
             add_tag,
             remove_tag,
             enable_core_dumps,
+            deletion_protection,
         } = command
         else {
             panic!("expected service update");
         };
 
         assert_eq!(service_id.id.as_deref(), Some("svc-1"));
+        assert_eq!(deletion_protection, Some(false));
         assert_eq!(name.as_deref(), Some("renamed"));
         assert_eq!(
             add_ip_allow,

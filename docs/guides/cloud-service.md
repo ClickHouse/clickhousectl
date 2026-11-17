@@ -99,7 +99,7 @@ Service tag and IP updates have explicit add/remove flags. Add and remove tags i
 
 ## Let users sign in with a JWT
 
-JWT authentication providers are beta and need the Enterprise tier. A service accepts tokens from up to five providers. A token holder signs in as the `default` user and receives the ClickHouse roles listed in the token's roles claim. Cloud fetches the JWKS URL when you create or update a provider, so it must be a public `https://` URL that serves at least one RS256 key.
+JWT authentication providers are beta and need the Enterprise tier. A service accepts tokens from up to five providers. A token holder signs in as the `default` user and receives the ClickHouse roles listed in the token's roles claim. Cloud fetches the JWKS URL when you create or update a provider, so it must be a public `https://` URL that serves at least one RS256 (RSA) key, or on ClickHouse 26.8 and later an ES256, ES384 or ES512 (EC) key.
 
 ```bash
 clickhousectl cloud service jwt-provider create <service-id> corp-sso \
@@ -170,3 +170,21 @@ clickhousectl cloud service delete <service-id>
 ```
 
 `delete --force` stops a running service and polls until the stop completes before deleting it, which can take minutes. It waits up to 10 minutes; if the stop times out or the service enters a state such as `failed` or `softdeleted`, nothing is deleted, so check `service get` and rerun. It is not a general conflict override; inspect other conflicts before retrying. Deletion also cleans up stored per-service Query API keys when exact ownership metadata is available. A cleanup failure can occur after the service is gone; retain the local credentials file and inspect the reported key IDs instead of assuming nothing happened.
+
+### Protect a service from deletion
+
+Deletion protection refuses every delete of the service until it is turned off. Turn it on when you create the service or later:
+
+```bash
+clickhousectl cloud service create --name prod --deletion-protection
+clickhousectl cloud service update <service-id> --deletion-protection true
+```
+
+Turning it on at create needs `control-plane:service:delete` granted on every service in the organization, not service by service, in addition to `control-plane:organization:create-service`. Changing it on an existing service, in either direction, needs `control-plane:service:delete` on that service. `service get` and `service list` show the setting. ClickStack services can't be updated through the API; change theirs in the console.
+
+`service delete` refuses a protected service with error code `deletion_protected`, and `--force` refuses it before stopping anything. Turn protection off first:
+
+```bash
+clickhousectl cloud service update <service-id> --deletion-protection false
+clickhousectl cloud service delete <service-id>
+```
