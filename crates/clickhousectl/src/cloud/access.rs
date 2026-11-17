@@ -348,7 +348,6 @@ impl CloudClient {
                 .map_err(|error| self.convert_error(error))?;
             let next_cursor = response.next_cursor.clone();
             let page = Self::unwrap_response(response)?;
-            let had_rows = !page.is_empty();
             let previous_count = organizations.len();
             for organization in page {
                 let id = organization.id.ok_or_else(|| CloudError::new(
@@ -360,10 +359,11 @@ impl CloudClient {
             }
             match next_cursor {
                 None => break,
+                // Every page that promises more must add an organization: an
+                // empty or all-duplicate page with a fresh cursor would
+                // otherwise page forever.
                 Some(next) => {
-                    if (had_rows && previous_count == organizations.len())
-                        || !seen_cursors.insert(next.clone())
-                    {
+                    if previous_count == organizations.len() || !seen_cursors.insert(next.clone()) {
                         return Err(CloudError::new(
                             "Organization pagination made no progress; cannot safely select an organization",
                         ));
