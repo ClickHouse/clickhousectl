@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-These beta commands manage Postgres in ClickHouse Cloud. Use [an API key](../reference/authentication.md) for changes; read-only SQL has its own OAuth-only route.
+These commands manage Postgres in ClickHouse Cloud. Use [an API key](../reference/authentication.md) for changes; read-only SQL has its own OAuth-only route.
 
 ## Create and connect with verified TLS
 
