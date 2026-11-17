@@ -282,6 +282,62 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies_with_file_
 }
 
 #[tokio::test]
+async fn organization_role_list_and_name_lookup_follow_every_page() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(ORG_ROLES_PATH))
+        .and(wiremock::matchers::query_param_is_missing("cursor"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"id": "system-1", "name": "admin", "type": "system"}],
+            "limit": 1, "nextCursor": "page-2"
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(ORG_ROLES_PATH))
+        .and(query_param("cursor", "page-2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"id": "role-2", "name": "auditor", "type": "custom"}],
+            "limit": 1, "nextCursor": null
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{ORG_ROLES_PATH}/role-2")))
+        .respond_with(organization_role_envelope(serde_json::json!({
+            "id": "role-2", "name": "auditor", "type": "custom"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "role", "list", "--org-id", "org-1"]);
+    assert_success(&list);
+    let roles: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let ids: Vec<_> = roles
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|role| role["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["system-1", "role-2"]);
+
+    // A role on the second page still resolves by name.
+    let get = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org", "role", "get", "--name", "auditor", "--org-id", "org-1",
+        ],
+    );
+    assert_success(&get);
+    let role: Value = serde_json::from_slice(&get.stdout).unwrap();
+    assert_eq!(role["id"], "role-2");
+}
+
+#[tokio::test]
 async fn organization_role_human_output_handles_sparse_fields() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
