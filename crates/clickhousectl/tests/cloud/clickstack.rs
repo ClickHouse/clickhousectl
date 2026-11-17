@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use wiremock::matchers::{method, path, query_param_is_missing};
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::*;
@@ -1102,22 +1102,50 @@ async fn clickstack_webhook_validate_posts_full_body_and_reports_results() {
 }
 
 #[tokio::test]
-async fn clickstack_alert_list_and_name_selector_use_display_name() {
+async fn clickstack_alert_list_filters_and_name_selector_use_display_name() {
     let mock = MockServer::start().await;
     let alerts = "/v1/organizations/org-1/services/svc-1/clickstack/alerts";
-    // The list sends none of the API's alert filters.
+    let alert_list = serde_json::json!({
+        "result":[
+            {"id":"alert-1","displayName":"Checkout errors","name":"Errors hit {{value}}","tags":[]},
+            {"id":"alert-2","displayName":"Latency","tags":[]}
+        ]
+    });
+    // `list` sends every filter, repeated flags as repeated parameters.
     Mock::given(method("GET"))
         .and(path(alerts))
+        .and(|request: &wiremock::Request| {
+            let mut pairs: Vec<(String, String)> = request
+                .url
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            pairs.sort();
+            pairs
+                == [
+                    ("search", "checkout errors"),
+                    ("source", "saved_search"),
+                    ("source", "tile"),
+                    ("state", "ALERT"),
+                    ("tag", "checkout"),
+                    ("tag", "prod"),
+                ]
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(alert_list.clone()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    // A `--name` lookup pages through every alert, unfiltered.
+    Mock::given(method("GET"))
+        .and(path(alerts))
+        .and(query_param("offset", "0"))
         .and(query_param_is_missing("tag"))
         .and(query_param_is_missing("search"))
         .and(query_param_is_missing("source"))
         .and(query_param_is_missing("state"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result":[
-                {"id":"alert-1","displayName":"Checkout errors","name":"Errors hit {{value}}","tags":[]},
-                {"id":"alert-2","displayName":"Latency","tags":[]}
-            ]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(alert_list))
+        .expect(2)
         .mount(&mock)
         .await;
     Mock::given(method("GET"))
@@ -1131,7 +1159,26 @@ async fn clickstack_alert_list_and_name_selector_use_display_name() {
 
     let output = invoke_clickstack_cli(
         &mock,
-        &["clickstack", "alert", "list", "svc-1", "--org-id", "org-1"],
+        &[
+            "clickstack",
+            "alert",
+            "list",
+            "svc-1",
+            "--tag",
+            "prod",
+            "--tag",
+            "checkout",
+            "--search",
+            "checkout errors",
+            "--source",
+            "saved_search",
+            "--source",
+            "tile",
+            "--state",
+            "ALERT",
+            "--org-id",
+            "org-1",
+        ],
         None,
         false,
     );
