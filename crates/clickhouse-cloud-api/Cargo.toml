@@ -33,10 +33,8 @@ uuid = { version = "1", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
-# No `credentials-login`: through aws-config 1.13.0 it pulls p256 0.13 and
-# crypto-bigint 0.5.5 (RUSTSEC-2026-0387). Restore it once aws-config ships
-# smithy-lang/smithy-rs#4970 (p256 0.14).
-aws-config = "1.8.16"
+# `credentials-login` lets the default credential chain read `aws login` sessions.
+aws-config = { version = "1.13.2", features = ["credentials-login"] }
 aws-credential-types = "1.2.14"
 clickhouse-openapi-analyzer = { path = "../clickhouse-openapi-analyzer" }
 # Disable default features on aws-sdk-* crates to drop the legacy `rustls` feature,
