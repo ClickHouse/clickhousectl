@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::support::*;
@@ -1105,8 +1105,13 @@ async fn clickstack_webhook_validate_posts_full_body_and_reports_results() {
 async fn clickstack_alert_list_and_name_selector_use_display_name() {
     let mock = MockServer::start().await;
     let alerts = "/v1/organizations/org-1/services/svc-1/clickstack/alerts";
+    // The list sends none of the API's alert filters.
     Mock::given(method("GET"))
         .and(path(alerts))
+        .and(query_param_is_missing("tag"))
+        .and(query_param_is_missing("search"))
+        .and(query_param_is_missing("source"))
+        .and(query_param_is_missing("state"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result":[
                 {"id":"alert-1","displayName":"Checkout errors","name":"Errors hit {{value}}","tags":[]},

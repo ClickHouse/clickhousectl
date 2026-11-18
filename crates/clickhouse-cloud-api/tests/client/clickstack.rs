@@ -26,11 +26,89 @@ async fn list_alerts() {
         .await;
 
     let resp = c
-        .click_stack_list_alerts("org-1", "svc-1", None, None)
+        .click_stack_list_alerts("org-1", "svc-1", None, None, &[], None, &[], &[])
         .await
         .unwrap();
     let alerts = resp.result.unwrap();
     assert_eq!(alerts.len(), 1);
+}
+
+#[tokio::test]
+async fn list_alerts_sends_repeated_filters() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
+        .and(wiremock::matchers::query_param("search", "checkout"))
+        .respond_with(ok_json(serde_json::json!([{"id": "alert-1"}])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_list_alerts(
+            "org-1",
+            "svc-1",
+            Some(10),
+            None,
+            &["prod", "team a"],
+            Some("checkout"),
+            &[
+                ClickStackListAlertsSource::Saved_search,
+                ClickStackListAlertsSource::Tile,
+            ],
+            &[
+                ClickStackListAlertsState::Alert,
+                ClickStackListAlertsState::Insufficient_data,
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().len(), 1);
+
+    let requests = s.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let pairs: Vec<(String, String)> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("limit", "10"),
+        ("tag", "prod"),
+        ("tag", "team a"),
+        ("search", "checkout"),
+        ("source", "saved_search"),
+        ("source", "tile"),
+        ("state", "ALERT"),
+        ("state", "INSUFFICIENT_DATA"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect();
+    assert_eq!(pairs, expected);
+}
+
+#[tokio::test]
+async fn list_alerts_without_filters_sends_no_filter_parameters() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
+        .respond_with(ok_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    c.click_stack_list_alerts("org-1", "svc-1", None, None, &[], None, &[], &[])
+        .await
+        .unwrap();
+    let requests = s.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.query(), None);
 }
 
 #[tokio::test]
@@ -565,12 +643,13 @@ async fn create_source() {
             "/v1/organizations/org-1/services/svc-1/clickstack/sources",
         ))
         .and(body_partial_json(
-            serde_json::json!({"kind": "promql", "name": "Prometheus Metrics"}),
+            serde_json::json!({"kind": "promql", "name": "Prometheus Metrics", "minAutoGranularity": "15 second"}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "id": "source-1",
             "kind": "promql",
             "name": "Prometheus Metrics",
+            "minAutoGranularity": "15 second",
             "connection": "conn-1",
             "from": {"databaseName": "default", "tableName": "metrics"},
             "timestampValueExpression": "timestamp"
@@ -589,6 +668,7 @@ async fn create_source() {
         timestamp_value_expression: "timestamp".to_string(),
         disabled: None,
         id: None,
+        min_auto_granularity: Some("15 second".to_string()),
         query_settings: None,
         section: None,
     });
@@ -596,7 +676,12 @@ async fn create_source() {
         .click_stack_create_source("org-1", "svc-1", &body)
         .await
         .unwrap();
-    assert!(resp.result.is_some());
+    match resp.result {
+        Some(ClickStackSourceResponse::ClickStackPromqlSource(source)) => {
+            assert_eq!(source.min_auto_granularity.as_deref(), Some("15 second"));
+        }
+        other => panic!("expected a promql source, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -658,6 +743,7 @@ async fn update_source() {
         timestamp_value_expression: "timestamp".to_string(),
         disabled: None,
         id: None,
+        min_auto_granularity: None,
         query_settings: None,
         section: None,
     });
@@ -1279,7 +1365,7 @@ async fn clickstack_list_pagination_encodes_only_supplied_parameters() {
                 .await;
             let count = match resource {
                 "alerts" => client
-                    .click_stack_list_alerts("org-1", "svc-1", limit, offset)
+                    .click_stack_list_alerts("org-1", "svc-1", limit, offset, &[], None, &[], &[])
                     .await
                     .unwrap()
                     .result

@@ -1684,7 +1684,8 @@ impl CloudClient {
     ) -> CloudResult<Vec<ClickStackAlertResponse>> {
         let response = self
             .api()
-            .click_stack_list_alerts(org_id, service_id, limit, offset)
+            // Filters are not exposed by `cloud clickstack alert list` yet.
+            .click_stack_list_alerts(org_id, service_id, limit, offset, &[], None, &[], &[])
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)

@@ -5703,3 +5703,101 @@ fn clickstack_tile_input_new_sends_only_required_fields() {
         serde_json::json!({"name": "Error Rate", "x": 1, "y": 2, "w": 6, "h": 3})
     );
 }
+
+#[test]
+fn clickstack_metric_and_promql_min_auto_granularity_write_back() {
+    let metric = serde_json::json!({
+        "kind": "metric",
+        "name": "metrics",
+        "connection": "conn-1",
+        "from": {"databaseName": "default"},
+        "metricTables": {
+            "exponential histogram": "otel_metrics_exp_histogram",
+            "gauge": "otel_metrics_gauge",
+            "histogram": "otel_metrics_histogram",
+            "sum": "otel_metrics_sum",
+            "summary": "otel_metrics_summary"
+        },
+        "resourceAttributesExpression": "ResourceAttributes",
+        "timestampValueExpression": "TimeUnix",
+        "minAutoGranularity": "1 minute",
+    });
+    let response: ClickStackMetricSourceResponse = serde_json::from_value(metric.clone()).unwrap();
+    assert_eq!(response.min_auto_granularity.as_deref(), Some("1 minute"));
+    let request = ClickStackMetricSource::try_from(response).unwrap();
+    assert_eq!(request.min_auto_granularity.as_deref(), Some("1 minute"));
+    assert_eq!(serde_json::to_value(&request).unwrap(), metric);
+
+    let promql = serde_json::json!({
+        "kind": "promql",
+        "name": "prometheus",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "timestamp",
+        "minAutoGranularity": "15 second",
+    });
+    let response: ClickStackPromqlSourceResponse = serde_json::from_value(promql.clone()).unwrap();
+    assert_eq!(response.min_auto_granularity.as_deref(), Some("15 second"));
+    let request = ClickStackPromqlSource::try_from(response).unwrap();
+    assert_eq!(request.min_auto_granularity.as_deref(), Some("15 second"));
+    assert_eq!(serde_json::to_value(&request).unwrap(), promql);
+
+    // Unset means no minimum and stays off the wire.
+    let mut without = request;
+    without.min_auto_granularity = None;
+    assert!(
+        serde_json::to_value(&without)
+            .unwrap()
+            .get("minAutoGranularity")
+            .is_none()
+    );
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"minAutoGranularity": null}),
+    ] {
+        let response: ClickStackPromqlSourceResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(response.min_auto_granularity, None);
+    }
+}
+
+#[test]
+fn clickstack_casl_permission_subject_app_round_trips() {
+    let subject: ClickStackCASLPermissionSubject =
+        serde_json::from_value(serde_json::json!("App")).unwrap();
+    assert_eq!(subject, ClickStackCASLPermissionSubject::App);
+    assert_eq!(subject.to_string(), "App");
+    assert_eq!(serde_json::to_value(&subject).unwrap(), "App");
+}
+
+#[test]
+fn clickstack_list_alerts_filter_enums_use_wire_values() {
+    for (value, wire) in [
+        (ClickStackListAlertsSource::Saved_search, "saved_search"),
+        (ClickStackListAlertsSource::Tile, "tile"),
+        (ClickStackListAlertsSource::Inline, "inline"),
+    ] {
+        assert_eq!(value.to_string(), wire);
+        assert_eq!(serde_json::to_value(&value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ClickStackListAlertsSource>(serde_json::json!(wire)).unwrap(),
+            value
+        );
+    }
+    for (value, wire) in [
+        (ClickStackListAlertsState::Alert, "ALERT"),
+        (ClickStackListAlertsState::Ok, "OK"),
+        (
+            ClickStackListAlertsState::Insufficient_data,
+            "INSUFFICIENT_DATA",
+        ),
+        (ClickStackListAlertsState::Disabled, "DISABLED"),
+        (ClickStackListAlertsState::Pending, "PENDING"),
+    ] {
+        assert_eq!(value.to_string(), wire);
+        assert_eq!(serde_json::to_value(&value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ClickStackListAlertsState>(serde_json::json!(wire)).unwrap(),
+            value
+        );
+    }
+}
