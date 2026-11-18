@@ -396,18 +396,20 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    /// Read every page of the organization's roles, for listing and name lookup.
     pub async fn list_organization_roles(
         &self,
         org_id: &str,
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::RBACRole>> {
-        let response = self
-            .api()
-            .organization_roles_get_list(org_id, None, None)
-            .await
-            .map_err(|error| {
-                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
-            })?;
-        Self::unwrap_response(response)
+        Self::collect_cursor_pages("role", |cursor| async move {
+            self.api()
+                .organization_roles_get_list(org_id, None, cursor.as_deref())
+                .await
+                .map_err(|error| {
+                    self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+                })
+        })
+        .await
     }
 
     pub async fn get_organization_role(
