@@ -132,6 +132,12 @@ const OPTIONAL_REQUEST_SCHEMAS: &[&str] = &[
     // Postgres configuration is partial: zero-value defaults fail, and omission
     // selects the server default.
     "pgConfig",
+    // The Postgres private endpoint create body has one property,
+    // `supportedRegions`, and the operation does not require a body at all.
+    // The field needs cross-region private endpoints enabled for the
+    // organization, so an organization without the feature must be able to
+    // omit it; the description fallback would mark it required.
+    "PostgresPrivateEndpointPostRequest",
 ];
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[

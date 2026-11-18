@@ -139,6 +139,30 @@ fn extracted_models_keep_root_and_models_paths() {
         PhantomData::<api::models::PostgresIpAccessListEntry>,
     );
     assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpoint>,
+        PhantomData::<api::models::PostgresPrivateEndpoint>,
+    );
+    assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpointPatchRequest>,
+        PhantomData::<api::models::PostgresPrivateEndpointPatchRequest>,
+    );
+    assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpointPort>,
+        PhantomData::<api::models::PostgresPrivateEndpointPort>,
+    );
+    assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpointPostRequest>,
+        PhantomData::<api::models::PostgresPrivateEndpointPostRequest>,
+    );
+    assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpointVpcEndpoint>,
+        PhantomData::<api::models::PostgresPrivateEndpointVpcEndpoint>,
+    );
+    assert_same_type(
+        PhantomData::<api::PostgresPrivateEndpointVpcEndpointResponse>,
+        PhantomData::<api::models::PostgresPrivateEndpointVpcEndpointResponse>,
+    );
+    assert_same_type(
         PhantomData::<api::PostgresIpAccessListEntryResponse>,
         PhantomData::<api::models::PostgresIpAccessListEntryResponse>,
     );

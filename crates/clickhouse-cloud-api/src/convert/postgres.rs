@@ -124,3 +124,22 @@ impl TryFrom<PostgresIpAccessListEntryResponse> for PostgresIpAccessListEntry {
         }
     }
 }
+
+impl TryFrom<PostgresPrivateEndpointVpcEndpointResponse> for PostgresPrivateEndpointVpcEndpoint {
+    type Error = MissingRequiredFields;
+
+    /// Turns a fetched approved VPC endpoint into one that can be sent back.
+    ///
+    /// The patch replaces the approved list in full, so a caller that adds or
+    /// removes one endpoint writes back every other entry it read. An entry
+    /// without `vpcEndpointId` cannot be written back.
+    fn try_from(value: PostgresPrivateEndpointVpcEndpointResponse) -> Result<Self, Self::Error> {
+        match value.vpc_endpoint_id {
+            Some(vpc_endpoint_id) => Ok(Self {
+                description: value.description,
+                vpc_endpoint_id,
+            }),
+            None => Err(MissingRequiredFields::new(vec!["vpcEndpointId"])),
+        }
+    }
+}
