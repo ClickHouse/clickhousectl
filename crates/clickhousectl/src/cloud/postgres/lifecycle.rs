@@ -5,11 +5,11 @@ use crate::cloud::output::{
 };
 use crate::cloud::shared::{parse_ip_or_cidr, parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
-    PgBouncerConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgStateProperty, PgVersion,
-    PostgresIpAccessListEntry, PostgresIpAccessListPatch, PostgresIpAccessListRuleReference,
-    PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
-    PostgresServicePostRequest, PostgresServiceSetPassword, PostgresServiceSetStateCommand,
-    ResourceTagsV1, ResourceTagsV1Response,
+    PgBouncerConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgStandbyCount, PgStateProperty,
+    PgVersion, PostgresIpAccessListEntry, PostgresIpAccessListPatch,
+    PostgresIpAccessListRuleReference, PostgresService, PostgresServiceListItem,
+    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceSetPassword,
+    PostgresServiceSetStateCommand, ResourceTagsV1, ResourceTagsV1Response,
 };
 use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
@@ -268,6 +268,7 @@ pub(super) fn render_postgres_service(svc: &PostgresService) {
         enum_label(svc.postgres_version.as_ref())
     );
     println!("  HA type: {}", enum_label(svc.ha_type.as_ref()));
+    println!("  Standby count: {}", or_absent(svc.standby_count));
     println!("  Primary: {}", or_absent(svc.is_primary));
     println!(
         "  Deletion protection: {}",
@@ -409,6 +410,7 @@ pub struct PostgresCreateOptions<'a> {
     pub provider: &'a str,
     pub pg_version: Option<&'a str>,
     pub ha_type: Option<&'a str>,
+    pub standby_count: Option<i64>,
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
@@ -420,6 +422,7 @@ pub struct PostgresUpdateOptions<'a> {
     pub name: Option<&'a str>,
     pub size: Option<&'a str>,
     pub ha_type: Option<&'a str>,
+    pub standby_count: Option<i64>,
     pub deletion_protection: Option<bool>,
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
@@ -468,6 +471,8 @@ pub async fn postgres_list(
         pg: String,
         #[tabled(rename = "HA")]
         ha: String,
+        #[tabled(rename = "Standbys")]
+        standbys: String,
         #[tabled(rename = "Primary")]
         primary: String,
         #[tabled(rename = "Deletion protection")]
@@ -485,6 +490,7 @@ pub async fn postgres_list(
             size: enum_label(i.size.as_ref()),
             pg: enum_label(i.postgres_version.as_ref()),
             ha: enum_label(i.ha_type.as_ref()),
+            standbys: or_absent(i.standby_count),
             primary: yes_no(i.is_primary),
             deletion_protection: yes_no(i.deletion_protection),
         })
@@ -518,17 +524,18 @@ pub(super) fn postgres_promote_next(org_id: &str, postgres_id: &str) -> NextStep
 
 /// `next` for `postgres update --size`, whose resize applies in the
 /// background while `size` still shows the old value. `None` whenever
-/// `--ha-type` is given: `haType` shows the new value as soon as the change is
-/// accepted, long before the standby exists, so no field confirms it. `None`
-/// for any other update, which applies at once.
+/// `--ha-type` or `--standby-count` is given (`changes_standbys`): `haType`
+/// and `standbyCount` show the new value as soon as the change is accepted,
+/// long before the standbys exist, so no field confirms it. `None` for any
+/// other update, which applies at once.
 fn postgres_update_next(
     org_id: &str,
     postgres_id: &str,
     size: Option<&PgSize>,
-    ha_type: Option<&PgHaType>,
+    changes_standbys: bool,
 ) -> Option<NextStep> {
-    match (size, ha_type) {
-        (Some(size), None) => Some(
+    match (size, changes_standbys) {
+        (Some(size), false) => Some(
             postgres_poll(org_id, postgres_id, "size")
                 .until(std::slice::from_ref(size))
                 .every(30),
@@ -595,6 +602,36 @@ fn postgres_credentials_block(
     }
 }
 
+/// Checks `--standby-count` against `--ha-type` when both are given and
+/// converts it to the API type. The API accepts 0 for `none`, 1 for `async`
+/// and 1 or 2 for `sync`; an HA type this CLI does not know is left to the
+/// server. Without `--ha-type` the server checks the count against the
+/// service's HA type.
+fn parse_standby_count(
+    standby_count: Option<i64>,
+    ha_type: Option<&PgHaType>,
+) -> CloudResult<Option<PgStandbyCount>> {
+    let Some(count) = standby_count else {
+        return Ok(None);
+    };
+    let accepted: &[i64] = match ha_type {
+        Some(PgHaType::None) => &[0],
+        Some(PgHaType::Async) => &[1],
+        Some(PgHaType::Sync) => &[1, 2],
+        Some(PgHaType::Unknown(_)) | None => &[],
+    };
+    if let Some(ha_type) = ha_type.filter(|_| !accepted.is_empty())
+        && !accepted.contains(&count)
+    {
+        let accepted: Vec<String> = accepted.iter().map(i64::to_string).collect();
+        return Err(CloudError::usage(format!(
+            "--standby-count {count} is not valid with --ha-type {ha_type}, which takes {}",
+            accepted.join(" or ")
+        )));
+    }
+    Ok(Some(PgStandbyCount::from(count)))
+}
+
 /// Builds the `postgres create` POST body, reading any config files.
 fn build_postgres_create_request(
     opts: &PostgresCreateOptions<'_>,
@@ -609,6 +646,7 @@ fn build_postgres_create_request(
         .ha_type
         .map(|v| parse_serde_enum(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
+    let standby_count = parse_standby_count(opts.standby_count, ha_type.as_ref())?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
@@ -627,8 +665,7 @@ fn build_postgres_create_request(
         pg_config,
         pg_bouncer_config,
         ip_access_list: postgres_create_ip_access_list(opts.ip_allow, opts.block_public_access),
-        // Not exposed by `cloud postgres create` yet: never sent.
-        standby_count: None,
+        standby_count,
     })
 }
 
@@ -671,13 +708,15 @@ pub async fn postgres_create(
 }
 
 /// Builds the `postgres update` PATCH body from the already-parsed pieces
-/// (name, size, HA type, deletion protection, merged tags, access-rule patch).
+/// (name, size, HA type, standby count, deletion protection, merged tags,
+/// access-rule patch).
 /// Kept separate from `postgres_update` so the shape sent on the wire is
 /// unit-testable without a mock server.
 pub(super) fn build_postgres_update_request(
     name: Option<&str>,
     size: Option<PgSize>,
     ha_type: Option<PgHaType>,
+    standby_count: Option<PgStandbyCount>,
     deletion_protection: Option<bool>,
     tags: Option<Vec<ResourceTagsV1>>,
     ip_access_list: Option<PostgresIpAccessListPatch>,
@@ -689,8 +728,7 @@ pub(super) fn build_postgres_update_request(
         ha_type,
         tags,
         ip_access_list,
-        // Not exposed by `cloud postgres update` yet: never sent.
-        standby_count: None,
+        standby_count,
     }
 }
 
@@ -700,13 +738,14 @@ pub async fn postgres_update(
     opts: PostgresUpdateOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client).await?;
-
     let size = opts.size.map(parse_pg_size).transpose()?;
     let ha_type = opts
         .ha_type
         .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
+    let standby_count = parse_standby_count(opts.standby_count, ha_type.as_ref())?;
+
+    let org_id = resolve_org_id(client).await?;
 
     // Clearing is already a complete replacement, so it never needs a GET.
     // The API clears tags when PATCH omits them, even for a rename or resize.
@@ -719,14 +758,16 @@ pub async fn postgres_update(
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
 
-    let next = postgres_update_next(&org_id, postgres_id, size.as_ref(), ha_type.as_ref());
-    let (resizes, changes_ha) = (size.is_some(), ha_type.is_some());
+    let (resizes, changes_standbys) =
+        (size.is_some(), ha_type.is_some() || standby_count.is_some());
+    let next = postgres_update_next(&org_id, postgres_id, size.as_ref(), changes_standbys);
     let ip_access_list =
         build_postgres_ip_access_list_patch(opts.add_ip_allow, opts.remove_ip_allow);
     let req = build_postgres_update_request(
         opts.name,
         size,
         ha_type,
+        standby_count,
         opts.deletion_protection,
         tags,
         ip_access_list,
@@ -738,7 +779,7 @@ pub async fn postgres_update(
 
     if json {
         println!("{}", json_with_next(&svc, next)?);
-    } else if resizes || changes_ha {
+    } else if resizes || changes_standbys {
         println!("Postgres service update accepted");
         println!();
         render_postgres_service(&svc);
@@ -748,7 +789,7 @@ pub async fn postgres_update(
                 &cloud_command(&["postgres", "get", postgres_id], &org_id),
             );
         }
-        if changes_ha {
+        if changes_standbys {
             eprintln!("{HA_CHANGE_NOTE}");
         }
     } else {
@@ -759,11 +800,13 @@ pub async fn postgres_update(
     Ok(())
 }
 
-/// Human-mode note for an accepted `--ha-type` change (#1241). Unlike a
-/// resize, `haType` shows the new value at once, so no `get` confirms it.
-const HA_CHANGE_NOTE: &str = "The HA type already shows the new value, but the standby is still \
-     being added or removed in the background, which can take several minutes. Check \
-     `pg_stat_replication` on the primary through psql: an added standby is ready once it is listed.";
+/// Human-mode note for an accepted `--ha-type` or `--standby-count` change
+/// (#1241). Unlike a resize, `haType` and `standbyCount` show the new value at
+/// once, so no `get` confirms it.
+const HA_CHANGE_NOTE: &str = "The HA type and standby count already show the new values, but \
+     standbys are still being added or removed in the background, which can take several minutes. \
+     Check `pg_stat_replication` on the primary through psql: an added standby is ready once it is \
+     listed.";
 
 pub async fn postgres_delete(
     client: &CloudClient,
@@ -907,30 +950,87 @@ pub(super) mod tests {
     use super::*;
 
     /// A resize is confirmed by `size`, the field name `postgres get --json`
-    /// prints. An HA change, alone or with a resize, gets no hint because
-    /// `haType` flips on acceptance; neither does an update changing neither.
+    /// prints. An HA or standby-count change, alone or with a resize, gets no
+    /// hint because `haType` and `standbyCount` flip on acceptance; neither
+    /// does an update changing neither.
     #[test]
     fn postgres_update_next_polls_size_only() {
         let size = parse_pg_size("c6gd.large").unwrap();
-        let ha_type = PgHaType::Async;
         let svc = serde_json::to_value(PostgresService {
             size: Some(size.clone()),
             ..PostgresService::default()
         })
         .unwrap();
-        let next = postgres_update_next("org-1", "pg-1", Some(&size), None).unwrap();
+        let next = postgres_update_next("org-1", "pg-1", Some(&size), false).unwrap();
         assert_eq!(
             next.command,
             "clickhousectl cloud postgres get pg-1 --org-id org-1 --json"
         );
         assert_eq!(next.field, "size");
         assert_eq!(next.until, [svc[next.field].clone()]);
-        for (size, ha_type) in [
-            (None, Some(&ha_type)),
-            (Some(&size), Some(&ha_type)),
-            (None, None),
+        for (size, changes_standbys) in [(None, true), (Some(&size), true), (None, false)] {
+            assert_eq!(
+                postgres_update_next("org-1", "pg-1", size, changes_standbys),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn parse_standby_count_accepts_each_count_its_ha_type_takes() {
+        assert_eq!(
+            parse_standby_count(None, Some(&PgHaType::Sync)).unwrap(),
+            None
+        );
+        for (ha_type, count, expected) in [
+            (PgHaType::None, 0, PgStandbyCount::Zero),
+            (PgHaType::Async, 1, PgStandbyCount::One),
+            (PgHaType::Sync, 1, PgStandbyCount::One),
+            (PgHaType::Sync, 2, PgStandbyCount::Two),
         ] {
-            assert_eq!(postgres_update_next("org-1", "pg-1", size, ha_type), None);
+            assert_eq!(
+                parse_standby_count(Some(count), Some(&ha_type)).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_standby_count_rejects_a_count_its_ha_type_does_not_take() {
+        for (ha_type, count) in [
+            (PgHaType::None, 1),
+            (PgHaType::None, 2),
+            (PgHaType::Async, 0),
+            (PgHaType::Async, 2),
+            (PgHaType::Sync, 0),
+        ] {
+            let error = parse_standby_count(Some(count), Some(&ha_type)).unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            assert!(
+                error.message.contains("--standby-count"),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains("--ha-type"), "{}", error.message);
+            assert!(
+                error.message.contains(&ha_type.to_string()),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    /// Without `--ha-type`, or with one this CLI does not know, the server
+    /// checks the count against the HA type it applies.
+    #[test]
+    fn parse_standby_count_leaves_other_ha_types_to_the_server() {
+        for ha_type in [None, Some(PgHaType::Unknown("quorum".into()))] {
+            for count in 0..=2 {
+                assert_eq!(
+                    parse_standby_count(Some(count), ha_type.as_ref()).unwrap(),
+                    Some(PgStandbyCount::from(count))
+                );
+            }
         }
     }
 
@@ -1063,7 +1163,7 @@ pub(super) mod tests {
 
     #[test]
     fn build_postgres_update_request_omits_name_when_not_given() {
-        let req = build_postgres_update_request(None, None, None, None, None, None);
+        let req = build_postgres_update_request(None, None, None, None, None, None, None);
         assert!(req.name.is_none());
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
@@ -1076,7 +1176,8 @@ pub(super) mod tests {
 
     #[test]
     fn build_postgres_update_request_clears_tags_explicitly() {
-        let req = build_postgres_update_request(None, None, None, None, Some(Vec::new()), None);
+        let req =
+            build_postgres_update_request(None, None, None, None, None, Some(Vec::new()), None);
 
         assert_eq!(req.tags, Some(Vec::new()));
         assert_eq!(
@@ -1091,6 +1192,7 @@ pub(super) mod tests {
             Some("renamed-pg"),
             Some(PgSize::C6gd_large),
             Some(PgHaType::Sync),
+            Some(PgStandbyCount::One),
             Some(true),
             Some(vec![ResourceTagsV1 {
                 key: "env".into(),
@@ -1104,6 +1206,8 @@ pub(super) mod tests {
         assert_eq!(req.name.as_deref(), Some("renamed-pg"));
         assert!(req.size.is_some());
         assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.standby_count, Some(PgStandbyCount::One));
+        assert_eq!(serde_json::to_value(&req).unwrap()["standbyCount"], 1);
         assert_eq!(req.deletion_protection, Some(true));
         assert_eq!(req.tags.as_ref().unwrap().len(), 1);
         assert_eq!(
@@ -1117,7 +1221,7 @@ pub(super) mod tests {
 
     #[test]
     fn build_postgres_update_request_sends_deletion_protection_off() {
-        let req = build_postgres_update_request(None, None, None, Some(false), None, None);
+        let req = build_postgres_update_request(None, None, None, None, Some(false), None, None);
 
         assert_eq!(
             serde_json::to_value(req).unwrap(),
@@ -1223,6 +1327,7 @@ pub(super) mod tests {
             provider: "aws",
             pg_version: None,
             ha_type: None,
+            standby_count: None,
             tags: &[],
             pg_config_file: None,
             pg_bouncer_config_file: None,
@@ -1254,6 +1359,17 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn build_postgres_create_request_rejects_a_standby_count_the_ha_type_refuses() {
+        let options = PostgresCreateOptions {
+            ha_type: Some("none"),
+            standby_count: Some(2),
+            ..create_options(&[], false)
+        };
+        let error = build_postgres_create_request(&options).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+    }
+
+    #[test]
     fn build_postgres_create_request_sends_rules_or_an_empty_list() {
         let blocked = build_postgres_create_request(&create_options(&[], true)).unwrap();
         assert_eq!(
@@ -1268,12 +1384,15 @@ pub(super) mod tests {
         let options = PostgresCreateOptions {
             pg_version: Some("17"),
             ha_type: Some("sync"),
+            standby_count: Some(1),
             tags: &["env=prod".to_string()][..],
             ..create_options(&rules, false)
         };
         let req = build_postgres_create_request(&options).unwrap();
         assert_eq!(req.postgres_version, Some(PgVersion::_17));
         assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.standby_count, Some(PgStandbyCount::One));
+        assert_eq!(serde_json::to_value(&req).unwrap()["standbyCount"], 1);
         assert_eq!(req.tags.as_ref().unwrap().len(), 1);
         assert_eq!(req.ip_access_list.as_ref(), Some(&rules));
         assert_eq!(

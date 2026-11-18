@@ -90,7 +90,7 @@ When a local error's text comes from another program, `message` is clickhousectl
 | ClickHouse delete | Poll `service get` until `state` is `terminated` or `softdeleted`, or it fails with `resource_not_found` |
 | Postgres create/restore/replica | Poll `postgres get`; verify connectivity and credentials separately |
 | Postgres resize (`update --size`) | Poll `postgres get` until `size` shows the requested value; this can take several minutes |
-| Postgres HA change (`update --ha-type`) | No field signal: `haType` shows the new value as soon as the change is accepted, minutes before the standby exists; check `pg_stat_replication` on the primary |
+| Postgres HA change (`update --ha-type` or `--standby-count`) | No field signal: `haType` and `standbyCount` show the new value as soon as the change is accepted, minutes before the standby exists; check `pg_stat_replication` on the primary |
 | Postgres config/restart | Re-read configuration, compare `pg_postmaster_start_time()` before/after restart, then `SHOW` the changed setting |
 | Postgres promote | Poll the replica until `isPrimary: true` |
 | Postgres switchover | No completion signal: it may wait for the maintenance window, and service-level state, `isPrimary` and readiness do not confirm it |
@@ -128,7 +128,7 @@ Run `command` as is: it carries the resolved IDs and `--org-id`, but not credent
 | `clickpipe cdc-scaling update` | `clickpipe cdc-scaling get` | `replicaCpuMillicores` | The requested value | None |
 | `clickpipe reverse-private-endpoint create` | `clickpipe reverse-private-endpoint get` | `status` | `Ready` | `Failed`, `Rejected`, `Expired` |
 
-Some commands have no `next`, because no single field confirms them. `postgres restart` can show `running` before the restart begins, so compare `pg_postmaster_start_time()` instead. Nothing that `postgres get` returns confirms a `postgres switchover`. A `postgres update --ha-type`, alone or with `--size`, has none because `haType` shows the new value on acceptance, minutes before the standby is replicating, so check `pg_stat_replication` on the primary instead. Any other `postgres update` applies at once. `next` is also omitted when the API response has no ID to poll. An endpoint in `PendingAcceptance` stays there until the source-side owner accepts it.
+Some commands have no `next`, because no single field confirms them. `postgres restart` can show `running` before the restart begins, so compare `pg_postmaster_start_time()` instead. Nothing that `postgres get` returns confirms a `postgres switchover`. A `postgres update --ha-type` or `--standby-count`, alone or with `--size`, has none because `haType` and `standbyCount` show the new value on acceptance, minutes before the standby is replicating, so check `pg_stat_replication` on the primary instead. Any other `postgres update` applies at once. `next` is also omitted when the API response has no ID to poll. An endpoint in `PendingAcceptance` stays there until the source-side owner accepts it.
 
 See the relevant [task guide](../README.md) for the full sequence. Resource creation, resync, password reset, and SQL writes are not safe generic retry targets. Reconcile the observed state before deciding what to repeat.
 
