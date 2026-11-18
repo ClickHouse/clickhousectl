@@ -1,5 +1,6 @@
 use super::lifecycle::{
-    build_service_state_patch_request, service_delete_error, service_delete_rejected,
+    build_service_state_patch_request, service_delete_error, service_delete_protected,
+    service_delete_rejected,
 };
 use super::query_key::{KeyPropagation, upsert_until_key_propagates};
 use crate::cloud::client::{CloudClient, CloudError, ResourceKind, ResourceLookup};
@@ -499,12 +500,45 @@ impl CloudClient {
                     .service_delete_bad_request(error, org_id, service_id)
                     .await);
             }
+            Err(error @ clickhouse_cloud_api::Error::Api { status: 409, .. }) => {
+                return Err(self
+                    .service_delete_conflict(error, force, org_id, service_id)
+                    .await);
+            }
             Err(error) => return Err(service_delete_error(self, error, force, service_id, org_id)),
         };
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    /// A 409 from a service DELETE: either the service is not stopped or its
+    /// deletion protection is on. A read of the service tells which; when the
+    /// read fails or shows no protection, the conflict is reported as before.
+    async fn service_delete_conflict(
+        &self,
+        error: clickhouse_cloud_api::Error,
+        force: bool,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudError {
+        let protected = matches!(
+            self.get_service_if_exists(org_id, service_id).await,
+            Ok(Some(Service {
+                deletion_protection: Some(true),
+                ..
+            }))
+        );
+        if protected {
+            service_delete_protected(
+                Some(self.convert_error_for_organization(error, org_id)),
+                service_id,
+                org_id,
+            )
+        } else {
+            service_delete_error(self, error, force, service_id, org_id)
+        }
     }
 
     /// A 400 from a service DELETE. It names a missing service only once a

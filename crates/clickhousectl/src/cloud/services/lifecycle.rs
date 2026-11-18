@@ -3,7 +3,8 @@ use crate::cloud::client::{
     read_flag_file,
 };
 use crate::cloud::output::{
-    ABSENT, CloudErrorCode, NextStep, json_with_next, or_absent, print_human,
+    ABSENT, CloudErrorCode, CloudErrorDetail, NextStep, cloud_command, json_with_next, or_absent,
+    print_human, yes_no,
 };
 use crate::cloud::shared::{Outcome, POLL_INTERVAL, PollProgress, Wait, wait_for};
 use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
@@ -149,6 +150,8 @@ pub(super) async fn service_list(
             region: String,
             #[tabled(rename = "Endpoint")]
             endpoint: String,
+            #[tabled(rename = "Deletion protection")]
+            deletion_protection: String,
         }
         let rows: Vec<Row> = services
             .into_iter()
@@ -159,6 +162,7 @@ pub(super) async fn service_list(
                 provider: or_absent(service.provider.as_ref()),
                 region: or_absent(service.region.as_ref()),
                 endpoint: first_endpoint(service.endpoints.as_deref()),
+                deletion_protection: yes_no(service.deletion_protection),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -366,6 +370,7 @@ pub(super) struct CreateServiceOptions {
     pub(super) disable_endpoints: Vec<String>,
     pub(super) private_preview_terms_checked: bool,
     pub(super) enable_core_dumps: Option<bool>,
+    pub(super) deletion_protection: bool,
 }
 
 #[derive(Default)]
@@ -382,6 +387,7 @@ pub(super) struct ServiceUpdateOptions {
     pub(super) add_tags: Vec<String>,
     pub(super) remove_tags: Vec<String>,
     pub(super) enable_core_dumps: Option<bool>,
+    pub(super) deletion_protection: Option<bool>,
 }
 
 #[derive(Default)]
@@ -544,6 +550,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             &options.disable_endpoints,
         )?,
         enable_core_dumps: options.enable_core_dumps,
+        deletion_protection: options.deletion_protection.then_some(true),
         autoscaling_mode: horizontal.autoscaling_mode,
         byoc_id: options.byoc_id.clone(),
         backup_encryption_config: options.backup_encryption_config.clone(),
@@ -607,8 +614,7 @@ fn build_update_service_request(
         transparent_data_encryption_key_id: options.transparent_data_encryption_key_id.clone(),
         tags: parse_instance_tags_patch(&options.add_tags, &options.remove_tags)?,
         enable_core_dumps: options.enable_core_dumps,
-        // Not exposed by `cloud service update` yet: never sent.
-        deletion_protection: None,
+        deletion_protection: options.deletion_protection,
     })
 }
 
@@ -1019,6 +1025,39 @@ fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
     CloudError { message, ..error }
 }
 
+/// A delete refused because the service has deletion protection on, known
+/// from a read of the service. `error` is the API's 409 when the DELETE was
+/// sent; `None` when `--force` found protection before stopping anything.
+pub(super) fn service_delete_protected(
+    error: Option<CloudError>,
+    service_id: &str,
+    org_id: &str,
+) -> CloudError {
+    let command = cloud_command(
+        &[
+            "service",
+            "update",
+            service_id,
+            "--deletion-protection",
+            "false",
+        ],
+        org_id,
+    );
+    let message = format!(
+        "service {service_id} has deletion protection on, so it was not deleted{}. Turn it off \
+         with `{command}`, then rerun the delete.",
+        if error.is_some() { "" } else { " or stopped" }
+    );
+    let detail = CloudErrorDetail {
+        command: Some(command),
+        ..CloudErrorDetail::new(CloudErrorCode::DeletionProtected, message.clone())
+    };
+    match error {
+        Some(error) => CloudError { message, ..error }.with_details(detail),
+        None => CloudError::new(message).with_details(detail),
+    }
+}
+
 /// A delete the API rejected for a service that a read shows still exists,
 /// such as one still provisioning (#1226). The service's state comes from
 /// that read, never from the response text.
@@ -1072,6 +1111,14 @@ pub(super) async fn service_delete(
 
     if force {
         let service = client.get_service_if_exists(&org_id, service_id).await?;
+        // A protected service would only be refused after the stop, leaving
+        // it stopped for nothing.
+        if service
+            .as_ref()
+            .is_some_and(|service| service.deletion_protection == Some(true))
+        {
+            return Err(service_delete_protected(None, service_id, &org_id));
+        }
         let state = service.as_ref().and_then(|service| service.state.as_ref());
         if matches!(
             state,
@@ -1230,6 +1277,12 @@ pub(super) async fn service_update(
         println!("Service {} updated", or_absent(service.name.as_deref()));
         println!("  ID: {}", or_absent(service.id));
         println!("  State: {}", or_absent(service.state.as_ref()));
+        if options.deletion_protection.is_some() {
+            println!(
+                "  Deletion protection: {}",
+                yes_no(service.deletion_protection)
+            );
+        }
     }
     Ok(())
 }
@@ -1667,6 +1720,48 @@ mod tests {
     }
 
     #[test]
+    fn service_delete_protected_names_the_update_command() {
+        let check = |error: &CloudError| {
+            let detail = error.details.as_deref().expect("structured details");
+            assert_eq!(detail.code, CloudErrorCode::DeletionProtected);
+            assert_eq!(detail.message, error.message);
+            let command = detail.command.as_deref().expect("command");
+            let args = shlex::split(command).unwrap();
+            assert_eq!(
+                &args[..8],
+                [
+                    "clickhousectl",
+                    "cloud",
+                    "service",
+                    "update",
+                    "svc-1",
+                    "--deletion-protection",
+                    "false",
+                    "--org-id"
+                ]
+            );
+            assert_eq!(args[8], "org-1");
+            assert!(error.message.contains(command), "{error}");
+        };
+
+        let refused_before_stop = service_delete_protected(None, "svc-1", "org-1");
+        check(&refused_before_stop);
+        assert_eq!(
+            refused_before_stop.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+
+        let api_conflict = CloudError::new("opaque conflict response")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 409));
+        let rejected = service_delete_protected(Some(api_conflict), "svc-1", "org-1");
+        check(&rejected);
+        assert_eq!(
+            rejected.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
+        );
+    }
+
+    #[test]
     fn generation_is_requested_unless_a_password_hash_is_sent() {
         let request = |new_password_hash: Option<&str>, new_double_sha1_hash: Option<&str>| {
             ServicePasswordPatchRequest {
@@ -1756,6 +1851,7 @@ mod tests {
         assert!(request.private_preview_terms_checked.is_none());
         assert!(request.endpoints.is_none());
         assert!(request.enable_core_dumps.is_none());
+        assert!(request.deletion_protection.is_none());
         assert!(request.byoc_id.is_none());
     }
 
@@ -1788,6 +1884,7 @@ mod tests {
             disable_endpoints: vec!["mysql".to_string()],
             private_preview_terms_checked: true,
             enable_core_dumps: Some(true),
+            deletion_protection: true,
             ..minimal_create_options()
         };
         let request = build_create_service_request(&options).unwrap();
@@ -1844,6 +1941,7 @@ mod tests {
         assert!(!endpoints[1].enabled);
         assert_eq!(request.private_preview_terms_checked, Some(true));
         assert_eq!(request.enable_core_dumps, Some(true));
+        assert_eq!(request.deletion_protection, Some(true));
         assert!(request.byoc_id.is_none());
     }
 
@@ -2045,6 +2143,7 @@ mod tests {
             add_tags: vec!["env=staging".to_string()],
             remove_tags: vec!["old=tag".to_string()],
             enable_core_dumps: Some(false),
+            deletion_protection: Some(true),
         };
         let request = build_update_service_request(&options).unwrap();
 
@@ -2081,7 +2180,20 @@ mod tests {
         assert_eq!(tags.remove[0].key, "old");
         assert_eq!(tags.remove[0].value.as_deref(), Some("tag"));
         assert_eq!(request.enable_core_dumps, Some(false));
-        assert!(request.deletion_protection.is_none());
+        assert_eq!(request.deletion_protection, Some(true));
+    }
+
+    #[test]
+    fn build_update_service_request_sends_deletion_protection_off() {
+        let request = build_update_service_request(&ServiceUpdateOptions {
+            deletion_protection: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"deletionProtection": false})
+        );
     }
 
     #[test]
