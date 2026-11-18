@@ -201,7 +201,7 @@ CONTEXT FOR AGENTS:
   A pin applies only to the API it was set against; another API ignores it with a warning.")]
     Use(UseArgs),
 
-    /// Discover roles and request scoped API keys
+    /// Get write access: request a short-lived key that the user approves
     #[cfg(feature = "experimental-access-negotiation")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -233,11 +233,22 @@ CONTEXT FOR AGENTS:
     },
 
     /// Manage ClickHouse services
-    #[command(
-        name = "clickhouse",
-        visible_alias = "ch",
-        alias = "service",
-        after_help = "\
+    #[command(name = "clickhouse", visible_alias = "ch", alias = "service")]
+    #[cfg_attr(
+        feature = "experimental-access-negotiation",
+        command(after_help = "\
+CONTEXT FOR AGENTS:
+  Service ID: `clickhousectl cloud clickhouse list`.
+  Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query, client,
+    query-endpoint get, private-endpoint get-config, backup-config get, snapshot list/get,
+    snapshot config get, scaling-schedule get, upgrade-window get, replica-aware-routing get,
+    jwt-provider list/get.
+    Other commands are writes: on OAuth, run `cloud access request` first.
+  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")
+    )]
+    #[cfg_attr(
+        not(feature = "experimental-access-negotiation"),
+        command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud clickhouse list`.
   Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query, client,
@@ -245,7 +256,7 @@ CONTEXT FOR AGENTS:
     snapshot config get, scaling-schedule get, upgrade-window get, replica-aware-routing get,
     jwt-provider list/get.
     Other commands need API key auth.
-  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`."
+  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")
     )]
     Service {
         #[command(subcommand)]
