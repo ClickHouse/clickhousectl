@@ -60,7 +60,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Only the flags you pass change; everything else is left as-is.
-  This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
+  This can only remove private endpoints; add them with `cloud clickhouse update --add-private-endpoint-id`.")]
     Update {
         /// New organization name
         #[arg(long = "new-name", id = "new_name")]
@@ -314,7 +314,7 @@ CONTEXT FOR AGENTS:
   Preflight the same flags with `cloud org byoc validate` before creating.
   Watch provisioning with `cloud org byoc progress <id>`.
   Wait for `cloud org byoc get <id>` to show state `infra-ready` before creating a service.
-  Discover profiles with `cloud service profile list --region <region> --byoc-id <id>`.")]
+  Discover profiles with `cloud clickhouse profile list --region <region> --byoc-id <id>`.")]
     Create {
         #[command(flatten)]
         infrastructure: Box<ByocInfrastructureArgs>,

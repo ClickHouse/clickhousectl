@@ -134,7 +134,7 @@ pub(super) fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
 /// of which source it ends up on.
 ///
 /// A path of `-` reads the key from stdin, the same spelling
-/// `service query --queries-file -` uses, so a key held in a secret manager
+/// `clickhouse query --queries-file -` uses, so a key held in a secret manager
 /// never has to be written to disk. An empty key is refused here rather than
 /// sent as an empty string; neither that error nor the io error names anything
 /// but the path, so the key itself cannot reach an error message.

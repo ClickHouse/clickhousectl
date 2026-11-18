@@ -24,7 +24,7 @@ use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Resp
 use std::{collections::HashSet, io::IsTerminal, path::Path, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
-/// Longest `service delete --force` waits for a stop to finish. A real stop
+/// Longest `clickhouse delete --force` waits for a stop to finish. A real stop
 /// takes minutes, so the wait can emit dozens of progress lines — see
 /// `crate::stdout` for why none of them may panic.
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -249,7 +249,7 @@ pub(super) async fn service_dotenv(
     if !vars.iter().any(|(key, _)| *key == "CLICKHOUSE_HOST") {
         return Err(CloudError::new(format!(
             "the API returned no endpoints for service {service_id}, so there is no host to \
-             write; check `clickhousectl cloud service get {service_id}`"
+             write; check `clickhousectl cloud clickhouse get {service_id}`"
         )));
     }
 
@@ -738,12 +738,12 @@ enum ServiceOperation {
     Delete,
 }
 
-/// `next` for an accepted service operation: poll `service get` for `state`
-/// (#1162). A finished delete is gone, so `service get` then fails with
+/// `next` for an accepted service operation: poll `clickhouse get` for `state`
+/// (#1162). A finished delete is gone, so `clickhouse get` then fails with
 /// `resource_not_found`.
 fn service_next(org_id: &str, service_id: &str, operation: ServiceOperation) -> NextStep {
     use ServiceState::*;
-    let poll = NextStep::poll(&["service", "get", service_id], org_id, "state").every(5);
+    let poll = NextStep::poll(&["clickhouse", "get", service_id], org_id, "state").every(5);
     match operation {
         ServiceOperation::Create | ServiceOperation::Start | ServiceOperation::Wake => {
             poll.until(&[Running]).fail_on(&[Failed])
@@ -759,7 +759,7 @@ fn service_next(org_id: &str, service_id: &str, operation: ServiceOperation) -> 
 fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
     service_id.map(|id| {
         format!(
-            "Run SQL with: clickhousectl cloud service query {} --query \"SELECT 1\"\n\
+            "Run SQL with: clickhousectl cloud clickhouse query {} --query \"SELECT 1\"\n\
              (the Query API endpoint is provisioned automatically on first use)",
             id
         )
@@ -776,12 +776,12 @@ fn service_credentials_block(password: Option<&str>, service_id: Option<uuid::Uu
         (None, Some(id)) => format!(
             "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
              The service was created; reset the password to get a usable credential:\n  \
-             clickhousectl cloud service reset-password {}",
+             clickhousectl cloud clickhouse reset-password {}",
             id
         ),
         (None, None) => "WARNING: the API response omitted the one-time password, so it cannot be \
                          shown.\nThe service was created; once you have its id, reset the password \
-                         with `clickhousectl cloud service reset-password <service-id>` to get a \
+                         with `clickhousectl cloud clickhouse reset-password <service-id>` to get a \
                          usable credential."
             .to_string(),
     }
@@ -830,7 +830,7 @@ pub(super) async fn service_create(
             if !vars.iter().any(|(key, _)| *key == "CLICKHOUSE_HOST") {
                 eprintln!(
                     "Warning: the API response had no endpoints, so {} has no host or ports. \
-                     Add them later with `clickhousectl cloud service dotenv {}`.",
+                     Add them later with `clickhousectl cloud clickhouse dotenv {}`.",
                     path.display(),
                     service_id.map_or_else(|| "<service-id>".to_string(), |id| id.to_string())
                 );
@@ -1019,7 +1019,7 @@ fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
     let api_message = error.message.clone();
     let message = format!(
         "service could not be deleted because of a conflict. If it is running, use --force to \
-         stop it first, or `clickhousectl cloud service stop {service_id}`. API response: \
+         stop it first, or `clickhousectl cloud clickhouse stop {service_id}`. API response: \
          {api_message}"
     );
     CloudError { message, ..error }
@@ -1035,7 +1035,7 @@ pub(super) fn service_delete_protected(
 ) -> CloudError {
     let command = cloud_command(
         &[
-            "service",
+            "clickhouse",
             "update",
             service_id,
             "--deletion-protection",
@@ -1069,7 +1069,7 @@ pub(super) fn service_delete_rejected(
     let api_message = error.message.clone();
     let message = format!(
         "service {service_id} exists but the API rejected its deletion in state '{state}'. \
-         Retry once it has finished changing state; check it with `clickhousectl cloud service \
+         Retry once it has finished changing state; check it with `clickhousectl cloud clickhouse \
          get {service_id}`. API response: {api_message}"
     );
     CloudError { message, ..error }
@@ -1138,8 +1138,8 @@ pub(super) async fn service_delete(
             let mut progress = PollProgress::default();
             let what = format!("the stop of service {service_id}");
             let hint = format!(
-                "the service was not deleted; check it with `clickhousectl cloud service get \
-                 {service_id}`, then rerun `clickhousectl cloud service delete {service_id} --force`"
+                "the service was not deleted; check it with `clickhousectl cloud clickhouse get \
+                 {service_id}`, then rerun `clickhousectl cloud clickhouse delete {service_id} --force`"
             );
             let wait = Wait {
                 what: &what,
@@ -1450,7 +1450,7 @@ mod tests {
 
     /// The start/stop hints and their wiring are the subprocess tests; this
     /// covers the create, wake and delete states, and that `state` is the field
-    /// `service get --json` prints.
+    /// `clickhouse get --json` prints.
     #[test]
     fn service_next_names_the_states_that_end_each_operation() {
         let create = service_next("org-1", "svc-1", ServiceOperation::Create);
@@ -1518,7 +1518,7 @@ mod tests {
         let hint = service_query_hint(Some(id)).unwrap();
         assert!(
             hint.contains(
-                "clickhousectl cloud service query a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 \
+                "clickhousectl cloud clickhouse query a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 \
                  --query \"SELECT 1\""
             ),
             "{hint}"
@@ -1555,7 +1555,7 @@ mod tests {
         let block = service_credentials_block(None, Some(id));
         assert!(!block.contains(&format!("Password: {ABSENT}")));
         assert!(block.contains(
-            "clickhousectl cloud service reset-password a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
+            "clickhousectl cloud clickhouse reset-password a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
         ));
     }
 
@@ -1563,7 +1563,7 @@ mod tests {
     fn service_credentials_block_warns_generically_when_the_service_id_is_absent() {
         assert!(
             service_credentials_block(None, None)
-                .contains("clickhousectl cloud service reset-password <service-id>")
+                .contains("clickhousectl cloud clickhouse reset-password <service-id>")
         );
     }
 
@@ -1638,7 +1638,7 @@ mod tests {
         assert!(
             rewritten
                 .message
-                .contains("`clickhousectl cloud service stop svc-1`"),
+                .contains("`clickhousectl cloud clickhouse stop svc-1`"),
             "{rewritten}"
         );
         assert!(
@@ -1699,7 +1699,7 @@ mod tests {
             message: "structured error".into(),
             host: None,
             port: None,
-            command: Some("cloud service list".into()),
+            command: Some("cloud clickhouse list".into()),
             api_key_id: None,
         };
         let error = CloudError::auth("opaque conflict response")
@@ -1716,7 +1716,7 @@ mod tests {
         let detail = rewritten.details.as_deref().expect("structured details");
         assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
         assert_eq!(detail.message, "structured error");
-        assert_eq!(detail.command.as_deref(), Some("cloud service list"));
+        assert_eq!(detail.command.as_deref(), Some("cloud clickhouse list"));
     }
 
     #[test]
@@ -1732,7 +1732,7 @@ mod tests {
                 [
                     "clickhousectl",
                     "cloud",
-                    "service",
+                    "clickhouse",
                     "update",
                     "svc-1",
                     "--deletion-protection",

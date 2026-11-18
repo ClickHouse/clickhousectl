@@ -118,36 +118,44 @@ pub enum CloudCommands {
 CONTEXT FOR AGENTS:
   `org list` is the source of the org IDs that other cloud commands take as --org-id.
   BYOC infrastructure IDs and state are shown by `cloud org get --org-id <org-id>`.
-  Next: `cloud service list`, `cloud member list`.")]
+  Next: `cloud clickhouse list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]
         command: OrgCommands,
     },
 
-    /// Manage ClickHouse Cloud services
-    #[command(after_help = "\
+    /// Manage ClickHouse services
+    #[command(
+        name = "clickhouse",
+        visible_alias = "ch",
+        alias = "service",
+        after_help = "\
 CONTEXT FOR AGENTS:
-  Service ID: `clickhousectl cloud service list`.
+  Service ID: `clickhousectl cloud clickhouse list`.
   Reads: list, get, dotenv, profile list, settings list/get/schema, prometheus, query, client,
     query-endpoint get, private-endpoint get-config, backup-config get, snapshot list/get,
     snapshot config get, scaling-schedule get, upgrade-window get, replica-aware-routing get,
     jwt-provider list/get.
     Other commands need API key auth.
-  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")]
+  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`."
+    )]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
     },
 
     /// Manage ClickHouse Cloud Postgres services
-    #[command(after_help = "\
+    #[command(
+        visible_alias = "pg",
+        after_help = "\
 CONTEXT FOR AGENTS:
   Write commands need API key auth.
   Service IDs: `cloud postgres list`.
   Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
   `get` shows host/user; connections use port 5432, database postgres and TLS.
   Role changes return after API acceptance; see each command's help for verification.
-  Typical flow: `create` -> `get <id>` until running -> `certs get <id> --output ca.pem` -> connect.")]
+  Typical flow: `create` -> `get <id>` until running -> `certs get <id> --output ca.pem` -> connect."
+    )]
     Postgres {
         #[command(subcommand)]
         command: crate::cloud::postgres::PostgresCommands,
@@ -156,7 +164,7 @@ CONTEXT FOR AGENTS:
     /// Manage Query API endpoints
     #[command(after_help = "CONTEXT FOR AGENTS:
   Writes require API key authentication; list/get support OAuth.
-  Service IDs: `cloud service list`; API key IDs: `cloud key list`.
+  Service IDs: `cloud clickhouse list`; API key IDs: `cloud key list`.
   Endpoint IDs: `cloud query-api-endpoint list <service-id>`.
   User-owned endpoints can be read but cannot be updated or deleted.
   Typical flow: create -> get -> update -> delete.")]
@@ -165,7 +173,7 @@ CONTEXT FOR AGENTS:
     /// Manage saved queries
     #[command(after_help = "CONTEXT FOR AGENTS:
   Writes require API key authentication; list/get support OAuth.
-  Service IDs: `cloud service list`.
+  Service IDs: `cloud clickhouse list`.
   Saved query IDs: `cloud saved-query list <service-id>`; or select by exact --name.
   Typical flow: create -> get -> update -> delete.")]
     SavedQuery(SavedQueryArgs),
@@ -173,11 +181,11 @@ CONTEXT FOR AGENTS:
     /// Manage service backups and backup buckets
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Service IDs come from `cloud service list`; backup IDs from `cloud backup list <service-id>`.
+  Service IDs come from `cloud clickhouse list`; backup IDs from `cloud backup list <service-id>`.
   Backup list/get and bucket get support OAuth; bucket writes require API key auth.
   Bucket create/update read strict provider JSON from `--file`, with `-` for stdin.
-  Restore a backup into a new service: `cloud service create --backup-id <backup-id>`.
-  Change schedule or retention with `cloud service backup-config update`, not here.")]
+  Restore a backup into a new service: `cloud clickhouse create --backup-id <backup-id>`.
+  Change schedule or retention with `cloud clickhouse backup-config update`, not here.")]
     Backup {
         #[command(subcommand)]
         command: BackupCommands,
@@ -188,11 +196,11 @@ CONTEXT FOR AGENTS:
         name = "clickpipe",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Service ID: `clickhousectl cloud service list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
+  Service ID: `clickhousectl cloud clickhouse list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
   Everything except list/get is a write and needs API key auth, schema-discover included.
   Lifecycle requests return immediately; use `get` to observe the resulting transition.
-  Metrics: `cloud service prometheus <SERVICE_ID>`; filter samples by `clickpipe_id`.
-  Streaming/object-storage errors: query `system.clickpipes_log` with `cloud service query`.
+  Metrics: `cloud clickhouse prometheus <SERVICE_ID>`; filter samples by `clickpipe_id`.
+  Streaming/object-storage errors: query `system.clickpipes_log` with `cloud clickhouse query`.
   Typical flow: `clickpipe schema-discover <source> <service-id>` -> `clickpipe create <source>`
     -> `clickpipe get`."
     )]
@@ -206,7 +214,7 @@ CONTEXT FOR AGENTS:
         name = "clickstack",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Service ID: `clickhousectl cloud service list`.
+  Service ID: `clickhousectl cloud clickhouse list`.
   Resource IDs come from their respective `list` commands.
   Everything except list/get is a write and needs API key auth.
   Create/update read complete JSON bodies from --file; `-` reads stdin.
@@ -220,7 +228,7 @@ CONTEXT FOR AGENTS:
     /// Manage user-defined functions
     #[command(after_help = "CONTEXT FOR AGENTS:
   Writes require API key authentication; list/get support OAuth.
-  Function names: `cloud udf list`; service IDs: `cloud service list`.
+  Function names: `cloud udf list`; service IDs: `cloud clickhouse list`.
   Create uploads a ZIP archive and starts an asynchronous build.
   Typical flow: deploy NAME --service <id>, or create -> get until ready -> attach -> attachment get.")]
     Udf(UdfArgs),
@@ -440,9 +448,9 @@ pub(crate) mod tests {
     #[test]
     fn org_id_reaches_cloud_args_at_every_command_and_positional_boundary() {
         let cases: &[&[&str]] = &[
-            &["service", "get", "svc-1"],
-            &["service", "backup-config", "get", "svc-1"],
-            &["service", "settings", "get", "svc-1", "setting"],
+            &["clickhouse", "get", "svc-1"],
+            &["clickhouse", "backup-config", "get", "svc-1"],
+            &["clickhouse", "settings", "get", "svc-1", "setting"],
             &["member", "get", "user-1"],
             &["invitation", "get", "invite-1"],
             &["key", "get", "key-1"],
@@ -608,11 +616,14 @@ pub(crate) mod tests {
             (&["org", "update", "--new-name", "renamed"], true),
             (&["org", "role", "delete", "role-1"], true),
             (&["org", "byoc", "delete", "byoc-1"], true),
-            (&["service", "list"], false),
-            (&["service", "query", "svc-1", "--query", "SELECT 1"], false),
-            (&["service", "delete", "svc-1"], true),
+            (&["clickhouse", "list"], false),
             (
-                &["service", "settings", "unset", "svc-1", "max_threads"],
+                &["clickhouse", "query", "svc-1", "--query", "SELECT 1"],
+                false,
+            ),
+            (&["clickhouse", "delete", "svc-1"], true),
+            (
+                &["clickhouse", "settings", "unset", "svc-1", "max_threads"],
                 true,
             ),
             (&["backup", "list", "svc-1"], false),
@@ -741,6 +752,7 @@ pub(crate) mod tests {
             "activity",
             "auth",
             "backup",
+            "clickhouse",
             "clickpipe",
             "clickstack",
             "invitation",
@@ -750,7 +762,6 @@ pub(crate) mod tests {
             "postgres",
             "query-api-endpoint",
             "saved-query",
-            "service",
             "udf",
         ];
         assert_eq!(reads, all.into_iter().collect());
@@ -760,5 +771,103 @@ pub(crate) mod tests {
                 .filter(|domain| !matches!(*domain, "activity" | "auth"))
                 .collect()
         );
+    }
+
+    fn cloud_command(args: &[&str]) -> super::CloudCommands {
+        let argv: Vec<_> = ["clickhousectl", "cloud"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        let Commands::Cloud(cloud) = Cli::try_parse_from(&argv).unwrap().command else {
+            panic!("expected cloud command for {argv:?}");
+        };
+        cloud.command
+    }
+
+    /// Every spelling of `cloud clickhouse` (the name, the shown alias `ch`
+    /// and the hidden compatibility alias `service`) and of `cloud postgres`
+    /// (`pg`) parses to the same command, so it dispatches the same (#1499).
+    #[test]
+    fn clickhouse_and_postgres_spellings_parse_identically() {
+        use super::CloudCommands;
+        use crate::cloud::postgres::PostgresCommands;
+        use crate::cloud::services::ServiceCommands;
+        for spelling in ["clickhouse", "ch", "service"] {
+            assert!(
+                matches!(
+                    cloud_command(&[spelling, "list"]),
+                    CloudCommands::Service {
+                        command: ServiceCommands::List { .. }
+                    }
+                ),
+                "{spelling}"
+            );
+            assert!(
+                matches!(
+                    cloud_command(&[spelling, "get", "svc-1"]),
+                    CloudCommands::Service {
+                        command: ServiceCommands::Get { service_id }
+                    } if service_id.id.as_deref() == Some("svc-1")
+                ),
+                "{spelling}"
+            );
+            assert!(
+                matches!(
+                    cloud_command(&[spelling, "delete", "svc-1", "--force"]),
+                    CloudCommands::Service {
+                        command: ServiceCommands::Delete { force: true, .. }
+                    }
+                ),
+                "{spelling}"
+            );
+        }
+        for spelling in ["postgres", "pg"] {
+            assert!(
+                matches!(
+                    cloud_command(&[spelling, "list"]),
+                    CloudCommands::Postgres {
+                        command: PostgresCommands::List { .. }
+                    }
+                ),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_help_shows_clickhouse_ch_and_pg_but_hides_service() {
+        let cli = Cli::command();
+        let cloud = cli.find_subcommand("cloud").unwrap();
+        let clickhouse = cloud.find_subcommand("service").unwrap();
+        assert_eq!(clickhouse.get_name(), "clickhouse");
+        assert_eq!(clickhouse.get_visible_aliases().collect::<Vec<_>>(), ["ch"]);
+        assert!(clickhouse.get_all_aliases().any(|alias| alias == "service"));
+        let postgres = cloud.find_subcommand("pg").unwrap();
+        assert_eq!(postgres.get_name(), "postgres");
+        assert_eq!(postgres.get_visible_aliases().collect::<Vec<_>>(), ["pg"]);
+
+        let help = Cli::try_parse_from(["clickhousectl", "cloud", "--help"])
+            .err()
+            .expect("--help should stop parsing")
+            .to_string();
+        let names = crate::local::cli::tests::listed_command_names(&help);
+        for shown in ["clickhouse", "ch", "postgres", "pg"] {
+            assert!(names.iter().any(|name| name == shown), "{shown}: {names:?}");
+        }
+        assert!(!names.iter().any(|name| name == "service"), "{names:?}");
+    }
+
+    /// The hidden alias reaches the same decorated help, permission lines
+    /// included, as the canonical name.
+    #[test]
+    fn service_alias_renders_the_clickhouse_help() {
+        let help = |spelling: &str| {
+            Cli::try_parse_from(["clickhousectl", "cloud", spelling, "get", "--help"])
+                .err()
+                .expect("--help should stop parsing")
+                .to_string()
+        };
+        assert_eq!(help("service"), help("clickhouse"));
+        assert_eq!(help("ch"), help("clickhouse"));
     }
 }

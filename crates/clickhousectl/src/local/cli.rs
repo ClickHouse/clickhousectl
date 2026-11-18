@@ -989,7 +989,7 @@ pub struct UdfServerArg {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::version_manager::list::Channel;
@@ -2574,7 +2574,7 @@ mod tests {
 
     /// Names listed in the `Commands:` section of a rendered help screen,
     /// including the aliases clap shows beside each command.
-    fn listed_command_names(help: &str) -> Vec<String> {
+    pub(crate) fn listed_command_names(help: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut in_commands = false;
         for line in help.lines() {

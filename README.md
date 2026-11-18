@@ -129,7 +129,7 @@ Create a ClickHouse Cloud service. Save the initial password shown at creation; 
 
 ```bash
 # Output will contain the service ID
-clickhousectl cloud service create --name analytics \
+clickhousectl cloud clickhouse create --name analytics \
   --provider aws --region us-east-1
 ```
 
@@ -158,7 +158,7 @@ Use ClickPipes to replicate database changes or load files into ClickHouse Cloud
 Start with the `analytics` ClickHouse service and `app-db` ClickHouse Managed Postgres service created above. Use their returned IDs below, and wait until both report `state=running`:
 
 ```bash
-clickhousectl cloud service get <service-id>
+clickhousectl cloud clickhouse get <service-id>
 clickhousectl cloud postgres get <postgres-id>
 clickhousectl cloud postgres certs get <postgres-id> --output ca.pem
 ```
@@ -192,7 +192,7 @@ Use the returned ClickPipe ID to check its state, then query the current rows in
 
 ```bash
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
-clickhousectl cloud service query <service-id> \
+clickhousectl cloud clickhouse query <service-id> \
   --query "SELECT id, status FROM default.orders FINAL WHERE _peerdb_is_deleted = 0"
 ```
 
@@ -219,7 +219,7 @@ This starts a one-time load of the matching objects. Check the returned ClickPip
 
 ```bash
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
-clickhousectl cloud service query <service-id> --query "SELECT count() FROM default.s3_events"
+clickhousectl cloud clickhouse query <service-id> --query "SELECT count() FROM default.s3_events"
 ```
 
 See the [ClickPipes guide](docs/guides/clickpipes.md) for source permissions and networking, other sources, continuous S3 ingestion, monitoring, and safe updates.

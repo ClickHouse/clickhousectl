@@ -75,7 +75,7 @@ The definition maps to ClickHouse's `<function>` XML with the same units as Clou
 
 ```bash
 clickhousectl cloud udf deploy my_udf --service <service-id>
-clickhousectl cloud service query <service-id> -q "SELECT my_udf(1)"
+clickhousectl cloud clickhouse query <service-id> -q "SELECT my_udf(1)"
 ```
 
 It creates the UDF, or adds a version when the name already exists, waits for that build, attaches exactly that version, and waits until the attachment is `deployed`. Omitted fields follow the create defaults, never the previous version's values. The service is checked before anything is uploaded: an unknown or stopped service, or an idle one with `--no-wake`, fails without creating a version. Otherwise an idle service is woken when attaching. `--timeout` bounds each wait, and a timeout exits 1 with the `timeout` error code and the command to keep polling. If the build wait times out, or attaching fails after the build, the error names the version so you can resume with `cloud udf attach <name> <service-id> --version <n>`, adding `--wake` when the service is idle or not running. JSON output is one object with `action` (`created` or `version_created`), `udf`, and `attachment`. It is the only `cloud udf` command that waits for the build and the deployment; the steps below run each part separately.
@@ -94,7 +94,7 @@ clickhousectl cloud udf attach my_udf <service-id> --wake
 clickhousectl cloud udf attachment get my_udf <service-id>
 ```
 
-Poll `attachment get` until it is `deployed`. The target service must be running. `--wake` wakes an idle service, waits up to ten minutes for it to reach `running`, then attaches once; without it, attaching to an idle service fails with the service state and the `cloud service wake` command. A stopped service must be started first. With `--json`, the error code is `service_idle`, `service_stopped` or `service_not_running`.
+Poll `attachment get` until it is `deployed`. The target service must be running. `--wake` wakes an idle service, waits up to ten minutes for it to reach `running`, then attaches once; without it, attaching to an idle service fails with the service state and the `cloud clickhouse wake` command. A stopped service must be started first. With `--json`, the error code is `service_idle`, `service_stopped` or `service_not_running`.
 
 Attachment replaces the version already attached to that service. Without `--version`, it selects the latest ready version. Any other dependency error (HTTP 424) requires inspecting the UDF and service before retrying.
 

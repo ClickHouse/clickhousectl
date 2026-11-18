@@ -171,7 +171,7 @@ fn stored_api_url(api_url: &str) -> Option<String> {
 /// drops it and reports the key that still exists in the organization.
 ///
 /// Nothing is created when there is no record to drop: the check runs on
-/// every `cloud service query` and `delete`, and a stray `.clickhouse/` would
+/// every `cloud clickhouse query` and `delete`, and a stray `.clickhouse/` would
 /// mark the current directory as a project root (#1444).
 pub(crate) fn take_legacy_service_query_key(
     service_id: &str,

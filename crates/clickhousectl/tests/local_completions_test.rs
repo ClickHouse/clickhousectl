@@ -62,8 +62,8 @@ fn tab_completes_subcommands_under_both_names_and_leaves_no_state() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     for name in ["clickhousectl", "chctl"] {
-        let output = tab(home.path(), cwd.path(), &[name, "cloud", "ser"]);
-        assert_eq!(candidates(&output), ["service"], "{name}");
+        let output = tab(home.path(), cwd.path(), &[name, "cloud", "clickh"]);
+        assert_eq!(candidates(&output), ["clickhouse"], "{name}");
     }
     assert!(tree(home.path()).is_empty(), "{:?}", tree(home.path()));
     assert!(tree(cwd.path()).is_empty(), "{:?}", tree(cwd.path()));

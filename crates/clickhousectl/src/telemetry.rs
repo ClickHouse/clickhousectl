@@ -596,15 +596,17 @@ fn resolve_suggestion(root: &clap::Command, suggested: &str) -> Option<DefName> 
 }
 
 /// Depth-first search of the whole command tree for a definition string
-/// equal to `name`: arg long names first, then subcommand names, recursing
-/// into every subcommand.
+/// equal to `name`: arg long names first, then subcommand names or aliases,
+/// recursing into every subcommand. Clap's did-you-mean also offers hidden
+/// aliases (`servce` suggests `service`); an alias resolves to its command's
+/// canonical name (`clickhouse`), as a typed alias does.
 fn find_defined_name(cmd: &clap::Command, name: &str) -> Option<DefName> {
     cmd.get_arguments()
         .find(|a| a.get_long() == Some(name))
         .and_then(DefName::long)
         .or_else(|| {
             cmd.get_subcommands().find_map(|sub| {
-                if sub.get_name() == name {
+                if sub.get_name() == name || sub.get_all_aliases().any(|alias| alias == name) {
                     Some(DefName::command(sub))
                 } else {
                     find_defined_name(sub, name)
@@ -1821,7 +1823,7 @@ mod tests {
                 vec!["file", "config-file", "config"],
             ),
             (
-                vec!["service", "settings", "set", "SECRET-SERVICE"],
+                vec!["clickhouse", "settings", "set", "SECRET-SERVICE"],
                 vec!["file", "settings-file"],
             ),
         ] {
@@ -1865,7 +1867,7 @@ mod tests {
                 vec![
                     "--org-name",
                     "SECRET-ORG",
-                    "service",
+                    "clickhouse",
                     "update",
                     "--name",
                     "SECRET-TARGET",
@@ -1908,13 +1910,13 @@ mod tests {
                 "clickhousectl",
                 "cloud",
                 "--json",
-                "service",
+                "clickhouse",
                 "get",
                 "SECRET-SERVICE-ID",
             ];
             args.splice(position..position, ["--org-id", "SECRET-ORG"]);
             let inv = capture_from(&args);
-            assert_eq!(inv.command, "cloud service get");
+            assert_eq!(inv.command, "cloud clickhouse get");
             assert_eq!(inv.flags, ["json", "org-id"]);
             // The positional's definition id is recorded; its value is not (#480).
             assert_eq!(inv.positionals, ["resource_id"]);
@@ -2072,8 +2074,8 @@ mod tests {
 
     #[test]
     fn capture_dedupes_propagated_global_flags() {
-        let inv = capture_from(&["clickhousectl", "cloud", "--json", "service", "list"]);
-        assert_eq!(inv.command, "cloud service list");
+        let inv = capture_from(&["clickhousectl", "cloud", "--json", "clickhouse", "list"]);
+        assert_eq!(inv.command, "cloud clickhouse list");
         assert_eq!(inv.flags, ["json"]);
     }
 
@@ -2163,8 +2165,8 @@ mod tests {
 
     #[test]
     fn lossy_nested_help_keeps_the_command_path() {
-        let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "--help"]);
-        assert_eq!(inv.command, "cloud service");
+        let inv = capture_lossy_from(&["clickhousectl", "cloud", "clickhouse", "--help"]);
+        assert_eq!(inv.command, "cloud clickhouse");
         assert_eq!(inv.flags, ["help"]);
         assert_eq!(inv.outcome, Some(Outcome::Help));
     }
@@ -2189,10 +2191,11 @@ mod tests {
         assert_eq!(inv.command, "cloud");
         assert!(inv.flags.is_empty());
         assert_eq!(inv.outcome, Some(Outcome::InvalidSubcommand));
-        // Clap's did-you-mean names a *defined* subcommand.
+        // Clap's did-you-mean names the hidden `service` alias; the recorded
+        // suggestion is the canonical name it belongs to.
         assert_eq!(
             inv.suggestion.as_ref().map(DefName::as_str),
-            Some("service")
+            Some("clickhouse")
         );
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("servce"), "typo leaked into payload: {json}");
@@ -2225,7 +2228,7 @@ mod tests {
     fn lossy_flag_suggestion_records_the_bare_definition_name() {
         // Clap's SuggestedArg context carries `--json`; the recorded value is
         // the bare canonical name, cloned from the definition.
-        let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "list", "--jsn"]);
+        let inv = capture_lossy_from(&["clickhousectl", "cloud", "clickhouse", "list", "--jsn"]);
         assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         assert_eq!(inv.suggestion.as_ref().map(DefName::as_str), Some("json"));
     }
@@ -2249,13 +2252,13 @@ mod tests {
         let mut error = clap::Error::new(ErrorKind::InvalidSubcommand);
         error.insert(
             ContextKind::SuggestedSubcommand,
-            ContextValue::Strings(vec!["service".into(), "not-a-defined-name".into()]),
+            ContextValue::Strings(vec!["clickhouse".into(), "not-a-defined-name".into()]),
         );
         assert_eq!(
             suggestion_for_error(&cmd, &error)
                 .as_ref()
                 .map(DefName::as_str),
-            Some("service")
+            Some("clickhouse")
         );
     }
 
@@ -2436,12 +2439,12 @@ mod tests {
         let inv = capture_lossy_from(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "get",
             "--org-id",
             "list",
         ]);
-        assert_eq!(inv.command, "cloud service get");
+        assert_eq!(inv.command, "cloud clickhouse get");
         assert_eq!(inv.flags, ["org-id"]);
         assert_eq!(inv.outcome, Some(Outcome::MissingRequired));
     }
@@ -2453,12 +2456,12 @@ mod tests {
         let inv = capture_lossy_from(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "list",
             "--org-id=SECRET-ORG",
             "junk-token",
         ]);
-        assert_eq!(inv.command, "cloud service list");
+        assert_eq!(inv.command, "cloud clickhouse list");
         assert_eq!(inv.flags, ["org-id"]);
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "inline value leaked: {json}");
@@ -2483,6 +2486,39 @@ mod tests {
         ] {
             for spelling in spellings {
                 let argv: Vec<&str> = ["clickhousectl", "local", spelling]
+                    .into_iter()
+                    .chain(rest.iter().copied())
+                    .collect();
+                assert_eq!(capture_from(&argv).command, canonical, "{argv:?}");
+
+                let mut failing = argv.clone();
+                failing.push("--no-such-flag");
+                let lossy = capture_lossy_from(&failing);
+                assert_eq!(lossy.command, canonical, "{failing:?}");
+            }
+        }
+    }
+
+    /// `cloud clickhouse` has a shown alias (`ch`) and a hidden one
+    /// (`service`), and `cloud postgres` has `pg`; every spelling records the
+    /// canonical command path, on a successful parse and on a failed one
+    /// (#1499).
+    #[test]
+    fn cloud_command_aliases_record_the_canonical_command_path() {
+        for (spellings, rest, canonical) in [
+            (
+                &["clickhouse", "ch", "service"][..],
+                &["get", "svc-1"][..],
+                "cloud clickhouse get",
+            ),
+            (
+                &["postgres", "pg"][..],
+                &["get", "pg-1"][..],
+                "cloud postgres get",
+            ),
+        ] {
+            for spelling in spellings {
+                let argv: Vec<&str> = ["clickhousectl", "cloud", spelling]
                     .into_iter()
                     .chain(rest.iter().copied())
                     .collect();
@@ -2578,13 +2614,13 @@ mod tests {
         let inv = capture_lossy_from(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "list",
             "-Z",
             "--org-id",
             "SECRET-ORG",
         ]);
-        assert_eq!(inv.command, "cloud service list");
+        assert_eq!(inv.command, "cloud clickhouse list");
         assert!(inv.flags.is_empty());
         assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
@@ -2638,7 +2674,7 @@ mod tests {
             "clickhousectl",
             "cloud",
             "--json",
-            "service",
+            "clickhouse",
             "get",
             "SECRET-SERVICE-ID",
             "--org-id",
@@ -2646,7 +2682,7 @@ mod tests {
             "--wat",
             "SECRET-TRAILING",
         ]);
-        assert_eq!(inv.command, "cloud service get");
+        assert_eq!(inv.command, "cloud clickhouse get");
         assert_eq!(inv.outcome, Some(Outcome::UnknownArgument));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
@@ -2779,7 +2815,7 @@ mod tests {
         for hostile in HOSTILE {
             // Successful parse. A local server name is validated in clap, so
             // these fixtures go through a free-form Cloud resource ID.
-            let inv = capture_from(&["clickhousectl", "cloud", "service", "get", hostile]);
+            let inv = capture_from(&["clickhousectl", "cloud", "clickhouse", "get", hostile]);
             assert_eq!(inv.positionals, ["resource_id"]);
             let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
             assert!(!json.contains(hostile), "leaked {hostile}: {json}");
@@ -2788,7 +2824,7 @@ mod tests {
             let inv = capture_lossy_from(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "get",
                 hostile,
                 "--frobnicate",

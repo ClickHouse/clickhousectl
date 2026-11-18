@@ -248,7 +248,7 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         // post-parse check. Format the error against the owning command.
         let query = cmd
             .find_subcommand_mut("cloud")
-            .and_then(|cloud| cloud.find_subcommand_mut("service"))
+            .and_then(|cloud| cloud.find_subcommand_mut("clickhouse"))
             .and_then(|service| service.find_subcommand_mut("query"))
             .expect("service query command must exist");
         return Err(query.error(
@@ -673,7 +673,7 @@ mod tests {
                 "cloud",
                 "--api-key",
                 "key",
-                "service",
+                "clickhouse",
                 "list",
             ],
         ] {
@@ -727,7 +727,7 @@ mod tests {
                 "clickhousectl",
                 "cloud",
                 "--json",
-                "service",
+                "clickhouse",
                 "query",
                 "--id",
                 "svc-1",
@@ -739,7 +739,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "query",
                 "--id",
                 "svc-1",
@@ -759,7 +759,7 @@ mod tests {
             assert!(message.contains("--json"), "{message}");
             assert!(message.contains("--format"), "{message}");
             assert!(
-                message.contains("clickhousectl cloud service query"),
+                message.contains("clickhousectl cloud clickhouse query"),
                 "{message}"
             );
         }
@@ -1057,7 +1057,7 @@ mod tests {
     fn command_json_flag_tracks_each_command() {
         // Human-readable commands report an explicit `false` flag.
         assert_eq!(
-            command_json_flag(&parse(&["clickhousectl", "cloud", "service", "list"])),
+            command_json_flag(&parse(&["clickhousectl", "cloud", "clickhouse", "list"])),
             Some(false)
         );
         assert_eq!(
@@ -1070,7 +1070,7 @@ mod tests {
                 "clickhousectl",
                 "cloud",
                 "--json",
-                "service",
+                "clickhouse",
                 "list"
             ])),
             Some(true)
@@ -1175,7 +1175,7 @@ mod tests {
             "clickhousectl",
             "cloud",
             "--json",
-            "service",
+            "clickhouse",
             "list"
         ])));
         assert!(!should_show_update_notice(&parse(&[

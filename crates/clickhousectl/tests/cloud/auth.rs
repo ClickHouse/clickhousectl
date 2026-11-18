@@ -513,7 +513,7 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
         ),
         (
             vec![
-                "service",
+                "clickhouse",
                 "update",
                 "--new-name",
                 "new",
@@ -796,7 +796,7 @@ async fn unusable_oauth_login_is_distinct_from_missing_credentials() {
             );
         }
         let output = command()
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(4), "{output:?}");

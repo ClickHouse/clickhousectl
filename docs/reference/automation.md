@@ -9,7 +9,7 @@ Use `--json` for commands that return structured data. Detected coding agents se
 To keep human output under a detected agent, set `CLICKHOUSECTL_AUTO_JSON=0` (also `false`, `no` or `off`, in any case). An explicit `--json` still selects JSON; an unset variable or any other value leaves detection on. The setting changes only the output format and the update notice; the `User-Agent`, agent correlation headers and telemetry still report the detected agent.
 
 ```bash
-clickhousectl cloud service list --json
+clickhousectl cloud clickhouse list --json
 clickhousectl cloud key list --all --json
 clickhousectl local clickhouse list --json
 ```
@@ -18,14 +18,14 @@ Cloud structured output follows each command's API-shaped contract, usually came
 
 | Command | Successful output |
 | --- | --- |
-| `cloud service list --json` | Bare array |
+| `cloud clickhouse list --json` | Bare array |
 | `cloud auth login --json` | Object with `saved` (file path), `identity`, `verification` (`verified` or `unverified`), and optional `warning`; the OAuth device code and URL go to stderr |
 | `cloud auth logout --json` | Object with `oauth_tokens` and `api_keys`, each `cleared` or `unchanged` |
 | `cloud auth signup --json` | Object with `url` and `browser_opened` |
-| `cloud service create --json` | The API's `service` and one-time `password`, plus `next` (see [Wait for completion](#wait-for-completion-and-retry-deliberately)); with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
-| `cloud service dotenv --json` | Object with `file`, `service` (name), and `vars` of `key` and `value`; never a password |
+| `cloud clickhouse create --json` | The API's `service` and one-time `password`, plus `next` (see [Wait for completion](#wait-for-completion-and-retry-deliberately)); with `--dotenv`, `password` is omitted and `dotenv` has `file` and the written `keys` |
+| `cloud clickhouse dotenv --json` | Object with `file`, `service` (name), and `vars` of `key` and `value`; never a password |
 | `cloud key list --json` | Object with `result` and optional pagination metadata; `--all` gives a combined array |
-| `cloud service settings list --json` | Object with `settings`; values retain string/number types |
+| `cloud clickhouse settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
 | `local init --json` | Object with `paths` this run created (`.clickhouse/`, `clickhouse/`, `postgres/`) and, when the directory was inside another project, `enclosing_project` with that project's path; with `CLICKHOUSECTL_PROJECT_DIR` set, `project_dir` names the directory initialized, which `paths` are relative to |
 | `local clickhouse list --json`, `local postgres list --json`, `local status --json` | Object with `servers`, `total_servers`, `total_running_servers`, and `project_scope` (`kind` and `path`, below); each server has an `engine` (`clickhouse` or `postgres`). A stopped ClickHouse server's `version` is the one it was last seen ready on, which a restart without `--version` reuses; a start that never became ready does not change it. An engine's `list` holds only that engine; `status` holds both |
@@ -34,15 +34,15 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud udf deploy --json` | Object with `action` (`created` or `version_created`), `udf`, and `attachment` |
 | `cloud udf list`, `cloud udf version list`, `cloud udf attachment list` with `--json` | Object with a `result` array and optional outer `limit`, `totalCount`, and `nextCursor`; missing/null metadata is omitted |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
-| `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
+| `cloud clickhouse query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |
 | `local client`, `local postgres client` | Native client output, even in JSON mode |
-| `cloud service prometheus`, legacy `cloud org prometheus` | Raw Prometheus text, even in JSON mode |
+| `cloud clickhouse prometheus`, legacy `cloud org prometheus` | Raw Prometheus text, even in JSON mode |
 | `cloud postgres prometheus service/org --json` | Prometheus text encoded as one JSON string |
 
 Human detail views summarize PEM blocks; JSON returns their original contents. `postgres certs get` deliberately emits PEM. Treat JSON results and files as potentially sensitive.
 
-`cloud org list`, `cloud service snapshot list` and `cloud clickpipe list` read every page themselves, as do `--name` lookups and organization-name and auto-detected organization lookups. Other paginated lists return one page and take `--cursor`. The cursor is in `nextCursor`, or `pagination.nextCursor` for `cloud query-api-endpoint list`. Pass it unchanged, even when it is empty or starts with `-`. Only an absent cursor marks the last page.
+`cloud org list`, `cloud clickhouse snapshot list` and `cloud clickpipe list` read every page themselves, as do `--name` lookups and organization-name and auto-detected organization lookups. Other paginated lists return one page and take `--cursor`. The cursor is in `nextCursor`, or `pagination.nextCursor` for `cloud query-api-endpoint list`. Pass it unchanged, even when it is empty or starts with `-`. Only an absent cursor marks the last page.
 
 ## Check status and stderr
 
@@ -56,7 +56,7 @@ Before acting, `clickhousectl cloud auth status --json` reports the Cloud creden
 | `3` | An interactive prompt was cancelled (the `skills` agent or scope picker); Ctrl-C elsewhere ends the process by signal |
 | `4` | Authentication required/rejected (HTTP 401, missing credentials), including OAuth-only writes |
 
-An HTTP 403 is a runtime error (`1`, code `http_4xx`), not `4`: it refuses the request, for example a quota, a precondition such as ClickStack not being set up, an organization policy or a missing grant, and logging in again does not fix it. The exception is a credential check backed by the identity (whoami) endpoint: `cloud auth login`, `cloud auth whoami`, and the key bind in `cloud service query`. There a 403 rejects the credentials themselves and exits `4`.
+An HTTP 403 is a runtime error (`1`, code `http_4xx`), not `4`: it refuses the request, for example a quota, a precondition such as ClickStack not being set up, an organization policy or a missing grant, and logging in again does not fix it. The exception is a credential check backed by the identity (whoami) endpoint: `cloud auth login`, `cloud auth whoami`, and the key bind in `cloud clickhouse query`. There a 403 rejects the credentials themselves and exits `4`.
 
 Exit `2` also covers input that is checked after parsing but can never succeed, such as an unknown `--provider`, a malformed `--tag`, `--ip-allow` or `--role-id` entry, `--min-replicas` without `--max-replicas`, empty SQL, ClickPipe credential flags that select more than one authentication method, an empty ClickPipe Protobuf schema or service-account key file, a `--file` body that is not valid JSON or has unknown fields, or `cloud auth login --interactive` without a TTY. A file that cannot be read is a runtime error (`1`, code `io`), and so is a check that depends on the resource's current state. When valid JSON does not fit the request, the error names the file, the JSON path of the offending value, such as `policies[0].permissions[0]`, and the kind of JSON value expected; only JSON syntax errors give a line and column. ClickStack `--file` bodies are checked locally only for JSON syntax, top-level field types and unknown keys, including keys inside a chart, filter, channel or permission; the API checks everything else (enum values, `kind`, `type` and `displayType` selectors, cross-field rules), so a value it rejects is a runtime error (`1`, code `http_4xx`).
 
@@ -72,13 +72,13 @@ Local and Cloud runtime errors in JSON mode write an envelope to stderr:
 
 Error rendering adds nothing to stdout, but a streaming query or a command that already committed a change may have emitted a result before failing. Do not accept partial output as success or assume nonzero exit means no side effects.
 
-Cloud generic codes are `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `rate_limited`, `transport`, `timeout`, `sql_error`, `service_stopped`, `io`, and `other`, with specific recovery codes taking precedence. `resource_not_found` means the API answered 404 for an identifier, or a `--name`/`--email` matched nothing; `command` lists what does exist in that scope. For a resource inside a service, including service-wide settings such as the scaling schedule or backup configuration and a Postgres service's logs, metrics and backups, the CLI reads the service to decide which one is missing; when the service exists, the API's own error is reported. A malformed identifier keeps the API's own diagnostic. ClickStack subresources can still report `http_4xx`. Treat a not-found from a delete as "already gone" only when `command` lists the kind you meant to delete, not its parent. A delete the API rejects for a service that still exists, such as one still provisioning, reports `http_4xx`, never `resource_not_found`; for a ClickHouse service the message names its current state. `cloud service delete` reports `deletion_protected` when the service has deletion protection on: nothing was deleted, `--force` did not stop it, and `command` is the `service update` that turns protection off.
+Cloud generic codes are `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `rate_limited`, `transport`, `timeout`, `sql_error`, `service_stopped`, `io`, and `other`, with specific recovery codes taking precedence. `resource_not_found` means the API answered 404 for an identifier, or a `--name`/`--email` matched nothing; `command` lists what does exist in that scope. For a resource inside a service, including service-wide settings such as the scaling schedule or backup configuration and a Postgres service's logs, metrics and backups, the CLI reads the service to decide which one is missing; when the service exists, the API's own error is reported. A malformed identifier keeps the API's own diagnostic. ClickStack subresources can still report `http_4xx`. Treat a not-found from a delete as "already gone" only when `command` lists the kind you meant to delete, not its parent. A delete the API rejects for a service that still exists, such as one still provisioning, reports `http_4xx`, never `resource_not_found`; for a ClickHouse service the message names its current state. `cloud clickhouse delete` reports `deletion_protected` when the service has deletion protection on: nothing was deleted, `--force` did not stop it, and `command` is the `clickhouse update` that turns protection off.
 
 `cloud udf attach` reports the service's state when it cannot attach: `service_idle` (rerun with `--wake`, or wake it; `command` is the wake command), `service_stopped` (start it first; `command` is the start command), or `service_not_running` (starting, or another non-running state: wait for `running`, or start it). A `--wake` that finds the service stopped or failed while waiting reports `service_stopped` or `service_not_running`.
 
 `cloud clickpipe start` exits 1 with `clickpipe_still_pausing` when the API answers with `Pausing`: a CDC pipe that is still pausing accepts the start but does not apply it. `command` is the `clickpipe get` to repeat until `state` is `Paused`; then run start again. It exits 1 with `clickpipe_start_not_applied` when the API answers with `Paused`: a pipe that has only just finished pausing drops the start too. `command` is the same start; wait a few seconds and rerun it until it returns `Running`. It exits 1 with `clickpipe_start_no_effect`, with no `command` and no `next`, when the API answers with `Completed`: start does not re-run a completed pipe, so there is nothing to retry. Only start is checked: a resync answered with `Paused` or `Completed` is applied.
 
-`cloud service client` checks the local ClickHouse build before calling the API, and reports a problem with the same codes and `command` as `local client`: `invalid_version`, `version_not_installed` (`command` lists or installs a build), `version_selection_required` (several builds and no default; pass `--version`), `binary_not_launchable` (`command` reinstalls the build), and `unsupported_client_version` (the build predates `--login`; `command` installs `latest`).
+`cloud clickhouse client` checks the local ClickHouse build before calling the API, and reports a problem with the same codes and `command` as `local client`: `invalid_version`, `version_not_installed` (`command` lists or installs a build), `version_selection_required` (several builds and no default; pass `--version`), `binary_not_launchable` (`command` reinstalls the build), and `unsupported_client_version` (the build predates `--login`; `command` installs `latest`).
 
 When a local error's text comes from another program, `message` is clickhousectl's own summary and that text is in `details`: the server's startup output or log tail (`startup_exit`, `startup_timeout`), the Docker daemon's (`docker_error`), the HTTP client's, downloader's, or extractor's (`network_error`, `download_failed`), the OS's or serializer's (`io_error`, `sql_input_open_failed`, `sql_input_read_failed`), a failed subprocess's (`local_error`), and ClickHouse's, the HTTP client's, or the JSON parser's for the UDF codes `udf_definition_invalid` (invalid JSON), `udf_rejected`, `udf_reload_blocked`, `udf_query_failed`, and `udf_server_unreachable`. Human mode prints the same text. Telemetry never records it. Managed-client failures include `project_scope`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command, and `server_metadata_invalid` carries `path` and `guidance`. `project_scope` always has `kind` and `path`. `path` is the project root the command acted on: the nearest directory holding `.clickhouse/` at or above the current directory (never the home directory for its subdirectories), else the current directory. `kind` is `project_root` when that `.clickhouse/` was found, `current_directory` when none was, and `env_override` when `CLICKHOUSECTL_PROJECT_DIR` named the root instead; only `current_directory` guidance suggests changing directory. Every `guidance` step has an `action`, a `message`, and, when one applies, a `command`. `action` is one of `list_project_servers`, `list_global_servers`, `return_to_project_root`, `stop_global_project_server`, `start_server`, `install_version`, `connect_directly`, `repair_project_state`, `repair_metadata`, and `verify_postgres_container`. Act on `action`, not on `message`. New optional fields, codes, and guidance actions may be added compatibly.
 
@@ -86,8 +86,8 @@ When a local error's text comes from another program, `message` is clickhousectl
 
 | Operation | Completion check or retry constraint |
 | --- | --- |
-| ClickHouse create/start/stop | Poll `service get` for the intended state |
-| ClickHouse delete | Poll `service get` until `state` is `terminated` or `softdeleted`, or it fails with `resource_not_found` |
+| ClickHouse create/start/stop | Poll `clickhouse get` for the intended state |
+| ClickHouse delete | Poll `clickhouse get` until `state` is `terminated` or `softdeleted`, or it fails with `resource_not_found` |
 | Postgres create/restore/replica | Poll `postgres get`; verify connectivity and credentials separately |
 | Postgres resize (`update --size`) | Poll `postgres get` until `size` shows the requested value; this can take several minutes |
 | Postgres HA change (`update --ha-type` or `--standby-count`) | No field signal: `haType` and `standbyCount` show the new value as soon as the change is accepted, minutes before the standby exists; check `pg_stat_replication` on the primary |
@@ -98,14 +98,14 @@ When a local error's text comes from another program, `message` is clickhousectl
 | CDC scaling (`clickpipe cdc-scaling update`) | Poll `cdc-scaling get` until `replicaCpuMillicores` shows the requested value; another update meanwhile fails with a conflict |
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
-| `service delete --force` stop wait | Waits up to 10 minutes for the stop; `timeout`, or `other` when the service leaves the stop path, means nothing was deleted: check `service get`, then rerun |
+| `clickhouse delete --force` stop wait | Waits up to 10 minutes for the stop; `timeout`, or `other` when the service leaves the stop path, means nothing was deleted: check `clickhouse get`, then rerun |
 | UDF creation/attachment | Wait for the version to be ready and inspect the service attachment; `udf deploy` waits for both |
 
 The asynchronous commands add a `next` object to their `--json` output that names the poll. The CLI still returns as soon as the API accepts the request:
 
 ```json
 "next": {
-  "command": "clickhousectl cloud service get 1234-... --org-id 5678-... --json",
+  "command": "clickhousectl cloud clickhouse get 1234-... --org-id 5678-... --json",
   "field": "state",
   "until": ["running"],
   "fail_on": ["failed"],
@@ -117,9 +117,9 @@ Run `command` as is: it carries the resolved IDs and `--org-id`, but not credent
 
 | Command | Polls | `field` | `until` | `fail_on` |
 | --- | --- | --- | --- | --- |
-| `service create`, `service start`, `service wake` | `service get` | `state` | `running` | `failed` |
-| `service stop` | `service get` | `state` | `stopped`, `idle` | `failed`, `terminated` |
-| `service delete` | `service get` | `state` | `terminated`, `softdeleted` (or `resource_not_found`) | `failed` |
+| `clickhouse create`, `clickhouse start`, `clickhouse wake` | `clickhouse get` | `state` | `running` | `failed` |
+| `clickhouse stop` | `clickhouse get` | `state` | `stopped`, `idle` | `failed`, `terminated` |
+| `clickhouse delete` | `clickhouse get` | `state` | `terminated`, `softdeleted` (or `resource_not_found`) | `failed` |
 | `postgres create`, `postgres restore`, `postgres read-replica create` | `postgres get` on the new service | `state` | `running` | `deleting` |
 | `postgres update --size` | `postgres get` | `size` | The requested value | None |
 | `postgres promote` | `postgres get` | `isPrimary` | `true` | None |

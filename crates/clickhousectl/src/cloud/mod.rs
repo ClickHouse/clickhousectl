@@ -145,7 +145,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         ));
     }
 
-    // `service client` ends in an `exec()` of the local client, and its
+    // `clickhouse client` ends in an `exec()` of the local client, and its
     // failures before that are local ones (no installed build, too old), so it
     // returns the top-level error itself.
     if let CloudCommands::Service {

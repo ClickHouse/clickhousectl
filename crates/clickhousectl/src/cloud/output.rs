@@ -52,12 +52,12 @@ pub enum CloudErrorCode {
     Other,
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,
-    /// `cloud service query` found the authenticated API key already bound to
+    /// `cloud clickhouse query` found the authenticated API key already bound to
     /// the service's Query API endpoint, yet the Query API kept rejecting it
     /// for the whole readiness window; no upsert was made, since rebinding
     /// cannot help (#1043).
     QueryKeyBoundRejected,
-    /// `cloud service query` had to bind the authenticated API key to the
+    /// `cloud clickhouse query` had to bind the authenticated API key to the
     /// service's Query API endpoint, and the Cloud API refused the write
     /// (`403`), typically because the key is read-only. Nothing was changed;
     /// `command` inspects the endpoint and `api_key_id` names the key (#1325).
@@ -102,17 +102,17 @@ pub enum CloudErrorCode {
     /// `update` downloaded an archive that the release's `SHA256SUMS` does
     /// not list or whose digest differs, and replaced nothing (#1307).
     VerificationFailed,
-    /// `cloud service delete` found the service's deletion protection on, so
+    /// `cloud clickhouse delete` found the service's deletion protection on, so
     /// nothing was deleted or stopped; `command` turns protection off.
     DeletionProtected,
-    /// `cloud service client` was pointed at a ClickHouse build whose version
+    /// `cloud clickhouse client` was pointed at a ClickHouse build whose version
     /// is malformed; the same code `local client` reports (#1443).
     InvalidVersion,
-    /// `cloud service client` found no installed local build to run, or not
+    /// `cloud clickhouse client` found no installed local build to run, or not
     /// the requested one; `command` lists or installs one. The same code
     /// `local client` reports (#1443).
     VersionNotInstalled,
-    /// `cloud service client` found several installed builds and no default;
+    /// `cloud clickhouse client` found several installed builds and no default;
     /// pass `--version` or set a default. The same code `local client`
     /// reports (#1443).
     VersionSelectionRequired,
@@ -120,7 +120,7 @@ pub enum CloudErrorCode {
     /// `command` reinstalls it. The same code `local client` reports (#1443).
     BinaryNotLaunchable,
     /// The selected local build's client predates `--login`, which
-    /// `cloud service client` needs; `command` installs a newer one (#1443).
+    /// `cloud clickhouse client` needs; `command` installs a newer one (#1443).
     UnsupportedClientVersion,
 }
 
@@ -141,7 +141,7 @@ impl CloudErrorCode {
     }
 
     /// The Cloud code for a local client pre-flight failure that
-    /// `cloud service client` shares with `local client` (#1443).
+    /// `cloud clickhouse client` shares with `local client` (#1443).
     fn from_local(code: crate::local::output::LocalErrorCode) -> Self {
         use crate::local::output::LocalErrorCode;
         match code {
@@ -278,7 +278,7 @@ pub fn print_error(error: &crate::error::Error) {
 /// the operation's JSON output as `next`. A command that carries `next` does
 /// not wait: exit 0 means the API accepted the request, and this names the
 /// read that shows when it is done. Most Cloud commands do not wait; the
-/// exceptions are `service delete --force` (it waits for the stop before
+/// exceptions are `clickhouse delete --force` (it waits for the stop before
 /// deleting), `udf deploy` and `udf attach --wake`.
 /// `docs/reference/automation.md` documents the shape.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -950,7 +950,7 @@ mod tests {
         }
     }
 
-    /// `cloud service client` runs the local client pre-flight, so a missing,
+    /// `cloud clickhouse client` runs the local client pre-flight, so a missing,
     /// ambiguous, broken or too-old build gets the same typed code and
     /// runnable repair `local client` reports, not `other` (#1443).
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
             message: "rejected".into(),
             host: None,
             port: None,
-            command: Some("clickhousectl cloud service query-endpoint get svc-1".into()),
+            command: Some("clickhousectl cloud clickhouse query-endpoint get svc-1".into()),
             api_key_id: Some("key-1".into()),
         };
         let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
@@ -1058,7 +1058,7 @@ mod tests {
                 "error": {
                     "code": "query_key_bound_rejected",
                     "message": "rejected",
-                    "command": "clickhousectl cloud service query-endpoint get svc-1",
+                    "command": "clickhousectl cloud clickhouse query-endpoint get svc-1",
                     "api_key_id": "key-1",
                 }
             })
@@ -1067,13 +1067,13 @@ mod tests {
 
     #[test]
     fn next_step_serializes_a_runnable_poll() {
-        let next = NextStep::poll(&["service", "get", "svc 1"], "org-1", "state")
+        let next = NextStep::poll(&["clickhouse", "get", "svc 1"], "org-1", "state")
             .until(&["running"])
             .every(5);
         assert_eq!(
             serde_json::to_value(&next).unwrap(),
             json!({
-                "command": "clickhousectl cloud service get 'svc 1' --org-id org-1 --json",
+                "command": "clickhousectl cloud clickhouse get 'svc 1' --org-id org-1 --json",
                 "field": "state",
                 "until": ["running"],
                 "fail_on": [],
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn json_with_next_adds_next_to_objects_only() {
-        let next = NextStep::poll(&["service", "get", "svc-1"], "org-1", "state");
+        let next = NextStep::poll(&["clickhouse", "get", "svc-1"], "org-1", "state");
         let with: Value = serde_json::from_str(
             &json_with_next(&json!({"id": "svc-1"}), Some(next.clone())).unwrap(),
         )

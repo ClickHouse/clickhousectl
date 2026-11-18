@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-`cloud service query` runs ClickHouse SQL over HTTP without a local binary or service password. For the separate OAuth-only Postgres route, see [ClickHouse Managed Postgres](../guides/managed-postgres.md#run-read-only-sql-with-oauth).
+`cloud clickhouse query` runs ClickHouse SQL over HTTP without a local binary or service password. For the separate OAuth-only Postgres route, see [ClickHouse Managed Postgres](../guides/managed-postgres.md#run-read-only-sql-with-oauth).
 
 ## Authentication and network access
 
@@ -13,14 +13,14 @@ With API-key authentication, the CLI uses the active API key. If needed, it adds
 Binding is a write. A read-only API key cannot bind itself: the query exits 1 with `query_key_bind_forbidden`, whose `api_key_id` names the key, and nothing is changed. Bind the read-only key once with a key that has write access, adding `--allowed-origins '*'` when the service has no endpoint yet:
 
 ```bash
-clickhousectl cloud service query-endpoint create <service-id> --role <role> --open-api-key <key-id>
+clickhousectl cloud clickhouse query-endpoint create <service-id> --role <role> --open-api-key <key-id>
 ```
 
 Endpoint roles apply to every bound key. Inspect the endpoint's roles and use appropriate key permissions before allowing a first-use bind. The command's help lists the conditional permissions it requires. A key already listed in the endpoint is not rebound: the CLI waits for acceptance, then reports `query_key_bound_rejected` if still refused. When the endpoint refuses a statement with HTTP 403 but answers a `SELECT 1` probe with the same key, the endpoint role lacks a grant for that statement. The CLI reports the refusal as a query failure (exit 1) without binding or re-running the statement, with or without `--no-auto-enable`.
 
 ```bash
-clickhousectl cloud service query-endpoint get <service-id>
-clickhousectl cloud service query <service-id> --no-auto-enable --query "SELECT 1"
+clickhousectl cloud clickhouse query-endpoint get <service-id>
+clickhousectl cloud clickhouse query <service-id> --no-auto-enable --query "SELECT 1"
 ```
 
 The Query API proxies requests from inside Cloud. The service's IP allowlist restricts direct connections, not that proxied route. API-key queries still enforce the key's own IP allowlist, endpoint binding, and database role; OAuth remains read-only.
@@ -32,15 +32,15 @@ The Query API proxies requests from inside Cloud. The service's IP allowlist res
 Supply one UTF-8 statement through `--query`, `--queries-file PATH`, or stdin. The two flags conflict; `--queries-file -` reads stdin explicitly. The Query API rejects multi-statement scripts. Use the native client for scripts.
 
 ```bash
-clickhousectl cloud service query <service-id> --queries-file query.sql
-clickhousectl cloud service query <service-id> --query "SELECT 1" --format JSONEachRow
+clickhousectl cloud clickhouse query <service-id> --queries-file query.sql
+clickhousectl cloud clickhouse query <service-id> --query "SELECT 1" --format JSONEachRow
 ```
 
 `--query` never reads stdin. Combining it with a separate CSV stream is refused. Put the INSERT statement and data in one stream instead, after creating the destination table:
 
 ```bash
 printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
-  clickhousectl cloud service query <service-id>
+  clickhousectl cloud clickhouse query <service-id>
 ```
 
 `--format` overrides automatic agent JSON but cannot be combined with explicit `--json`. Defaults are `PrettyCompact` on a terminal, `TabSeparated` when piped, and `JSONEachRow` under explicit or automatic JSON mode.
@@ -49,22 +49,22 @@ printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
 
 The gateway can stop waiting after about 30 seconds. **A timeout does not prove that SQL failed or never ran.** The CLI does not retry timed-out SQL. Verify the result before resending an INSERT or another write; it may duplicate work. Check active queries through `system.processes`, but absence there alone does not prove a statement never executed.
 
-An idle service can be woken in either auth mode. If the gateway requests wake confirmation, the CLI resends with it. A wake-related timeout still leaves SQL completion uncertain. Check the service state and the statement's result before retrying. A stopped service is not woken: start it with `cloud service start`.
+An idle service can be woken in either auth mode. If the gateway requests wake confirmation, the CLI resends with it. A wake-related timeout still leaves SQL completion uncertain. Check the service state and the statement's result before retrying. A stopped service is not woken: start it with `cloud clickhouse start`.
 
 Use a native client for bulk loads, binary formats such as `RowBinary`/`Native`, or long-running queries:
 
 ```bash
 clickhousectl local use latest
-clickhousectl cloud service client <service-id> -- --queries-file backfill.sql
+clickhousectl cloud clickhouse client <service-id> -- --queries-file backfill.sql
 ```
 
-`cloud service client` connects to the service's `nativesecure` endpoint and signs in through a browser as your Cloud user, so no service password is needed; it needs ClickHouse 25.12 or newer. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client). Direct connections must satisfy the service's IP allowlist.
+`cloud clickhouse client` connects to the service's `nativesecure` endpoint and signs in through a browser as your Cloud user, so no service password is needed; it needs ClickHouse 25.12 or newer. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client). Direct connections must satisfy the service's IP allowlist.
 
 In JSON mode a timeout reports `error.code: query_timeout` on stderr. Optional `command`, `host`, and `port` fields suggest recovery; the SQL placeholder is never filled with your input. A possible wake delay instead suggests a service-state check. Always check the exit status even if stdout already contains rows.
 
 ## Keys stored by earlier versions
 
-Earlier versions created a per-service key and stored it in `.clickhouse/credentials.json` under `service_query_keys`. The CLI no longer uses such a record; queries always bind the active API key. The first `cloud service query` or `cloud service delete` of that service removes the record and prints a notice to stderr that names the stored key's management ID. The key itself still exists in the organization, enabled and bound to the service's endpoint. Delete it when nothing else uses it:
+Earlier versions created a per-service key and stored it in `.clickhouse/credentials.json` under `service_query_keys`. The CLI no longer uses such a record; queries always bind the active API key. The first `cloud clickhouse query` or `cloud clickhouse delete` of that service removes the record and prints a notice to stderr that names the stored key's management ID. The key itself still exists in the organization, enabled and bound to the service's endpoint. Delete it when nothing else uses it:
 
 ```bash
 clickhousectl cloud key list

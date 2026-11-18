@@ -27,7 +27,7 @@ async fn permission_help_is_offline_and_exposes_multi_permission_operations() {
 #[tokio::test]
 async fn permission_help_does_not_attach_leaf_permissions_to_parent_groups() {
     let mock = MockServer::start().await;
-    for command in [&["service"][..], &["postgres", "read-replica"][..]] {
+    for command in [&["clickhouse"][..], &["postgres", "read-replica"][..]] {
         let help = permission_help(&mock, command, "--help");
         assert!(advertised_permission_ids(&help).is_empty());
     }
@@ -37,7 +37,7 @@ async fn permission_help_does_not_attach_leaf_permissions_to_parent_groups() {
 #[tokio::test]
 async fn permission_help_covers_force_delete_calls() {
     let mock = MockServer::start().await;
-    let help = permission_help(&mock, &["service", "delete"], "--help");
+    let help = permission_help(&mock, &["clickhouse", "delete"], "--help");
     assert!(mock.received_requests().await.unwrap().is_empty());
     let service_path = format!("/v1/organizations/org-1/services/{TEST_SERVICE_ID}");
     Mock::given(method("GET"))
@@ -70,7 +70,7 @@ async fn permission_help_covers_force_delete_calls() {
             "--json",
             "--org-id",
             "org-1",
-            "service",
+            "clickhouse",
             "delete",
             TEST_SERVICE_ID,
             "--force",

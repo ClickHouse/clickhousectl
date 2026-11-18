@@ -37,7 +37,7 @@ async fn manual_query_endpoint_mock(get_response: ResponseTemplate) -> MockServe
 
 fn manual_query_endpoint_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
-        "service",
+        "clickhouse",
         "query-endpoint",
         "create",
         "svc-1",
@@ -56,7 +56,7 @@ async fn query_endpoint_create_sends_typed_roles_and_explicit_first_origins() {
     // enough to show the 404-then-create path and its permissions.
     let origins = "https://app.example.com";
     let mock = manual_query_endpoint_mock(ResponseTemplate::new(404)).await;
-    let help = permission_help(&mock, &["service", "query-endpoint", "create"], "--help");
+    let help = permission_help(&mock, &["clickhouse", "query-endpoint", "create"], "--help");
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &manual_query_endpoint_args(&[

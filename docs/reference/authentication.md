@@ -23,7 +23,7 @@ clickhousectl cloud auth status
 
 If a saved OAuth login cannot be read or uses an older format without complete authorization configuration, `auth status` shows OAuth as `Login required`, not `Not configured`, and explains the problem below the table with the command to log in again. JSON output includes this explanation in `oauth_warning`, separate from any identity-verification `warning`; it is shown even when an API key is active. Run `clickhousectl cloud auth login` to log in again. Without a higher-priority API key source, Cloud commands exit 4 (`auth_required` in JSON) with an explicit re-login message. The unusable file is left unchanged; the CLI does not reconstruct its authorization configuration from built-in defaults or environment variables.
 
-`cloud service client` is the exception to both modes for SQL: either credential only looks up the service, and `clickhouse client --login` then signs you in to the service itself through its own browser flow, as your Cloud user. That needs a person at a browser, so it does not suit CI or agents. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client).
+`cloud clickhouse client` is the exception to both modes for SQL: either credential only looks up the service, and `clickhouse client --login` then signs you in to the service itself through its own browser flow, as your Cloud user. That needs a person at a browser, so it does not suit CI or agents. See [Open an interactive client](../guides/cloud-service.md#open-an-interactive-client).
 
 For automation, inject `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through a secret manager. The CLI does not save environment credentials. For development it also reads `.env` from the current directory or, when that has none, from the [project root](../guides/local-development.md); the first file found is used alone, never merged. Keep that file out of version control and restrict access. Flags are available, but command-line secrets can appear in shell history and process listings.
 
@@ -39,16 +39,16 @@ The first applicable source wins:
 
 Supplying only one credential flag blocks fallback. So does a `.clickhouse/credentials.json` that exists but cannot be read or parsed: Cloud commands exit 1 with an error naming the file instead of using environment or OAuth credentials, and `auth status` shows the API key source as `Unreadable` with the error below the table (`credentials_warning` in JSON). Fix the file, or remove it with `clickhousectl cloud auth logout --api-keys`. Cloud commands skip OAuth token refresh when a higher-priority API key source wins, leaving saved OAuth tokens unchanged. When OAuth is selected, expired or near-expiry tokens are refreshed before the API request. If the login has no refresh token or the refresh fails, including when the authorization server is unreachable, the saved login is kept: `auth status` shows OAuth as `Expired`, and the command exits 4 (`auth_required` in JSON) with a message to run `clickhousectl cloud auth login`. `auth status` identifies inactive sources; `--debug` on a Cloud command prints the selected credential source and API URL to stderr.
 
-A saved API key works only against the API it was saved for. When `auth login --api-key` verifies a key against a non-production API (`--url`), that API is saved with the key as `api_url`; a key with no `api_url` is for production. Later commands without `--url` use the saved API, print a note naming it to stderr, and derive the Query API host for `cloud service query` from it unless `CLICKHOUSE_CLOUD_QUERY_HOST` is set. A `--url` naming any other API exits 4 without sending the key or falling back to environment or OAuth credentials: pass the saved URL, or save a key for that API. `auth status` shows the API each saved source uses. Flag and environment keys carry no URL; they use `--url` or production.
+A saved API key works only against the API it was saved for. When `auth login --api-key` verifies a key against a non-production API (`--url`), that API is saved with the key as `api_url`; a key with no `api_url` is for production. Later commands without `--url` use the saved API, print a note naming it to stderr, and derive the Query API host for `cloud clickhouse query` from it unless `CLICKHOUSE_CLOUD_QUERY_HOST` is set. A `--url` naming any other API exits 4 without sending the key or falling back to environment or OAuth credentials: pass the saved URL, or save a key for that API. `auth status` shows the API each saved source uses. Flag and environment keys carry no URL; they use `--url` or production.
 
-`cloud postgres query` accepts **OAuth only**, unlike `cloud service query`. Remove higher-priority API key sources before using that route. Clearing a saved key file alone is insufficient if exported variables or `.env` still supply a key.
+`cloud postgres query` accepts **OAuth only**, unlike `cloud clickhouse query`. Remove higher-priority API key sources before using that route. Clearing a saved key file alone is insufficient if exported variables or `.env` still supply a key.
 
 ## Select an organization and resource
 
 ```bash
 clickhousectl cloud org list
-clickhousectl cloud service list --org-id <org-id>
-clickhousectl cloud service get --name analytics --org-id <org-id>
+clickhousectl cloud clickhouse list --org-id <org-id>
+clickhousectl cloud clickhouse get --name analytics --org-id <org-id>
 ```
 
 Organization-scoped commands auto-select only when credentials reach exactly one organization. Otherwise pass `--org-id` or, where supported, exact `--org-name`. When credentials reach several organizations and neither is given, the command exits 2 as a usage error and lists each organization's ID and name. Organization names need not be unique: when `--org-name` matches more than one, the command exits 1 and lists the matching IDs to pass to `--org-id`.
@@ -60,8 +60,8 @@ Most resource commands accept a positional ID or exact `--name`. Name lookup nee
 Every executable Cloud command's `--help` lists bundled API-key permission requirements without making a network request:
 
 ```bash
-clickhousectl cloud service get --help
-clickhousectl cloud service query --help
+clickhousectl cloud clickhouse get --help
+clickhousectl cloud clickhouse query --help
 ```
 
 All applicable permissions are needed, including conditional permissions for name lookup, optional flags, and Query API binding. An empty upstream permission list still requires a valid key. Permission help does not inspect your credentials, change OAuth's read-only restriction, or grant SQL privileges.

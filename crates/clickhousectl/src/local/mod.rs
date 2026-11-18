@@ -516,7 +516,7 @@ pub(crate) fn resolve_installed_client(
 
 /// Hand the process over to `<binary> client <args>`; returns only on failure.
 ///
-/// Shared by `local client` and `cloud service client`. `args` is the native
+/// Shared by `local client` and `cloud clickhouse client`. `args` is the native
 /// client's argv, passed as separate arguments with no shell in between.
 pub(crate) fn exec_clickhouse_client(binary: &Path, version: &str, args: &[String]) -> Result<()> {
     // Before the telemetry pre-exec hook, so a binary that cannot be launched

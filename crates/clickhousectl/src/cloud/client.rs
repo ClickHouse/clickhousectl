@@ -535,19 +535,19 @@ impl ResourceKind {
     /// list of its own: `org get` shows the organization's `byocConfig`.
     const fn list_base(self) -> &'static str {
         match self {
-            Self::Service => "clickhousectl cloud service list",
+            Self::Service => "clickhousectl cloud clickhouse list",
             Self::PostgresService => "clickhousectl cloud postgres list",
             Self::Organization => "clickhousectl cloud org list",
             Self::Backup => "clickhousectl cloud backup list",
-            Self::Snapshot => "clickhousectl cloud service snapshot list",
+            Self::Snapshot => "clickhousectl cloud clickhouse snapshot list",
             Self::ClickPipe => "clickhousectl cloud clickpipe list",
             Self::ReversePrivateEndpoint => {
                 "clickhousectl cloud clickpipe reverse-private-endpoint list"
             }
             Self::SavedQuery => "clickhousectl cloud saved-query list",
             Self::QueryApiEndpoint => "clickhousectl cloud query-api-endpoint list",
-            Self::ClickHouseSetting => "clickhousectl cloud service settings list",
-            Self::JwtProvider => "clickhousectl cloud service jwt-provider list",
+            Self::ClickHouseSetting => "clickhousectl cloud clickhouse settings list",
+            Self::JwtProvider => "clickhousectl cloud clickhouse jwt-provider list",
             Self::Udf => "clickhousectl cloud udf list",
             Self::Member => "clickhousectl cloud member list",
             Self::Invitation => "clickhousectl cloud invitation list",
@@ -1794,7 +1794,7 @@ mod tests {
             &err,
             &[ORG_UUID],
             "BAD_REQUEST: Invalid service id string:\"",
-            &format!("clickhousectl cloud service list --org-id {ORG_UUID}"),
+            &format!("clickhousectl cloud clickhouse list --org-id {ORG_UUID}"),
         );
         assert_eq!(err.kind, CloudErrorKind::Generic);
     }
@@ -2151,10 +2151,10 @@ mod tests {
             (
                 404,
                 Some(format!(
-                    "clickhousectl cloud service list --org-id {ORG_UUID}"
+                    "clickhousectl cloud clickhouse list --org-id {ORG_UUID}"
                 )),
                 Some(format!(
-                    "clickhousectl cloud service list --org-id {ORG_UUID}"
+                    "clickhousectl cloud clickhouse list --org-id {ORG_UUID}"
                 )),
             ),
             (

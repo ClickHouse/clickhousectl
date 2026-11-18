@@ -9,8 +9,8 @@ ClickPipes supports object storage, Kafka, Kinesis, Pub/Sub, Postgres, MySQL, Mo
 Use [API-key authentication](../reference/authentication.md) for creation and schema discovery. Select a ClickHouse Cloud service and wait for it to be running:
 
 ```bash
-clickhousectl cloud service list
-clickhousectl cloud service get <service-id>
+clickhousectl cloud clickhouse list
+clickhousectl cloud clickhouse get <service-id>
 clickhousectl cloud clickpipe context get <service-id>
 ```
 
@@ -45,7 +45,7 @@ Inspect the pipe and query the destination to confirm data arrived:
 
 ```bash
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
-clickhousectl cloud service query <service-id> \
+clickhousectl cloud clickhouse query <service-id> \
   --query "SELECT count() FROM default.events"
 ```
 
@@ -82,7 +82,7 @@ For a publicly trusted source certificate, omit `--ca-certificate`. Use `--tls-h
 Simple Postgres mappings use `ReplacingMergeTree`. For a current-state view, deduplicate versions and exclude deletion markers:
 
 ```bash
-clickhousectl cloud service query <service-id> \
+clickhousectl cloud clickhouse query <service-id> \
   --query "SELECT count() FROM default.orders FINAL WHERE _peerdb_is_deleted = 0"
 ```
 
@@ -91,7 +91,7 @@ Compare expected source data after the snapshot and ongoing replication have cau
 ## Monitor and diagnose
 
 ```bash
-clickhousectl cloud service prometheus <service-id> --filtered-metrics true | \
+clickhousectl cloud clickhouse prometheus <service-id> --filtered-metrics true | \
   grep 'clickpipe_id="<clickpipe-id>"'
 ```
 

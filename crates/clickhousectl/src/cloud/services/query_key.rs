@@ -1,4 +1,4 @@
-//! Query API endpoint access for `cloud service query`.
+//! Query API endpoint access for `cloud clickhouse query`.
 //!
 //! On first use the caller's own API key is bound to the service's query
 //! endpoint (#1043), which is created with role `sql_console_admin` when the
@@ -250,7 +250,7 @@ pub(crate) fn bound_caller_key_rejected_error(
     waited: Duration,
 ) -> CloudError {
     let inspect =
-        format!("clickhousectl cloud service query-endpoint get {service_id} --org-id {org_id}");
+        format!("clickhousectl cloud clickhouse query-endpoint get {service_id} --org-id {org_id}");
     let message = format!(
         "the authenticated API key {caller_uuid} is already bound to the Query API endpoint of \
          service {service_id}, yet the Query API still rejected it after waiting {}s. Nothing \
@@ -288,12 +288,12 @@ fn bind_forbidden_or(
         return error;
     }
     let inspect =
-        format!("clickhousectl cloud service query-endpoint get {service_id} --org-id {org_id}");
+        format!("clickhousectl cloud clickhouse query-endpoint get {service_id} --org-id {org_id}");
     let message = format!(
         "the authenticated API key {caller_uuid} must be bound to the Query API endpoint of \
          service {service_id} before it can query it, and the Cloud API refused the binding \
          ({}). Nothing was changed. Binding needs write access, so bind this key with an API \
-         key that has it:\n  clickhousectl cloud service query-endpoint create {service_id} \
+         key that has it:\n  clickhousectl cloud clickhouse query-endpoint create {service_id} \
          --role <role> --open-api-key {caller_uuid} --org-id {org_id}\n(add \
          --allowed-origins '*' when the service has no endpoint yet). --role replaces the \
          endpoint's roles for every bound key; read them first with\n  {inspect}",
@@ -864,7 +864,7 @@ mod tests {
         for needle in [
             "key-uuid-1",
             "after waiting 120s",
-            "cloud service query-endpoint get svc-1 --org-id org-1",
+            "cloud clickhouse query-endpoint get svc-1 --org-id org-1",
             "cloud key get key-uuid-1 --org-id org-1",
         ] {
             assert!(
@@ -878,7 +878,7 @@ mod tests {
         assert_eq!(details.api_key_id.as_deref(), Some("key-uuid-1"));
         assert_eq!(
             details.command.as_deref(),
-            Some("clickhousectl cloud service query-endpoint get svc-1 --org-id org-1")
+            Some("clickhousectl cloud clickhouse query-endpoint get svc-1 --org-id org-1")
         );
         assert_eq!(error.failure.unwrap().kind, FailureKind::Timeout);
     }
@@ -904,7 +904,7 @@ mod tests {
         for needle in [
             "key-uuid-1",
             "API error (403): FORBIDDEN",
-            "cloud service query-endpoint create svc-1",
+            "cloud clickhouse query-endpoint create svc-1",
             "--open-api-key key-uuid-1 --org-id org-1",
         ] {
             assert!(
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(details.api_key_id.as_deref(), Some("key-uuid-1"));
         assert_eq!(
             details.command.as_deref(),
-            Some("clickhousectl cloud service query-endpoint get svc-1 --org-id org-1")
+            Some("clickhousectl cloud clickhouse query-endpoint get svc-1 --org-id org-1")
         );
     }
 

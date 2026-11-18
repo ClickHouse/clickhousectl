@@ -111,7 +111,7 @@ async fn selectors_use_exact_scoped_names_and_ids_do_not_require_list_access() {
     );
     let cases: &[SelectorCase] = &[
         (
-            &["service", "get"],
+            &["clickhouse", "get"],
             "services",
             "services",
             "GET",
@@ -341,7 +341,7 @@ async fn selectors_refuse_bad_lists_before_mutation_and_preserve_list_errors() {
         let output = invoke_cli_with_cloud_credentials(
             &mock,
             &[
-                "service",
+                "clickhouse",
                 "update",
                 "--name",
                 "target",
@@ -367,7 +367,7 @@ async fn selectors_refuse_bad_lists_before_mutation_and_preserve_list_errors() {
 async fn selectors_rename_body_and_organization_name_scope_are_independent() {
     let org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     let id = "11111111-2222-3333-4444-555555555555";
-    for resource in ["service", "postgres", "key", "org"] {
+    for resource in ["clickhouse", "postgres", "key", "org"] {
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/organizations"))
@@ -380,7 +380,7 @@ async fn selectors_rename_body_and_organization_name_scope_are_independent() {
             .mount(&mock)
             .await;
         let suffix = match resource {
-            "service" => "services",
+            "clickhouse" => "services",
             "postgres" => "postgres",
             "key" => "keys",
             _ => "",
