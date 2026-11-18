@@ -19,13 +19,13 @@ macro_rules! root_agent_context {
     () => {
         "\
 CONTEXT FOR AGENTS:
+  Postgres for an app's transactional data: `local postgres start` (needs Docker), `cloud postgres create`
   Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
   (`cloud auth login --api-key X --api-secret Y`) allow writes.
-  Create account: `cloud auth signup`
   Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
   Check state first: `clickhousectl cloud auth status --json`, `clickhousectl local status --json`
   Find a command or flag by keyword: `clickhousectl search <words>`
-  Install the ClickHouse agent skills: `clickhousectl skills --agent claude`"
+  Install the ClickHouse and Postgres agent skills: `clickhousectl skills --agent claude`"
     };
 }
 
@@ -40,7 +40,7 @@ const ROOT_AFTER_HELP: &str = root_agent_context!();
 
 #[derive(Args)]
 #[command(name = "clickhousectl")]
-#[command(about = "The official CLI for ClickHouse: local and cloud", long_about = None)]
+#[command(about = "The official CLI for ClickHouse and Postgres: local and cloud", long_about = None)]
 #[command(version, disable_version_flag = true)]
 #[command(arg(clap::Arg::new("version")
     .short('V')
@@ -79,7 +79,8 @@ CONTEXT FOR AGENTS:
   Outside a project they use the current directory, and server starts create `.clickhouse/` there.
   CLICKHOUSECTL_PROJECT_DIR=<dir> skips discovery: <dir> is the project root (`local init` too).
   `clickhousectl local clickhouse start` bootstraps from zero — installs `latest` if nothing is set up.
-  Typical flow: `local init` -> `local clickhouse start` -> `local client -q 'SELECT 1'`")]
+  Typical flow: `local init` -> `local clickhouse start` -> `local client -q 'SELECT 1'`
+  Postgres flow (needs Docker): `local init` -> `local postgres start` -> `local postgres client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
     /// Manage ClickHouse and Postgres in ClickHouse Cloud
@@ -92,7 +93,7 @@ CONTEXT FOR AGENTS:
   `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
   delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list`")]
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list` or `cloud postgres list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents

@@ -32,6 +32,11 @@ const SYNONYMS: &[(&[&str], &str)] = &[
     (&["access", "list"], "allow"),
     (&["allowlist"], "allow"),
     (&["whitelist"], "allow"),
+    // What Postgres is for, and its long name; the commands only say `postgres`.
+    (&["oltp"], "postgres"),
+    (&["transactional"], "postgres"),
+    (&["relational"], "postgres"),
+    (&["postgresql"], "postgres"),
 ];
 
 /// The query's distinct words, with synonym phrases replaced.
@@ -492,6 +497,20 @@ mod tests {
             "cloud postgres update",
         ] {
             assert!(found.contains(&command), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn postgres_purpose_words_reach_the_postgres_commands() {
+        for words in ["oltp", "transactional database", "relational", "PostgreSQL"] {
+            let output = search(&real_index(), &query(words), 5);
+            let found = commands(&output);
+            assert!(
+                found
+                    .iter()
+                    .any(|command| command.split(' ').nth(1) == Some("postgres")),
+                "{words}: {found:?}"
+            );
         }
     }
 
