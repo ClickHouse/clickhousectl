@@ -5,14 +5,15 @@ use super::observability::{
     parse_known_postgres_logs_sort_order, parse_postgres_log_severity,
     parse_postgres_window_datetime,
 };
+use super::private_endpoint::parse_vpc_endpoint;
 use crate::cloud::shared::{NameSelector, SourceSelector, parse_datetime};
 use clap::builder::NonEmptyStringValueParser;
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     PgHaType, PgProvider, PgVersion, PostgresIpAccessListEntry, PostgresLogsGetListSeverity,
-    PostgresLogsGetListSortorder, SlowQueryPatternsGetListSortby,
-    SlowQueryPatternsGetListSortorder,
+    PostgresLogsGetListSortorder, PostgresPrivateEndpointVpcEndpoint,
+    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use std::path::PathBuf;
 
@@ -315,6 +316,19 @@ CONTEXT FOR AGENTS:
     #[command(subcommand)]
     Backup(PostgresBackupCommands),
 
+    /// Manage the Postgres AWS private endpoint (Beta)
+    #[command(
+        name = "private-endpoint",
+        subcommand,
+        after_help = "\
+CONTEXT FOR AGENTS:
+  AWS Postgres services only, in organizations with private endpoints enabled.
+  Typical flow: `create`, poll `get` until state=available (5 to 10 minutes), create an AWS
+    VPC endpoint for endpointServiceName, then `update --add-vpc-endpoint <vpce-id>`.
+  Connect through privateHostname from an approved VPC endpoint."
+    )]
+    PrivateEndpoint(PrivateEndpointCommands),
+
     /// Restore a Postgres service to a point in time
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -499,6 +513,93 @@ CONTEXT FOR AGENTS:
 }
 
 #[derive(Subcommand)]
+pub enum PrivateEndpointCommands {
+    /// Get the private endpoint of a Postgres service (Beta)
+    Get {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+    },
+    /// Create the private endpoint of a Postgres service (Beta)
+    Create {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// AWS region, other than the service's, that may connect (repeatable)
+        ///
+        /// Requires cross-region private endpoints for the organization.
+        #[arg(
+            long = "supported-region",
+            value_name = "REGION",
+            value_parser = NonEmptyStringValueParser::new()
+        )]
+        supported_region: Vec<String>,
+    },
+    /// Approve VPC endpoints or change supported regions (Beta)
+    #[command(
+        group(ArgGroup::new("private_endpoint_change").required(true).multiple(true).args([
+            "add_vpc_endpoint", "remove_vpc_endpoint", "add_region", "remove_region"
+        ])),
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Other approvals and regions are kept. Removing one that is not listed exits 0 with a
+    warning on stderr. Removed VPC endpoints can no longer connect."
+    )]
+    Update {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// VPC endpoint to approve (repeatable)
+        #[arg(
+            long = "add-vpc-endpoint",
+            value_name = "VPCE_ID[=DESCRIPTION]",
+            value_parser = parse_vpc_endpoint
+        )]
+        add_vpc_endpoint: Vec<PostgresPrivateEndpointVpcEndpoint>,
+        /// Approved VPC endpoint to remove (repeatable)
+        #[arg(
+            long = "remove-vpc-endpoint",
+            value_name = "VPCE_ID",
+            value_parser = NonEmptyStringValueParser::new()
+        )]
+        remove_vpc_endpoint: Vec<String>,
+        /// AWS region to allow connections from (repeatable)
+        #[arg(
+            long = "add-region",
+            value_name = "REGION",
+            value_parser = NonEmptyStringValueParser::new()
+        )]
+        add_region: Vec<String>,
+        /// Supported region to remove (repeatable)
+        #[arg(
+            long = "remove-region",
+            value_name = "REGION",
+            value_parser = NonEmptyStringValueParser::new()
+        )]
+        remove_region: Vec<String>,
+    },
+    /// Delete the private endpoint of a Postgres service (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Connections through approved VPC endpoints stop working; `create` makes a new endpoint
+    service with a new endpointServiceName, so VPC endpoints must be recreated.")]
+    Delete {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+    },
+}
+
+impl PrivateEndpointCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
 pub enum PrometheusCommands {
     /// Get metrics for one Postgres service
     Service {
@@ -662,6 +763,7 @@ impl PostgresCommands {
             PostgresCommands::SlowQueries(command) => command.is_write(),
             PostgresCommands::Prometheus(command) => command.is_write(),
             PostgresCommands::Backup(PostgresBackupCommands::List { .. }) => false,
+            PostgresCommands::PrivateEndpoint(command) => command.is_write(),
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -2395,5 +2497,130 @@ mod tests {
         let PostgresCommands::Prometheus(PrometheusCommands::Org) = org else {
             panic!("expected organization prometheus");
         };
+    }
+
+    const PRIVATE_ENDPOINT: [&str; 4] = ["clickhousectl", "cloud", "postgres", "private-endpoint"];
+
+    fn private_endpoint_args<'a>(rest: &[&'a str]) -> Vec<&'a str> {
+        PRIVATE_ENDPOINT
+            .iter()
+            .copied()
+            .chain(rest.iter().copied())
+            .collect()
+    }
+
+    #[test]
+    fn private_endpoint_reads_and_writes_are_classified() {
+        for (rest, write) in [
+            (&["get", "pg-1"][..], false),
+            (&["create", "pg-1"][..], true),
+            (&["update", "pg-1", "--add-region", "us-west-2"][..], true),
+            (&["delete", "--name", "db"][..], true),
+        ] {
+            let command = parse_postgres(&private_endpoint_args(rest));
+            assert_eq!(command.is_write(), write, "{rest:?}");
+        }
+    }
+
+    #[test]
+    fn private_endpoint_create_repeats_supported_regions() {
+        let command = parse_postgres(&private_endpoint_args(&[
+            "create",
+            "pg-1",
+            "--supported-region",
+            "us-west-2",
+            "--supported-region",
+            "eu-west-1",
+        ]));
+        let PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Create {
+            supported_region,
+            ..
+        }) = command
+        else {
+            panic!("expected private-endpoint create");
+        };
+        assert_eq!(supported_region, ["us-west-2", "eu-west-1"]);
+    }
+
+    #[test]
+    fn private_endpoint_update_needs_a_change_and_parses_every_list_flag() {
+        let error = Cli::try_parse_from(private_endpoint_args(&["update", "pg-1"]))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        let command = parse_postgres(&private_endpoint_args(&[
+            "update",
+            "pg-1",
+            "--add-vpc-endpoint",
+            "vpce-0123456789abcdef0=Production VPC",
+            "--add-vpc-endpoint",
+            "vpce-0123456789abcdef1",
+            "--remove-vpc-endpoint",
+            "vpce-0123456789abcdef2",
+            "--add-region",
+            "us-west-2",
+            "--remove-region",
+            "eu-west-1",
+        ]));
+        let PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Update {
+            add_vpc_endpoint,
+            remove_vpc_endpoint,
+            add_region,
+            remove_region,
+            ..
+        }) = command
+        else {
+            panic!("expected private-endpoint update");
+        };
+        assert_eq!(
+            add_vpc_endpoint,
+            [
+                PostgresPrivateEndpointVpcEndpoint {
+                    vpc_endpoint_id: "vpce-0123456789abcdef0".into(),
+                    description: Some("Production VPC".into()),
+                },
+                PostgresPrivateEndpointVpcEndpoint {
+                    vpc_endpoint_id: "vpce-0123456789abcdef1".into(),
+                    description: None,
+                },
+            ]
+        );
+        assert_eq!(remove_vpc_endpoint, ["vpce-0123456789abcdef2"]);
+        assert_eq!(add_region, ["us-west-2"]);
+        assert_eq!(remove_region, ["eu-west-1"]);
+    }
+
+    #[test]
+    fn private_endpoint_update_checks_added_but_not_removed_vpc_endpoint_ids() {
+        let error = Cli::try_parse_from(private_endpoint_args(&[
+            "update",
+            "pg-1",
+            "--add-vpc-endpoint",
+            "vpce-NOTHEX",
+        ]))
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("vpce-NOTHEX"));
+
+        // A stored ID must stay removable whatever its format (#611).
+        let command = parse_postgres(&private_endpoint_args(&[
+            "update",
+            "pg-1",
+            "--remove-vpc-endpoint",
+            "vpce-NOTHEX",
+        ]));
+        let PostgresCommands::PrivateEndpoint(PrivateEndpointCommands::Update {
+            remove_vpc_endpoint,
+            ..
+        }) = command
+        else {
+            panic!("expected private-endpoint update");
+        };
+        assert_eq!(remove_vpc_endpoint, ["vpce-NOTHEX"]);
     }
 }
