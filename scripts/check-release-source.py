@@ -121,13 +121,20 @@ def exact_head_approval(pull, api):
     merged_at = timestamp(pull.get("merged_at"))
     count = pull.get("commits")
     require(type(count) is int and 0 < count <= 250, "Unsupported PR commit count")
+    author = pull.get("user")
+    require(
+        isinstance(author, dict)
+        and isinstance(author.get("login"), str)
+        and bool(author["login"].strip()),
+        "Missing linked PR author identity",
+    )
+    contributors = {author["login"].casefold()}
     commits = api(
         f"repos/{REPOSITORY}/pulls/{number}/commits?per_page=100", paginate=True
     )
     require(
         isinstance(commits, list) and len(commits) == count, "Incomplete PR commits"
     )
-    contributors = {pull.get("user", {}).get("login", "").casefold()}
     for commit in commits:
         require(isinstance(commit, dict), "Invalid PR commit")
         for field in ("author", "committer"):

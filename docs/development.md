@@ -141,6 +141,8 @@ Download into a dedicated flat directory containing exactly the two raw
 binaries and their raw receipt. Do not put archives, bundles or other files
 there. The future signing worker must pass only each verified binary to its
 target-specific signing directory, not the whole verification directory.
+Use the pinned download action or a REST download stream for raw files:
+`gh run download` 2.105.0 still attempts ZIP extraction and fails on them.
 
 Those expected values come from the signer's own policy and GitHub context,
 never caller inputs or the unverified receipt. Verification requires `gh`
@@ -156,10 +158,13 @@ A repository writer able to publish attestations can deny availability by
 flooding that list, just as artifact deletion can block a handoff. This must
 not turn into an authorization fallback.
 
-Unit tests cover policy and rejection paths. They do not establish the first
-real reusable-workflow certificate identity or raw-artifact service behavior;
-those still need a controlled GitHub run before the builder is approved for
-signing. See [GitHub's trusted-builder guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/increase-security-rating)
+Unit tests cover policy and rejection paths. A live inert fixture verified
+the SHA-pinned reusable-workflow certificate identity and raw-artifact
+digest/run/source behavior; the production verifier rejected its different
+workflow identity. This is not a product release or receipt proof. A controlled
+authorized-tag run must still build both macOS binaries, publish their receipt
+and pass verification before signing credentials are enabled.
+See [GitHub's trusted-builder guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/increase-security-rating)
 and [the verifier interface](https://cli.github.com/manual/gh_attestation_verify).
 
 ## Live Cloud integration

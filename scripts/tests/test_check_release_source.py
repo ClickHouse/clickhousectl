@@ -204,6 +204,20 @@ class AuthorizeTests(unittest.TestCase):
                     }
                 self.rejected(evidence)
 
+    def test_rejects_missing_pr_author_identity(self):
+        for author in (
+            None,
+            {},
+            {"login": None},
+            {"login": ""},
+            {"login": " "},
+            {"login": 42},
+        ):
+            with self.subTest(author=author):
+                evidence = Evidence()
+                evidence.pull["user"] = author
+                self.rejected(evidence)
+
     def test_rejects_missing_linked_commit_identities(self):
         for field in ("author", "committer"):
             for missing in ("absent", "null"):
