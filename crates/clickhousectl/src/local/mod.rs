@@ -538,6 +538,8 @@ pub(crate) fn exec_clickhouse_client(binary: &Path, version: &str, args: &[Strin
     // becoming a spawn-and-wait wrapper that would have to relay all of it.
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
+    #[cfg(feature = "debug-log")]
+    crate::debug_log::finish_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
 }

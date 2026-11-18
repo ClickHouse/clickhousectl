@@ -99,6 +99,19 @@ The authorization URL must use HTTPS; HTTP is allowed only for exact `localhost`
 
 Keep tests isolated from real credentials and telemetry. Use the existing temporary-project and local-mock patterns in subprocess tests and set `DO_NOT_TRACK=1` for development checks.
 
+## Invocation debug log
+
+For agent-experience experiments, build with the internal `debug-log` feature and set `CLICKHOUSECTL_DEBUG_LOG` to a file path:
+
+```bash
+cargo build -p clickhousectl --features debug-log
+CLICKHOUSECTL_DEBUG_LOG=/tmp/chctl.jsonl target/debug/clickhousectl local list
+```
+
+Each invocation appends one JSON line with `timestamp`, `pid`, `version`, raw `argv`, `cwd`, `env` (`CLICKHOUSE_*`, `CLICKHOUSECTL_*`, `CHCTL_*`, `CI`, `DO_NOT_TRACK`), the `.env` file and values read, the detected `agent`, the effective `json_output`, `outcome` (`exit`, or `exec` for a native-client handoff, whose `exit_code` is `null`), `exit_code` and `duration_ms`. A relative path resolves against the working directory. With the variable unset nothing is written. Shell completion and the hidden `telemetry send` child are not logged.
+
+Nothing is redacted: credentials passed as flags, environment variables or `.env` values are written in plain text, so treat the log as secret. The feature is off by default and must never be enabled in a release; `release.yml` fails if a release binary contains it.
+
 ## Telemetry changes
 
 The [user telemetry reference](reference/telemetry.md) describes what is recorded and how to disable it. `src/telemetry.rs` builds events from argument definitions, not raw values; `src/failure.rs` defines the bounded failure vocabulary. Paths here are relative to `crates/clickhousectl/`.

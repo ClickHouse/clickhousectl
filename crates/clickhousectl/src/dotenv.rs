@@ -29,6 +29,11 @@ impl DotenvVars {
         self.source_path.as_deref()
     }
 
+    #[cfg(feature = "debug-log")]
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
     /// Construct directly from a map. Reserved for unit tests in other
     /// modules that need to feed a synthetic snapshot into the resolver.
     #[cfg(test)]

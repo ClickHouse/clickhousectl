@@ -92,6 +92,15 @@ jobs:
           echo "$ldd_output" | grep -qE "not a dynamic executable|statically linked"
           echo "Static linking verified."
 
+      # The internal `debug-log` feature must never ship.
+      - name: Verify debug-log is compiled out
+        run: |
+          binary="target/${{ matrix.target }}/release/clickhousectl"
+          if grep -q CLICKHOUSECTL_DEBUG_LOG "$binary"; then
+            echo "Release binary contains the debug-log feature" >&2
+            exit 1
+          fi
+
       - name: Compute version
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"

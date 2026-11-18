@@ -59,6 +59,13 @@ jobs:
       - name: Test
         run: cargo test -p clickhousectl
 
+      # The internal invocation log is off by default; keep it building, linted and tested.
+      - name: Clippy with debug-log
+        run: cargo clippy -p clickhousectl --all-targets --features debug-log -- -D warnings
+
+      - name: Test debug-log
+        run: cargo test -p clickhousectl --features debug-log debug_log
+
       # The live tests include the API library's harness by a path outside
       # this crate, so the published crate must ship its sources only.
       - name: Check packaged files

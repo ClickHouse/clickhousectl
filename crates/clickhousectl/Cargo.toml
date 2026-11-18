@@ -37,6 +37,10 @@ deprecated-fields = ["clickhouse-cloud-api/deprecated-fields"]
 # pipx owns that install, so `update` points at their upgrade command instead
 # of replacing the binary.
 channel-pip = []
+# Internal only, never in a released binary: appends one JSON line per
+# invocation (raw argv, cwd, env, outcome) to the file named by
+# `CLICKHOUSECTL_DEBUG_LOG`, for agent-experience experiments. Unredacted.
+debug-log = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

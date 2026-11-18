@@ -1415,6 +1415,8 @@ fn exec_host_psql(
     // `exec()`.
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
+    #[cfg(feature = "debug-log")]
+    crate::debug_log::finish_before_exec();
     let err = cmd.exec();
     Err(Error::Postgres(format!("could not execute psql: {err}")))
 }

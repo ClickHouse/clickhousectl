@@ -10,6 +10,8 @@ mod cli;
 mod client_facts;
 mod cloud;
 mod completions;
+#[cfg(feature = "debug-log")]
+mod debug_log;
 mod dotenv;
 mod error;
 mod failure;
@@ -64,6 +66,8 @@ async fn run_main() {
     // clap definitions — argument values are never consulted. Argv is
     // collected once so a failed parse can be re-walked by `capture_lossy`.
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    #[cfg(feature = "debug-log")]
+    debug_log::start(&argv);
     let mut cmd = Cli::command();
 
     // Single-exit invariant (#320): every invocation — bare, help, version,
@@ -183,6 +187,9 @@ async fn run_main() {
         let _ = defer_telemetry_notice;
         let _ = read_only_telemetry_status;
     }
+
+    #[cfg(feature = "debug-log")]
+    debug_log::finish(exit_code);
 
     std::process::exit(exit_code);
 }
@@ -348,6 +355,8 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     // Decide whether to surface the update notice before `run` consumes the
     // command. Shown on every command that does not emit machine-readable JSON.
     let show_notice = should_show_update_notice(&cli.command);
+    #[cfg(feature = "debug-log")]
+    debug_log::set_json_output(command_json_flag(&cli.command).map(json_output));
     let is_local = matches!(cli.command, Commands::Local(_));
     let local_json = match &cli.command {
         Commands::Local(args) => json_output(args.json),
