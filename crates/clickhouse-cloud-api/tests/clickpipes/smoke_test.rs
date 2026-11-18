@@ -481,6 +481,7 @@ async fn cloud_clickpipe_create_mysql_cdc_smoke() -> TestResult<()> {
                     snapshot_number_of_parallel_tables: None,
                     sync_interval_seconds: None,
                     use_compression: None,
+                    use_json_native_format: None,
                 },
                 table_mappings: vec![ClickPipeMySQLPipeTableMapping {
                     source_schema_name: "smoke_db".to_string(),

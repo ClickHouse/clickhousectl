@@ -369,6 +369,14 @@ pub struct ClickPipePostgresPipeSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
+    /// Store JSON columns in native ClickHouse JSON format (ClickHouse 25.3+);
+    /// otherwise they are stored as `String`. Create only, and only for
+    /// organizations with the feature enabled.
+    #[serde(
+        rename = "useJsonNativeFormat",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_json_native_format: Option<bool>,
 }
 
 /// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API, in response
@@ -422,6 +430,11 @@ pub struct ClickPipePostgresPipeSettingsResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
+    #[serde(
+        rename = "useJsonNativeFormat",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_json_native_format: Option<bool>,
 }
 
 /// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API.

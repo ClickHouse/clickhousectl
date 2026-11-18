@@ -339,6 +339,7 @@ fn build_mysql_request(
             snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
             sync_interval_seconds: args.sync_interval_seconds,
             use_compression: args.use_compression,
+            use_json_native_format: None,
         },
         table_mappings,
     };

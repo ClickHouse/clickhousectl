@@ -414,6 +414,7 @@ async fn run_variant(
                         snapshot_num_rows_per_partition: None,
                         snapshot_number_of_parallel_tables: None,
                         sync_interval_seconds: None,
+                        use_json_native_format: None,
                     },
                     table_mappings: variant
                         .mappings
