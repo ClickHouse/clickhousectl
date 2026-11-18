@@ -42,6 +42,53 @@ impl PgHaType {
     pub const VALUES: &'static [&'static str] = &["none", "async", "sync"];
 }
 
+/// `pgStandbyCount` enum from the ClickHouse Cloud API: the number of hot
+/// standby instances.
+///
+/// Accepted values and defaults depend on `haType`: `none` takes 0 (default),
+/// `async` takes 1 (default), and `sync` takes 1 or 2 (default). When `haType`
+/// is updated without a standby count, the default for the new `haType`
+/// applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum PgStandbyCount {
+    Zero = 0,
+    One = 1,
+    Two = 2,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for PgStandbyCount {
+    fn from(value: i64) -> Self {
+        match value {
+            0 => Self::Zero,
+            1 => Self::One,
+            2 => Self::Two,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<PgStandbyCount> for i64 {
+    fn from(value: PgStandbyCount) -> Self {
+        match value {
+            PgStandbyCount::Zero => 0,
+            PgStandbyCount::One => 1,
+            PgStandbyCount::Two => 2,
+            PgStandbyCount::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for PgStandbyCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
+    }
+}
+
 /// `pgProvider` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgProvider {
@@ -1194,6 +1241,10 @@ pub struct BasePostgresService {
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
+    /// Number of hot standby instances; see [`PgStandbyCount`] for the values
+    /// each `haType` accepts.
+    #[serde(rename = "standbyCount")]
+    pub standby_count: PgStandbyCount,
     pub tags: PgTags,
 }
 
@@ -1242,6 +1293,10 @@ pub struct PostgresService {
     pub region: Option<PgRegion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PgSize>,
+    /// Number of hot standby instances; see [`PgStandbyCount`] for the values
+    /// each `haType` accepts.
+    #[serde(rename = "standbyCount", skip_serializing_if = "Option::is_none")]
+    pub standby_count: Option<PgStandbyCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<PgStateProperty>,
     #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none")]
@@ -1340,6 +1395,10 @@ pub struct PostgresServiceListItem {
     pub region: Option<PgRegion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PgSize>,
+    /// Number of hot standby instances; see [`PgStandbyCount`] for the values
+    /// each `haType` accepts.
+    #[serde(rename = "standbyCount", skip_serializing_if = "Option::is_none")]
+    pub standby_count: Option<PgStandbyCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<PgStateProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1370,6 +1429,10 @@ pub struct PostgresServicePatchRequest {
     pub name: Option<PgNameProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PgSize>,
+    /// Number of hot standby instances; see [`PgStandbyCount`] for the values
+    /// each `haType` accepts.
+    #[serde(rename = "standbyCount", skip_serializing_if = "Option::is_none")]
+    pub standby_count: Option<PgStandbyCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
@@ -1395,6 +1458,10 @@ pub struct PostgresServicePostRequest {
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
+    /// Number of hot standby instances; see [`PgStandbyCount`] for the values
+    /// each `haType` accepts.
+    #[serde(rename = "standbyCount", skip_serializing_if = "Option::is_none")]
+    pub standby_count: Option<PgStandbyCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }

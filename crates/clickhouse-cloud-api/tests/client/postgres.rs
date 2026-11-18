@@ -117,6 +117,7 @@ async fn create_postgres_service() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
+        standby_count: None,
         pg_bouncer_config: Some(PgBouncerConfig::from([
             ("default_pool_size".into(), "16".into()),
             ("future_parameter".into(), "on".into()),
@@ -131,6 +132,107 @@ async fn create_postgres_service() {
     let pg = resp.result.unwrap();
     assert_eq!(pg.name.as_deref(), Some("pg-svc"));
     assert_eq!(pg.password.as_deref(), Some("generated-pw"));
+}
+
+#[tokio::test]
+async fn create_postgres_service_sends_standby_count() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .and(body_partial_json(
+            serde_json::json!({"haType": "sync", "standbyCount": 1}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "haType": "sync",
+            "standbyCount": 1
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = PostgresServicePostRequest {
+        name: "pg-ha".to_string(),
+        provider: PgProvider::Aws,
+        region: "us-east-1".to_string(),
+        size: PgSize::C6gd_large,
+        standby_count: Some(PgStandbyCount::One),
+        pg_bouncer_config: None,
+        ha_type: Some(PgHaType::Sync),
+        ip_access_list: None,
+        pg_config: None,
+        postgres_version: None,
+        tags: None,
+    };
+    let pg = c
+        .postgres_service_create("org-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(pg.standby_count, Some(PgStandbyCount::One));
+}
+
+#[tokio::test]
+async fn postgres_list_and_get_read_standby_count() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(ok_json(serde_json::json!([
+            {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "standbyCount": 2}
+        ])))
+        .expect(1)
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1"))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "standbyCount": 0
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let list = c.postgres_service_get_list("org-1").await.unwrap();
+    assert_eq!(
+        list.result.unwrap()[0].standby_count,
+        Some(PgStandbyCount::Two)
+    );
+    let pg = c.postgres_service_get("org-1", "pg-1").await.unwrap();
+    assert_eq!(pg.result.unwrap().standby_count, Some(PgStandbyCount::Zero));
+}
+
+#[tokio::test]
+async fn update_postgres_service_sends_standby_count() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1"))
+        .and(wiremock::matchers::body_json(
+            serde_json::json!({"standbyCount": 2}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "standbyCount": 2
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = PostgresServicePatchRequest {
+        standby_count: Some(PgStandbyCount::Two),
+        ..Default::default()
+    };
+    let pg = c
+        .postgres_service_patch("org-1", "pg-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(pg.standby_count, Some(PgStandbyCount::Two));
 }
 
 #[tokio::test]

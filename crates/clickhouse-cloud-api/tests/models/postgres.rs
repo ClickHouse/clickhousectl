@@ -266,6 +266,7 @@ fn serialize_postgres_service_post_request() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
+        standby_count: None,
         ha_type: None,
         ip_access_list: None,
         pg_bouncer_config: None,
@@ -870,6 +871,7 @@ fn postgres_service_post_request_distinguishes_omitted_and_empty_access_list() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
+        standby_count: None,
         ha_type: None,
         ip_access_list: None,
         pg_bouncer_config: None,
@@ -1059,4 +1061,78 @@ fn pg_config_serializes_only_the_new_gucs_that_are_set() {
             "max_wal_senders": 20
         })
     );
+}
+
+#[test]
+fn pg_standby_count_serializes_as_an_integer_and_keeps_unknown_values() {
+    for (wire, value) in [
+        (0, PgStandbyCount::Zero),
+        (1, PgStandbyCount::One),
+        (2, PgStandbyCount::Two),
+        (7, PgStandbyCount::Unknown(7)),
+    ] {
+        assert_eq!(
+            serde_json::to_value(value).unwrap(),
+            serde_json::json!(wire)
+        );
+        assert_eq!(
+            serde_json::from_value::<PgStandbyCount>(serde_json::json!(wire)).unwrap(),
+            value
+        );
+        assert_eq!(value.to_string(), wire.to_string());
+    }
+    assert!(serde_json::from_value::<PgStandbyCount>(serde_json::json!("1")).is_err());
+}
+
+#[test]
+fn postgres_standby_count_tolerates_missing_and_null_in_responses() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"standbyCount": null}),
+    ] {
+        let pg: PostgresService = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(pg.standby_count, None);
+        assert_eq!(serde_json::to_value(pg).unwrap(), serde_json::json!({}));
+
+        let item: PostgresServiceListItem = serde_json::from_value(wire).unwrap();
+        assert_eq!(item.standby_count, None);
+        assert_eq!(serde_json::to_value(item).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn postgres_requests_send_standby_count_only_when_set() {
+    assert_eq!(
+        serde_json::to_value(PostgresServicePatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(PostgresServicePatchRequest {
+            standby_count: Some(PgStandbyCount::Zero),
+            ..Default::default()
+        })
+        .unwrap(),
+        serde_json::json!({"standbyCount": 0})
+    );
+    let mut create = PostgresServicePostRequest {
+        name: "pg".to_string(),
+        provider: PgProvider::Aws,
+        region: "us-east-1".to_string(),
+        size: PgSize::C6gd_large,
+        standby_count: None,
+        pg_bouncer_config: None,
+        ha_type: None,
+        ip_access_list: None,
+        pg_config: None,
+        postgres_version: None,
+        tags: None,
+    };
+    assert!(
+        serde_json::to_value(&create)
+            .unwrap()
+            .get("standbyCount")
+            .is_none()
+    );
+    create.standby_count = Some(PgStandbyCount::Two);
+    assert_eq!(serde_json::to_value(&create).unwrap()["standbyCount"], 2);
 }

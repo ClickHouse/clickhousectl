@@ -113,24 +113,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "organization_public_previews_get_list",
     "organization_quota_get",
     "organization_quotas_get_list",
-    "postgres_instance_config_get",
-    "postgres_instance_config_patch",
-    "postgres_instance_config_post",
-    "postgres_instance_create_read_replica",
-    "postgres_instance_metrics_get",
-    "postgres_instance_prometheus_get",
-    "postgres_instance_restore",
-    "postgres_logs_get_list",
-    "postgres_org_prometheus_get",
-    "postgres_service_backup_get_list",
-    "postgres_service_certs_get",
     "postgres_service_create",
-    "postgres_service_delete",
-    "postgres_service_get",
-    "postgres_service_get_list",
-    "postgres_service_patch",
-    "postgres_service_patch_state",
-    "postgres_service_set_password",
     "replica_aware_routing_get",
     "replica_aware_routing_update",
     "service_clickhouse_setting_delete",
@@ -138,8 +121,6 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "service_clickhouse_settings_list_get",
     "service_clickhouse_settings_schema_get",
     "service_clickhouse_settings_update",
-    "slow_query_pattern_get",
-    "slow_query_patterns_get_list",
     "snapshot_configuration_get",
     "snapshot_configuration_update",
     "snapshot_get",
@@ -275,7 +256,8 @@ mod tests {
     fn is_beta_operation_matches_constant() {
         assert!(is_beta_operation("replica_aware_routing_get"));
         assert!(!is_beta_operation("scaling_schedule_get"));
-        assert!(is_beta_operation("postgres_service_get_list"));
+        assert!(is_beta_operation("click_stack_list_alerts"));
+        assert!(!is_beta_operation("postgres_service_get_list"));
         assert!(!is_beta_operation("services_list"));
         assert!(!is_beta_operation("organization_prometheus_discovery_get"));
         assert!(!is_beta_operation("not_a_real_op"));
