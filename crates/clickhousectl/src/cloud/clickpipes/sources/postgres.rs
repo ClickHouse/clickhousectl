@@ -187,6 +187,13 @@ pub struct PostgresCreateArgs {
     #[arg(long, value_name = "true|false")]
     pub delete_on_merge: Option<bool>,
 
+    /// Store json/jsonb as native ClickHouse JSON (create-time only)
+    ///
+    /// Needs ClickHouse 25.3+ and the feature enabled for the organization;
+    /// otherwise JSON is stored as String.
+    #[arg(long, value_name = "true|false")]
+    pub use_json_native_format: Option<bool>,
+
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
 
@@ -290,7 +297,7 @@ fn build_postgres_pipe_settings(
             allow_nullable_columns: args.allow_nullable_columns.unwrap_or(false),
             delete_on_merge: args.delete_on_merge.unwrap_or(false),
             enable_failover_slots: args.enable_failover_slots.unwrap_or(false),
-            use_json_native_format: None,
+            use_json_native_format: args.use_json_native_format,
         },
     )
 }
@@ -538,6 +545,7 @@ mod tests {
         assert_eq!(args.allow_nullable_columns, None);
         assert_eq!(args.enable_failover_slots, None);
         assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.use_json_native_format, None);
         assert_eq!(args.destination.destination_database, "default");
     }
 
@@ -561,6 +569,8 @@ mod tests {
             "false",
             "--delete-on-merge",
             "true",
+            "--use-json-native-format",
+            "false",
         ]);
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::Postgres(args),
@@ -579,6 +589,7 @@ mod tests {
         assert_eq!(args.allow_nullable_columns, Some(true));
         assert_eq!(args.enable_failover_slots, Some(false));
         assert_eq!(args.delete_on_merge, Some(true));
+        assert_eq!(args.use_json_native_format, Some(false));
     }
 
     #[test]
@@ -1053,6 +1064,7 @@ mod tests {
             allow_nullable_columns: None,
             enable_failover_slots: None,
             delete_on_merge: None,
+            use_json_native_format: None,
             destination: DatabaseDestinationArgs {
                 destination_database: "default".into(),
             },
@@ -1103,6 +1115,8 @@ mod tests {
         assert!(!source.settings.allow_nullable_columns);
         assert!(!source.settings.delete_on_merge);
         assert!(!source.settings.enable_failover_slots);
+        // Unset stays omitted, so organizations without the feature never send it.
+        assert_eq!(source.settings.use_json_native_format, None);
         assert_eq!(source.settings.initial_load_parallelism, None);
         assert_eq!(source.settings.pull_batch_size, None);
         assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
@@ -1155,6 +1169,7 @@ mod tests {
         args.allow_nullable_columns = Some(true);
         args.enable_failover_slots = Some(true);
         args.delete_on_merge = Some(true);
+        args.use_json_native_format = Some(true);
         args.destination.destination_database = "analytics".into();
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into(), "analytics_writer".into()],
@@ -1206,6 +1221,7 @@ mod tests {
         assert!(source.settings.allow_nullable_columns);
         assert!(source.settings.enable_failover_slots);
         assert!(source.settings.delete_on_merge);
+        assert_eq!(source.settings.use_json_native_format, Some(true));
         assert_eq!(source.table_mappings.len(), 2);
         assert_eq!(source.table_mappings[0].source_schema_name, "public");
         assert_eq!(source.table_mappings[0].source_table, "users");
