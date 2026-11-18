@@ -15,6 +15,23 @@ pub(crate) mod help_order {
 }
 
 // The root agent context, shared by builds with and without `feedback`.
+// With access negotiation compiled in, `cloud access request` is the route to
+// write access; a default binary must not name it.
+#[cfg(feature = "experimental-access-negotiation")]
+macro_rules! root_agent_context {
+    () => {
+        "\
+CONTEXT FOR AGENTS:
+  Use Postgres for transactional workloads (`local postgres`, `cloud postgres`).
+  Use ClickHouse for analytical workloads (`local clickhouse`, `cloud service`).
+  Cloud auth: OAuth is read-only. For writes, run `cloud access request`
+  (the user approves it, requires OAuth). Check auth status: `cloud auth status`.
+  Typical cloud flow: `cloud auth signup` -> `cloud auth login` -> `cloud access request` -> `cloud service create`
+  Find a command or flag by keyword: `clickhousectl search <words>`
+  Install the ClickHouse agent skills: `clickhousectl skills --agent claude`"
+    };
+}
+#[cfg(not(feature = "experimental-access-negotiation"))]
 macro_rules! root_agent_context {
     () => {
         "\
@@ -37,6 +54,27 @@ const ROOT_AFTER_HELP: &str = concat!(
 );
 #[cfg(not(feature = "feedback"))]
 const ROOT_AFTER_HELP: &str = root_agent_context!();
+
+#[cfg(feature = "experimental-access-negotiation")]
+const CLOUD_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Credentials, first wins: --api-key/--api-secret, saved API keys,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
+  OAuth is read-only: for writes, run `cloud access request` (the user approves it).
+  delete/remove act immediately — there is no confirmation prompt.
+  Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
+  Typical flow: `cloud auth login` -> `cloud service list`";
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const CLOUD_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Credentials, first wins: --api-key/--api-secret, saved API keys,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
+  API keys are read+write; OAuth is read-only and every write command fails on it.
+  `cloud auth login` and `cloud auth whoami` print who you are and your orgs.
+  `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
+  delete/remove act immediately — there is no confirmation prompt.
+  Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list`";
 
 #[derive(Args)]
 #[command(name = "clickhousectl")]
@@ -83,16 +121,7 @@ CONTEXT FOR AGENTS:
     Local(LocalArgs),
 
     /// Manage ClickHouse and Postgres in ClickHouse Cloud
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Credentials, first wins: --api-key/--api-secret, saved API keys,
-  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
-  API keys are read+write; OAuth is read-only and every write command fails on it.
-  `cloud auth login` and `cloud auth whoami` print who you are and your orgs.
-  `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
-  delete/remove act immediately — there is no confirmation prompt.
-  Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list`")]
+    #[command(after_help = CLOUD_AFTER_HELP)]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
@@ -382,9 +411,15 @@ mod tests {
                     ));
                 }
                 let content: Vec<_> = lines.collect();
-                if content.is_empty() || content.len() > 8 {
+                // The access-negotiation `access request` context carries one extra line.
+                let max = if path == "clickhousectl cloud access request" {
+                    9
+                } else {
+                    8
+                };
+                if content.is_empty() || content.len() > max {
                     failures.push(format!(
-                        "{path}: agent context has {} content lines (expected 1–8)",
+                        "{path}: agent context has {} content lines (expected 1–{max})",
                         content.len()
                     ));
                 }
@@ -406,6 +441,8 @@ mod tests {
     }
 
     /// The root agent context points at status commands; they must exist and take `--json`.
+    /// The access-negotiation root context names no `--json` status commands.
+    #[cfg(not(feature = "experimental-access-negotiation"))]
     #[test]
     fn root_agent_context_status_commands_parse() {
         let commands: Vec<_> = ROOT_AFTER_HELP

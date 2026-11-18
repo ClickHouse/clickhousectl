@@ -85,6 +85,7 @@ CONTEXT FOR AGENTS:
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  For writes on an OAuth login. The user approves or declines in their browser, so no go-ahead is needed first.
   Requires OAuth from `cloud auth login`, even with a saved API key; roles are per organization: pass --org-id.
   Each command's `--help` declares `API key permission:` needs; take conditionals only if their condition holds.
   `Authorization:` needs have no granting role.

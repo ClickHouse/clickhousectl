@@ -31,16 +31,48 @@ const SCOPE: &str = "openid profile email offline_access";
 
 const DEFAULT_API_URL: &str = "https://api.clickhouse.cloud/v1";
 
-#[derive(Subcommand)]
-pub enum AuthCommands {
-    /// Log in to ClickHouse Cloud
-    #[command(after_help = "\
+// With access negotiation compiled in, help and `auth status` point an OAuth
+// login at `cloud access request` for writes; a default binary must not.
+#[cfg(feature = "experimental-access-negotiation")]
+const LOGIN_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  OAuth device flow: opens a browser, needs a human; the tokens are read-only.
+  For writes afterwards, run `cloud access request`.
+  In JSON mode the device code and URL go to stderr; stdout holds only the JSON report.
+  Prints the verified identity.";
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const LOGIN_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
   In JSON mode the device code and URL go to stderr; stdout holds only the JSON report.
   --api-key/--api-secret: no browser, read+write; a key the API rejects is not saved (exit 4).
   Prints the verified identity; offline, the key is saved unverified with a warning.
-  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl";
+
+#[cfg(feature = "experimental-access-negotiation")]
+const SIGNUP_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in a browser; a human must finish it.
+  Next: `cloud auth login`";
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const SIGNUP_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in a browser; a human must finish it.
+  Next: `cloud auth login --api-key X --api-secret Y`";
+
+/// What `auth status` reports as `write_access` while OAuth is the active source.
+#[cfg(feature = "experimental-access-negotiation")]
+const OAUTH_WRITE_ACCESS: Option<&str> = Some(
+    "none: OAuth is read-only. Run `clickhousectl cloud access roles`, then \
+     `clickhousectl cloud access request --perms role:<UUID>`; the user approves it in their browser.",
+);
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const OAUTH_WRITE_ACCESS: Option<&str> = None;
+
+#[derive(Subcommand)]
+pub enum AuthCommands {
+    /// Log in to ClickHouse Cloud
+    #[command(after_help = LOGIN_AFTER_HELP)]
     Login {
         /// Prompt for an API key and secret instead of using flags
         #[arg(long)]
@@ -80,10 +112,7 @@ CONTEXT FOR AGENTS:
   Use it to confirm who you are and which orgs you can use; exits 4 if the credentials are rejected.")]
     Whoami,
     /// Create a ClickHouse Cloud account
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Opens the ClickHouse Cloud sign-up page in a browser; a human must finish it.
-  Next: `cloud auth login --api-key X --api-secret Y`")]
+    #[command(after_help = SIGNUP_AFTER_HELP)]
     Signup,
 }
 
@@ -504,10 +533,19 @@ pub async fn run(
                 None => IdentityCheck::skipped(),
             };
 
+            // Only an active OAuth login lacks write access it could obtain.
+            let write_access = if active == Some(AuthSource::OAuthTokens) {
+                OAUTH_WRITE_ACCESS
+            } else {
+                None
+            };
+
             if json {
                 #[derive(Serialize)]
                 struct StatusOutput<'a> {
                     sources: Vec<AuthRow>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    write_access: Option<&'a str>,
                     #[serde(skip_serializing_if = "Option::is_none")]
                     oauth_warning: Option<&'a str>,
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -517,6 +555,7 @@ pub async fn run(
                 }
                 let output = StatusOutput {
                     sources: rows,
+                    write_access,
                     oauth_warning,
                     credentials_warning: credentials_warning.as_deref(),
                     identity: &identity,
@@ -524,6 +563,10 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
+                if let Some(write_access) = write_access {
+                    println!();
+                    println!("Write access: {write_access}");
+                }
                 if let Some(warning) = oauth_warning {
                     println!();
                     println!("{warning}");
