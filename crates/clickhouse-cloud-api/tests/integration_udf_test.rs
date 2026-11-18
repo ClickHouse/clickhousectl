@@ -150,6 +150,7 @@ async fn cloud_udf_list_lifecycle() -> TestResult<()> {
             byoc_id: None,
             compliance_type: None,
             data_warehouse_id: None,
+            deletion_protection: None,
             enable_core_dumps: None,
             endpoints: None,
             has_transparent_data_encryption: None,

@@ -1533,7 +1533,7 @@ pub const UDF_ATTACH: OperationMetadata = OperationMetadata {
     rust_method: "udf_attach",
     method: "PUT",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}` (`udfAttachmentGet`).
@@ -1542,7 +1542,7 @@ pub const UDF_ATTACHMENT_GET: OperationMetadata = OperationMetadata {
     rust_method: "udf_attachment_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
-    required_permissions: &["control-plane:organization:view"],
+    required_permissions: &["control-plane:organization:view-udfs"],
 };
 
 /// `GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments` (`udfAttachmentList`).
@@ -1551,7 +1551,7 @@ pub const UDF_ATTACHMENT_LIST: OperationMetadata = OperationMetadata {
     rust_method: "udf_attachment_list",
     method: "GET",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/attachments",
-    required_permissions: &["control-plane:organization:view"],
+    required_permissions: &["control-plane:organization:view-udfs"],
 };
 
 /// `POST /v1/organizations/{organizationId}/udfs` (`udfCreate`).
@@ -1560,7 +1560,7 @@ pub const UDF_CREATE: OperationMetadata = OperationMetadata {
     rust_method: "udf_create",
     method: "POST",
     path: "/v1/organizations/{organizationId}/udfs",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/udfs/{functionName}` (`udfDelete`).
@@ -1569,7 +1569,7 @@ pub const UDF_DELETE: OperationMetadata = OperationMetadata {
     rust_method: "udf_delete",
     method: "DELETE",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}` (`udfDetach`).
@@ -1578,7 +1578,7 @@ pub const UDF_DETACH: OperationMetadata = OperationMetadata {
     rust_method: "udf_detach",
     method: "DELETE",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `GET /v1/organizations/{organizationId}/udfs/{functionName}` (`udfGet`).
@@ -1587,7 +1587,7 @@ pub const UDF_GET: OperationMetadata = OperationMetadata {
     rust_method: "udf_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}",
-    required_permissions: &["control-plane:organization:view"],
+    required_permissions: &["control-plane:organization:view-udfs"],
 };
 
 /// `GET /v1/organizations/{organizationId}/udfs` (`udfList`).
@@ -1596,7 +1596,7 @@ pub const UDF_LIST: OperationMetadata = OperationMetadata {
     rust_method: "udf_list",
     method: "GET",
     path: "/v1/organizations/{organizationId}/udfs",
-    required_permissions: &["control-plane:organization:view"],
+    required_permissions: &["control-plane:organization:view-udfs"],
 };
 
 /// `POST /v1/organizations/{organizationId}/udfUploads/url` (`udfUploadSessionCreate`).
@@ -1605,7 +1605,7 @@ pub const UDF_UPLOAD_SESSION_CREATE: OperationMetadata = OperationMetadata {
     rust_method: "udf_upload_session_create",
     method: "POST",
     path: "/v1/organizations/{organizationId}/udfUploads/url",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `POST /v1/organizations/{organizationId}/udfs/{functionName}/versions` (`udfVersionCreate`).
@@ -1614,7 +1614,7 @@ pub const UDF_VERSION_CREATE: OperationMetadata = OperationMetadata {
     rust_method: "udf_version_create",
     method: "POST",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}` (`udfVersionDelete`).
@@ -1623,7 +1623,7 @@ pub const UDF_VERSION_DELETE: OperationMetadata = OperationMetadata {
     rust_method: "udf_version_delete",
     method: "DELETE",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
-    required_permissions: &["control-plane:organization:manage"],
+    required_permissions: &["control-plane:organization:manage-udfs"],
 };
 
 /// `GET /v1/organizations/{organizationId}/udfs/{functionName}/versions` (`udfVersionList`).
@@ -1632,7 +1632,7 @@ pub const UDF_VERSION_LIST: OperationMetadata = OperationMetadata {
     rust_method: "udf_version_list",
     method: "GET",
     path: "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
-    required_permissions: &["control-plane:organization:view"],
+    required_permissions: &["control-plane:organization:view-udfs"],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow` (`upgradeWindowDelete`).

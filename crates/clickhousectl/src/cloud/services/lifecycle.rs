@@ -607,6 +607,8 @@ fn build_update_service_request(
         transparent_data_encryption_key_id: options.transparent_data_encryption_key_id.clone(),
         tags: parse_instance_tags_patch(&options.add_tags, &options.remove_tags)?,
         enable_core_dumps: options.enable_core_dumps,
+        // Not exposed by `cloud service update` yet: never sent.
+        deletion_protection: None,
     })
 }
 
@@ -2025,6 +2027,7 @@ mod tests {
         assert!(request.transparent_data_encryption_key_id.is_none());
         assert!(request.tags.is_none());
         assert!(request.enable_core_dumps.is_none());
+        assert!(request.deletion_protection.is_none());
     }
 
     #[test]
@@ -2078,6 +2081,7 @@ mod tests {
         assert_eq!(tags.remove[0].key, "old");
         assert_eq!(tags.remove[0].value.as_deref(), Some("tag"));
         assert_eq!(request.enable_core_dumps, Some(false));
+        assert!(request.deletion_protection.is_none());
     }
 
     #[test]

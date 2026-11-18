@@ -161,6 +161,33 @@ The beta `organization_public_previews_get_list` method lists the organization's
 
 Every `Client` method sends each path parameter (organization, service, key, pipe or provider ID, UDF or setting name) as one percent-encoded URL segment, so `/`, `?`, `#` or `%` in an ID can no longer change the request path; the API answers 400 or 404 for a malformed ID instead. The same applies to the service ID in the Query API URLs. A parameter that is empty, `.` or `..` cannot be one segment, because URL parsing drops or resolves it, so the method returns `Error::InvalidPathParameter` without sending a request. Each method takes its HTTP method and path template from its generated `meta::operations` descriptor.
 
+`Service`, `ServiceScalingPatchResponse`, `ServicePostRequest` and
+`ServicePatchRequest` gain optional `deletion_protection` (`deletionProtection`,
+a `bool`). While it is `true`, `instance_delete` fails with
+`Error::Api { status: 409, .. }` until it is turned off. Setting it on create
+requires `control-plane:service:delete` for all services in the organization;
+changing it on update requires `control-plane:service:delete` on the service.
+`ServicePostRequest::new` leaves it `None`. Struct-literal callers need
+`deletion_protection: None` or `..Default::default()` (PATCH body only).
+`ActivityType` adds `Service_update_deletion_protection`. The spec now types
+`Activity.type` as an open string and lists the known values in its
+description; `ActivityType` keeps those values as variants, and any other value
+still lands in `ActivityType::Unknown`.
+
+The twelve UDF operations in `meta::operations` (`UDF_CREATE`, `UDF_GET`,
+`UDF_ATTACH` and the rest) now require the dedicated
+`control-plane:organization:manage-udfs` and
+`control-plane:organization:view-udfs` permissions instead of
+`control-plane:organization:manage` and `control-plane:organization:view`.
+
+The spec now types `settings` in `ClickPipePostRequest` and
+`ClickPipePatchRequest` as `ClickPipeSettingsPutRequest`, the schema the
+settings PUT already took, so both fields are now
+`Option<ClickPipeSettingsPutRequest>`. The two structs had the same fields, so
+the request body is unchanged, and `ClickPipeSettings` remains as a type alias
+of `ClickPipeSettingsPutRequest`: existing code compiles unchanged. Responses
+still use `ClickPipeSettingsResponse`.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

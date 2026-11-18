@@ -1091,6 +1091,21 @@ async fn ensure_service_gone(
     match client.instance_get(org_id, service_id).await {
         Ok(resp) => {
             if let Some(svc) = resp.result {
+                // A protected service answers delete with 409, so a test that
+                // left protection on must not leak the service.
+                if svc.deletion_protection == Some(true) {
+                    eprintln!("  cleanup: disabling deletion protection");
+                    let _ = client
+                        .instance_update(
+                            org_id,
+                            service_id,
+                            &ServicePatchRequest {
+                                deletion_protection: Some(false),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                }
                 let state = service_state(&svc);
                 if matches!(state.as_str(), "running" | "idle" | "starting" | "awaking") {
                     eprintln!("  cleanup: stopping service before delete");
@@ -1485,6 +1500,7 @@ pub async fn provision_clickhouse(
         byoc_id: None,
         compliance_type: None,
         data_warehouse_id: None,
+        deletion_protection: None,
         enable_core_dumps: None,
         endpoints: None,
         has_transparent_data_encryption: None,

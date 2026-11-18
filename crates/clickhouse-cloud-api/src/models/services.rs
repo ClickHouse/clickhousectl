@@ -1540,6 +1540,10 @@ pub struct Service {
     pub current_scaling: Option<CurrentScaling>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
+    /// When true, the service cannot be deleted: the delete endpoint returns
+    /// 409 until deletion protection is turned off.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<bool>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(
@@ -1785,6 +1789,13 @@ pub struct ServicePasswordPatchResponse {
 /// `ServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePatchRequest {
+    /// When true, the service cannot be deleted: the delete endpoint returns
+    /// 409 until deletion protection is turned off. Changing it in either
+    /// direction requires `control-plane:service:delete` on the service, in
+    /// addition to `control-plane:service:manage`; sending the current value
+    /// changes nothing. ClickStack services cannot be updated through the API.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<bool>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1834,6 +1845,13 @@ pub struct ServicePostRequest {
     pub compliance_type: Option<ServicePostRequestCompliancetype>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
+    /// When true, the service cannot be deleted: the delete endpoint returns
+    /// 409 until deletion protection is turned off. Defaults to false. Setting
+    /// it to true requires `control-plane:service:delete` granted for all
+    /// services in the organization, in addition to
+    /// `control-plane:organization:create-service`.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<bool>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1905,6 +1923,7 @@ impl ServicePostRequest {
             byoc_id: None,
             compliance_type: None,
             data_warehouse_id: None,
+            deletion_protection: None,
             enable_core_dumps: None,
             endpoints: None,
             has_transparent_data_encryption: None,
@@ -2045,6 +2064,10 @@ pub struct ServiceScalingPatchResponse {
     pub current_scaling: Option<CurrentScaling>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
+    /// When true, the service cannot be deleted: the delete endpoint returns
+    /// 409 until deletion protection is turned off.
+    #[serde(rename = "deletionProtection", skip_serializing_if = "Option::is_none")]
+    pub deletion_protection: Option<bool>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(

@@ -937,6 +937,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             byoc_id: None,
             compliance_type: None,
             data_warehouse_id: None,
+            deletion_protection: None,
             enable_core_dumps: None,
             endpoints: None,
             has_transparent_data_encryption: None,
@@ -3448,6 +3449,74 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     Ok(())
                 }
             })
+            .await?;
+
+        // Deletion protection: while it is on, delete answers 409 (documented in
+        // the instanceDelete description). Turning it off again happens in the
+        // same step so a failed assertion cannot block the real delete below;
+        // cleanup also turns it off before deleting a leaked service.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "deletion protection blocks delete with 409",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let enabled = client
+                            .instance_update(
+                                &org_id,
+                                &service_id,
+                                &ServicePatchRequest {
+                                    deletion_protection: Some(true),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                            .result
+                            .ok_or("service update returned no result")?;
+                        let delete_result = client.instance_delete(&org_id, &service_id).await;
+                        let disabled = client
+                            .instance_update(
+                                &org_id,
+                                &service_id,
+                                &ServicePatchRequest {
+                                    deletion_protection: Some(false),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                            .result
+                            .ok_or("service update returned no result")?;
+                        if enabled.deletion_protection != Some(true) {
+                            return Err(format!(
+                                "expected deletionProtection=true after enabling, got {:?}",
+                                enabled.deletion_protection
+                            )
+                            .into());
+                        }
+                        match delete_result {
+                            Err(clickhouse_cloud_api::Error::Api { status: 409, .. }) => {}
+                            other => {
+                                return Err(format!(
+                                    "expected 409 deleting a protected service, got {other:?}"
+                                )
+                                .into());
+                            }
+                        }
+                        if disabled.deletion_protection != Some(false) {
+                            return Err(format!(
+                                "expected deletionProtection=false after disabling, got {:?}",
+                                disabled.deletion_protection
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
             .await?;
 
         failures

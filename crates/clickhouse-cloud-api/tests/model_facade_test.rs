@@ -112,6 +112,12 @@ fn extracted_models_keep_root_and_models_paths() {
         PhantomData::<api::ClickPipeMutateKafkaConfluentSchemaRegistry>,
         PhantomData::<api::models::ClickPipeMutateKafkaConfluentSchemaRegistry>,
     );
+    // `ClickPipeSettings` is kept as an alias of the request type the spec now
+    // uses for create/PATCH settings, so existing callers keep compiling.
+    assert_same_type(
+        PhantomData::<api::ClickPipeSettings>,
+        PhantomData::<api::models::ClickPipeSettingsPutRequest>,
+    );
     assert_same_type(
         PhantomData::<api::PostgresBackup>,
         PhantomData::<api::models::PostgresBackup>,

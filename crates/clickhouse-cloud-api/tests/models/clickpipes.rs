@@ -745,6 +745,47 @@ fn click_pipe_post_kafka_source_requires_authentication() {
     }
 }
 
+// The spec types create and PATCH `settings` as `ClickPipeSettingsPutRequest`,
+// the same schema the settings PUT takes, so nested settings follow the same
+// omission contract: unset keys (including the Kafka-only
+// `kafka_read_committed`) never reach the wire.
+#[test]
+fn click_pipe_create_and_patch_settings_use_the_put_request_shape() {
+    let settings = ClickPipeSettingsPutRequest {
+        object_storage_max_file_count: Some(200),
+        ..Default::default()
+    };
+    let create = ClickPipePostRequest {
+        destination: ClickPipeMutateDestination {
+            columns: None,
+            database: "db".to_string(),
+            managed_table: None,
+            roles: None,
+            table: None,
+            table_definition: None,
+        },
+        field_mappings: None,
+        name: "pipe".to_string(),
+        scaling: None,
+        settings: Some(settings.clone()),
+        source: ClickPipePostSource::default(),
+        start_paused: None,
+    };
+    let patch = ClickPipePatchRequest {
+        settings: Some(settings),
+        ..Default::default()
+    };
+    for wire in [
+        serde_json::to_value(&create).unwrap(),
+        serde_json::to_value(&patch).unwrap(),
+    ] {
+        assert_eq!(
+            wire["settings"],
+            serde_json::json!({ "object_storage_max_file_count": 200 })
+        );
+    }
+}
+
 // `kafka_read_committed` is only supported for Kafka pipes, so a settings PUT
 // for any other source must leave the key off the wire entirely — not send
 // `false` and not send `null`.

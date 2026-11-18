@@ -165,6 +165,7 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             byoc_id: None,
             compliance_type: None,
             data_warehouse_id: None,
+            deletion_protection: None,
             enable_core_dumps: None,
             endpoints: None,
             has_transparent_data_encryption: None,

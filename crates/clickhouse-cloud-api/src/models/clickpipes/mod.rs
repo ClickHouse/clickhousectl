@@ -309,7 +309,7 @@ pub struct ClickPipePatchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<ClickPipeSettings>,
+    pub settings: Option<ClickPipeSettingsPutRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ClickPipePatchSource>,
 }
@@ -349,7 +349,7 @@ pub struct ClickPipePostRequest {
     pub scaling: Option<ClickPipeScaling>,
     // settings default-serializes as `{}` which the API also rejects.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<ClickPipeSettings>,
+    pub settings: Option<ClickPipeSettingsPutRequest>,
     pub source: ClickPipePostSource,
     /// Create stopped and start ingestion later; unsupported for database ClickPipes.
     #[serde(rename = "startPaused", skip_serializing_if = "Option::is_none")]
@@ -446,47 +446,18 @@ pub struct ClickPipeScalingPatchRequest {
     pub replicas: Option<i64>,
 }
 
-/// `ClickPipeSettings` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipeSettings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_max_download_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_max_insert_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_max_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_min_insert_block_size_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_parallel_distributed_insert_select: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clickhouse_parallel_view_processing: Option<bool>,
-    // The control plane rejected this key on an object-storage create on
-    // 2026-09-05, even when false. It must be absent outside Kafka creates.
-    #[serde(
-        rename = "kafka_read_committed",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub kafka_read_committed: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_concurrency: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_max_file_count: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_max_file_size: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_max_insert_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_polling_interval_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_storage_use_cluster_function: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub streaming_max_insert_wait_ms: Option<i64>,
-}
+/// Former request-position name for ClickPipe settings.
+///
+/// The spec now types `settings` in [`ClickPipePostRequest`] and
+/// [`ClickPipePatchRequest`] as `ClickPipeSettingsPutRequest`, leaving the
+/// `ClickPipeSettings` schema response-only ([`ClickPipeSettingsResponse`]).
+/// The two request structs had identical fields, so this alias keeps existing
+/// callers compiling with an unchanged wire body.
+pub type ClickPipeSettings = ClickPipeSettingsPutRequest;
 
 /// `ClickPipeSettings` from the ClickHouse Cloud API, in response position.
 ///
-/// Response variant of [`ClickPipeSettings`]: every field is `Option<T>`, so a
+/// Every field is `Option<T>`, so a
 /// field the API drops or sends as `null` deserializes to `None` instead of
 /// failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -541,8 +512,8 @@ pub struct ClickPipeSettingsPutRequest {
     pub clickhouse_parallel_view_processing: Option<bool>,
     /// Kafka-only: the API rejects this key outright for any other source
     /// ("Setting 'kafka_read_committed' is only supported for Kafka
-    /// ClickPipes"), so absence — not `false` — is how a non-Kafka settings
-    /// update expresses "this setting does not apply".
+    /// ClickPipes"), so absence — not `false` — is how a non-Kafka create,
+    /// PATCH or settings update expresses "this setting does not apply".
     #[serde(
         rename = "kafka_read_committed",
         skip_serializing_if = "Option::is_none"

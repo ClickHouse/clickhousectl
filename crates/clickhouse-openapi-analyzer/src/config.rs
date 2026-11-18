@@ -119,7 +119,11 @@ const OPTIONAL_REQUEST_SCHEMAS: &[&str] = &[
     // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
     // for every other source, so absence is the only way a non-Kafka update
     // can express "does not apply". `object_storage_max_file_size` is also a
-    // private-preview setting that orgs must have enabled by support.
+    // private-preview setting that orgs must have enabled by support. The
+    // same contract applies to settings nested in a ClickPipe create or PATCH,
+    // which the spec also types as this schema: on 2026-09-05 an
+    // object-storage create with `kafka_read_committed: false` was rejected,
+    // while omitting the key succeeded.
     "ClickPipeSettingsPutRequest",
     // Despite its non-Patch name and descriptions that omit the "Optional"
     // prefix, RoleUpdateRequest is used only by PATCH and the operation states
@@ -176,15 +180,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // https://github.com/ClickHouse/terraform-provider-clickhouse/blob/7c1d20d485f260f410698a17936cf7793bb5d9e1/internal/service/clickhouse/resource/clickpipe_kafka_update_payload_test.go
     ("ClickPipePatchKafkaSource", "credentials"),
     ("ClickPipePatchKafkaSource", "reversePrivateEndpointIds"),
-    // ClickPipeSettingsPutRequest's source-conditional contract also applies to
-    // settings nested in a create request: on 2026-09-05 an object-storage create with the key set
-    // to false was rejected, while omitting it succeeded.
-    ("ClickPipeSettings", "kafka_read_committed"),
-    // object_storage_max_file_size is object-storage-only and private preview
-    // ("Contact support to enable it"), and can only lower the server's limit,
-    // so a create must be able to leave it out. The schema has no required[]
-    // and the field is not nullable, unlike its nullable neighbours.
-    ("ClickPipeSettings", "object_storage_max_file_size"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),
