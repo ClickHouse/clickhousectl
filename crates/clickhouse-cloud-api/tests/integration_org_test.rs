@@ -1281,7 +1281,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                     }
                                     let hit = entries.into_iter().find(|a| {
                                         a.created_at.is_some_and(|created_at| {
-                                            created_at.timestamp() as u64 >= window_start_secs
+                                            created_at.as_second() as u64 >= window_start_secs
                                         })
                                     });
                                     Ok(hit)
@@ -1334,7 +1334,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                     "activity_get returned no organizationId".into()
                                 );
                             }
-                            if fetched.created_at.is_none_or(|at| at.timestamp() == 0) {
+                            if fetched.created_at.is_none_or(|at| at.as_second() == 0) {
                                 return Err(
                                     "activity_get returned zero createdAt".into()
                                 );
@@ -1541,10 +1541,10 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     async move {
                         let before = client.openapi_key_get(&org_id, &api_key_uuid).await?
                             .result.ok_or("key missing before expiry update")?;
-                        let expires = chrono::Utc::now() + chrono::Duration::days(7);
                         // Use whole seconds because the API may normalize timestamp precision.
-                        let expires = chrono::DateTime::from_timestamp(expires.timestamp(), 0)
-                            .ok_or("invalid expiry timestamp")?;
+                        let expires = jiff::Timestamp::from_second(
+                            jiff::Timestamp::now().as_second() + 7 * 24 * 60 * 60,
+                        )?;
                         for expire_at in [Some(expires), None] {
                             let request = ApiKeyPatchRequest {
                                 expire_at: Some(expire_at),

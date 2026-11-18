@@ -1,4 +1,3 @@
-use chrono::Utc;
 use clickhouse_cloud_api::models::*;
 use wiremock::matchers::{basic_auth, body_partial_json, method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
@@ -586,7 +585,7 @@ async fn restore_postgres_service() {
             ("default_pool_size".into(), "16".into()),
             ("future_parameter".into(), "on".into()),
         ])),
-        restore_target: Utc::now(),
+        restore_target: jiff::Timestamp::now(),
         pg_config: None,
         tags: None,
     };
@@ -678,11 +677,7 @@ async fn postgres_service_backup_get_list_encodes_cursor_and_reads_envelope_pagi
         );
         assert_eq!(
             result[0].last_modified,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-03-31T18:17:37Z")
-                    .unwrap()
-                    .with_timezone(&Utc)
-            )
+            Some("2026-03-31T18:17:37Z".parse::<jiff::Timestamp>().unwrap())
         );
         let requests = server.received_requests().await.unwrap();
         let query: std::collections::HashMap<_, _> =

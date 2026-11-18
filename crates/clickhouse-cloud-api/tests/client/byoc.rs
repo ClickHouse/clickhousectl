@@ -277,8 +277,8 @@ async fn get_byoc_infrastructure_progress() {
         Some(ByocInfrastructureProgressStatus::InProgress)
     );
     assert_eq!(
-        progress.updated_at.map(|t| t.to_rfc3339()),
-        Some("2026-09-30T12:00:00+00:00".to_string())
+        progress.updated_at.map(|t| t.to_string()),
+        Some("2026-09-30T12:00:00Z".to_string())
     );
     let stages = progress.stages.unwrap();
     assert_eq!(stages.len(), 2);

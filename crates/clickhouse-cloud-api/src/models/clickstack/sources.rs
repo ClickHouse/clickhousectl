@@ -134,7 +134,7 @@ pub struct ClickStackAggregatedColumnResponse {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackConnection {
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(
@@ -152,7 +152,7 @@ pub struct ClickStackConnection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
@@ -500,7 +500,7 @@ pub struct ClickStackMaterializedView {
     #[serde(rename = "dimensionColumns")]
     pub dimension_columns: String,
     #[serde(rename = "minDate", skip_serializing_if = "Option::is_none")]
-    pub min_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub min_date: Option<jiff::Timestamp>,
     #[serde(rename = "minGranularity")]
     pub min_granularity: ClickStackMaterializedViewMingranularity,
     #[serde(rename = "tableName")]
@@ -523,7 +523,7 @@ pub struct ClickStackMaterializedViewResponse {
     #[serde(rename = "dimensionColumns", skip_serializing_if = "Option::is_none")]
     pub dimension_columns: Option<String>,
     #[serde(rename = "minDate", skip_serializing_if = "Option::is_none")]
-    pub min_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub min_date: Option<jiff::Timestamp>,
     #[serde(rename = "minGranularity", skip_serializing_if = "Option::is_none")]
     pub min_granularity: Option<ClickStackMaterializedViewMingranularity>,
     #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]

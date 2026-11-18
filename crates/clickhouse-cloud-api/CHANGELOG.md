@@ -16,6 +16,20 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+Timestamp fields are now `jiff::Timestamp` instead of
+`chrono::DateTime<chrono::Utc>`, and the crate no longer depends on `chrono`,
+which is unmaintained (RUSTSEC-2026-0543). This covers every model field that
+held a timestamp (`created_at`, `expire_at`, `start_timestamp` and similar) and
+the `PgCreatedAtProperty` and `PgPitrRestoreTargetProperty` aliases. Callers
+depend on `jiff` 1.x and convert at the boundary:
+`"2030-01-02T03:04:05Z".parse::<jiff::Timestamp>()?` to build a value,
+`timestamp.to_string()` for RFC 3339 and `timestamp.as_second()` for Unix
+seconds. A caller that must keep `chrono` can convert with
+`chrono::DateTime::from_timestamp(ts.as_second(), ts.subsec_nanosecond() as u32)`.
+On the wire, timestamps are still RFC 3339 in UTC with a `Z` suffix. One
+difference: a fractional second is written with the fewest digits that
+represent it (`.5Z`), where `chrono` padded to 3, 6 or 9 (`.500Z`).
+
 Structs with a required field no longer implement `Default`: request bodies
 such as `ServicePostRequest`, `ClickPipePostRequest` and
 `ClickStackCreateAlertRequest`, their nested required types, the request

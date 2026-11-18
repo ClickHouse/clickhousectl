@@ -162,10 +162,8 @@ fn parse_pubsub_filter(value: &str) -> Result<String, String> {
 /// Parse `--seek-timestamp` into the library's UTC timestamp. clap already
 /// validates the format with `parse_datetime`, so this keeps the builder total
 /// rather than being a second gate the user can hit.
-fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|datetime| datetime.with_timezone(&chrono::Utc))
-        .map_err(|error| {
+fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<jiff::Timestamp> {
+    crate::cloud::shared::parse_rfc3339(value).map_err(|error| {
             CloudError::usage(format!(
                 "invalid --seek-timestamp '{value}': expected ISO 8601 / RFC 3339 format (e.g. 2026-04-10T12:00:00Z): {error}"
             ))
@@ -494,11 +492,7 @@ mod tests {
         };
         assert_eq!(
             built.seek_timestamp,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
-                    .expect("fixed timestamp")
-                    .with_timezone(&chrono::Utc)
-            )
+            Some("2026-04-10T12:00:00Z".parse::<jiff::Timestamp>().unwrap())
         );
 
         // clap cannot express the inverse relationship, so the builder refuses
@@ -729,11 +723,7 @@ mod tests {
         // The offset is normalized to UTC for the wire.
         assert_eq!(
             source.seek_timestamp,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-04-10T10:00:00Z")
-                    .expect("fixed timestamp")
-                    .with_timezone(&chrono::Utc)
-            )
+            Some("2026-04-10T10:00:00Z".parse::<jiff::Timestamp>().unwrap())
         );
         assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
         assert_eq!(source.enable_ordering, Some(true));
@@ -834,11 +824,7 @@ mod tests {
         );
         assert_eq!(
             source.seek_timestamp,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
-                    .expect("fixed timestamp")
-                    .with_timezone(&chrono::Utc)
-            )
+            Some("2026-04-10T12:00:00Z".parse::<jiff::Timestamp>().unwrap())
         );
         assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
         assert_eq!(source.enable_ordering, Some(true));

@@ -833,7 +833,7 @@ pub struct ByocInfrastructureProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ByocInfrastructureProgressStatus>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `ByocInfrastructureProgressStage` from the ClickHouse Cloud API.
@@ -850,7 +850,7 @@ pub struct ByocInfrastructureProgressStage {
     #[serde(rename = "subStages", skip_serializing_if = "Option::is_none")]
     pub sub_stages: Option<Vec<ByocInfrastructureProgressStage>>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `ByocInfrastructureValidation` from the ClickHouse Cloud API.
@@ -902,11 +902,11 @@ pub struct ByocCustomerAuthorizedAccess {
     pub mode: Option<String>,
     /// Start of the access window; present only for `window` mode.
     #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
-    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub start_timestamp: Option<jiff::Timestamp>,
     /// End of the current access window; present only while access is allowed
     /// until a deadline.
     #[serde(rename = "windowEndTimestamp", skip_serializing_if = "Option::is_none")]
-    pub window_end_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub window_end_timestamp: Option<jiff::Timestamp>,
 }
 
 /// `ByocCustomerAuthorizedAccessPatchRequest` from the ClickHouse Cloud API (Beta).
@@ -921,5 +921,5 @@ pub struct ByocCustomerAuthorizedAccessPatchRequest {
     #[serde(rename = "mode", skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
-    pub start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub start_timestamp: Option<jiff::Timestamp>,
 }

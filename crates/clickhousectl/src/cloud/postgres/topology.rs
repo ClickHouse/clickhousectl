@@ -152,9 +152,8 @@ pub async fn postgres_restore(
         .pg_bouncer_config_file
         .map(|path| load_json_file::<PgBouncerConfig>("--pg-bouncer-config-file", path))
         .transpose()?;
-    let restore_target = chrono::DateTime::parse_from_rfc3339(opts.restore_target)
-        .map_err(|e| CloudError::usage(format!("invalid restore-target: {}", e)))?
-        .with_timezone(&chrono::Utc);
+    let restore_target = crate::cloud::shared::parse_rfc3339(opts.restore_target)
+        .map_err(|e| CloudError::usage(format!("invalid restore-target: {}", e)))?;
 
     let org_id = resolve_org_id(client).await?;
 

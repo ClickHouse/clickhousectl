@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedSearch {
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackSavedSearchFilterResponse>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,7 +26,7 @@ pub struct ClickStackSavedSearch {
     #[serde(rename = "teamId", skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
     #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]

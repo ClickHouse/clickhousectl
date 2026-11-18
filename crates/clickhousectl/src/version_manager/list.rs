@@ -2,7 +2,6 @@ use crate::error::{Error, NetworkStage, Result};
 use crate::paths;
 use crate::version_manager::atomic::CommitLock;
 use crate::version_manager::network::{self, ProbeOutcome};
-use chrono::Datelike;
 use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use std::fmt;
@@ -112,7 +111,9 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
     use crate::version_manager::platform::{Platform, builds_probe_url};
 
     let platform = Platform::detect()?;
-    let current_year = chrono::Utc::now().year() as u32;
+    let current_year = jiff::Timestamp::now()
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+        .year() as u32;
     // ClickHouse uses YY.MM versioning — scan from current year down to 20 (2020)
     // Use two-digit year format
     let start_yy = current_year % 100;

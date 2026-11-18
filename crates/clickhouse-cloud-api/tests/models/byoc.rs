@@ -506,8 +506,8 @@ fn byoc_customer_authorized_access_keeps_window_fields_and_open_mode() {
     assert_eq!(access.duration_seconds, Some(3600));
     assert_eq!(access.allowed, Some(true));
     assert_eq!(
-        access.start_timestamp.unwrap().to_rfc3339(),
-        "2026-11-09T10:00:00+00:00"
+        access.start_timestamp.unwrap().to_string(),
+        "2026-11-09T10:00:00Z"
     );
     assert!(access.window_end_timestamp.is_some());
 

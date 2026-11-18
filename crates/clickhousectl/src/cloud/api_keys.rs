@@ -18,7 +18,9 @@ use crate::cloud::client::{
 };
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, NamedResource};
-use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
+use crate::cloud::shared::{
+    format_rfc3339, parse_datetime, parse_ip_access_entries, parse_rfc3339, resolve_org_id,
+};
 use crate::cloud::types::DeleteResponse;
 use clap::{Subcommand, builder::PossibleValuesParser};
 #[cfg(test)]
@@ -315,10 +317,8 @@ fn parse_api_key_state_patch(value: &str) -> CloudResult<ApiKeyPatchRequestState
     }
 }
 
-fn parse_expire_at(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|datetime| datetime.with_timezone(&chrono::Utc))
-        .map_err(|error| {
+fn parse_expire_at(value: &str) -> CloudResult<jiff::Timestamp> {
+    parse_rfc3339(value).map_err(|error| {
             CloudError::usage(format!(
                 "invalid expire_at '{}': expected ISO 8601 / RFC 3339 format (e.g. 2025-12-31T23:59:59Z): {}",
                 value, error
@@ -488,7 +488,7 @@ fn print_key_table(keys: Vec<ApiKey>, all: bool) {
             state: or_absent(key.state.as_ref()),
             expires: key
                 .expire_at
-                .map(|time| time.to_rfc3339())
+                .map(format_rfc3339)
                 .unwrap_or_else(|| "never".into()),
         })
         .collect();
@@ -1370,10 +1370,7 @@ mod tests {
         })
         .unwrap();
         let expected_role_id = uuid::Uuid::parse_str(role_id).unwrap();
-        let expected_create_expiration =
-            chrono::DateTime::parse_from_rfc3339("2025-12-31T23:59:59Z")
-                .unwrap()
-                .with_timezone(&chrono::Utc);
+        let expected_create_expiration = "2025-12-31T23:59:59Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(create.name, "ci-key");
         assert_eq!(create.assigned_role_ids, Some(vec![expected_role_id]));
         assert_eq!(create.expire_at, Some(expected_create_expiration));
@@ -1403,10 +1400,7 @@ mod tests {
             clear_ip_allow: false,
         })
         .unwrap();
-        let expected_update_expiration =
-            chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
-                .unwrap()
-                .with_timezone(&chrono::Utc);
+        let expected_update_expiration = "2025-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap();
         assert_eq!(update.name.as_deref(), Some("renamed"));
         assert_eq!(update.assigned_role_ids, Some(vec![expected_role_id]));
         assert_eq!(update.expire_at, Some(Some(expected_update_expiration)));

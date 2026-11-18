@@ -1,4 +1,3 @@
-use chrono::Utc;
 use clickhouse_cloud_api::{Client, models::*};
 use wiremock::matchers::{basic_auth, body_json, body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -213,9 +212,7 @@ async fn delete_api_key() {
 
 #[tokio::test]
 async fn update_api_key_sends_omitted_timestamp_and_null_expiry() {
-    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
-        .unwrap()
-        .with_timezone(&Utc);
+    let timestamp = "2030-01-02T03:04:05Z".parse::<jiff::Timestamp>().unwrap();
     for (expire_at, wire) in [
         (None, serde_json::json!({"name": "retained"})),
         (

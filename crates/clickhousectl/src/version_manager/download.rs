@@ -1,9 +1,11 @@
 use crate::error::{Error, NetworkFailure, NetworkStage, Result};
 use crate::version_manager::platform::{DownloadSource, Platform};
 use crate::version_manager::{master::ArtifactInfo, network};
-use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use jiff::Timestamp;
+use jiff::civil::DateTime;
+use jiff::tz::TimeZone;
 use reqwest::StatusCode;
 use reqwest::header::{IF_NONE_MATCH, RETRY_AFTER};
 use std::path::Path;
@@ -188,7 +190,7 @@ async fn download_once(
             .headers()
             .get(RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| parse_retry_after(value, Utc::now()));
+            .and_then(|value| parse_retry_after(value, Timestamp::now()));
         return Err(DownloadAttemptError::Network(DownloadAttemptFailure {
             failure: network::failure_from_status(NetworkStage::DownloadHeaders, url, status),
             retryable: status == StatusCode::REQUEST_TIMEOUT
@@ -250,21 +252,20 @@ fn retry_delay(policy: &RetryPolicy, attempt: usize, retry_after: Option<Duratio
         .min(policy.max_delay)
 }
 
-fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<Duration> {
+fn parse_retry_after(value: &str, now: Timestamp) -> Option<Duration> {
     if let Ok(seconds) = value.trim().parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
-    let deadline = DateTime::parse_from_rfc2822(value)
-        .map(|date| date.with_timezone(&Utc))
-        .or_else(|_| {
-            NaiveDateTime::parse_from_str(value, "%A, %d-%b-%y %H:%M:%S GMT")
-                .map(|date| date.and_utc())
-        })
-        .or_else(|_| {
-            NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").map(|date| date.and_utc())
-        })
+    let utc = |date: DateTime| {
+        date.to_zoned_datetime(TimeZone::UTC)
+            .map(|zoned| zoned.timestamp())
+    };
+    let deadline = jiff::fmt::rfc2822::DateTimeParser::new()
+        .parse_timestamp(value)
+        .or_else(|_| DateTime::strptime("%A, %d-%b-%y %H:%M:%S GMT", value).and_then(utc))
+        .or_else(|_| DateTime::strptime("%a %b %e %H:%M:%S %Y", value).and_then(utc))
         .ok()?;
-    (deadline - now).to_std().ok()
+    Duration::try_from(deadline.duration_since(now)).ok()
 }
 
 #[cfg(test)]
@@ -323,9 +324,9 @@ mod tests {
 
     #[test]
     fn retry_after_supports_seconds_and_all_http_date_forms() {
-        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:28:00 GMT")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = jiff::fmt::rfc2822::DateTimeParser::new()
+            .parse_timestamp("Wed, 21 Oct 2015 07:28:00 GMT")
+            .unwrap();
         assert_eq!(parse_retry_after("7", now), Some(Duration::from_secs(7)));
         for value in [
             "Wed, 21 Oct 2015 07:28:05 GMT",
@@ -342,9 +343,9 @@ mod tests {
 
     #[test]
     fn expired_retry_after_dates_are_ignored() {
-        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:28:00 GMT")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = jiff::fmt::rfc2822::DateTimeParser::new()
+            .parse_timestamp("Wed, 21 Oct 2015 07:28:00 GMT")
+            .unwrap();
         for value in [
             "Wed, 21 Oct 2015 07:27:59 GMT",
             "Wednesday, 21-Oct-15 07:27:59 GMT",

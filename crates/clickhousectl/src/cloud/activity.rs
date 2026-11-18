@@ -10,9 +10,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{CloudClient, ResourceKind, ResourceLookup, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
-use chrono::{Datelike, Days, NaiveDate, Utc};
 use clap::Subcommand;
 use clap::builder::NonEmptyStringValueParser;
+use jiff::civil::Date;
+use jiff::{Timestamp, ToSpan};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
@@ -61,10 +62,8 @@ async fn activity_list(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    let from_date = from_date.map_or_else(
-        || default_from_date(to_date, Utc::now().date_naive()),
-        str::to_string,
-    );
+    let from_date =
+        from_date.map_or_else(|| default_from_date(to_date, today_utc()), str::to_string);
     let to_date = to_date.map(exclusive_end_date);
     let activities = client
         .list_activities(&org_id, Some(&from_date), to_date.as_deref())
@@ -91,7 +90,11 @@ async fn activity_list(
             .map(|activity| Row {
                 id: or_absent(activity.id.as_deref()),
                 activity_type: or_absent(activity.r#type.as_ref()),
-                created: or_absent(activity.created_at.map(|at| at.to_rfc3339())),
+                created: or_absent(
+                    activity
+                        .created_at
+                        .map(crate::cloud::shared::format_rfc3339),
+                ),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -100,29 +103,33 @@ async fn activity_list(
 }
 
 /// Days `activity list` covers when `--from-date` is absent, counting the end day.
-const DEFAULT_WINDOW_DAYS: u64 = 7;
+const DEFAULT_WINDOW_DAYS: i64 = 7;
 
 /// Without a start date the API returns the whole history, so default to the
 /// last `DEFAULT_WINDOW_DAYS` days ending on `--to-date`, or on `today`.
-fn default_from_date(to_date: Option<&str>, today: NaiveDate) -> String {
+fn default_from_date(to_date: Option<&str>, today: Date) -> String {
     let end = to_date
-        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+        .and_then(|date| Date::strptime("%Y-%m-%d", date).ok())
         .unwrap_or(today);
-    end.checked_sub_days(Days::new(DEFAULT_WINDOW_DAYS - 1))
+    end.checked_sub((DEFAULT_WINDOW_DAYS - 1).days())
         .unwrap_or(end)
-        .format("%Y-%m-%d")
         .to_string()
+}
+
+fn today_utc() -> Date {
+    Timestamp::now()
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+        .date()
 }
 
 /// The API reads `to_date` as midnight at the start of that day, so a bare
 /// date would exclude the day it names. Send the following day instead, which
 /// makes `--to-date` inclusive like `org usage --to-date`.
 fn exclusive_end_date(to_date: &str) -> String {
-    NaiveDate::parse_from_str(to_date, "%Y-%m-%d")
+    Date::strptime("%Y-%m-%d", to_date)
         .ok()
-        .and_then(|date| date.succ_opt())
-        .filter(|next| next.year() <= 9999)
-        .map(|next| next.format("%Y-%m-%d").to_string())
+        .and_then(|date| date.tomorrow().ok())
+        .map(|next| next.to_string())
         .unwrap_or_else(|| to_date.to_string())
 }
 
@@ -246,7 +253,7 @@ mod tests {
 
     #[test]
     fn default_from_date_covers_seven_days_ending_today() {
-        let today = NaiveDate::from_ymd_opt(2026, 3, 3).unwrap();
+        let today = jiff::civil::date(2026, 3, 3);
         assert_eq!(default_from_date(None, today), "2026-02-25");
         // A named end day wins over today, across a leap day.
         assert_eq!(default_from_date(Some("2024-03-01"), today), "2024-02-24");

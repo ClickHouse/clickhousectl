@@ -96,9 +96,9 @@ pub struct ScimGroupMember {
 /// `ScimGroupMeta` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimGroupMeta {
-    pub created: chrono::DateTime<chrono::Utc>,
+    pub created: jiff::Timestamp,
     #[serde(rename = "lastModified")]
-    pub last_modified: chrono::DateTime<chrono::Utc>,
+    pub last_modified: jiff::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]
@@ -316,9 +316,9 @@ pub struct ScimUserIm {
 /// `ScimUserMeta` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScimUserMeta {
-    pub created: chrono::DateTime<chrono::Utc>,
+    pub created: jiff::Timestamp,
     #[serde(rename = "lastModified")]
-    pub last_modified: chrono::DateTime<chrono::Utc>,
+    pub last_modified: jiff::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]

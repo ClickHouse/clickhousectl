@@ -500,7 +500,6 @@ impl Checker<'_> {
         }
         if let TypeNode::Applied(name, _) = ty
             && !self.rust.model_types.contains(name)
-            && name != "DateTime"
         {
             self.finding(
                 FindingKind::UnsupportedResponseSchema,
@@ -661,14 +660,12 @@ impl Checker<'_> {
             .is_some_and(|info| info.uses_i64_serde_conversion);
         let matches = match kind {
             Some("string") => {
-                matches!(
-                    scalar,
-                    "String" | "str" | "Uuid" | "DateTime" | "NaiveDateTime" | "NaiveDate"
-                ) || self
-                    .rust
-                    .enums
-                    .get(scalar)
-                    .is_some_and(|info| info.is_value_enum && !info.uses_i64_serde_conversion)
+                matches!(scalar, "String" | "str" | "Uuid" | "Timestamp")
+                    || self
+                        .rust
+                        .enums
+                        .get(scalar)
+                        .is_some_and(|info| info.is_value_enum && !info.uses_i64_serde_conversion)
             }
             Some("integer") => {
                 integer

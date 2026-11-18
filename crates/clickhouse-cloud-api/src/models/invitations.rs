@@ -52,11 +52,11 @@ pub struct Invitation {
     #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
     pub assigned_roles: Option<Vec<AssignedRole>>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expire_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
     #[cfg(feature = "deprecated-fields")]

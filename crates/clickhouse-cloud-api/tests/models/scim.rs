@@ -25,8 +25,8 @@ fn scim_user_enterprise_extension_uses_the_exact_wire_name() {
         ims: None,
         locale: None,
         meta: ScimUserMeta {
-            created: chrono::DateTime::<chrono::Utc>::default(),
-            last_modified: chrono::DateTime::<chrono::Utc>::default(),
+            created: jiff::Timestamp::default(),
+            last_modified: jiff::Timestamp::default(),
             location: None,
             resource_type: String::new(),
         },

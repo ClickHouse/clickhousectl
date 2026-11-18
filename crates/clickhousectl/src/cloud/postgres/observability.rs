@@ -1,6 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
-use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
+use crate::cloud::shared::{format_rfc3339, parse_rfc3339, parse_serde_enum, resolve_org_id};
 use clickhouse_cloud_api::models::{
     PostgresBackup, PostgresLogEntry, PostgresLogsGetListSeverity, PostgresLogsGetListSortorder,
     PostgresMetrics, PostgresSlowQueryPattern, SlowQueryPatternsGetListSortby,
@@ -43,14 +43,14 @@ pub(super) fn build_postgres_logs_query(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> CloudResult<PostgresLogsQuery> {
-    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+    let from = parse_rfc3339(from_date)
         .map_err(|error| CloudError::usage(format!("invalid from-date: {error}")))?;
-    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+    let to = parse_rfc3339(to_date)
         .map_err(|error| CloudError::usage(format!("invalid to-date: {error}")))?;
     if to <= from {
         return Err(CloudError::usage("to-date must be after from-date"));
     }
-    if to.signed_duration_since(from) > chrono::Duration::days(30) {
+    if to.duration_since(from) > jiff::SignedDuration::from_hours(30 * 24) {
         return Err(CloudError::usage(
             "the Postgres log time window must not exceed 30 days",
         ));
@@ -143,7 +143,7 @@ fn postgres_log_row(log: &PostgresLogEntry) -> PostgresLogRow {
         timestamp: or_absent(
             log.timestamp
                 .as_ref()
-                .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
+                .map(|timestamp| format_rfc3339(*timestamp)),
         ),
         severity: or_absent(log.severity.as_deref()),
         message: postgres_log_message(log.body.as_deref()),
@@ -172,9 +172,9 @@ fn postgres_log_message(body: Option<&str>) -> String {
 
 // These endpoints accept UTC timestamps with exactly three fractional digits,
 // for window bounds and the slow-query detail `--timestamp` alike.
-// Check the original fraction: chrono discards digits beyond nanosecond precision.
+// Check the original fraction: parsing drops digits beyond nanosecond precision.
 pub(super) fn parse_postgres_window_datetime(value: &str) -> Result<String, String> {
-    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+    let timestamp = parse_rfc3339(value)
         .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
     if value.split_once('.').is_some_and(|(_, fraction)| {
         fraction
@@ -187,15 +187,13 @@ pub(super) fn parse_postgres_window_datetime(value: &str) -> Result<String, Stri
             "invalid datetime '{value}': Postgres timestamps support at most millisecond precision"
         ));
     }
-    Ok(timestamp
-        .with_timezone(&chrono::Utc)
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    Ok(format!("{timestamp:.3}"))
 }
 
 fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
-    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+    let from = parse_rfc3339(from_date)
         .map_err(|_| CloudError::usage("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
-    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+    let to = parse_rfc3339(to_date)
         .map_err(|_| CloudError::usage("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
     if from > to {
         return Err(CloudError::usage(
@@ -207,9 +205,9 @@ fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
 
 fn postgres_metric_timestamp(timestamp: Option<i64>) -> String {
     timestamp
-        .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
-        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        // The wire type permits epoch values outside chrono's calendar range.
+        .and_then(|timestamp| jiff::Timestamp::from_second(timestamp).ok())
+        .map(|timestamp| format!("{timestamp:.0}"))
+        // The wire type permits epoch values outside the calendar range.
         // Keep such a value visible rather than dropping its data point.
         .unwrap_or_else(|| match timestamp {
             Some(timestamp) => format!("{timestamp} (outside displayable date range)"),
@@ -416,7 +414,7 @@ fn build_slow_query_detail_query(
     input: SlowQueryDetailInput<'_>,
 ) -> CloudResult<SlowQueryDetailQuery<'_>> {
     if let Some(timestamp) = input.timestamp {
-        chrono::DateTime::parse_from_rfc3339(timestamp)
+        parse_rfc3339(timestamp)
             .map_err(|_| CloudError::usage("invalid --timestamp: expected ISO 8601 / RFC 3339"))?;
     }
     Ok(SlowQueryDetailQuery {
@@ -585,11 +583,7 @@ fn render_postgres_backup_page(page: PostgresBackupPage) -> String {
         let rows = page.result.into_iter().map(|backup| Row {
             key: or_absent(backup.key),
             status: or_absent(backup.status),
-            last_modified: or_absent(
-                backup
-                    .last_modified
-                    .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
-            ),
+            last_modified: or_absent(backup.last_modified.map(format_rfc3339)),
         });
         Table::new(rows).with(Style::markdown()).to_string()
     };
@@ -961,8 +955,8 @@ mod tests {
             let normalized = parse_postgres_window_datetime(input).unwrap();
             assert_eq!(normalized, expected, "{input}");
             assert_eq!(
-                chrono::DateTime::parse_from_rfc3339(input).unwrap(),
-                chrono::DateTime::parse_from_rfc3339(&normalized).unwrap(),
+                parse_rfc3339(input).unwrap(),
+                parse_rfc3339(&normalized).unwrap(),
                 "normalization changed {input}"
             );
         }

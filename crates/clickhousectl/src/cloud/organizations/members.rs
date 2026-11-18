@@ -259,7 +259,11 @@ pub(super) async fn invitation_list(client: &CloudClient, json: bool) -> CloudRe
                 roles: join_absent(invitation.assigned_roles.as_deref(), |role| {
                     or_absent(role.role_name.as_deref())
                 }),
-                expires: or_absent(invitation.expire_at.map(|at| at.to_rfc3339())),
+                expires: or_absent(
+                    invitation
+                        .expire_at
+                        .map(crate::cloud::shared::format_rfc3339),
+                ),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));

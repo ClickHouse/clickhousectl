@@ -1592,7 +1592,7 @@ pub struct ClickStackAlertExecutionError {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub timestamp: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickStackAlertExecutionErrorType>,
 }
@@ -1610,7 +1610,7 @@ pub struct ClickStackAlertResponse {
     #[serde(rename = "chartConfig", skip_serializing_if = "Option::is_none")]
     pub chart_config: Option<ClickStackAlertChartConfigResponse>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<jiff::Timestamp>,
     #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
@@ -1642,7 +1642,7 @@ pub struct ClickStackAlertResponse {
     )]
     pub schedule_offset_minutes: Option<i64>,
     #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
-    pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub schedule_start_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub silenced: Option<ClickStackAlertSilenced>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1662,7 +1662,7 @@ pub struct ClickStackAlertResponse {
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<jiff::Timestamp>,
 }
 
 /// `ClickStackAlertSilenced` from the ClickHouse Cloud API.
@@ -1672,11 +1672,11 @@ pub struct ClickStackAlertResponse {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertSilenced {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub at: Option<chrono::DateTime<chrono::Utc>>,
+    pub at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub until: Option<chrono::DateTime<chrono::Utc>>,
+    pub until: Option<jiff::Timestamp>,
 }
 
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
@@ -1714,7 +1714,7 @@ pub struct ClickStackCreateAlertRequest {
     )]
     pub schedule_offset_minutes: Option<i64>,
     #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
-    pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub schedule_start_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ClickStackCreateAlertRequestSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1763,7 +1763,7 @@ pub struct ClickStackUpdateAlertRequest {
     )]
     pub schedule_offset_minutes: Option<i64>,
     #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
-    pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub schedule_start_at: Option<jiff::Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ClickStackUpdateAlertRequestSource>,
     #[serde(skip_serializing_if = "Option::is_none")]

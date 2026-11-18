@@ -262,9 +262,9 @@ fn contract_report(target: &str, snapshot: &str) -> DriftReport {
             #[cfg(feature = "deprecated-fields")] pub roles: Option<Vec<String>>,
             #[serde(rename = "assignedRoles")] pub assigned_roles: Option<Vec<AssignedRole>>,
             #[serde(rename = "keySuffix")] pub key_suffix: Option<String>,
-            #[serde(rename = "createdAt")] pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-            #[serde(rename = "expireAt")] pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-            #[serde(rename = "usedAt")] pub used_at: Option<chrono::DateTime<chrono::Utc>>,
+            #[serde(rename = "createdAt")] pub created_at: Option<jiff::Timestamp>,
+            #[serde(rename = "expireAt")] pub expire_at: Option<jiff::Timestamp>,
+            #[serde(rename = "usedAt")] pub used_at: Option<jiff::Timestamp>,
             #[serde(rename = "ipAccessList")] pub ip_access_list: Option<Vec<IpAccessListEntry>>,
         }
         pub enum ApiKeyState {

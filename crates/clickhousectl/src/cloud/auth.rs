@@ -1125,7 +1125,7 @@ pub fn clear_tokens() {
 }
 
 pub fn is_token_valid(tokens: &TokenStore) -> bool {
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     tokens.expires_at > now + 60
 }
 
@@ -1229,7 +1229,7 @@ pub async fn device_auth_login(api_url: &str, json: bool) -> CloudResult<TokenSt
 
         if status.is_success() {
             let token_resp: TokenResponse = serde_json::from_str(&body)?;
-            let now = chrono::Utc::now().timestamp();
+            let now = jiff::Timestamp::now().as_second();
             let tokens = TokenStore {
                 access_token: token_resp.access_token,
                 refresh_token: token_resp.refresh_token.unwrap_or_default(),
@@ -1300,7 +1300,7 @@ async fn refresh_access_token_with(
     }
 
     let token_resp: TokenResponse = serde_json::from_slice(&resp_body)?;
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
 
     Ok(TokenStore {
         access_token: token_resp.access_token,
@@ -1682,7 +1682,7 @@ mod tests {
 
     #[test]
     fn test_token_validity() {
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now().as_second();
 
         let valid = TokenStore {
             access_token: "a".into(),
@@ -1736,7 +1736,7 @@ mod tests {
         TokenStore {
             access_token: "a".into(),
             refresh_token: "r".into(),
-            expires_at: chrono::Utc::now().timestamp() + 3600,
+            expires_at: jiff::Timestamp::now().as_second() + 3600,
             api_url: DEFAULT_API_URL.into(),
             auth_config: sample_auth_config(),
         }
@@ -1835,7 +1835,7 @@ mod tests {
         assert_eq!(read_tokens(&file).unwrap().unwrap().access_token, "a");
 
         let expired = TokenStore {
-            expires_at: chrono::Utc::now().timestamp() - 10,
+            expires_at: jiff::Timestamp::now().as_second() - 10,
             ..fresh
         };
         save_tokens_to(&file, &expired).unwrap();
