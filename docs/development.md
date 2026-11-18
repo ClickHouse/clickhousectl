@@ -65,61 +65,39 @@ Each classifier fails closed for one set of paths, and a new or renamed file nee
 
 Documentation paths alone do not select live suites.
 
-## Trusted macOS build handoff
+## macOS build provenance
 
-`macos-build.yml` is a reusable builder, not the production release caller.
-It accepts no inputs or secrets. Call it by its full merged commit SHA;
-branch/tag references and same-commit `./` calls are rejected. The current
-`release.yml` remains unchanged until that immutable revision can be pinned.
-No signing or publication is enabled by adding this builder.
+Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or
+secrets. `release.yml` is not switched by this change; signing remains disabled.
+Build jobs have no OIDC or AWS credentials. A separate job attests the raw
+binaries and their receipt.
 
-The authorize job runs helpers from the builder revision, not the source
-under review. `check-release-source.py` requires the pushed `vX.Y.Z` tag to
-resolve to the expected commit and to name one exact merged PR into `main`
-or a single-level `release/*` branch. A human with current write access must
-have approved the exact PR head before merge. The PR author and linked
-commit authors/committers cannot supply that approval; missing linked
-identities are rejected. Git email linkage is not proof of actual authorship
-or historical push attribution. The released Git tree must equal that
-approved head tree. Refresh and re-review the release PR before merging if
-its base changes; a different merge tree is rejected rather than inferred
-to be approved.
+Source must be a pushed `vX.Y.Z` tag naming an exact reviewed PR merge into
+`main` or a single-level `release/*` branch. The released tree must equal the
+approved PR head. Source branches need active organization rules blocking
+deletion/force-push and requiring fresh, last-push-separated approval.
+Approval must come from a human writer other than the PR author or linked
+commit contributors; missing linked identities are rejected.
+Patch history must be linear, with every commit reviewed back to `main`
+(maximum 200 commits). Use squash merges or single-commit rebases.
 
-Source branches need active organization rules blocking deletion and
-force-pushes and requiring fresh, last-push-separated approving reviews.
-Current approve-once rules and evaluate-only rules do not satisfy this gate.
-Before enabling the signer, independently verify the organization rules'
-bypass actors too; the read-only effective-rules response does not establish
-that inventory. Review permissions reflect current access, not historical
-access. Existing organization administrators and bypass applications remain
-part of the trust model.
+`main` history is a trusted baseline, not retrospectively checked. Review
+permissions are current; linked Git identities do not prove actual authorship.
+Audit organization-rule bypass access separately before enabling signing.
 
-`main` is the trusted history baseline. Its tagged PR is checked, but earlier
-`main` history is not retrospectively reviewed by this gate. Accept that
-baseline explicitly before enabling credentials; a later reviewed version
-bump does not prove earlier bypassed changes were reviewed.
+Caller permissions: `contents: read`, `pull-requests: read`, `actions: read`,
+`id-token: write`, `attestations: write`. Verification needs source-repository
+PR/reviewer, artifact and attestation read access; cross-repository
+`GITHUB_TOKEN` access must be checked, not assumed.
 
-Patch history is checked back to its common ancestor with `main`, at most
-200 commits. Each intervening commit must itself be an exact, reviewed PR
-commit into that release branch with the approved tree. Use squash merges
-or single-commit rebases for patch releases; unmatched intermediate rebased
-commits and non-linear history fail closed. An unreviewed initial release
-branch cannot gain authority merely by receiving one reviewed version bump.
-Historical tags and stacked-branch merges that do not meet these rules are
-not automatically grandfathered in.
+The handoff is a flat directory containing exactly two raw Mach-O binaries
+and one receipt. Use the pinned download action or a REST stream;
+`gh run download` 2.105.0 incorrectly assumes ZIP. The verifier requires
+`gh >= 2.102.0` and rejects unapproved builders, mismatched provenance,
+expired artifacts, extra files, symlinks and changed bytes.
 
-Both macOS builds run without OIDC or AWS credentials, using a pinned Rust
-1.100.0 rather than floating stable. Workspace build flags and locked
-dependencies match the current release build. A separate clean job consumes
-their exact immutable artifact IDs, checks raw artifact digests, run/source
-identity, file inventory and Mach-O architecture, then attests the binaries
-and a receipt.
-Run/attempt-specific filenames preserve earlier successful build artifacts
-when only failed jobs are rerun. No shared caches or source-checkout helpers
-run in the attestation job.
-
-Before any future signing credentials are requested, the signer must repeat
-source authorization and authenticate the receipt and both raw files:
+Before requesting signing credentials, run helpers from the approved builder
+revision with expected values derived from trusted policy and run context:
 
 ```bash
 python3 builder/scripts/check-release-source.py --sha "$SOURCE_SHA" --ref "$RELEASE_REF"
@@ -129,43 +107,8 @@ python3 builder/scripts/release_artifacts.py verify \
   --approved-builder-sha "$APPROVED_BUILDER_SHA"
 ```
 
-The future reusable-workflow caller must grant `contents: read`,
-`pull-requests: read`, `actions: read`, `id-token: write` and
-`attestations: write`; the called workflow cannot increase those permissions.
-The signer needs read access to the source repository's PR/reviewer evidence,
-Actions artifact metadata/downloads and attestations, plus a checksum-pinned
-`gh` 2.102.0 or newer. Do not assume a private signer's `GITHUB_TOKEN` grants
-cross-repository access. Prove those reads before enabling credentials.
-
-Download into a dedicated flat directory containing exactly the two raw
-binaries and their raw receipt. Do not put archives, bundles or other files
-there. The future signing worker must pass only each verified binary to its
-target-specific signing directory, not the whole verification directory.
-Use the pinned download action or a REST download stream for raw files:
-`gh run download` 2.105.0 still attempts ZIP extraction and fails on them.
-
-Those expected values come from the signer's own policy and GitHub context,
-never caller inputs or the unverified receipt. Verification requires `gh`
-2.102.0 or newer, exact certificate identity and source ref, numeric
-repository/owner IDs, the expected run and a GitHub-hosted builder. Predicate
-claims alone are not authority. Missing evidence, old verification tools,
-expired/mismatched artifact IDs, extra files, symlinks and hash mismatches
-stop the handoff. No AWS credentials or signing operation are part of these
-commands.
-
-Attestation discovery is bounded by `gh`'s default 30 results per digest.
-A repository writer able to publish attestations can deny availability by
-flooding that list, just as artifact deletion can block a handoff. This must
-not turn into an authorization fallback.
-
-Unit tests cover policy and rejection paths. A live inert fixture verified
-the SHA-pinned reusable-workflow certificate identity and raw-artifact
-digest/run/source behavior; the production verifier rejected its different
-workflow identity. This is not a product release or receipt proof. A controlled
-authorized-tag run must still build both macOS binaries, publish their receipt
-and pass verification before signing credentials are enabled.
-See [GitHub's trusted-builder guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/increase-security-rating)
-and [the verifier interface](https://cli.github.com/manual/gh_attestation_verify).
+Signing enablement still requires a full authorized-tag build and receipt
+verification. Do not bypass a failed check or publish unsigned as a fallback.
 
 ## Live Cloud integration
 
