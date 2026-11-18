@@ -130,12 +130,13 @@ use crate::cloud::config::read_lossless_config;
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use clap::Subcommand;
-use clap::builder::NonEmptyStringValueParser;
+use clap::builder::{NonEmptyStringValueParser, PossibleValuesParser, TypedValueParser};
 use clickhouse_cloud_api::models::{
     ClickStackAlertResponse, ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest,
-    ClickStackCreateRoleRequest, ClickStackDashboardResponse, ClickStackRole,
-    ClickStackSavedSearch, ClickStackSavedSearchInput, ClickStackSource, ClickStackSourceResponse,
-    ClickStackUpdateAlertRequest, ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
+    ClickStackCreateRoleRequest, ClickStackDashboardResponse, ClickStackListAlertsSource,
+    ClickStackListAlertsState, ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchInput,
+    ClickStackSource, ClickStackSourceResponse, ClickStackUpdateAlertRequest,
+    ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
     ClickStackValidateDashboardResponse, ClickStackValidateWebhookResponse, ClickStackWebhook,
     ClickStackWebhookInput,
 };
@@ -246,10 +247,17 @@ impl From<AlertSelector> for NameSelector {
 #[derive(Subcommand)]
 pub enum AlertCommands {
     /// List ClickStack alerts
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Repeated values of one filter match any of them; different filters must all match.
+  --tag and --search match only the tags and displayName stored on the alert, not those
+  inherited from its saved search or dashboard.")]
     List {
         /// Service ID (from `cloud service list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
+        #[command(flatten)]
+        filters: AlertListFilters,
     },
     /// Get ClickStack alert details
     Get {
@@ -313,6 +321,91 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         target: AlertSelector,
     },
+}
+
+/// The API's alert-list limits, checked before credentials so an over-long
+/// filter is a usage error rather than a request the API rejects.
+const ALERT_LIST_MAX_TAGS: usize = 50;
+const ALERT_LIST_TAG_MAX_CHARS: usize = 32;
+const ALERT_LIST_SEARCH_MAX_CHARS: usize = 512;
+
+/// Server-side filters for `alert list`.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct AlertListFilters {
+    /// Only alerts with this tag; repeat to match any of several
+    #[arg(long = "tag", value_name = "TAG", value_parser = parse_alert_tag)]
+    pub tags: Vec<String>,
+    /// Only alerts whose displayName contains this text (case-insensitive)
+    #[arg(long, value_name = "TEXT", value_parser = parse_alert_search)]
+    pub search: Option<String>,
+    /// Only alerts from this source; repeat to match any of several
+    #[arg(
+        long = "source",
+        value_name = "SOURCE",
+        value_parser = PossibleValuesParser::new(ClickStackListAlertsSource::VALUES)
+            .map(|value| alert_filter_enum::<ClickStackListAlertsSource>(&value)),
+    )]
+    pub sources: Vec<ClickStackListAlertsSource>,
+    /// Only alerts in this state; repeat to match any of several
+    #[arg(
+        long = "state",
+        value_name = "STATE",
+        value_parser = PossibleValuesParser::new(ClickStackListAlertsState::VALUES)
+            .map(|value| alert_filter_enum::<ClickStackListAlertsState>(&value)),
+    )]
+    pub states: Vec<ClickStackListAlertsState>,
+}
+
+impl AlertListFilters {
+    /// The tag-count limit, which clap cannot express for a repeated flag.
+    pub(crate) fn validation_error(&self) -> Option<String> {
+        let count = self.tags.len();
+        (count > ALERT_LIST_MAX_TAGS).then(|| {
+            format!("--tag was given {count} times; at most {ALERT_LIST_MAX_TAGS} tags are allowed")
+        })
+    }
+}
+
+/// Convert a value clap already checked against the enum's `VALUES`. The
+/// library enums keep an `Unknown` catch-all, so deserialization cannot fail.
+fn alert_filter_enum<T: serde::de::DeserializeOwned>(value: &str) -> T {
+    serde_json::from_value(Value::String(value.to_owned()))
+        .expect("library filter enums accept every string")
+}
+
+fn parse_alert_tag(value: &str) -> Result<String, String> {
+    let length = value.chars().count();
+    if length > ALERT_LIST_TAG_MAX_CHARS {
+        return Err(format!(
+            "tag is {length} characters; the limit is {ALERT_LIST_TAG_MAX_CHARS}"
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_alert_search(value: &str) -> Result<String, String> {
+    let length = value.chars().count();
+    if length > ALERT_LIST_SEARCH_MAX_CHARS {
+        return Err(format!(
+            "search is {length} characters; the limit is {ALERT_LIST_SEARCH_MAX_CHARS}"
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+impl ClickStackCommands {
+    /// A usage error clap cannot detect, checked after parsing and before
+    /// credentials. Returns the owning subcommand path below `clickstack`.
+    pub fn validation_error(&self) -> Option<(&'static [&'static str], String)> {
+        match self {
+            Self::Alert {
+                command: AlertCommands::List { filters, .. },
+            } => filters
+                .validation_error()
+                .map(|message| (&["alert", "list"][..], message)),
+            _ => None,
+        }
+    }
 }
 
 impl AlertCommands {
@@ -879,6 +972,8 @@ async fn resolve_clickstack_target(
                         service_id,
                         Some(NAME_LOOKUP_PAGE_SIZE),
                         Some(offset),
+                        // A name lookup searches every alert.
+                        &AlertListFilters::default(),
                     )
                     .await?
                     .into_iter()
@@ -945,9 +1040,14 @@ pub async fn run(client: &CloudClient, command: ClickStackCommands, json: bool) 
 
 async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> CloudResult<()> {
     match command {
-        AlertCommands::List { service_id } => {
+        AlertCommands::List {
+            service_id,
+            filters,
+        } => {
             let org_id = resolve_org_id(client).await?;
-            let alerts = client.click_stack_list_alerts(&org_id, &service_id).await?;
+            let alerts = client
+                .click_stack_list_alerts(&org_id, &service_id, &filters)
+                .await?;
             print_alert_list(&alerts, json)
         }
         AlertCommands::Get { service_id, target } => {
@@ -1670,22 +1770,35 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
+        filters: &AlertListFilters,
     ) -> CloudResult<Vec<ClickStackAlertResponse>> {
-        self.click_stack_list_alerts_page(org_id, service_id, None, None)
+        self.click_stack_list_alerts_page(org_id, service_id, None, None, filters)
             .await
     }
 
+    /// One page of alerts. Every page of a paged read must pass the same
+    /// `filters`, so offsets index the same filtered result set.
     async fn click_stack_list_alerts_page(
         &self,
         org_id: &str,
         service_id: &str,
         limit: Option<i64>,
         offset: Option<i64>,
+        filters: &AlertListFilters,
     ) -> CloudResult<Vec<ClickStackAlertResponse>> {
+        let tags: Vec<&str> = filters.tags.iter().map(String::as_str).collect();
         let response = self
             .api()
-            // Filters are not exposed by `cloud clickstack alert list` yet.
-            .click_stack_list_alerts(org_id, service_id, limit, offset, &[], None, &[], &[])
+            .click_stack_list_alerts(
+                org_id,
+                service_id,
+                limit,
+                offset,
+                &tags,
+                filters.search.as_deref(),
+                &filters.sources,
+                &filters.states,
+            )
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -2606,6 +2719,165 @@ mod tests {
         assert!(error.message.contains("ClickStack alert"), "{error}");
         assert!(!error.message.contains("Shared"), "{error}");
         assert_eq!(digits(&error.message), "", "{error}");
+    }
+
+    fn parse_alert_list_filters(extra: &[&str]) -> AlertListFilters {
+        let mut args = vec![
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "alert",
+            "list",
+            "svc-1",
+        ];
+        args.extend(extra);
+        let ClickStackCommands::Alert {
+            command: AlertCommands::List { filters, .. },
+        } = parse_clickstack(&args)
+        else {
+            panic!("expected alert list")
+        };
+        filters
+    }
+
+    #[test]
+    fn alert_list_filters_default_to_none_and_repeat() {
+        let filters = parse_alert_list_filters(&[]);
+        assert!(filters.tags.is_empty());
+        assert_eq!(filters.search, None);
+        assert!(filters.sources.is_empty() && filters.states.is_empty());
+
+        let filters = parse_alert_list_filters(&[
+            "--tag",
+            "prod",
+            "--tag",
+            "checkout",
+            "--search",
+            "Errors",
+            "--source",
+            "tile",
+            "--source",
+            "saved_search",
+            "--state",
+            "ALERT",
+            "--state",
+            "PENDING",
+        ]);
+        assert_eq!(filters.tags, ["prod", "checkout"]);
+        assert_eq!(filters.search.as_deref(), Some("Errors"));
+        assert_eq!(
+            filters.sources,
+            [
+                ClickStackListAlertsSource::Tile,
+                ClickStackListAlertsSource::Saved_search
+            ]
+        );
+        assert_eq!(
+            filters.states,
+            [
+                ClickStackListAlertsState::Alert,
+                ClickStackListAlertsState::Pending
+            ]
+        );
+    }
+
+    #[test]
+    fn alert_list_filter_enums_accept_every_wire_value_and_reject_others() {
+        use clap::error::ErrorKind;
+        for value in ClickStackListAlertsSource::VALUES {
+            let filters = parse_alert_list_filters(&["--source", value]);
+            assert_eq!(filters.sources[0].to_string(), *value);
+        }
+        for value in ClickStackListAlertsState::VALUES {
+            let filters = parse_alert_list_filters(&["--state", value]);
+            assert_eq!(filters.states[0].to_string(), *value);
+        }
+        for (flag, value) in [("--source", "dashboard"), ("--state", "alert")] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "list",
+                "svc-1",
+                flag,
+                value,
+            ])
+            .err()
+            .expect("unknown filter value must be rejected");
+            assert_eq!(error.kind(), ErrorKind::InvalidValue, "{flag} {value}");
+        }
+    }
+
+    #[test]
+    fn alert_list_filters_enforce_the_api_length_limits() {
+        use clap::error::ErrorKind;
+        let tag_at_limit = "t".repeat(ALERT_LIST_TAG_MAX_CHARS);
+        let search_at_limit = "é".repeat(ALERT_LIST_SEARCH_MAX_CHARS);
+        let filters =
+            parse_alert_list_filters(&["--tag", &tag_at_limit, "--search", &search_at_limit]);
+        assert_eq!(filters.tags, [tag_at_limit]);
+        assert_eq!(filters.search.as_deref(), Some(search_at_limit.as_str()));
+
+        for (flag, value) in [
+            ("--tag", "t".repeat(ALERT_LIST_TAG_MAX_CHARS + 1)),
+            ("--search", "s".repeat(ALERT_LIST_SEARCH_MAX_CHARS + 1)),
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "list",
+                "svc-1",
+                flag,
+                &value,
+            ])
+            .err()
+            .expect("an over-long filter must be rejected");
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "{flag}");
+            assert!(error.to_string().contains(flag), "{error}");
+        }
+    }
+
+    #[test]
+    fn alert_list_tag_count_limit_is_a_clickstack_validation_error() {
+        let tags = |count: usize| -> Vec<String> {
+            (0..count)
+                .flat_map(|index| ["--tag".to_owned(), format!("t{index}")])
+                .collect()
+        };
+        let at_limit = tags(ALERT_LIST_MAX_TAGS);
+        let at_limit: Vec<&str> = at_limit.iter().map(String::as_str).collect();
+        let mut args = vec![
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "alert",
+            "list",
+            "svc-1",
+        ];
+        args.extend(&at_limit);
+        assert_eq!(parse_clickstack(&args).validation_error(), None);
+
+        let over = tags(ALERT_LIST_MAX_TAGS + 1);
+        let over: Vec<&str> = over.iter().map(String::as_str).collect();
+        let mut args = vec![
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "alert",
+            "list",
+            "svc-1",
+        ];
+        args.extend(&over);
+        let (path, message) = parse_clickstack(&args).validation_error().unwrap();
+        assert_eq!(path, ["alert", "list"]);
+        assert!(message.contains("--tag"), "{message}");
+        assert!(
+            message.contains(&(ALERT_LIST_MAX_TAGS + 1).to_string()),
+            "{message}"
+        );
     }
 
     #[test]

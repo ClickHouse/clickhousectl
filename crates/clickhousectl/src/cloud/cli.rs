@@ -82,6 +82,15 @@ impl CloudArgs {
         command.clickpipe_create_validation_error()
     }
 
+    /// A `clickstack` usage error clap cannot detect, with the owning
+    /// subcommand path below `clickstack`, checked before credentials.
+    pub fn clickstack_validation_error(&self) -> Option<(&'static [&'static str], String)> {
+        let CloudCommands::ClickStack { command } = &self.command else {
+            return None;
+        };
+        command.validation_error()
+    }
+
     /// The `clickpipe reverse-private-endpoint create` validation message, if
     /// the flags cannot describe the chosen `--type`. clap cannot express
     /// "forbidden for this value of another argument", so the check runs after

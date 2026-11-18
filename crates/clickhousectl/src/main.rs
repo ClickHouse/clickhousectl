@@ -257,6 +257,20 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         ));
     }
 
+    // Limits clap cannot express, such as how often a flag may repeat.
+    if let Some((path, message)) = args.clickstack_validation_error() {
+        let mut owner = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickstack"))
+            .expect("cloud clickstack command must exist");
+        for name in path {
+            owner = owner
+                .find_subcommand_mut(name)
+                .expect("clickstack validation path names an existing subcommand");
+        }
+        return Err(owner.error(ErrorKind::TooManyValues, message));
+    }
+
     // Each reverse private endpoint type has its own required flags, and the
     // flags of the other types are meaningless for it; clap has no way to
     // forbid an argument based on another argument's value.
@@ -678,6 +692,32 @@ mod tests {
             .expect("Cli::from_arg_matches must accept matches from Cli::command()");
         validate_post_parse(&cli, &mut cmd)?;
         Ok(cli)
+    }
+
+    #[test]
+    fn clickstack_validation_errors_are_usage_errors_on_the_owning_command() {
+        let mut args = vec![
+            "clickhousectl".to_owned(),
+            "cloud".to_owned(),
+            "clickstack".to_owned(),
+            "alert".to_owned(),
+            "list".to_owned(),
+            "svc-1".to_owned(),
+        ];
+        for index in 0..51 {
+            args.extend(["--tag".to_owned(), format!("t{index}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let error = parse_and_validate(&args)
+            .err()
+            .expect("more than 50 tags should be rejected");
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        assert!(message.contains("--tag"), "{message}");
+        assert!(
+            message.contains("clickhousectl cloud clickstack alert list"),
+            "{message}"
+        );
     }
 
     #[test]

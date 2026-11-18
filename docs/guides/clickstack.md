@@ -110,6 +110,12 @@ Inspect `state` and `executionErrors`, as well as notification destinations. A `
 
 An alert's `displayName` is the name shown in the UI and in `alert list`; its optional `name` is a Handlebars template for the notification title. For `alert get`, `update` and `delete`, `--name` selects the alert whose `displayName` or `name` equals the value, and fails if more than one alert matches.
 
+`alert list` filters on the server. Repeat `--tag`, `--source` (`saved_search`, `tile` or `inline`) or `--state` (`ALERT`, `OK`, `INSUFFICIENT_DATA`, `DISABLED` or `PENDING`) to match any of several values; `--search` matches text in `displayName`, ignoring case. Different filters must all match. `--tag` and `--search` see only the tags and `displayName` stored on the alert, not those inherited from its saved search or dashboard. The API accepts up to 50 tags of at most 32 characters each and a search of at most 512 characters:
+
+```bash
+clickhousectl cloud clickstack alert list <service-id> --state ALERT --state PENDING --tag checkout
+```
+
 `displayName` defaults to the name of the saved search, tile or chart the alert queries, and `tags` default to the saved search's or dashboard's tags. An `inline` alert carries its own chart in `chartConfig` (a `line`, `stacked_bar`, `stacked_line` or `number` chart) instead of referencing a dashboard tile, and has no tags unless you set them:
 
 ```json
