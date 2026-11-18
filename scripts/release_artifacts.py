@@ -2,7 +2,6 @@
 """Create and authenticate raw macOS build artifact receipts."""
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -190,21 +189,6 @@ def artifact(id_, source, run, target, digest):
     return name
 
 
-def lock_digest(source):
-    obj = github_api(f"repos/{REPO}/contents/Cargo.lock?ref={source}")
-    if (
-        not isinstance(obj, dict)
-        or obj.get("encoding") != "base64"
-        or not isinstance(obj.get("content"), str)
-    ):
-        fail("invalid Cargo.lock response")
-    try:
-        content = base64.b64decode("".join(obj["content"].split()), validate=True)
-    except (ValueError, TypeError) as exc:
-        raise ProvenanceError("invalid Cargo.lock encoding") from exc
-    return hashlib.sha256(content).hexdigest()
-
-
 def receipt(directory, source, ref, run, attempt, builder, inputs):
     check_context(source, ref, run, builder)
     if not positive(attempt) or set(inputs) != set(TARGETS):
@@ -238,7 +222,6 @@ def receipt(directory, source, ref, run, attempt, builder, inputs):
         "builder_sha": builder,
         "run_id": run,
         "run_attempt": attempt,
-        "cargo_lock_sha256": lock_digest(source),
         "targets": records,
     }
     path = directory / f"macos-build-receipt-{run}-{attempt}.json"
@@ -327,7 +310,7 @@ def verify_attestation(path, sha, source, ref, run, digest):
                     for s in statement["subject"]
                 )
             ):
-                return
+                return result
         except (KeyError, TypeError, AttributeError):
             continue
     fail("no attestation matches trusted identity and run")
@@ -355,7 +338,7 @@ def verify(directory, source, ref, run, approved):
     try:
         data = json.loads(raw)
         builder = data["builder_sha"]
-    except (ValueError, TypeError, KeyError) as exc:
+    except (ValueError, TypeError, KeyError, RecursionError) as exc:
         raise ProvenanceError("invalid receipt") from exc
     if not isinstance(builder, str) or builder not in approved:
         fail("unapproved builder")
@@ -382,13 +365,6 @@ def verify(directory, source, ref, run, approved):
         or path.name != f"macos-build-receipt-{run}-{attempt}.json"
     ):
         fail("receipt attempt mismatch")
-    lock = data.get("cargo_lock_sha256")
-    if (
-        not isinstance(lock, str)
-        or not HEX64.fullmatch(lock)
-        or lock != lock_digest(source)
-    ):
-        fail("Cargo.lock digest mismatch")
     records = data.get("targets")
     if not isinstance(records, dict) or set(records) != set(TARGETS):
         fail("invalid target inventory")

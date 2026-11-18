@@ -132,8 +132,13 @@ def exact_head_approval(pull, api):
         require(isinstance(commit, dict), "Invalid PR commit")
         for field in ("author", "committer"):
             user = commit.get(field)
-            if isinstance(user, dict) and isinstance(user.get("login"), str):
-                contributors.add(user["login"].casefold())
+            require(
+                isinstance(user, dict)
+                and isinstance(user.get("login"), str)
+                and bool(user["login"].strip()),
+                "Missing linked PR commit identity",
+            )
+            contributors.add(user["login"].casefold())
     reviews = api(
         f"repos/{REPOSITORY}/pulls/{number}/reviews?per_page=100", paginate=True
     )

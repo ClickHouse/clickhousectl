@@ -76,10 +76,13 @@ No signing or publication is enabled by adding this builder.
 The authorize job runs helpers from the builder revision, not the source
 under review. `check-release-source.py` requires the pushed `vX.Y.Z` tag to
 resolve to the expected commit and to name one exact merged PR into `main`
-or a single-level `release/*` branch. An independent human writer must have
-approved the exact PR head before merge. The released Git tree must equal
-that approved head tree. Refresh and re-review the release PR before merging
-if its base changes; a different merge tree is rejected rather than inferred
+or a single-level `release/*` branch. A human with current write access must
+have approved the exact PR head before merge. The PR author and linked
+commit authors/committers cannot supply that approval; missing linked
+identities are rejected. Git email linkage is not proof of actual authorship
+or historical push attribution. The released Git tree must equal that
+approved head tree. Refresh and re-review the release PR before merging if
+its base changes; a different merge tree is rejected rather than inferred
 to be approved.
 
 Source branches need active organization rules blocking deletion and
@@ -91,6 +94,11 @@ that inventory. Review permissions reflect current access, not historical
 access. Existing organization administrators and bypass applications remain
 part of the trust model.
 
+`main` is the trusted history baseline. Its tagged PR is checked, but earlier
+`main` history is not retrospectively reviewed by this gate. Accept that
+baseline explicitly before enabling credentials; a later reviewed version
+bump does not prove earlier bypassed changes were reviewed.
+
 Patch history is checked back to its common ancestor with `main`, at most
 200 commits. Each intervening commit must itself be an exact, reviewed PR
 commit into that release branch with the approved tree. Use squash merges
@@ -100,10 +108,12 @@ branch cannot gain authority merely by receiving one reviewed version bump.
 Historical tags and stacked-branch merges that do not meet these rules are
 not automatically grandfathered in.
 
-Both macOS builds run without OIDC or AWS credentials, using Rust 1.100.0 and
-the locked dependencies. A separate clean job consumes their exact immutable
-artifact IDs, checks the raw artifact digests, run/source identity, file
-inventory and Mach-O architecture, then attests the binaries and a receipt.
+Both macOS builds run without OIDC or AWS credentials, using a pinned Rust
+1.100.0 rather than floating stable. Workspace build flags and locked
+dependencies match the current release build. A separate clean job consumes
+their exact immutable artifact IDs, checks raw artifact digests, run/source
+identity, file inventory and Mach-O architecture, then attests the binaries
+and a receipt.
 Run/attempt-specific filenames preserve earlier successful build artifacts
 when only failed jobs are rerun. No shared caches or source-checkout helpers
 run in the attestation job.
@@ -119,6 +129,19 @@ python3 builder/scripts/release_artifacts.py verify \
   --approved-builder-sha "$APPROVED_BUILDER_SHA"
 ```
 
+The future reusable-workflow caller must grant `contents: read`,
+`pull-requests: read`, `actions: read`, `id-token: write` and
+`attestations: write`; the called workflow cannot increase those permissions.
+The signer needs read access to the source repository's PR/reviewer evidence,
+Actions artifact metadata/downloads and attestations, plus a checksum-pinned
+`gh` 2.102.0 or newer. Do not assume a private signer's `GITHUB_TOKEN` grants
+cross-repository access. Prove those reads before enabling credentials.
+
+Download into a dedicated flat directory containing exactly the two raw
+binaries and their raw receipt. Do not put archives, bundles or other files
+there. The future signing worker must pass only each verified binary to its
+target-specific signing directory, not the whole verification directory.
+
 Those expected values come from the signer's own policy and GitHub context,
 never caller inputs or the unverified receipt. Verification requires `gh`
 2.102.0 or newer, exact certificate identity and source ref, numeric
@@ -127,6 +150,11 @@ claims alone are not authority. Missing evidence, old verification tools,
 expired/mismatched artifact IDs, extra files, symlinks and hash mismatches
 stop the handoff. No AWS credentials or signing operation are part of these
 commands.
+
+Attestation discovery is bounded by `gh`'s default 30 results per digest.
+A repository writer able to publish attestations can deny availability by
+flooding that list, just as artifact deletion can block a handoff. This must
+not turn into an authorization fallback.
 
 Unit tests cover policy and rejection paths. They do not establish the first
 real reusable-workflow certificate identity or raw-artifact service behavior;

@@ -101,7 +101,7 @@ class Evidence:
             if self.tag_reads > 1:
                 return {"object": {"type": "commit", "sha": self.final_tag}}
         if path not in self.data:
-            raise ProvenanceError("Evidence unavailable")
+            raise AssertionError(f"Unexpected API path: {path}")
         return copy.deepcopy(self.data[path])
 
     @property
@@ -119,7 +119,7 @@ class Evidence:
 
 class AuthorizeTests(unittest.TestCase):
     def rejected(self, evidence):
-        with self.assertRaises(ProvenanceError):
+        with self.assertRaises(source.SourceRejected):
             source.authorize(COMMIT, REF, api=evidence)
 
     def test_authorizes_exact_reviewed_main_tree(self):
@@ -204,6 +204,54 @@ class AuthorizeTests(unittest.TestCase):
                     }
                 self.rejected(evidence)
 
+    def test_rejects_missing_linked_commit_identities(self):
+        for field in ("author", "committer"):
+            for missing in ("absent", "null"):
+                with self.subTest(field=field, missing=missing):
+                    evidence = Evidence()
+                    commit = evidence.data[f"{PREFIX}/pulls/7/commits?per_page=100"][0]
+                    if missing == "absent":
+                        del commit[field]
+                    else:
+                        commit[field] = None
+                    self.rejected(evidence)
+
+    def test_rejects_malformed_linked_commit_logins(self):
+        for field in ("author", "committer"):
+            for identity in (
+                {},
+                {"login": None},
+                {"login": 1},
+                {"login": ""},
+                {"login": " "},
+            ):
+                with self.subTest(field=field, identity=identity):
+                    evidence = Evidence()
+                    commit = evidence.data[f"{PREFIX}/pulls/7/commits?per_page=100"][0]
+                    commit[field] = identity
+                    self.rejected(evidence)
+
+    def test_excludes_linked_contributors_from_review(self):
+        for field in ("author", "committer"):
+            for identity_type in ("User", "Bot"):
+                with self.subTest(field=field, identity_type=identity_type):
+                    evidence = Evidence()
+                    evidence.data[f"{PREFIX}/pulls/7/commits?per_page=100"][0][
+                        field
+                    ] = {"login": "REVIEWER", "type": identity_type}
+                    self.rejected(evidence)
+
+    def test_accepts_linked_bot_contributor_with_independent_human_reviewer(self):
+        evidence = Evidence()
+        evidence.data[f"{PREFIX}/pulls/7/commits?per_page=100"][0]["committer"] = {
+            "login": "release-bot",
+            "type": "Bot",
+        }
+        self.assertEqual(
+            source.authorize(COMMIT, REF, api=evidence)["approval"]["reviewer"],
+            "reviewer",
+        )
+
     def test_later_change_request_or_dismissal_revokes_approval(self):
         for state in ("CHANGES_REQUESTED", "DISMISSED"):
             with self.subTest(state=state):
@@ -284,10 +332,17 @@ class AuthorizeTests(unittest.TestCase):
         evidence.data[f"{PREFIX}/git/commits/{COMMIT}"]["parents"].append({"sha": HEAD})
         self.rejected(evidence)
 
-    def test_rejects_missing_evidence_instead_of_treating_it_as_approval(self):
+    def test_propagates_transport_failure(self):
         evidence = Evidence()
-        del evidence.data[f"{PREFIX}/pulls/7/reviews?per_page=100"]
-        self.rejected(evidence)
+
+        def unavailable(path, *, paginate=False):
+            if path == f"{PREFIX}/pulls/7/reviews?per_page=100":
+                raise ProvenanceError("Transport unavailable")
+            return evidence(path, paginate=paginate)
+
+        with self.assertRaises(ProvenanceError) as error:
+            source.authorize(COMMIT, REF, api=unavailable)
+        self.assertNotIsInstance(error.exception, source.SourceRejected)
 
 
 class MainTests(unittest.TestCase):
