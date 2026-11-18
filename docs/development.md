@@ -65,6 +65,75 @@ Each classifier fails closed for one set of paths, and a new or renamed file nee
 
 Documentation paths alone do not select live suites.
 
+## Trusted macOS build handoff
+
+`macos-build.yml` is a reusable builder, not the production release caller.
+It accepts no inputs or secrets. Call it by its full merged commit SHA;
+branch/tag references and same-commit `./` calls are rejected. The current
+`release.yml` remains unchanged until that immutable revision can be pinned.
+No signing or publication is enabled by adding this builder.
+
+The authorize job runs helpers from the builder revision, not the source
+under review. `check-release-source.py` requires the pushed `vX.Y.Z` tag to
+resolve to the expected commit and to name one exact merged PR into `main`
+or a single-level `release/*` branch. An independent human writer must have
+approved the exact PR head before merge. The released Git tree must equal
+that approved head tree. Refresh and re-review the release PR before merging
+if its base changes; a different merge tree is rejected rather than inferred
+to be approved.
+
+Source branches need active organization rules blocking deletion and
+force-pushes and requiring fresh, last-push-separated approving reviews.
+Current approve-once rules and evaluate-only rules do not satisfy this gate.
+Before enabling the signer, independently verify the organization rules'
+bypass actors too; the read-only effective-rules response does not establish
+that inventory. Review permissions reflect current access, not historical
+access. Existing organization administrators and bypass applications remain
+part of the trust model.
+
+Patch history is checked back to its common ancestor with `main`, at most
+200 commits. Each intervening commit must itself be an exact, reviewed PR
+commit into that release branch with the approved tree. Use squash merges
+or single-commit rebases for patch releases; unmatched intermediate rebased
+commits and non-linear history fail closed. An unreviewed initial release
+branch cannot gain authority merely by receiving one reviewed version bump.
+Historical tags and stacked-branch merges that do not meet these rules are
+not automatically grandfathered in.
+
+Both macOS builds run without OIDC or AWS credentials, using Rust 1.100.0 and
+the locked dependencies. A separate clean job consumes their exact immutable
+artifact IDs, checks the raw artifact digests, run/source identity, file
+inventory and Mach-O architecture, then attests the binaries and a receipt.
+Run/attempt-specific filenames preserve earlier successful build artifacts
+when only failed jobs are rerun. No shared caches or source-checkout helpers
+run in the attestation job.
+
+Before any future signing credentials are requested, the signer must repeat
+source authorization and authenticate the receipt and both raw files:
+
+```bash
+python3 builder/scripts/check-release-source.py --sha "$SOURCE_SHA" --ref "$RELEASE_REF"
+python3 builder/scripts/release_artifacts.py verify \
+  --directory "$UNSIGNED_DIRECTORY" --source-sha "$SOURCE_SHA" \
+  --ref "$RELEASE_REF" --run-id "$RUN_ID" \
+  --approved-builder-sha "$APPROVED_BUILDER_SHA"
+```
+
+Those expected values come from the signer's own policy and GitHub context,
+never caller inputs or the unverified receipt. Verification requires `gh`
+2.102.0 or newer, exact certificate identity and source ref, numeric
+repository/owner IDs, the expected run and a GitHub-hosted builder. Predicate
+claims alone are not authority. Missing evidence, old verification tools,
+expired/mismatched artifact IDs, extra files, symlinks and hash mismatches
+stop the handoff. No AWS credentials or signing operation are part of these
+commands.
+
+Unit tests cover policy and rejection paths. They do not establish the first
+real reusable-workflow certificate identity or raw-artifact service behavior;
+those still need a controlled GitHub run before the builder is approved for
+signing. See [GitHub's trusted-builder guidance](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/increase-security-rating)
+and [the verifier interface](https://cli.github.com/manual/gh_attestation_verify).
+
 ## Live Cloud integration
 
 Use a dedicated test workspace: these tests create and change real Cloud resources. Maintainer labels, exact-SHA overrides, stacked-PR policy, and required checks are documented in [the CI guide](../.github/CLOUD_INTEGRATION.md). Affected suites run with `run-cloud-integration`; the decision check passes without the label when no suites are selected.
