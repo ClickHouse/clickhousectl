@@ -225,6 +225,15 @@ type. Struct-literal callers need `min_auto_granularity: None`.
 `ClickStackCASLPermissionSubject` adds `App`; exhaustive matches without a
 wildcard arm need the new variant.
 
+Breaking: `organization_roles_get_list` takes `limit: Option<i64>` and
+`cursor: Option<&str>` after the organization ID, because the API now pages
+the role list. A page holds at most `limit` roles (the server default and
+maximum is 250), ordered by role ID; `ApiResponse::next_cursor` is set while
+more pages remain and `ApiResponse::limit` echoes the page size. Migrate
+`organization_roles_get_list(org)` to `organization_roles_get_list(org, None, None)`;
+the request sent is unchanged, but an organization with more than 250 roles
+now needs to follow `next_cursor` to see them all.
+
 ## 0.5.1
 
 No changes to this crate; released in lockstep with `clickhousectl` 0.5.1.

@@ -253,6 +253,7 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-cloud-api/tests/client/organizations.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/postgres.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/query_api_endpoints.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/tests/client/rbac.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/saved_queries.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/services.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/client/udfs.rs": NO_SUITES,

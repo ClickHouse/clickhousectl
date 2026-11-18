@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1418320",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1443100",
       "email": "support@clickhouse.com"
     }
   },
@@ -710,7 +710,7 @@
     "/v1/organizations/{organizationId}/roles": {
       "get": {
         "summary": "List all available roles for an organization",
-        "description": "Returns all available roles (system + custom) for an organization.",
+        "description": "Returns available roles (system + custom) for an organization, ordered by unique role ID ascending. Results are capped at `limit` (default and maximum 250) per page. Pass `nextCursor` as the `cursor` query parameter to fetch the next page until it is null.",
         "operationId": "organizationRolesGetList",
         "parameters": [
           {
@@ -721,6 +721,24 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "Maximum number of results to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 250
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "description": "Opaque cursor from a previous response's `nextCursor`, marking where to resume the list.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -747,6 +765,17 @@
                       "items": {
                         "$ref": "#/components/schemas/RBACRole"
                       }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "description": "Maximum number of results returned in this page."
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Cursor for the next page, to be sent as the `cursor` query parameter. Null on the last page."
                     }
                   }
                 }
@@ -3832,7 +3861,7 @@
       },
       "post": {
         "summary": "Create or replace service autoscaling schedule",
-        "description": "Creates or fully replaces the autoscaling schedule for a service. Pass an empty `entries` array to clear the schedule \u2014 a subsequent GET will return 404, and the response will contain an empty `baseConfig` (all fields absent). The base scaling config (applied when no entry is active) is managed separately via the `replicaScaling` endpoint. Requires the scheduled autoscaling feature to be enabled for the organization. Gen 2 (v2-default) services use a fixed size and cannot idle. An entry may leave out fields it takes from the base config, but each entry combined with those fields must have equal minReplicaMemoryGb and maxReplicaMemoryGb, a fixed replica count (numReplicas, or equal minReplicas and maxReplicas), and idling off; otherwise the request is rejected.",
+        "description": "Creates or fully replaces the autoscaling schedule for a service. Pass an empty `entries` array to clear the schedule — a subsequent GET will return 404, and the response will contain an empty `baseConfig` (all fields absent). The base scaling config (applied when no entry is active) is managed separately via the `replicaScaling` endpoint. Requires the scheduled autoscaling feature to be enabled for the organization. Gen 2 (v2-default) services use a fixed size and cannot idle. An entry may leave out fields it takes from the base config, but each entry combined with those fields must have equal minReplicaMemoryGb and maxReplicaMemoryGb, a fixed replica count (numReplicas, or equal minReplicas and maxReplicas), and idling off; otherwise the request is rejected.",
         "operationId": "scalingScheduleUpsert",
         "parameters": [
           {
@@ -4188,7 +4217,7 @@
       },
       "put": {
         "summary": "Set service upgrade window",
-        "description": "Creates or fully replaces the upgrade window for a service. The upgrade window currently lasts 6 hours from `startHourUtc`. The upgrade window can only be set on primary services; secondary services inherit the primary service window.\n\nErrors:\n- 400: invalid field values (`weekday` not in 0\u20136, `startHourUtc` not in {0, 6, 12, 18}), or the service is a secondary service.\n- 401: missing, invalid, or disabled API key.\n- 403: caller lacks `control-plane:service:manage` on the service, or the organization does not have the scheduled upgrades feature enabled.\n- 404: service does not exist or is not visible to the caller.",
+        "description": "Creates or fully replaces the upgrade window for a service. The upgrade window currently lasts 6 hours from `startHourUtc`. The upgrade window can only be set on primary services; secondary services inherit the primary service window.\n\nErrors:\n- 400: invalid field values (`weekday` not in 0–6, `startHourUtc` not in {0, 6, 12, 18}), or the service is a secondary service.\n- 401: missing, invalid, or disabled API key.\n- 403: caller lacks `control-plane:service:manage` on the service, or the organization does not have the scheduled upgrades feature enabled.\n- 404: service does not exist or is not visible to the caller.",
         "operationId": "upgradeWindowUpdate",
         "parameters": [
           {
@@ -9630,7 +9659,7 @@
     "/v1/organizations/{organizationId}/members/{userId}/notificationSettings": {
       "get": {
         "summary": "List a member's notification settings",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the notification settings an organization member has explicitly chosen. A member who has never changed a setting has none, so an empty list means every notification follows the platform default for their role \u2014 it does not mean notifications are off. Settings for notification types the member cannot use are omitted, which depends on their permissions rather than the caller's. Slack is configured for the whole organization and never appears here. A page holds at most `limit` settings (default 100, maximum 250; a larger value is clamped) and the server may return fewer. Every response carries `limit` and `nextCursor`; pass `nextCursor` as the `cursor` query parameter to fetch the next page, repeating until it is null.",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the notification settings an organization member has explicitly chosen. A member who has never changed a setting has none, so an empty list means every notification follows the platform default for their role — it does not mean notifications are off. Settings for notification types the member cannot use are omitted, which depends on their permissions rather than the caller's. Slack is configured for the whole organization and never appears here. A page holds at most `limit` settings (default 100, maximum 250; a larger value is clamped) and the server may return fewer. Every response carries `limit` and `nextCursor`; pass `nextCursor` as the `cursor` query parameter to fetch the next page, repeating until it is null.",
         "operationId": "memberNotificationSettingsGetList",
         "parameters": [
           {
@@ -13288,7 +13317,7 @@
       },
       "post": {
         "summary": "ClickStack: Create Source",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Creates a new source.  The request body is a source object without the `id` field. If an `id` is sent anyway it is silently ignored (stripped before validation \u2014 the request is never rejected because of it). Granularity fields (`materializedViews[].minGranularity` and `metadataMaterializedViews.granularity`) accept the same short format the API returns (e.g. `5m`, `15s`, `1h`, `1d`).",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Creates a new source.  The request body is a source object without the `id` field. If an `id` is sent anyway it is silently ignored (stripped before validation — the request is never rejected because of it). Granularity fields (`materializedViews[].minGranularity` and `metadataMaterializedViews.granularity`) accept the same short format the API returns (e.g. `5m`, `15s`, `1h`, `1d`).",
         "operationId": "clickStackCreateSource",
         "parameters": [
           {
@@ -13552,7 +13581,7 @@
       },
       "put": {
         "summary": "ClickStack: Update Source",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Updates an existing source. The full source object must be provided; this is a replace, not a patch.  The request body is a source object without the `id` field. If an `id` is sent anyway it is silently ignored (stripped before validation \u2014 never a 400); the path parameter alone identifies the source. Granularity fields (`materializedViews[].minGranularity` and `metadataMaterializedViews.granularity`) accept the same short format the API returns (e.g. `5m`, `15s`, `1h`, `1d`).",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Updates an existing source. The full source object must be provided; this is a replace, not a patch.  The request body is a source object without the `id` field. If an `id` is sent anyway it is silently ignored (stripped before validation — never a 400); the path parameter alone identifies the source. Granularity fields (`materializedViews[].minGranularity` and `metadataMaterializedViews.granularity`) accept the same short format the API returns (e.g. `5m`, `15s`, `1h`, `1d`).",
         "operationId": "clickStackUpdateSource",
         "parameters": [
           {
@@ -14775,7 +14804,7 @@
       },
       "delete": {
         "summary": "ClickStack: Delete Webhook",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Deletes a webhook. Blocked with a 409 while any alert still references it \u2014 reassign or remove those alerts first \u2014 so deletion never leaves an alert pointing at a missing webhook (which would silently drop notifications). Mirrors the internal webhook delete guard.",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Deletes a webhook. Blocked with a 409 while any alert still references it — reassign or remove those alerts first — so deletion never leaves an alert pointing at a missing webhook (which would silently drop notifications). Mirrors the internal webhook delete guard.",
         "operationId": "clickStackDeleteWebhook",
         "parameters": [
           {
@@ -18158,6 +18187,511 @@
         ],
         "tags": [
           "Postgres"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/postgres/{postgresId}/privateEndpoint": {
+      "get": {
+        "summary": "Get the PostgreSQL private endpoint",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns the AWS private endpoint service of a Postgres service, or 404 if it has not been created. Private endpoints are available only for AWS Postgres services, and only for organizations with the feature enabled.",
+        "operationId": "postgresPrivateEndpointGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/PostgresPrivateEndpoint"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create the PostgreSQL private endpoint",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Creates the AWS private endpoint service of a Postgres service. Creation takes about 5 to 10 minutes: `state` is `creating` until the service is `available`. A VPC endpoint can connect only after its ID is approved with the update endpoint. Private endpoints are available only for AWS Postgres services, and only for organizations with the feature enabled.",
+        "operationId": "postgresPrivateEndpointPost",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostgresPrivateEndpointPostRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/PostgresPrivateEndpoint"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "patch": {
+        "summary": "Update the PostgreSQL private endpoint",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Approves VPC endpoints by ID and sets the supported regions. At least one of `allowedVpcEndpoints` and `supportedRegions` is required, and each one provided replaces the existing list in full, so include every entry to keep. Private endpoints are available only for AWS Postgres services, and only for organizations with the feature enabled.",
+        "operationId": "postgresPrivateEndpointPatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostgresPrivateEndpointPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/PostgresPrivateEndpoint"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete the PostgreSQL private endpoint",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Deletes the AWS private endpoint service of a Postgres service. Connections through approved VPC endpoints stop working. Private endpoints are available only for AWS Postgres services, and only for organizations with the feature enabled.",
+        "operationId": "postgresPrivateEndpointDelete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -26691,20 +27225,20 @@
           },
           "weekdays": {
             "type": "array",
-            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, \u2026, 6 = Saturday.",
+            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "items": {
               "type": "integer"
             },
             "minItems": 1
           },
           "startHourUtc": {
-            "description": "UTC hour (0\u201323) when this entry becomes active (inclusive).",
+            "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
             "type": "integer",
             "minimum": 0,
             "maximum": 23
           },
           "endHourUtc": {
-            "description": "UTC hour (1\u201324) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
+            "description": "UTC hour (1–24) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
             "type": "integer",
             "minimum": 1,
             "maximum": 24
@@ -26742,7 +27276,7 @@
             "type": "integer"
           },
           "isActiveNow": {
-            "description": "Whether this entry is currently active. Scheduled times are indicative \u2014 actions are applied on a best-effort basis and may be delayed by a few minutes.",
+            "description": "Whether this entry is currently active. Scheduled times are indicative — actions are applied on a best-effort basis and may be delayed by a few minutes.",
             "type": "boolean"
           }
         },
@@ -26824,7 +27358,7 @@
           },
           "weekdays": {
             "type": "array",
-            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, \u2026, 6 = Saturday.",
+            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "items": {
               "type": "integer"
             },
@@ -26838,14 +27372,14 @@
             "minItems": 1
           },
           "startHourUtc": {
-            "description": "UTC hour (0\u201323) when this entry becomes active (inclusive).",
+            "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
             "type": "integer",
             "minimum": 0,
             "maximum": 23,
             "example": 9
           },
           "endHourUtc": {
-            "description": "UTC hour (1\u201324) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
+            "description": "UTC hour (1–24) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
             "type": "integer",
             "minimum": 1,
             "maximum": 24,
@@ -26861,7 +27395,7 @@
             "example": "vertical"
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum memory per replica (Gb). Optional for vertical entries \u2014 provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to maxReplicaMemoryGb \u2014 memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "description": "Minimum memory per replica (Gb). Optional for vertical entries — provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to maxReplicaMemoryGb — memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -26869,7 +27403,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb). Optional for vertical entries \u2014 provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to minReplicaMemoryGb \u2014 memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "description": "Maximum memory per replica (Gb). Optional for vertical entries — provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to minReplicaMemoryGb — memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -27363,7 +27897,7 @@
       "BackupEncryptionConfig": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The `encryption_config.json` stored alongside this backup in your bucket, passed through unchanged. Supply the file contents verbatim rather than constructing this object \u2014 its shape is versioned and depends on your cloud provider. See [Export backups to your own cloud account](https://clickhouse.com/docs/cloud/manage/backups/export-backups-to-own-cloud-account) for what it contains.\n\nAccepted only for organizations enrolled in the private preview, and only when the backup is of a service that has transparent data encryption enabled. Such a restore always produces a service with transparent data encryption enabled, inherited from the source service.",
+        "description": "The `encryption_config.json` stored alongside this backup in your bucket, passed through unchanged. Supply the file contents verbatim rather than constructing this object — its shape is versioned and depends on your cloud provider. See [Export backups to your own cloud account](https://clickhouse.com/docs/cloud/manage/backups/export-backups-to-own-cloud-account) for what it contains.\n\nAccepted only for organizations enrolled in the private preview, and only when the backup is of a service that has transparent data encryption enabled. Such a restore always produces a service with transparent data encryption enabled, inherited from the source service.",
         "example": {
           "schema_version": 1,
           "restore_key_pairs": [
@@ -28394,7 +28928,7 @@
             "example": "*.my-service.example.com"
           },
           "targetId": {
-            "description": "Optional DNS target ID. For VPC_RESOURCE, it is the CHILD resource configuration ID (rcfg-\u2026), or the configuration ID for a single resource. For VPC_ENDPOINT_SERVICE, it is an AWS availability zone ID (for example use1-az1, not the zone name us-east-1a) that the endpoint service offers and ClickPipes supports in the region; if the endpoint is not in that zone yet, ClickPipes adds the zone to the endpoint. Cross-region VPC endpoint services reject targetId. Not supported for other endpoint types. Set it at create time to route a custom DNS name to that target. If the target is not reported in dnsTargets yet, the mapping is not served until it appears; it does not fall back to the default target. If omitted, the default target is used. For VPC_RESOURCE, once dnsTargets is non-empty, adding or changing a targetId requires an ID in that list; unchanged target IDs are not re-checked.",
+            "description": "Optional DNS target ID. For VPC_RESOURCE, it is the CHILD resource configuration ID (rcfg-…), or the configuration ID for a single resource. For VPC_ENDPOINT_SERVICE, it is an AWS availability zone ID (for example use1-az1, not the zone name us-east-1a) that the endpoint service offers and ClickPipes supports in the region; if the endpoint is not in that zone yet, ClickPipes adds the zone to the endpoint. Cross-region VPC endpoint services reject targetId. Not supported for other endpoint types. Set it at create time to route a custom DNS name to that target. If the target is not reported in dnsTargets yet, the mapping is not served until it appears; it does not fall back to the default target. If omitted, the default target is used. For VPC_RESOURCE, once dnsTargets is non-empty, adding or changing a targetId requires an ID in that list; unchanged target IDs are not re-checked.",
             "type": "string",
             "example": "rcfg-097648d8068504966"
           }
@@ -31601,7 +32135,7 @@
       "ClickPipePubSubSource": {
         "properties": {
           "format": {
-            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview \u2014 contact support to enable this feature for your organization.",
+            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview — contact support to enable this feature for your organization.",
             "type": "string",
             "enum": [
               "JSONEachRow",
@@ -31684,7 +32218,7 @@
       "ClickPipePostPubSubServiceAccountSource": {
         "properties": {
           "format": {
-            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview \u2014 contact support to enable this feature for your organization.",
+            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview — contact support to enable this feature for your organization.",
             "type": "string",
             "enum": [
               "JSONEachRow",
@@ -31771,7 +32305,7 @@
       "ClickPipePostPubSubWorkloadIdentitySource": {
         "properties": {
           "format": {
-            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview \u2014 contact support to enable this feature for your organization.",
+            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in private preview — contact support to enable this feature for your organization.",
             "type": "string",
             "enum": [
               "JSONEachRow",
@@ -32565,7 +33099,7 @@
             "example": 2000
           },
           "replicaMemoryGb": {
-            "description": "Memory in GiB for DB ClickPipes. Must be 4\u00d7 the CPU core count.",
+            "description": "Memory in GiB for DB ClickPipes. Must be 4× the CPU core count.",
             "type": "number",
             "minimum": 4,
             "maximum": 128,
@@ -33094,7 +33628,7 @@
             "type": "number"
           },
           "backupRetentionPeriodInHours": {
-            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) \u2014 i.e. a multiple of 24.",
+            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) — i.e. a multiple of 24.",
             "type": "number"
           },
           "backupStartTime": {
@@ -33209,7 +33743,7 @@
             "type": "number"
           },
           "type": {
-            "description": "Snapshot type. Always \"full\" \u2014 snapshots never chain off a parent.",
+            "description": "Snapshot type. Always \"full\" — snapshots never chain off a parent.",
             "type": "string",
             "enum": [
               "full"
@@ -34595,7 +35129,7 @@
           },
           "select": {
             "type": "array",
-            "description": "Exactly one aggregated value to display as a single number \u2014 unless \"formulas\" is set, in which case the select items are the formula's operands and the (single) formula value is displayed instead.",
+            "description": "Exactly one aggregated value to display as a single number — unless \"formulas\" is set, in which case the select items are the formula's operands and the (single) formula value is displayed instead.",
             "items": {
               "$ref": "#/components/schemas/ClickStackSelectItem"
             }
@@ -37472,7 +38006,7 @@
             ]
           },
           "isBroadcastEnabled": {
-            "description": "Must be false \u2014 there is no expression to broadcast. Omit it and it is false. Allowed values: false.",
+            "description": "Must be false — there is no expression to broadcast. Omit it and it is false. Allowed values: false.",
             "type": "boolean",
             "example": false
           },
@@ -37626,7 +38160,7 @@
             ]
           },
           "isBroadcastEnabled": {
-            "description": "Must be true if provided, and is true when omitted \u2014 a source filter should always broadcast to at least its own source. Allowed values: true.",
+            "description": "Must be true if provided, and is true when omitted — a source filter should always broadcast to at least its own source. Allowed values: true.",
             "type": "boolean",
             "example": true
           },
@@ -43302,7 +43836,7 @@
       },
       "pgHaType": {
         "type": "string",
-        "description": "Type of high availability: \u201cnone\u201d for no replication, \u201casync\u201d for asynchronous replication to a single standby, and \u201csync\u201d for synchronous replication to the number of standbys in `standbyCount` (two by default).",
+        "description": "Type of high availability: “none” for no replication, “async” for asynchronous replication to a single standby, and “sync” for synchronous replication to the number of standbys in `standbyCount` (two by default).",
         "enum": [
           "none",
           "async",
@@ -43311,7 +43845,7 @@
       },
       "pgStandbyCount": {
         "type": "integer",
-        "description": "Number of hot standby instances. Accepted values and defaults depend on `haType`:\n- \u201cnone\u201d: 0 (default)\n- \u201casync\u201d: 1 (default)\n- \u201csync\u201d: 1, or 2 (default)\n\nWhen `haType` is updated without `standbyCount`, the default for the new `haType` applies.",
+        "description": "Number of hot standby instances. Accepted values and defaults depend on `haType`:\n- “none”: 0 (default)\n- “async”: 1 (default)\n- “sync”: 1, or 2 (default)\n\nWhen `haType` is updated without `standbyCount`, the default for the new `haType` applies.",
         "enum": [
           0,
           1,
@@ -43348,7 +43882,7 @@
         },
         "maxItems": 50,
         "title": "Postgres Tags",
-        "description": "Tags associated with the Postgres service. Tag keys starting with \u201cchc_\u201d are reserved for internal use."
+        "description": "Tags associated with the Postgres service. Tag keys starting with “chc_” are reserved for internal use."
       },
       "pgDeletionProtectionProperty": {
         "type": "boolean",
@@ -43473,7 +44007,7 @@
             "$ref": "#/components/schemas/pgIsPrimaryProperty"
           },
           "connectionString": {
-            "description": "Connection string to the Postgres service. Embeds the service password, so it is only returned when the service is created or its password is reset. Omitted from every other response when Postgres credential redaction is enabled for the organization. Not guaranteed to be present \u2014 treat as optional.",
+            "description": "Connection string to the Postgres service. Embeds the service password, so it is only returned when the service is created or its password is reset. Omitted from every other response when Postgres credential redaction is enabled for the organization. Not guaranteed to be present — treat as optional.",
             "type": "string"
           },
           "username": {
@@ -43481,7 +44015,7 @@
             "type": "string"
           },
           "password": {
-            "description": "Password for the Postgres service. Only returned when the service is created or its password is reset. Omitted from every other response when Postgres credential redaction is enabled for the organization. Not guaranteed to be present \u2014 treat as optional.",
+            "description": "Password for the Postgres service. Only returned when the service is created or its password is reset. Omitted from every other response when Postgres credential redaction is enabled for the organization. Not guaranteed to be present — treat as optional.",
             "type": "string"
           },
           "hostname": {
@@ -43739,6 +44273,160 @@
           "pgConfig",
           "pgBouncerConfig"
         ]
+      },
+      "PostgresPrivateEndpointVpcEndpoint": {
+        "properties": {
+          "vpcEndpointId": {
+            "description": "ID of the AWS VPC endpoint that is allowed to connect.",
+            "type": "string",
+            "example": "vpce-0123456789abcdef0",
+            "pattern": "^vpce-[0-9a-f]{17}$"
+          },
+          "description": {
+            "description": "Optional description of the VPC endpoint.",
+            "type": "string",
+            "example": "Production VPC",
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "vpcEndpointId"
+        ]
+      },
+      "PostgresPrivateEndpointPort": {
+        "properties": {
+          "port": {
+            "description": "Port exposed by the endpoint service.",
+            "type": "integer",
+            "example": 5432
+          },
+          "targetPort": {
+            "description": "Port on the Postgres service it forwards to.",
+            "type": "integer",
+            "example": 5432
+          }
+        },
+        "required": [
+          "port",
+          "targetPort"
+        ]
+      },
+      "PostgresPrivateEndpoint": {
+        "properties": {
+          "id": {
+            "description": "ID of the private endpoint service.",
+            "type": "string",
+            "example": "ps0123456789abcdefghjkmnpq"
+          },
+          "state": {
+            "description": "State of the private endpoint service: one of 'creating', 'available', 'deleting'. More states may be added. It is `creating` for about 5 to 10 minutes after creation, then `available`.",
+            "type": "string",
+            "example": "available"
+          },
+          "endpointServiceName": {
+            "description": "Name of the AWS endpoint service. Use it as the service name when creating a VPC endpoint. Omitted until the service is created.",
+            "type": "string",
+            "example": "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0"
+          },
+          "endpointServiceId": {
+            "description": "ID of the AWS endpoint service. Omitted until the service is created.",
+            "type": "string",
+            "example": "vpce-svc-0123456789abcdef0"
+          },
+          "privateHostname": {
+            "description": "Hostname that resolves to the Postgres service from an approved VPC endpoint. Omitted until the service is available.",
+            "type": "string"
+          },
+          "privateDnsName": {
+            "description": "Private DNS name of the endpoint service. Omitted until it is assigned.",
+            "type": "string"
+          },
+          "privateDnsVerificationState": {
+            "description": "Verification state of the private DNS name. Omitted until it is assigned.",
+            "type": "string"
+          },
+          "ipAddressType": {
+            "description": "IP address type of the endpoint service.",
+            "type": "string",
+            "example": "dual"
+          },
+          "ports": {
+            "type": "array",
+            "description": "Ports the endpoint service forwards.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresPrivateEndpointPort"
+            }
+          },
+          "supportedRegions": {
+            "type": "array",
+            "description": "AWS region IDs, other than the service region, from which VPC endpoints can connect, such as `us-west-2`. Requires cross-region private endpoints to be enabled for the organization.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "us-west-2"
+            ]
+          },
+          "allowedVpcEndpoints": {
+            "type": "array",
+            "description": "VPC endpoints approved to connect.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresPrivateEndpointVpcEndpoint"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "ipAddressType",
+          "ports",
+          "supportedRegions",
+          "allowedVpcEndpoints"
+        ]
+      },
+      "PostgresPrivateEndpointPostRequest": {
+        "properties": {
+          "supportedRegions": {
+            "type": "array",
+            "description": "AWS region IDs, other than the service region, from which VPC endpoints can connect, such as `us-west-2`. Requires cross-region private endpoints to be enabled for the organization.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "us-west-2"
+            ],
+            "uniqueItems": true
+          }
+        }
+      },
+      "PostgresPrivateEndpointPatchRequest": {
+        "properties": {
+          "allowedVpcEndpoints": {
+            "type": "array",
+            "description": "Full replacement of the approved VPC endpoints: endpoints not listed are no longer allowed to connect. Each endpoint ID must be unique.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresPrivateEndpointVpcEndpoint"
+            },
+            "example": [
+              {
+                "vpcEndpointId": "vpce-0123456789abcdef0",
+                "description": "Production VPC"
+              }
+            ],
+            "maxItems": 50
+          },
+          "supportedRegions": {
+            "type": "array",
+            "description": "Full replacement of the supported regions. AWS region IDs, other than the service region, from which VPC endpoints can connect, such as `us-west-2`. Requires cross-region private endpoints to be enabled for the organization.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "us-west-2"
+            ],
+            "uniqueItems": true
+          }
+        }
       },
       "PostgresBackup": {
         "properties": {
@@ -44207,7 +44895,7 @@
       "UpgradeWindow": {
         "properties": {
           "weekday": {
-            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, \u2026, 6 = Saturday.",
+            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "type": "integer",
             "minimum": 0,
             "maximum": 6,
@@ -44242,7 +44930,7 @@
       "UpgradeWindowPutRequest": {
         "properties": {
           "weekday": {
-            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, \u2026, 6 = Saturday.",
+            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "type": "integer",
             "minimum": 0,
             "maximum": 6,
@@ -45180,7 +45868,7 @@
             ]
           },
           "backupRetentionPeriodInHours": {
-            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) \u2014 i.e. a multiple of 24.",
+            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) — i.e. a multiple of 24.",
             "type": [
               "number",
               "null"
@@ -45526,7 +46214,7 @@
             "example": 2000
           },
           "replicaMemoryGb": {
-            "description": "Memory in GiB for DB ClickPipes. Must be 4\u00d7 the CPU core count.",
+            "description": "Memory in GiB for DB ClickPipes. Must be 4× the CPU core count.",
             "type": "number",
             "minimum": 4,
             "maximum": 128,
@@ -45974,7 +46662,7 @@
                 "const": "executable"
               },
               "poolSize": {
-                "description": "Always null \u2014 an executable UDF has no command pool.",
+                "description": "Always null — an executable UDF has no command pool.",
                 "default": null,
                 "anyOf": [
                   {
@@ -46228,7 +46916,7 @@
                 "const": "executable"
               },
               "poolSize": {
-                "description": "Always null \u2014 an executable UDF has no command pool.",
+                "description": "Always null — an executable UDF has no command pool.",
                 "default": null,
                 "anyOf": [
                   {
@@ -46857,7 +47545,7 @@
         "type": "http",
         "scheme": "basic",
         "description": "Use key ID and key secret obtained in ClickHouse Cloud console: https://clickhouse.com/docs/cloud/manage/openapi",
-        "x-permission-scopes": "The scope list of a `security` requirement holds ClickHouse Cloud API key permission ids (for example `control-plane:organization:view`), not OAuth scopes. OpenAPI has no field for API key permissions, so this is the closest available place. A key must hold every permission listed on an operation to call it; an operation with no scopes needs none beyond a valid key. Every operation declares at most one requirement object, always for this scheme, so the list is only ever conjunctive \u2014 alternative sets of permissions are never expressed."
+        "x-permission-scopes": "The scope list of a `security` requirement holds ClickHouse Cloud API key permission ids (for example `control-plane:organization:view`), not OAuth scopes. OpenAPI has no field for API key permissions, so this is the closest available place. A key must hold every permission listed on an operation to call it; an operation with no scopes needs none beyond a valid key. Every operation declares at most one requirement object, always for this scheme, so the list is only ever conjunctive — alternative sets of permissions are never expressed."
       },
       "bearerJwt": {
         "type": "http",

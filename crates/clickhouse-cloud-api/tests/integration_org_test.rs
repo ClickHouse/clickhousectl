@@ -305,8 +305,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let client = client.clone();
                         let org_id = ctx.org_id.clone();
                         async move {
-                            let resp = client.organization_roles_get_list(&org_id).await?;
-                            resp.result.ok_or_else(|| "org roles list returned no result".into())
+                            list_all_org_roles(&client, &org_id, None).await
                         }
                     },
                 )
@@ -861,10 +860,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
                     async move {
-                        let resp = client.organization_roles_get_list(&org_id).await?;
-                        let roles = resp
-                            .result
-                            .ok_or("roles list returned no result")?;
+                        // A one-role page walks the cursor across every page.
+                        let roles = list_all_org_roles(&client, &org_id, Some(1)).await?;
                         Ok(roles.into_iter().flat_map(|r| r.id).collect::<Vec<_>>())
                     }
                 },
@@ -933,10 +930,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let role_id = role_id_clone;
                         let pre_ids = pre_ids_clone;
                         async move {
-                            let resp = client.organization_roles_get_list(&org_id).await?;
-                            let roles = resp
-                                .result
-                                .ok_or("roles list returned no result")?;
+                            let roles = list_all_org_roles(&client, &org_id, None).await?;
                             if !roles
                                 .iter()
                                 .any(|r| r.id.as_deref() == Some(role_id.as_str()))

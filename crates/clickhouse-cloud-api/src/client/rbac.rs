@@ -4,12 +4,24 @@ use crate::meta::operations;
 use crate::models::*;
 
 impl Client {
-    /// List all available roles for an organization
+    /// Get one page of an organization's roles, system and custom.
+    ///
+    /// Roles are ordered by role ID. The server defaults `limit` to 250, which is
+    /// also the maximum. Pass the response's `next_cursor` as `cursor` until it is
+    /// `None`.
     pub async fn organization_roles_get_list(
         &self,
         organization_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<RBACRole>>, Error> {
-        let req = self.request(&operations::ORGANIZATION_ROLES_GET_LIST, &[organization_id])?;
+        let mut req = self.request(&operations::ORGANIZATION_ROLES_GET_LIST, &[organization_id])?;
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
