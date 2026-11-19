@@ -8,6 +8,8 @@
 
 mod support;
 
+#[cfg(feature = "experimental-access-negotiation")]
+mod access;
 mod activity;
 mod api_keys;
 mod auth;
