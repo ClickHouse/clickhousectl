@@ -16,6 +16,8 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+## 0.6.0
+
 Timestamp fields are now `jiff::Timestamp` instead of
 `chrono::DateTime<chrono::Utc>`, and the crate no longer depends on `chrono`,
 which is unmaintained (RUSTSEC-2026-0543). This covers every model field that
