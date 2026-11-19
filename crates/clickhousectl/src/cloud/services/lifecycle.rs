@@ -128,6 +128,14 @@ pub(super) async fn service_list(
     } else {
         client.list_services_filtered(&org_id, filters).await?
     };
+    #[cfg(feature = "experimental-access-negotiation")]
+    if services.is_empty()
+        && let Some(note) = crate::cloud::grant::active_grant(client.auth_source())
+            .as_ref()
+            .and_then(crate::cloud::grant::empty_service_list_note)
+    {
+        eprintln!("{note}");
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&services)?);

@@ -43,6 +43,17 @@ pub(crate) fn permission_path_matches(template: &str, actual: &str) -> bool {
 
 /// Check observed HTTP calls rather than duplicating the command's declared list.
 pub(crate) async fn assert_observed_permissions_advertised(mock: &MockServer, help: &str) {
+    assert_observed_permissions_advertised_except(mock, help, &[]).await;
+}
+
+/// [`assert_observed_permissions_advertised`], except for `tolerated`
+/// operation ids: best-effort calls whose refusal the command carries on
+/// from, which help does not list as needs.
+pub(crate) async fn assert_observed_permissions_advertised_except(
+    mock: &MockServer,
+    help: &str,
+    tolerated: &[&str],
+) {
     let advertised = advertised_permission_ids(help);
     let requests = mock.received_requests().await.unwrap();
     assert!(
@@ -64,6 +75,9 @@ pub(crate) async fn assert_observed_permissions_advertised(mock: &MockServer, he
             request.method,
             request.url.path()
         );
+        if tolerated.contains(&operations[0].operation_id) {
+            continue;
+        }
         for permission in operations[0].required_permissions {
             assert!(
                 advertised.contains(permission),

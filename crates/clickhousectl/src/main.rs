@@ -94,6 +94,16 @@ async fn run_main() {
             // a clap derive bug, not a user error.
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
+            // The cloud command path, so errors can name what it declares.
+            #[cfg(feature = "experimental-access-negotiation")]
+            if let Some(("cloud", mut current)) = matches.subcommand() {
+                let mut names = Vec::new();
+                while let Some((name, sub)) = current.subcommand() {
+                    names.push(name);
+                    current = sub;
+                }
+                cloud::permissions::set_running_command(names.join(" "));
+            }
             let read_only_telemetry_status = is_read_only_telemetry_status(&cli.command);
             #[cfg(feature = "experimental-access-negotiation")]
             let access_validation = match &cli.command {

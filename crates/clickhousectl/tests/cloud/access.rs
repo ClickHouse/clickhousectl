@@ -19,7 +19,7 @@ fn access_roles_command(dir: &Path, json: bool) -> Command {
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.join("home"))
         .current_dir(dir)
-        .args(["cloud", "access", "roles"]);
+        .args(["cloud", "access", "roles", "--policies"]);
     if json {
         command.arg("--json");
     }
@@ -113,6 +113,56 @@ async fn access_roles_outputs_complete_oauth_menu_with_selected_organization() {
             );
         }
     }
+}
+
+/// Without `--policies`, JSON is the compact summary: one role per line,
+/// fewest writes first.
+#[tokio::test]
+async fn access_roles_defaults_to_the_compact_summary() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/roles"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": assignable_roles_fixture()})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    write_oauth_tokens(&access_credentials(dir.path()), &server.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .current_dir(dir.path())
+        .args(["cloud", "access", "roles", "--json", "--org", "org"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(text.lines().count(), 5, "{text}");
+    let roles: Value = serde_json::from_str(&text).unwrap();
+    let names: Vec<_> = roles
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|role| role["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Future type", "System reader", "Custom SQL"]);
+    assert_eq!(
+        roles[1]["denied"],
+        serde_json::json!({"service": ["delete"]})
+    );
+    assert_eq!(
+        roles[2]["write"],
+        serde_json::json!({"sql-console": ["database:access (sql-console-admin)"]})
+    );
 }
 
 #[tokio::test]
@@ -504,11 +554,24 @@ async fn access_request_authorization_code_handoff_keeps_stdout_final_and_creden
                         }
                         ResponseTemplate::new(200).set_body_json(issued)
                     }).expect(u64::from(exchanges)).mount(&server).await;
+                // The granted roles' names come from the OAuth role listing;
+                // `grants-many` leaves it unmocked, so the lookup fails and ids stay.
+                if scenario != "grants-many" {
+                    Mock::given(method("GET")).and(path("/v1/organizations/org/roles"))
+                        .and(header("authorization", "Bearer test-bearer-token"))
+                        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [
+                            {"id": B, "name": "Service Admin", "type": "system", "policies": [
+                                {"allowDeny": "ALLOW", "permissions": ["control-plane:service:manage"], "resources": ["instance/*"]}
+                            ]},
+                            {"id": A, "name": "Member", "type": "system", "policies": []}
+                        ]})))
+                        .mount(&server).await;
+                }
 
                 let mut command = Command::new(clickhousectl_binary());
                 command.env_clear().env("DO_NOT_TRACK", "1").env("HOME", dir.path().join("home"))
                     .env("PATH", dir.path().join("empty-path")).current_dir(dir.path())
-                    .args(["cloud", "access", "request", "--org", "org", "--debug"])
+                    .args(["cloud", "access", "request", "--org", "org", "--debug", "--purpose", "test purpose"])
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
                 if json { command.arg("--json"); }
                 match scenario {
@@ -628,7 +691,14 @@ async fn access_request_authorization_code_handoff_keeps_stdout_final_and_creden
                     let expiry = scenario != "success-no-expiry";
                     if json {
                         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-                        assert_eq!(result.as_object().unwrap().len(), 9);
+                        assert_eq!(result.as_object().unwrap().len(), 12);
+                        assert_eq!(result["activeIn"], dir.path().canonicalize().unwrap().display().to_string());
+                        assert_eq!(result["keyExpiresAtUtc"], if expiry {serde_json::json!("2026-11-09T13:37:36Z")} else {Value::Null});
+                        if scenario == "grants-many" {
+                            assert!(result["grantedRoles"].as_array().unwrap().iter().all(|role| role["name"].is_null()));
+                        } else {
+                            assert_eq!(result["grantedRoles"], serde_json::json!([{"id": B, "name": "Service Admin"}, {"id": C, "name": null}]));
+                        }
                         assert_eq!(result["requestId"], "request-1");
                         assert_eq!(result["organizationId"], "org");
                         assert_eq!(result["credentialsPath"], credentials_path.canonicalize().unwrap().display().to_string());
@@ -642,16 +712,33 @@ async fn access_request_authorization_code_handoff_keeps_stdout_final_and_creden
                         assert_eq!(result["keyExpiresAt"], if expiry {serde_json::json!(1794231456974_i64)} else {Value::Null});
                     } else {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        assert!(stdout.contains("Organization: org"));
-                        assert!(stdout.contains("Request ID: request-1"));
-                        if proposed { assert!(stdout.contains(&format!("Requested roles: {A}, {B}"))); }
-                        else { assert!(stdout.contains("Requested roles: none (manual selection)")); }
-                        if scenario != "grants-many" { assert!(stdout.contains(&format!("Granted roles: {B}, {C}"))); }
-                        assert_eq!(stdout.contains("Key expires: 2026-11-09T13:37:36Z"), expiry, "{stdout}");
+                        let canonical = credentials_path.canonicalize().unwrap();
+                        assert!(stdout.starts_with(&format!("Approved. Key saved: {}\n", canonical.display())), "{stdout}");
+                        if scenario != "grants-many" {
+                            assert!(stdout.contains(&format!("  Granted: Service Admin ({B}), {C}\n")), "{stdout}");
+                        }
+                        // The approver granted other roles than proposed.
+                        if proposed { assert!(stdout.contains("  Requested: Member, Service Admin; the approver changed the roles."), "{stdout}"); }
+                        else { assert!(stdout.contains("  Requested: none; the approver changed the roles."), "{stdout}"); }
+                        // The fixture expiry is in the past, so 0 minutes remain.
+                        assert_eq!(stdout.contains("  Expires: 2026-11-09T13:37:36Z ("), expiry, "{stdout}");
+                        assert!(stdout.contains(&format!("  Active in {} and below.", dir.path().canonicalize().unwrap().display())), "{stdout}");
                     }
                     let stored: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
                     assert_eq!(stored["api_key"], "issued-key");
                     assert_eq!(stored["api_secret"], "issued-secret");
+                    let grant = &stored["access_grant"];
+                    assert_eq!(grant["api_key"], "issued-key");
+                    assert_eq!(grant["key_id"], "issued-id");
+                    assert_eq!(grant["organization_id"], "org");
+                    assert_eq!(grant["request_id"], "request-1");
+                    assert_eq!(grant["expires_at"], if expiry {serde_json::json!("2026-11-09T13:37:36Z")} else {Value::Null});
+                    assert!(!grant.to_string().contains("issued-secret"));
+                    if scenario != "grants-many" {
+                        assert_eq!(grant["roles"][0]["name"], "Service Admin");
+                        assert_eq!(grant["roles"][0]["policies"][0]["permissions"], serde_json::json!(["control-plane:service:manage"]));
+                        assert!(grant["roles"][1].get("policies").is_none());
+                    }
                 } else {
                     assert!(output.stdout.is_empty());
                     assert_eq!(std::fs::read(&credentials_path).unwrap(), before);
@@ -663,6 +750,16 @@ async fn access_request_authorization_code_handoff_keeps_stdout_final_and_creden
     for task in tasks {
         task.await.unwrap();
     }
+}
+
+#[test]
+fn access_request_without_purpose_is_a_usage_error_before_authentication() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = access_command_without_purpose(dir.path()).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--purpose"));
+    assert!(output.stdout.is_empty());
+    assert!(!dir.path().join(".clickhouse").exists());
 }
 
 #[test]
@@ -679,7 +776,14 @@ fn access_request_invalid_timeout_environment_fails_before_authentication() {
     }
 }
 
+/// `cloud access request` with the required `--purpose`.
 fn access_command(dir: &Path) -> Command {
+    let mut command = access_command_without_purpose(dir);
+    command.args(["--purpose", "test purpose"]);
+    command
+}
+
+fn access_command_without_purpose(dir: &Path) -> Command {
     let mut command = Command::new(clickhousectl_binary());
     command
         .env_clear()
@@ -961,7 +1065,12 @@ async fn access_request_length_limits_fail_before_oauth_and_network() {
             "--key-name must be 1 to 100 characters",
         ),
     ] {
-        let output = access_command(dir.path())
+        let mut command = if args[0] == "--purpose" {
+            access_command_without_purpose(dir.path())
+        } else {
+            access_command(dir.path())
+        };
+        let output = command
             .args(&args)
             .env("CLICKHOUSECTL_AUTH_URL", server.uri())
             .env("CLICKHOUSECTL_CLIENT_ID", "test-client")
@@ -1086,7 +1195,9 @@ async fn access_request_uses_oauth_for_discovery_and_filing_with_saved_or_explic
         );
         assert!(body.get("codeVerifier").is_none());
         assert!(body.get("flow").is_none());
-        assert_eq!(body.as_object().unwrap().len(), 4);
+        // The required --purpose is the fifth field.
+        assert_eq!(body.as_object().unwrap().len(), 5);
+        assert_eq!(body["purpose"], "test purpose");
         let credentials =
             std::fs::read_to_string(dir.path().join(".clickhouse/credentials.json")).unwrap();
         assert!(credentials.contains("saved-basic-secret"));
@@ -1422,4 +1533,96 @@ fn access_organization_conflicts_fail_usage_before_authentication() {
         );
         assert!(output.stdout.is_empty());
     }
+}
+
+/// A bare `FORBIDDEN` under the saved key from `cloud access request` names
+/// the running command's declared need and what the granted role lacks; the
+/// classification and exit code stay those of a 403. An empty `clickhouse list`
+/// under a role without `service:view` gets a stderr note.
+#[tokio::test]
+async fn forbidden_under_a_granted_key_names_what_the_role_lacks() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org/services/svc-1"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_json(serde_json::json!({"error": "FORBIDDEN", "status": 403})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(dir.path().join("home")).unwrap();
+    std::fs::write(
+        project.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": "granted-key", "api_secret": "granted-secret",
+            "api_url": format!("{}/v1", server.uri()),
+            "access_grant": {
+                "api_key": "granted-key", "key_id": "key-id", "organization_id": "org",
+                "request_id": "request-1", "expires_at": "2099-01-01T09:56:00Z",
+                "roles": [{"id": "21111111-1111-1111-9999-000000000003", "name": "Member", "policies": [
+                    {"effect": "ALLOW", "permissions": ["control-plane:organization:view"], "resources": ["*"]}
+                ]}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path().join("home"))
+            .current_dir(dir.path())
+            .args(["cloud", "--org-id", "org"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    for json in [false, true] {
+        let mut args = vec!["clickhouse", "update", "svc-1", "--new-name", "renamed"];
+        if json {
+            args.push("--json");
+        }
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(1));
+        let message = if json {
+            let error = cloud_runtime_error(&output);
+            assert_eq!(error["code"], "http_4xx");
+            error["message"].as_str().unwrap().to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        };
+        assert!(
+            message.contains("FORBIDDEN (the Cloud API gives no reason)."),
+            "{message}"
+        );
+        assert!(
+            message.contains(
+                "Key: from `cloud access request`, role Member, expires 2099-01-01T09:56Z."
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("`cloud clickhouse update` needs control-plane:service:manage"),
+            "{message}"
+        );
+        assert!(
+            message.contains("clickhousectl cloud access request --perms role:<UUID>"),
+            "{message}"
+        );
+        assert!(!message.contains("granted-secret"));
+    }
+    let output = run(&["clickhouse", "list", "--json"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "note: this key's role lacks control-plane:service:view; an empty list may mean no access."
+    ));
 }

@@ -1083,6 +1083,29 @@ impl CloudClient {
         }
     }
 
+    /// An OAuth (Bearer) client against `base_url`, for unit tests.
+    #[cfg(all(test, feature = "experimental-access-negotiation"))]
+    pub(crate) fn for_tests_bearer(base_url: &str) -> Self {
+        let http = reqwest::Client::builder().build().unwrap();
+        Self {
+            lib_client: clickhouse_cloud_api::Client::with_http_client_bearer(
+                http,
+                lib_base_url(base_url),
+                "test_token",
+            ),
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Off,
+            active_pin: std::sync::OnceLock::new(),
+            auth_mode: AuthMode::Bearer {
+                token: "test_token".into(),
+            },
+            auth_source: AuthSource::OAuthTokens,
+            base_url: base_url.to_string(),
+        }
+    }
+
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {

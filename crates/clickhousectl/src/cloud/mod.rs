@@ -12,6 +12,8 @@ pub mod client;
 pub(crate) mod config;
 pub mod context;
 pub mod credentials;
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) mod grant;
 pub mod organizations;
 pub mod output;
 pub(crate) mod permissions;
@@ -152,6 +154,11 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && command.is_write_command() {
+        #[cfg(feature = "experimental-access-negotiation")]
+        return Err(Error::AuthRequired(oauth_write_refused(
+            permissions::running_command(),
+        )));
+        #[cfg(not(feature = "experimental-access-negotiation"))]
         const BASE: &str = "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
              To authenticate with an API key:\n  \
@@ -164,15 +171,8 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         // The scoped-access flow exists only when compiled with the
         // `experimental-access-negotiation` feature, so a default binary must
         // not advertise commands it does not carry.
-        #[cfg(feature = "experimental-access-negotiation")]
-        const ACCESS_HINT: &str = "\n\n\
-             Or request a short-lived, human-approved scoped key, with no \
-             long-lived API key to manage:\n  \
-             clickhousectl cloud access roles   # list the roles you can request\n  \
-             clickhousectl cloud access request --perms role:<UUID>";
         #[cfg(not(feature = "experimental-access-negotiation"))]
-        const ACCESS_HINT: &str = "";
-        return Err(Error::AuthRequired(format!("{BASE}{ACCESS_HINT}")));
+        return Err(Error::AuthRequired(BASE.to_string()));
     }
 
     // `clickhouse client` ends in an `exec()` of the local client, and its
@@ -187,10 +187,34 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 
     match dispatch(&client, command, json).await {
         Ok(()) => Ok(()),
-        Err(error) => Err(cloud_error_to_top_level(
-            client.explain_pinned_org_error(error).await,
-        )),
+        Err(error) => {
+            let error = client.explain_pinned_org_error(error).await;
+            // A bare `FORBIDDEN` under an API key names no permission: say what
+            // the running command declares and what the saved grant lacks.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let error = grant::explain_forbidden(&client, error);
+            Err(cloud_error_to_top_level(error))
+        }
     }
+}
+
+/// The OAuth write block: what the running command (`path`, without the
+/// `cloud ` prefix) declares it needs, and how to get a key that has it.
+#[cfg(feature = "experimental-access-negotiation")]
+fn oauth_write_refused(path: Option<&str>) -> String {
+    let mut message = String::from("Write refused: the OAuth login is read-only.");
+    if let Some(path) = path
+        && let Some(needs) = permissions::declared_needs(path)
+        && !needs.is_empty()
+    {
+        message.push_str(&format!("\n  `cloud {path}` needs: {}", needs.render()));
+    }
+    message.push_str(
+        "\n  Get a key (user approves in browser):\n    \
+         clickhousectl cloud access roles\n    \
+         clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\"",
+    );
+    message
 }
 
 fn print_client_diagnostics(client: &CloudClient) {
@@ -387,6 +411,36 @@ mod runtime_tests {
         let error = cloud_error_to_top_level(CloudError::auth("nope").with_details(detail));
         assert!(matches!(&error, Error::AuthRequired(message) if message == "nope"));
         assert_eq!(error.exit_code(), 4);
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn oauth_write_block_names_the_declared_needs_and_the_access_commands() {
+        let message = oauth_write_refused(Some("clickhouse update"));
+        let lines: Vec<_> = message.lines().collect();
+        assert_eq!(lines[0], "Write refused: the OAuth login is read-only.");
+        assert!(
+            lines[1].starts_with("  `cloud clickhouse update` needs: control-plane:service:manage"),
+            "{message}"
+        );
+        // Conditional needs follow in the help's `(<condition>): <permission>` style.
+        assert!(
+            lines[1].contains("(Removing IPs/endpoints/tags): control-plane:service:view"),
+            "{message}"
+        );
+        assert!(message.contains("    clickhousectl cloud access roles\n"));
+        assert!(message.contains(
+            "    clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\""
+        ));
+        assert!(!message.contains("--api-secret"), "{message}");
+        // No declaration (or an unknown command): no `needs:` line.
+        for path in [None, Some("no such command")] {
+            let message = oauth_write_refused(path);
+            assert!(!message.contains("needs:"), "{message}");
+            assert!(message.contains("cloud access request"));
+        }
+        // A command that declares no named permission has no `needs:` line.
+        assert!(!oauth_write_refused(Some("clickhouse list")).contains("needs:"));
     }
 
     #[test]

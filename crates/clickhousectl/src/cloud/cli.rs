@@ -205,14 +205,14 @@ CONTEXT FOR AGENTS:
     #[cfg(feature = "experimental-access-negotiation")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
-  Discover assignable roles with `cloud access roles`; policies describe current authority.
-  Request a scoped key with `cloud access request --perms role:<UUID>`; a human approves it.
-  Approve in a browser on this machine; it redirects to a local listener.
-  The approval URL goes to stderr. The issued key is short-lived; see keyExpiresAt.
-  API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.
-  Exactly one user organization is selected automatically; otherwise choose --org or --org-name.
-  Organization IDs: `cloud org list --json`. --org-id remains supported.")]
+  Write access: a short-lived API key the user approves in their browser.
+  1. List the task's writes; each command's `--help` gives its `API key permission:` needs.
+  2. `cloud access roles`: pick one role covering all of them, fewest extras.
+  3. `cloud access request --perms role:<UUID> --purpose \"<what, why>\"`: one request per task.
+  Key is saved in the project's `.clickhouse/` (nearest up the tree, else here);
+    found from that directory and below, not above.
+  `cloud auth status`: roles held, expiry. On FORBIDDEN the error lists what the key lacks: request a role covering it.
+  Requires OAuth (`cloud auth login`). Several orgs: pass --org-id.")]
     Access {
         /// Organization ID (conflicts with --org-name)
         #[arg(long, global = true, value_name = "ID", conflicts_with = "org_name")]
