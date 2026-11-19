@@ -146,12 +146,23 @@ pub fn grant_of(credentials: &crate::cloud::credentials::Credentials) -> Option<
         .filter(|grant| grant.api_key == key)
 }
 
-/// `auth status` Scope cell of the saved key: `<roles>, expires HH:MMZ`.
+/// `auth status` Scope cell of the saved key: `<roles>, expires HH:MMZ`, or
+/// only the roles once expired (the Status cell then names the expiry).
 pub fn status_scope(grant: &AccessGrant, now: DateTime<Utc>) -> String {
     match grant.expires() {
-        Some(expires) => format!("{}, {}", grant.role_labels(), expiry_phrase(expires, now)),
-        None => grant.role_labels(),
+        Some(expires) if expires > now => {
+            format!("{}, {}", grant.role_labels(), expiry_phrase(expires, now))
+        }
+        _ => grant.role_labels(),
     }
+}
+
+/// When the saved key's grant expired (`%Y-%m-%dT%H:%MZ`), once it is past.
+pub fn status_expired(grant: &AccessGrant, now: DateTime<Utc>) -> Option<String> {
+    grant
+        .expires()
+        .filter(|expires| *expires <= now)
+        .map(|expires| expires.format("%Y-%m-%dT%H:%MZ").to_string())
 }
 
 /// `auth status` JSON `write_access` of the saved key.
@@ -380,14 +391,17 @@ mod tests {
             status_write_access(&saved, now),
             "API key from cloud access request: Member, unnamed-id; expires 2026-11-19T09:56:10Z"
         );
+        assert_eq!(status_expired(&saved, now), None);
         saved.expires_at = Some("2026-11-19T09:00:00Z".into());
+        assert_eq!(status_scope(&saved, now), "Member, unnamed-id");
         assert_eq!(
-            status_scope(&saved, now),
-            "Member, unnamed-id, expired 09:00Z"
+            status_expired(&saved, now).as_deref(),
+            Some("2026-11-19T09:00Z")
         );
         assert!(status_write_access(&saved, now).ends_with("; expired 2026-11-19T09:00:00Z"));
         saved.expires_at = None;
         assert_eq!(status_scope(&saved, now), "Member, unnamed-id");
+        assert_eq!(status_expired(&saved, now), None);
     }
 
     #[test]

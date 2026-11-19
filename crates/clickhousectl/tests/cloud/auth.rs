@@ -85,7 +85,7 @@ async fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
     assert_eq!(status["verification"], "verified");
     let rows = status["sources"].as_array().unwrap();
     let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
-    assert_eq!(saved["status"], "Active");
+    assert_eq!(saved["status"], "Valid");
     assert_eq!(saved["scope"], "read/write");
     assert_eq!(saved["active"], "yes");
     assert_eq!(saved["api_url"], api_url.as_str());
@@ -264,6 +264,15 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
         } else {
             assert!(stdout.contains("Identity:\n"), "{stdout}");
             assert!(stdout.contains("key-123"), "{stdout}");
+            let header: Vec<_> = stdout
+                .lines()
+                .next()
+                .unwrap()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            assert_eq!(header, ["Type", "Status", "Scope", "In use", "API URL"]);
             stdout
                 .lines()
                 .skip(2)
@@ -280,17 +289,22 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
                 })
                 .collect()
         };
-        assert_eq!(rows.len(), 4);
+        let types: Vec<_> = rows.iter().map(|row| row.0.as_str()).collect();
+        assert_eq!(types, ["CLI flags", "API key", "Env vars", "OAuth"]);
         assert_eq!(rows.iter().filter(|row| row.3 == "yes").count(), 1);
         let flags = rows.iter().find(|row| row.0 == "CLI flags").unwrap();
-        assert_eq!(flags.1, "Active");
+        assert_eq!(flags.1, "Valid");
         assert_eq!(flags.2, "read/write");
         assert_eq!(flags.3, "yes");
         for source in ["API key", "Env vars", "OAuth"] {
             let row = rows.iter().find(|row| row.0 == source).unwrap();
             assert_eq!(row.3, "-");
             if configure_other_sources {
-                assert!(row.1.starts_with("Configured"), "{row:?}");
+                if source == "OAuth" {
+                    assert_eq!(row.1, "Valid");
+                } else {
+                    assert_eq!(row.1, "Configured, not in use (outranked by CLI flags)");
+                }
                 assert_eq!(
                     row.2,
                     if source == "OAuth" {
@@ -403,6 +417,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
             stdout
                 .lines()
                 .skip(2)
+                .take_while(|line| !line.is_empty())
                 .map(|line| {
                     // The fifth column, the API URL, has no JSON counterpart
                     // for these rows.
@@ -425,7 +440,13 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
                 assert!(row[1].contains(missing), "{row:?}");
                 assert_eq!(row[2], "-");
             } else if Some(row[0].as_str()) == configured_source {
-                assert_eq!(row[1], "Configured (inactive)");
+                // Incomplete flags block fallback; a valid OAuth login is
+                // still valid locally.
+                if row[0] == "OAuth" {
+                    assert_eq!(row[1], "Valid");
+                } else {
+                    assert_eq!(row[1], "Configured, not in use (outranked by CLI flags)");
+                }
                 assert_eq!(
                     row[2],
                     if row[0] == "OAuth" {
@@ -444,7 +465,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
 }
 
 #[tokio::test]
-async fn auth_status_marks_outranked_environment_credentials_inactive() {
+async fn auth_status_marks_outranked_environment_credentials_not_in_use() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/whoami"))
@@ -479,10 +500,13 @@ async fn auth_status_marks_outranked_environment_credentials_inactive() {
     let env = row("Env vars");
     assert_eq!(env["active"], "-");
     assert_eq!(row("API key")["active"], "yes");
-    // The inactive row names the source that outranks it.
-    let env_status = env["status"].as_str().unwrap();
-    assert!(env_status.starts_with("Configured"), "{env_status}");
-    assert!(env_status.contains("credentials file"), "{env_status}");
+    assert_eq!(row("API key")["status"], "Valid");
+    // The row not in use names the source that outranks it.
+    assert_eq!(
+        env["status"],
+        "Configured, not in use (outranked by saved API key)"
+    );
+    assert_eq!(status["summary"], "Commands here use the saved API key.");
 }
 
 /// The one end-to-end copy of the OAuth write check (`cloud::run`); which
@@ -1566,7 +1590,97 @@ async fn auth_status_without_credentials_skips_the_identity_check() {
     assert_eq!(status["verification"], "skipped");
     assert!(status["identity"].is_null());
     assert_eq!(status["sources"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        status["summary"],
+        "Not logged in: `cloud auth login` (needs the user)."
+    );
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// A saved `cloud access request` key past its expiry, with a valid OAuth
+/// login: the key is in use but expired, and the summary says so and points
+/// at the OAuth login.
+#[cfg(feature = "experimental-access-negotiation")]
+#[tokio::test]
+async fn auth_status_reports_an_expired_saved_key_beside_a_valid_oauth_login() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_rejected())
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let cloud_dir = project.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &server.uri());
+    let credentials_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": "granted-key", "api_secret": "granted-secret",
+            "api_url": format!("{}/v1", server.uri()),
+            "access_grant": {
+                "api_key": "granted-key", "key_id": "key-id", "organization_id": "org",
+                "request_id": "request-1", "expires_at": "2026-01-02T17:45:00Z",
+                "roles": [{"id": "role-1", "name": "Service API Reader"}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let summary = "Commands here use the saved API key, which has expired, so they fail.\n\
+                   The OAuth login is valid: `cloud access request` works and replaces the key.";
+    for json in [false, true] {
+        let output = invoke_auth(project.path(), &server.uri(), json, &["status"]);
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let rows: Vec<Vec<String>> = if json {
+            let status: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(status["summary"], summary);
+            assert_eq!(status["verification"], "rejected");
+            status["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    ["type", "status", "scope", "active"]
+                        .map(|field| row[field].as_str().unwrap().to_owned())
+                        .to_vec()
+                })
+                .collect()
+        } else {
+            let tail = stdout.split("\n\n").nth(1).unwrap();
+            assert_eq!(tail, summary, "{stdout}");
+            stdout
+                .lines()
+                .skip(2)
+                .take_while(|line| !line.is_empty())
+                .map(|line| {
+                    line.trim_matches('|')
+                        .split('|')
+                        .map(|cell| cell.trim().to_owned())
+                        .take(4)
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            [
+                ["CLI flags", "Not configured", "-", "-"],
+                [
+                    "API key",
+                    "Expired 2026-01-02T17:45Z",
+                    "Service API Reader",
+                    "yes"
+                ],
+                ["Env vars", "Not configured", "-", "-"],
+                ["OAuth", "Valid", "read-only", "-"],
+            ],
+            "{stdout}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1630,20 +1744,28 @@ async fn auth_status_reports_the_identity_and_never_fails_on_it() {
         let output = invoke_auth(project.path(), &url, json, &["status"]);
         assert_success(&output);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let in_use_status = match verification {
+            "verified" => "Valid",
+            "rejected" => "Rejected by the API",
+            _ => "Configured (not verified)",
+        };
         if json {
             let status: Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(status["verification"], verification, "{stdout}");
             assert_eq!(status["identity"].is_null(), verification != "verified");
             assert_eq!(status["warning"].is_string(), verification != "verified");
-            let active = status["sources"]
+            let active: Vec<_> = status["sources"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .filter(|row| row["active"] == "yes")
-                .count();
-            assert_eq!(active, 1);
+                .collect();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0]["status"], in_use_status, "{stdout}");
         } else {
             assert!(stdout.contains(human), "missing {human}: {stdout}");
+            let row = stdout.lines().find(|line| line.contains("| yes ")).unwrap();
+            assert!(row.contains(&format!("| {in_use_status} ")), "{stdout}");
         }
     }
 }
