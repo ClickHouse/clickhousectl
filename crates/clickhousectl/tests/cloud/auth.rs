@@ -554,6 +554,16 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
                 "{stderr}"
             );
             assert!(stderr.contains("needs: control-plane:"), "{stderr}");
+            // No project here or above: the block names the directory searched.
+            let cwd = project.path().canonicalize().unwrap();
+            assert!(
+                stderr.contains(&format!(
+                    "No API key in {} or above. A key you already requested is active only in \
+                     its project: cd there and rerun.",
+                    cwd.display()
+                )),
+                "{stderr}"
+            );
             assert!(
                 stderr.contains("clickhousectl cloud access request --perms role:<UUID> --purpose"),
                 "{stderr}"
@@ -565,6 +575,50 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
         }
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+/// A found project (`.clickhouse/` in the working directory) was the only
+/// place a key was looked for, so the write block makes no claim about the
+/// directories above it.
+#[cfg(feature = "experimental-access-negotiation")]
+#[tokio::test]
+async fn oauth_write_block_names_no_directory_inside_a_project() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    std::fs::create_dir(project.path().join(".clickhouse")).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri()])
+        .args([
+            "udf",
+            "create",
+            "--file",
+            "missing",
+            "--artifact",
+            "missing",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Write refused: the OAuth login is read-only."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("No API key"), "{stderr}");
+    assert!(
+        stderr.contains("Get a key (user approves in browser):"),
+        "{stderr}"
+    );
 }
 
 // An expired login that cannot be refreshed is kept (#1224): no refresh

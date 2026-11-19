@@ -152,6 +152,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         #[cfg(feature = "experimental-access-negotiation")]
         return Err(Error::AuthRequired(oauth_write_refused(
             permissions::running_command(),
+            credentials::no_key_search_dir().as_deref(),
         )));
         #[cfg(not(feature = "experimental-access-negotiation"))]
         const BASE: &str = "This command requires API key authentication. \
@@ -190,15 +191,23 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 }
 
 /// The OAuth write block: what the running command (`path`, without the
-/// `cloud ` prefix) declares it needs, and how to get a key that has it.
+/// `cloud ` prefix) declares it needs, where no key was found (`searched`,
+/// from [`credentials::no_key_search_dir`]; `None` names no directory), and
+/// how to get a key that has it.
 #[cfg(feature = "experimental-access-negotiation")]
-fn oauth_write_refused(path: Option<&str>) -> String {
+fn oauth_write_refused(path: Option<&str>, searched: Option<&str>) -> String {
     let mut message = String::from("Write refused: the OAuth login is read-only.");
     if let Some(path) = path
         && let Some(needs) = permissions::declared_needs(path)
         && !needs.is_empty()
     {
         message.push_str(&format!("\n  `cloud {path}` needs: {}", needs.render()));
+    }
+    if let Some(dir) = searched {
+        message.push_str(&format!(
+            "\n  No API key in {dir} or above. A key you already requested is active only in \
+             its project: cd there and rerun."
+        ));
     }
     message.push_str(
         "\n  Get a key (user approves in browser):\n    \
@@ -406,9 +415,15 @@ mod runtime_tests {
     #[cfg(feature = "experimental-access-negotiation")]
     #[test]
     fn oauth_write_block_names_the_declared_needs_and_the_access_commands() {
-        let message = oauth_write_refused(Some("service update"));
+        let message = oauth_write_refused(Some("service update"), Some("/work/dir"));
         let lines: Vec<_> = message.lines().collect();
         assert_eq!(lines[0], "Write refused: the OAuth login is read-only.");
+        assert_eq!(
+            lines[2],
+            "  No API key in /work/dir or above. A key you already requested is active only in \
+             its project: cd there and rerun."
+        );
+        assert_eq!(lines[3], "  Get a key (user approves in browser):");
         assert!(
             lines[1].starts_with("  `cloud service update` needs: control-plane:service:manage"),
             "{message}"
@@ -425,12 +440,32 @@ mod runtime_tests {
         assert!(!message.contains("--api-secret"), "{message}");
         // No declaration (or an unknown command): no `needs:` line.
         for path in [None, Some("no such command")] {
-            let message = oauth_write_refused(path);
+            let message = oauth_write_refused(path, Some("/work/dir"));
             assert!(!message.contains("needs:"), "{message}");
             assert!(message.contains("cloud access request"));
         }
         // A command that declares no named permission has no `needs:` line.
-        assert!(!oauth_write_refused(Some("service list")).contains("needs:"));
+        assert!(!oauth_write_refused(Some("service list"), None).contains("needs:"));
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn oauth_write_block_names_the_directory_only_when_no_project_was_found() {
+        // No needs line: the directory line follows the header directly.
+        assert_eq!(
+            oauth_write_refused(None, Some("this directory")),
+            "Write refused: the OAuth login is read-only.\n  \
+             No API key in this directory or above. A key you already requested is active only \
+             in its project: cd there and rerun.\n  \
+             Get a key (user approves in browser):\n    \
+             clickhousectl cloud access roles\n    \
+             clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\""
+        );
+        // A found or named project: no directory line at all.
+        let message = oauth_write_refused(Some("service update"), None);
+        assert!(!message.contains("No API key"), "{message}");
+        let lines: Vec<_> = message.lines().collect();
+        assert_eq!(lines[2], "  Get a key (user approves in browser):");
     }
 
     #[test]

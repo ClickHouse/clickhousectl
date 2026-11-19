@@ -563,6 +563,83 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
     assert_eq!(sql, ["SELECT 1", "SELECT 2\n", "SELECT 3\n"]);
 }
 
+/// SQL error 164 on the OAuth login: with no project in or above the working
+/// directory the hint names that directory and points back to the project a
+/// key was requested from; with the project named by
+/// `CLICKHOUSECTL_PROJECT_DIR` it names no directory.
+#[cfg(feature = "experimental-access-negotiation")]
+#[tokio::test]
+async fn readonly_sql_error_on_oauth_names_the_directory_searched() {
+    for named_project in [false, true] {
+        let control = start_mock_control_plane_with_service().await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{TEST_SERVICE_ID}/run")))
+            .respond_with(ResponseTemplate::new(500).set_body_string(
+                r#"{"error":{"code":"164","details":"Cannot execute query in readonly mode"}}"#,
+            ))
+            .mount(&query_host)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let home_dir = dir.path().join("home");
+        let ch_dir = home_dir.join(".clickhouse");
+        std::fs::create_dir_all(&ch_dir).unwrap();
+        write_oauth_tokens(&ch_dir, &control.uri());
+
+        let mut command = Command::new(clickhousectl_binary());
+        command.isolated_env();
+        if named_project {
+            command.env("CLICKHOUSECTL_PROJECT_DIR", dir.path());
+        }
+        let output = command
+            .env("DO_NOT_TRACK", "1")
+            .args([
+                "cloud",
+                "--url",
+                &control.uri(),
+                "service",
+                "query",
+                "--id",
+                TEST_SERVICE_ID,
+                "--org-id",
+                "org-1",
+                "--query",
+                "INSERT INTO t VALUES (1)",
+            ])
+            .current_dir(dir.path())
+            .env("HOME", &home_dir)
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+            .stdin(Stdio::null())
+            .output()
+            .expect("failed to spawn clickhousectl");
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("SQL error 164: Cannot execute query in readonly mode"),
+            "{stderr}"
+        );
+        let expected = if named_project {
+            "\nRan on the read-only OAuth login: no API key in this directory or above.\n\
+             SQL writes need a key: `clickhousectl cloud access request` (see \
+             `cloud access --help`)."
+                .to_string()
+        } else {
+            format!(
+                "\nRan on the read-only OAuth login: no API key in {} or above.\n\
+                 If you already requested a key, it is active only in the project it was \
+                 requested from: cd there and rerun.\n\
+                 If not, SQL writes need one: `clickhousectl cloud access request` (see \
+                 `cloud access --help`).",
+                dir.path().canonicalize().unwrap().display()
+            )
+        };
+        assert!(stderr.contains(&expected), "{named_project}: {stderr}");
+        // Nothing was written: the hint never creates a project.
+        assert!(!dir.path().join(".clickhouse").exists());
+    }
+}
+
 #[tokio::test]
 async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
     let control = start_mock_control_plane_with_service().await;
