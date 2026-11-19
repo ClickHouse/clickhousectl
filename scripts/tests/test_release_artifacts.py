@@ -216,7 +216,9 @@ class ReceiptTests(unittest.TestCase):
     def test_receipt_decoder_recursion_is_invalid(self):
         self.create()
         # Native decoder nesting limits differ across Python versions.
-        with patch.object(p.json, "loads", side_effect=RecursionError("receipt nesting")):
+        with patch.object(
+            p.json, "loads", side_effect=RecursionError("receipt nesting")
+        ):
             with self.assertRaises(p.ProvenanceError) as error:
                 self.verify()
             self.assertEqual(error.exception.code, "receipt_mismatch")
@@ -250,6 +252,11 @@ class ReceiptTests(unittest.TestCase):
     def test_verify_rejects_bad_api_objects(self):
         self.create()
         cases = [
+            (
+                "run",
+                lambda obj: obj["workflow_run"].update(id=99),
+                "artifact_run_mismatch",
+            ),
             (
                 "source",
                 lambda obj: obj["workflow_run"].update(head_sha="c" * 40),
