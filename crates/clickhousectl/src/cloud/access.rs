@@ -22,6 +22,7 @@
 
 use crate::cloud::client::{CloudClient, CloudError, RequestAuth, Result as CloudResult};
 use crate::cloud::credentials;
+use crate::cloud::grant::{AccessGrant, GrantPolicy, GrantedRole};
 use crate::cloud::permissions::Declaration as Permission;
 
 // Access negotiation runs on the user's OAuth (Bearer) identity, not an API
@@ -79,21 +80,25 @@ pub enum AccessCommands {
     /// List caller-assignable roles with policy scopes
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Returns current assignable roles, not a guarantee of later approval.
-  JSON output is the complete role array, including all policies and tags.")]
-    Roles,
+  Requestable roles, fewest write permissions first: what each can change and on what.
+  `--policies`: full policies. Listed does not mean approved.")]
+    Roles(AccessRolesArgs),
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  For writes on an OAuth login. The user approves or declines in their browser, so no go-ahead is needed first.
-  Requires OAuth from `cloud auth login`, even with a saved API key; roles are per organization: pass --org-id.
-  Each command's `--help` declares `API key permission:` needs; take conditionals only if their condition holds.
-  `Authorization:` needs have no granting role.
-  `cloud access roles --json` lists roles (empty: stop); policies `ALLOW`/`DENY` permissions on `*` or named resources.
-  Choose roles covering every need with `ALLOW`, none denied by chosen roles, and the fewest extras.
-  Propose with `--perms` and `--purpose`; a human approves the stderr URL before the timeout; check `grantedRoleIds`.
-  The approved key becomes the active credential; changing permissions means a new flow (API keys cannot read roles).")]
+  User approves or declines in their browser: no go-ahead needed first.
+  --perms role:<UUID> (from `cloud access roles`): one role covering every write in the task, fewest extras.
+  --purpose: required, shown to the approver.
+  Blocks until approved (120s default; --timeout-seconds). Approver may change the roles: output names what was granted.
+  Key becomes the project's active credential until expiry. Wider role: new request.")]
     Request(AccessRequestArgs),
+}
+
+#[derive(Args)]
+pub struct AccessRolesArgs {
+    /// Print every role's complete policies instead of the summary
+    #[arg(long)]
+    pub policies: bool,
 }
 
 impl AccessCommands {
@@ -102,7 +107,7 @@ impl AccessCommands {
     /// write command and must not be blocked by the OAuth write gate.
     pub fn is_write(&self) -> bool {
         match self {
-            AccessCommands::Request(_) | AccessCommands::Roles => false,
+            AccessCommands::Request(_) | AccessCommands::Roles(_) => false,
         }
     }
 }
@@ -127,7 +132,7 @@ pub struct AccessRequestArgs {
     pub key_name: Option<String>,
 
     /// Purpose shown to the approver (1-200 characters)
-    #[arg(long)]
+    #[arg(long, required = true)]
     pub purpose: Option<String>,
 }
 
@@ -409,7 +414,9 @@ pub async fn run(
         AccessCommands::Request(args) => {
             request(args, url_override, org_id, org_name, debug, json).await
         }
-        AccessCommands::Roles => roles(url_override, org_id, org_name, debug, json).await,
+        AccessCommands::Roles(args) => {
+            roles(args, url_override, org_id, org_name, debug, json).await
+        }
     }
 }
 
@@ -445,6 +452,7 @@ fn validate_assignable_roles(roles: &[AssignableRole]) -> CloudResult<()> {
 }
 
 async fn roles(
+    args: AccessRolesArgs,
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
@@ -459,12 +467,198 @@ async fn roles(
         .resolve_access_organization_id(org_id, org_name)
         .await?;
     let roles = client.list_assignable_roles(&org_id).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&roles)?);
-    } else {
-        print_assignable_roles(&org_id, &roles);
+    match (args.policies, json) {
+        (true, true) => println!("{}", serde_json::to_string_pretty(&roles)?),
+        (true, false) => print_assignable_roles(&org_id, &roles),
+        (false, true) => println!("{}", summary_json(&summarize_roles(&roles))),
+        (false, false) => print!("{}", summary_human(&org_id, &summarize_roles(&roles))),
     }
     Ok(())
+}
+
+/// Permissions of one role, grouped by resource family, in first-seen order.
+type Families = Vec<(String, Vec<String>)>;
+
+/// The compact `cloud access roles` entry of one role.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct RoleSummary {
+    id: String,
+    name: String,
+    write: Families,
+    read: Families,
+    on: Vec<String>,
+    denied: Families,
+}
+
+impl RoleSummary {
+    fn count(families: &Families) -> usize {
+        families.iter().map(|(_, entries)| entries.len()).sum()
+    }
+}
+
+/// A read is a permission whose last `:`-segment starts with `view`.
+fn is_read_permission(permission: &str) -> bool {
+    permission
+        .rsplit(':')
+        .next()
+        .is_some_and(|last| last.starts_with("view"))
+}
+
+/// `(family, entry)` of a permission: `control-plane:` is dropped and the next
+/// segment is the family; any other permission keeps its first segment as the
+/// family, and its entry carries the policy's `roleV2` tag in parentheses.
+fn permission_entry(permission: &str, role_v2: Option<&str>) -> (String, String) {
+    if let Some(rest) = permission.strip_prefix("control-plane:") {
+        return match rest.split_once(':') {
+            Some((family, entry)) => (family.into(), entry.into()),
+            None => (rest.into(), rest.into()),
+        };
+    }
+    let (family, entry) = permission
+        .split_once(':')
+        .unwrap_or((permission, permission));
+    let entry = match role_v2 {
+        Some(tag) => format!("{entry} ({tag})"),
+        None => entry.to_string(),
+    };
+    (family.into(), entry)
+}
+
+fn add_entry(families: &mut Families, family: String, entry: String) {
+    match families.iter_mut().find(|(name, _)| *name == family) {
+        Some((_, entries)) => {
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+        None => families.push((family, vec![entry])),
+    }
+}
+
+fn summarize_role(role: &AssignableRole) -> RoleSummary {
+    let mut summary = RoleSummary {
+        id: role.id.clone().unwrap_or_default(),
+        name: role.name.clone().unwrap_or_default(),
+        ..RoleSummary::default()
+    };
+    for policy in role.policies.iter().flatten() {
+        let role_v2 = policy
+            .tags
+            .as_ref()
+            .and_then(|tags| tags.role_v2.as_ref())
+            .map(ToString::to_string);
+        let permissions = policy.permissions.iter().flatten();
+        match &policy.allow_deny {
+            Some(RBACPolicyAllowdeny::ALLOW) => {
+                for permission in permissions {
+                    let (family, entry) = permission_entry(permission, role_v2.as_deref());
+                    let target = if is_read_permission(permission) {
+                        &mut summary.read
+                    } else {
+                        &mut summary.write
+                    };
+                    add_entry(target, family, entry);
+                }
+                for resource in policy.resources.iter().flatten() {
+                    if !summary.on.contains(resource) {
+                        summary.on.push(resource.clone());
+                    }
+                }
+            }
+            Some(RBACPolicyAllowdeny::DENY) => {
+                for permission in permissions {
+                    let (family, entry) = permission_entry(permission, role_v2.as_deref());
+                    add_entry(&mut summary.denied, family, entry);
+                }
+            }
+            // An effect this CLI does not know neither grants nor denies here;
+            // `--policies` shows it.
+            _ => {}
+        }
+    }
+    summary
+}
+
+/// One summary per role: fewest write permissions first, then fewest
+/// permissions overall, then by name.
+fn summarize_roles(roles: &[AssignableRole]) -> Vec<RoleSummary> {
+    let mut summaries: Vec<_> = roles.iter().map(summarize_role).collect();
+    summaries.sort_by(|a, b| {
+        let writes = |s: &RoleSummary| RoleSummary::count(&s.write);
+        let total = |s: &RoleSummary| RoleSummary::count(&s.write) + RoleSummary::count(&s.read);
+        writes(a)
+            .cmp(&writes(b))
+            .then(total(a).cmp(&total(b)))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    summaries
+}
+
+fn families_json(families: &Families) -> serde_json::Value {
+    serde_json::Value::Object(
+        families
+            .iter()
+            .map(|(family, entries)| (family.clone(), serde_json::json!(entries)))
+            .collect(),
+    )
+}
+
+/// A JSON array with one compact role object per line.
+fn summary_json(summaries: &[RoleSummary]) -> String {
+    if summaries.is_empty() {
+        return "[]".into();
+    }
+    let lines: Vec<_> = summaries
+        .iter()
+        .map(|summary| {
+            let mut object = serde_json::Map::new();
+            object.insert("id".into(), summary.id.clone().into());
+            object.insert("name".into(), summary.name.clone().into());
+            object.insert("write".into(), families_json(&summary.write));
+            object.insert("read".into(), families_json(&summary.read));
+            object.insert("on".into(), serde_json::json!(summary.on));
+            if !summary.denied.is_empty() {
+                object.insert("denied".into(), families_json(&summary.denied));
+            }
+            serde_json::Value::Object(object).to_string()
+        })
+        .collect();
+    format!("[\n{}\n]", lines.join(",\n"))
+}
+
+/// Human summary: per role a header, then `write`, `read`, `on` and `denied`
+/// rows, one family per line.
+fn summary_human(org_id: &str, summaries: &[RoleSummary]) -> String {
+    const INDENT: &str = "         ";
+    fn rows(out: &mut String, label: &str, families: &Families) {
+        for (index, (family, entries)) in families.iter().enumerate() {
+            let lead = if index == 0 {
+                format!("  {label:<7}")
+            } else {
+                INDENT.to_string()
+            };
+            out.push_str(&format!("{lead}{family}: {}\n", entries.join(", ")));
+        }
+    }
+    let mut out = format!("Organization: {org_id}\n");
+    if summaries.is_empty() {
+        out.push_str("No assignable roles for your user in this organization.\n");
+        return out;
+    }
+    for summary in summaries {
+        out.push_str(&format!("\n{}  {}\n", summary.name, summary.id));
+        if summary.write.is_empty() {
+            out.push_str("  write  none\n");
+        } else {
+            rows(&mut out, "write", &summary.write);
+        }
+        rows(&mut out, "read", &summary.read);
+        if !summary.on.is_empty() {
+            out.push_str(&format!("  {:<7}{}\n", "on", summary.on.join(", ")));
+        }
+        rows(&mut out, "denied", &summary.denied);
+    }
+    out
 }
 
 fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
@@ -618,10 +812,11 @@ async fn request(
     // it when near expiry. The code is single-use and already approved: any
     // refresh failure, or a login now for another API URL, keeps the filing
     // Bearer rather than dropping the code without trying the exchange.
-    let auth = match CloudClient::for_access(url_override).await {
-        Ok(fresh) if fresh.base_url() == base_url => fresh.request_auth(),
-        _ => auth,
-    };
+    let fresh = CloudClient::for_access(url_override)
+        .await
+        .ok()
+        .filter(|fresh| fresh.base_url() == base_url);
+    let auth = fresh.as_ref().map_or(auth, CloudClient::request_auth);
     let token_url = format!("{access_url}/authorizationCode/token");
     let issued = exchange_code(
         &http,
@@ -642,6 +837,25 @@ async fn request(
     let granted_role_ids = canonical_role_ids(issued.granted_role_ids.as_deref(), false)?;
     let key_expires = key_expiry(issued.key_expires_at)?;
     let credentials_path = credentials::credentials_path()?.display().to_string();
+    let active_in = crate::init::project_root()?.dir.display().to_string();
+    // Names and permissions of the granted roles, from the same OAuth listing
+    // `cloud access roles` reads. Best effort: an approved key is never lost
+    // because the lookup failed; the grant then carries ids only.
+    let menu = client_for_lookup(fresh.as_ref(), &client)
+        .list_assignable_roles(&org_id)
+        .await
+        .ok();
+    let grant = AccessGrant {
+        api_key: issued.key.clone(),
+        key_id: issued.key_id.clone(),
+        organization_id: org_id.clone(),
+        request_id: created.request_id.clone(),
+        expires_at: key_expires.clone(),
+        roles: granted_role_ids
+            .iter()
+            .map(|id| granted_role(id, menu.as_deref()))
+            .collect(),
+    };
     // Prepare the complete output before the only credential write. Actual roles
     // come only from the successful exchange, never from the proposal or status GET.
     let json_result = if json {
@@ -655,34 +869,129 @@ async fn request(
             "organizationId": org_id,
             "requestedRoleIds": saved_requested_role_ids,
             "grantedRoleIds": granted_role_ids,
+            "grantedRoles": grant.roles.iter().map(|role| serde_json::json!({
+                "id": role.id,
+                "name": role.name,
+            })).collect::<Vec<_>>(),
+            "keyExpiresAtUtc": key_expires,
+            "activeIn": active_in,
         }))?)
     } else {
         None
     };
+    let human = approved_summary(
+        &credentials_path,
+        &active_in,
+        &grant,
+        &saved_requested_role_ids,
+        menu.as_deref(),
+        issued.key_expires_at,
+        epoch_millis()?,
+    );
 
     // Never print the secret; store it with the CLI's existing credential file.
-    credentials::set_api_credentials(issued.key.clone(), issued.secret, &base_url)?;
+    credentials::set_api_credentials_with_grant(
+        issued.key.clone(),
+        issued.secret,
+        &base_url,
+        grant,
+    )?;
 
-    if let Some(out) = json_result {
-        println!("{out}");
-    } else {
-        println!("Access approved. Scoped API key stored.");
-        println!("  Organization: {org_id}");
-        println!("  Request ID: {}", created.request_id);
-        if saved_requested_role_ids.is_empty() {
-            println!("  Requested roles: none (manual selection)");
-        } else {
-            println!("  Requested roles: {}", saved_requested_role_ids.join(", "));
-        }
-        println!("  Granted roles: {}", granted_role_ids.join(", "));
-        println!("  Key ID: {}", issued.key_id);
-        if let Some(expires) = key_expires {
-            println!("  Key expires: {expires}");
-        }
-        println!("  Saved to: {credentials_path}");
+    match json_result {
+        Some(out) => println!("{out}"),
+        None => print!("{human}"),
     }
 
     Ok(())
+}
+
+fn client_for_lookup<'a>(
+    fresh: Option<&'a CloudClient>,
+    filing: &'a CloudClient,
+) -> &'a CloudClient {
+    fresh.unwrap_or(filing)
+}
+
+/// The listed role with this id (ids compare as UUIDs).
+fn find_role<'a>(id: &str, menu: Option<&'a [AssignableRole]>) -> Option<&'a AssignableRole> {
+    let wanted = uuid::Uuid::parse_str(id).ok();
+    menu?.iter().find(|role| {
+        role.id.as_deref().is_some_and(|candidate| {
+            uuid::Uuid::parse_str(candidate).ok() == wanted || candidate == id
+        })
+    })
+}
+
+/// A granted role with the name and policies the listing gives it, or the id
+/// alone when the listing failed or does not carry it.
+fn granted_role(id: &str, menu: Option<&[AssignableRole]>) -> GrantedRole {
+    let role = find_role(id, menu);
+    GrantedRole {
+        id: id.to_string(),
+        name: role.and_then(|role| role.name.clone()),
+        policies: role.map(|role| {
+            role.policies
+                .iter()
+                .flatten()
+                .map(|policy| GrantPolicy {
+                    effect: policy
+                        .allow_deny
+                        .as_ref()
+                        .map_or_else(String::new, ToString::to_string),
+                    permissions: policy.permissions.clone().unwrap_or_default(),
+                    resources: policy.resources.clone().unwrap_or_default(),
+                })
+                .collect()
+        }),
+    }
+}
+
+/// The human output of an approved request.
+fn approved_summary(
+    credentials_path: &str,
+    active_in: &str,
+    grant: &AccessGrant,
+    requested: &[String],
+    menu: Option<&[AssignableRole]>,
+    key_expires_at: Option<i64>,
+    now_millis: i64,
+) -> String {
+    let granted = grant
+        .roles
+        .iter()
+        .map(|role| match &role.name {
+            Some(name) => format!("{name} ({})", role.id),
+            None => role.id.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut out = format!("Approved. Key saved: {credentials_path}\n  Granted: {granted}\n");
+    let same =
+        |a: &[String], b: Vec<&String>| a.len() == b.len() && a.iter().all(|id| b.contains(&id));
+    if !same(requested, grant.roles.iter().map(|role| &role.id).collect()) {
+        let names = if requested.is_empty() {
+            "none".to_string()
+        } else {
+            requested
+                .iter()
+                .map(|id| {
+                    find_role(id, menu)
+                        .and_then(|role| role.name.clone())
+                        .unwrap_or_else(|| id.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!(
+            "  Requested: {names}; the approver changed the roles.\n"
+        ));
+    }
+    if let (Some(expires), Some(millis)) = (&grant.expires_at, key_expires_at) {
+        let minutes = (millis.saturating_sub(now_millis).max(0) + 30_000) / 60_000;
+        out.push_str(&format!("  Expires: {expires} ({minutes} min)\n"));
+    }
+    out.push_str(&format!("  Active in {active_in} and below.\n"));
+    out
 }
 
 /// The key's expiry as RFC 3339 UTC, for human output. A value outside the
@@ -2066,8 +2375,225 @@ mod tests {
         }
     }
 
+    /// `args` with the required `--purpose` added right after `request` when
+    /// the test does not pass one itself.
+    fn with_purpose<'a>(args: &[&'a str]) -> Vec<&'a str> {
+        let mut args = args.to_vec();
+        if !args.iter().any(|arg| arg.starts_with("--purpose"))
+            && let Some(at) = args.iter().position(|arg| *arg == "request")
+        {
+            args.insert(at + 1, "--purpose=test purpose");
+        }
+        args
+    }
+
+    fn summary_fixture() -> Vec<AssignableRole> {
+        serde_json::from_value(serde_json::json!([
+            {"id": "21111111-1111-1111-9999-000000000005", "name": "Service API Admin", "type": "system", "policies": [
+                {"allowDeny": "ALLOW", "permissions": [
+                    "control-plane:service:manage", "control-plane:service:delete",
+                    "control-plane:service:view", "control-plane:postgres-service:manage",
+                    "control-plane:organization:create-api-keys"
+                ], "resources": ["instance/*", "postgres/*"]},
+                {"allowDeny": "ALLOW", "permissions": ["control-plane:service:view-backups"], "resources": ["instance/*"]},
+                {"allowDeny": "DENY", "permissions": ["control-plane:service:delete"], "resources": ["instance/prod"]}
+            ]},
+            {"id": "21111111-1111-1111-9999-000000000002", "name": "Viewer", "type": "system", "policies": [
+                {"allowDeny": "ALLOW", "permissions": ["control-plane:service:view"], "resources": ["*"]}
+            ]},
+            {"id": "21111111-1111-1111-9999-000000000003", "name": "SQL", "type": "custom", "policies": [
+                {"allowDeny": "ALLOW", "permissions": ["sql-console:database:access"], "resources": ["instance/a"], "tags": {"roleV2": "sql-console-admin"}}
+            ]},
+            {"id": "21111111-1111-1111-9999-000000000004", "name": "Another viewer", "type": "system", "policies": [
+                {"allowDeny": "ALLOW", "permissions": ["control-plane:service:view"], "resources": ["*"]}
+            ]}
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn role_summary_orders_by_writes_then_total_then_name_and_groups_by_family() {
+        let summaries = summarize_roles(&summary_fixture());
+        let names: Vec<_> = summaries.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Another viewer", "Viewer", "SQL", "Service API Admin"]
+        );
+        let admin = &summaries[3];
+        assert_eq!(
+            admin.write,
+            vec![
+                (
+                    "service".to_string(),
+                    vec!["manage".to_string(), "delete".to_string()]
+                ),
+                ("postgres-service".to_string(), vec!["manage".to_string()]),
+                (
+                    "organization".to_string(),
+                    vec!["create-api-keys".to_string()]
+                ),
+            ]
+        );
+        assert_eq!(
+            admin.read,
+            vec![(
+                "service".to_string(),
+                vec!["view".to_string(), "view-backups".to_string()]
+            )]
+        );
+        assert_eq!(admin.on, vec!["instance/*", "postgres/*"]);
+        assert_eq!(
+            admin.denied,
+            vec![("service".to_string(), vec!["delete".to_string()])]
+        );
+        // A non-control-plane permission keeps its first segment as family
+        // and carries the policy's roleV2 tag.
+        assert_eq!(
+            summaries[2].write,
+            vec![(
+                "sql-console".to_string(),
+                vec!["database:access (sql-console-admin)".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn role_summary_json_is_one_compact_role_per_line() {
+        let text = summary_json(&summarize_roles(&summary_fixture()));
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0], "[");
+        assert_eq!(lines[5], "]");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 4);
+        let admin = &parsed[3];
+        let keys: Vec<_> = admin.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["id", "name", "write", "read", "on", "denied"]);
+        assert_eq!(
+            admin["write"]["service"],
+            serde_json::json!(["manage", "delete"])
+        );
+        assert_eq!(admin["denied"]["service"], serde_json::json!(["delete"]));
+        assert!(parsed[0].get("denied").is_none());
+        assert_eq!(parsed[0]["write"], serde_json::json!({}));
+        assert_eq!(summary_json(&[]), "[]");
+    }
+
+    #[test]
+    fn role_summary_human_lists_every_permission_per_family() {
+        let text = summary_human("org-1", &summarize_roles(&summary_fixture()));
+        assert!(text.starts_with("Organization: org-1\n"));
+        assert!(
+            text.contains(
+                "Service API Admin  21111111-1111-1111-9999-000000000005\n  \
+             write  service: manage, delete\n         \
+             postgres-service: manage\n         \
+             organization: create-api-keys\n  \
+             read   service: view, view-backups\n  \
+             on     instance/*, postgres/*\n  \
+             denied service: delete\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("Viewer  21111111-1111-1111-9999-000000000002\n  write  none\n"));
+        assert!(summary_human("org-1", &[]).contains("No assignable roles"));
+    }
+
+    #[test]
+    fn roles_policies_flag_parses_only_on_roles() {
+        let cli = Cli::try_parse_from(["chctl", "cloud", "access", "roles", "--policies"]).unwrap();
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Access { command, .. } = cloud.command else {
+            panic!("expected access command");
+        };
+        assert!(matches!(
+            command,
+            AccessCommands::Roles(AccessRolesArgs { policies: true })
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "chctl",
+                "cloud",
+                "access",
+                "request",
+                "--purpose=x",
+                "--policies"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn approved_summary_names_granted_requested_expiry_and_project() {
+        let menu = summary_fixture();
+        let admin = "21111111-1111-1111-9999-000000000005";
+        let viewer = "21111111-1111-1111-9999-000000000002";
+        let grant = AccessGrant {
+            api_key: "key".into(),
+            key_id: "key-id".into(),
+            organization_id: "org".into(),
+            request_id: "request".into(),
+            expires_at: Some("2026-11-19T09:58:23Z".into()),
+            roles: vec![
+                granted_role(admin, Some(&menu)),
+                granted_role("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Some(&menu)),
+            ],
+        };
+        let expires = 1_795_082_303_000_i64; // 2026-11-19T09:58:23Z
+        let text = approved_summary(
+            "/home/dev/work/.clickhouse/credentials.json",
+            "/home/dev/work",
+            &grant,
+            &[viewer.to_string()],
+            Some(&menu),
+            Some(expires),
+            expires - 15 * 60_000,
+        );
+        assert_eq!(
+            text,
+            format!(
+                "Approved. Key saved: /home/dev/work/.clickhouse/credentials.json\n  \
+                 Granted: Service API Admin ({admin}), aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n  \
+                 Requested: Viewer; the approver changed the roles.\n  \
+                 Expires: 2026-11-19T09:58:23Z (15 min)\n  \
+                 Active in /home/dev/work and below.\n"
+            )
+        );
+        // Granted as requested: no Requested line; a failed lookup keeps ids.
+        let same = AccessGrant {
+            roles: vec![granted_role(admin, None)],
+            ..grant
+        };
+        let text = approved_summary("p", "/w", &same, &[admin.to_string()], None, None, 0);
+        assert_eq!(
+            text,
+            format!("Approved. Key saved: p\n  Granted: {admin}\n  Active in /w and below.\n")
+        );
+        assert!(same.roles[0].policies.is_none());
+    }
+
+    #[test]
+    fn request_requires_a_purpose() {
+        let error = Cli::try_parse_from(["chctl", "cloud", "access", "request"])
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--purpose"), "{error}");
+        assert_eq!(
+            parse(&["chctl", "cloud", "access", "request", "--purpose", "why"])
+                .purpose
+                .as_deref(),
+            Some("why")
+        );
+    }
+
     fn parse(args: &[&str]) -> AccessRequestArgs {
-        let cli = Cli::try_parse_from(args).expect("parse");
+        let cli = Cli::try_parse_from(with_purpose(args)).expect("parse");
         let Commands::Cloud(cloud) = cli.command else {
             panic!("expected cloud command");
         };
@@ -2305,7 +2831,7 @@ mod tests {
         use clap::{CommandFactory, FromArgMatches};
         fn validate(args: &[&str]) -> Result<(), clap::Error> {
             let argv: Vec<std::ffi::OsString> = std::iter::once("chctl")
-                .chain(args.iter().copied())
+                .chain(with_purpose(args))
                 .map(Into::into)
                 .collect();
             let mut command = Cli::command();

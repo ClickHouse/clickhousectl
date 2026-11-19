@@ -64,7 +64,7 @@ CONTEXT FOR AGENTS:
 #[cfg(feature = "experimental-access-negotiation")]
 const OAUTH_WRITE_ACCESS: Option<&str> = Some(
     "none: OAuth is read-only. Run `clickhousectl cloud access roles`, then \
-     `clickhousectl cloud access request --perms role:<UUID>`; the user approves it in their browser.",
+     `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`; the user approves it in their browser.",
 );
 #[cfg(not(feature = "experimental-access-negotiation"))]
 const OAUTH_WRITE_ACCESS: Option<&str> = None;
@@ -431,10 +431,22 @@ pub async fn run(
                 }
                 _ => ("Not configured".into(), "-"),
             };
+            // The active saved key from `cloud access request`: its roles and expiry.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let active_grant = saved
+                .as_ref()
+                .filter(|_| active == Some(AuthSource::CredentialsFile))
+                .and_then(crate::cloud::grant::grant_of);
+            let scope: String = scope.into();
+            #[cfg(feature = "experimental-access-negotiation")]
+            let scope = match active_grant {
+                Some(grant) => crate::cloud::grant::status_scope(grant, chrono::Utc::now()),
+                None => scope,
+            };
             rows.push(AuthRow {
                 auth_type: "API key".into(),
                 status,
-                scope: scope.into(),
+                scope,
                 active: mark(AuthSource::CredentialsFile),
                 api_url: saved
                     .as_ref()
@@ -534,10 +546,19 @@ pub async fn run(
             };
 
             // Only an active OAuth login lacks write access it could obtain.
-            let write_access = if active == Some(AuthSource::OAuthTokens) {
-                OAUTH_WRITE_ACCESS
+            let write_access: Option<String> = if active == Some(AuthSource::OAuthTokens) {
+                OAUTH_WRITE_ACCESS.map(str::to_string)
             } else {
                 None
+            };
+            // JSON names what the saved `cloud access request` key may write.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let write_access = match active_grant {
+                Some(grant) if json => Some(crate::cloud::grant::status_write_access(
+                    grant,
+                    chrono::Utc::now(),
+                )),
+                _ => write_access,
             };
 
             if json {
@@ -555,7 +576,7 @@ pub async fn run(
                 }
                 let output = StatusOutput {
                     sources: rows,
-                    write_access,
+                    write_access: write_access.as_deref(),
                     oauth_warning,
                     credentials_warning: credentials_warning.as_deref(),
                     identity: &identity,
@@ -563,7 +584,7 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
-                if let Some(write_access) = write_access {
+                if let Some(write_access) = &write_access {
                     println!();
                     println!("Write access: {write_access}");
                 }

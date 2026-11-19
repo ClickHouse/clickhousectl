@@ -25,6 +25,11 @@ pub struct Credentials {
     /// [`take_legacy_service_query_key`] has told the user about it.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub service_query_keys: HashMap<String, serde_json::Value>,
+    /// What `cloud access request` granted the saved key. Any other write of
+    /// the key pair drops it; files without it keep working.
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_grant: Option<crate::cloud::grant::AccessGrant>,
 }
 
 impl Credentials {
@@ -50,10 +55,26 @@ pub fn credentials_path() -> std::io::Result<PathBuf> {
     Ok(init::local_dir()?.join(CREDENTIALS_FILE))
 }
 
-fn ensure_local_dir() -> CloudResult<PathBuf> {
-    let dir = init::local_dir()?;
-    ensure_dir(&dir)?;
-    Ok(dir)
+/// The directory the OAuth fallback can truthfully say holds no API key "or
+/// above": the current directory, when discovery searched from it upward and
+/// found no project, so there was no `credentials.json` to read. `None` when a
+/// project was found or named ([`init::PROJECT_DIR_ENV`]): only that project's
+/// key was read, and one in a directory above may exist. `this directory`
+/// when the current directory cannot be read.
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn no_key_search_dir() -> Option<String> {
+    no_key_search_dir_for(init::project_root())
+}
+
+#[cfg(feature = "experimental-access-negotiation")]
+fn no_key_search_dir_for(root: std::io::Result<&init::ProjectRoot>) -> Option<String> {
+    match root {
+        Ok(root) if root.kind == init::ProjectRootKind::Unmarked => {
+            Some(root.dir.display().to_string())
+        }
+        Ok(_) => None,
+        Err(_) => Some("this directory".to_string()),
+    }
 }
 
 fn ensure_dir(dir: &Path) -> CloudResult<()> {
@@ -130,10 +151,6 @@ pub fn clear_credentials() -> CloudResult<()> {
     }
 }
 
-fn save_credentials(creds: &Credentials) -> CloudResult<()> {
-    save_credentials_in(&ensure_local_dir()?, creds)
-}
-
 fn save_credentials_in(dir: &Path, creds: &Credentials) -> CloudResult<()> {
     ensure_dir(dir)?;
     let json = serde_json::to_string_pretty(creds)?;
@@ -149,12 +166,48 @@ pub(crate) fn set_api_credentials(
     api_secret: String,
     api_url: &str,
 ) -> CloudResult<()> {
-    let _lock = lock_credentials_mutation()?;
-    let mut creds = try_load_credentials()?.unwrap_or_default();
+    set_api_credentials_in(
+        &init::local_dir()?,
+        api_key,
+        api_secret,
+        api_url,
+        |_creds| {
+            // A key saved any other way has no grant: drop the previous key's.
+            #[cfg(feature = "experimental-access-negotiation")]
+            {
+                _creds.access_grant = None;
+            }
+        },
+    )
+}
+
+/// Save the key `cloud access request` issued along with what it granted.
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn set_api_credentials_with_grant(
+    api_key: String,
+    api_secret: String,
+    api_url: &str,
+    grant: crate::cloud::grant::AccessGrant,
+) -> CloudResult<()> {
+    set_api_credentials_in(&init::local_dir()?, api_key, api_secret, api_url, |creds| {
+        creds.access_grant = Some(grant);
+    })
+}
+
+fn set_api_credentials_in(
+    dir: &Path,
+    api_key: String,
+    api_secret: String,
+    api_url: &str,
+    update: impl FnOnce(&mut Credentials),
+) -> CloudResult<()> {
+    let _lock = lock_credentials_mutation_in(dir)?;
+    let mut creds = load_credentials_from(&dir.join(CREDENTIALS_FILE))?.unwrap_or_default();
     creds.api_key = Some(api_key);
     creds.api_secret = Some(api_secret);
     creds.api_url = stored_api_url(api_url);
-    save_credentials(&creds)
+    update(&mut creds);
+    save_credentials_in(dir, &creds)
 }
 
 /// The `api_url` to record for a key used against `api_url`: `None` for
@@ -207,6 +260,97 @@ fn take_legacy_service_query_key_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn the_no_key_directory_is_named_only_when_no_project_was_found() {
+        let root = |kind| init::ProjectRoot {
+            dir: PathBuf::from("/work/dir"),
+            kind,
+        };
+        assert_eq!(
+            no_key_search_dir_for(Ok(&root(init::ProjectRootKind::Unmarked))).as_deref(),
+            Some("/work/dir")
+        );
+        // A found or named project: only its key was read.
+        for kind in [
+            init::ProjectRootKind::Marked,
+            init::ProjectRootKind::Override,
+        ] {
+            assert_eq!(no_key_search_dir_for(Ok(&root(kind))), None, "{kind:?}");
+        }
+        let unreadable = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            no_key_search_dir_for(Err(unreadable)).as_deref(),
+            Some("this directory")
+        );
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn a_grant_is_saved_with_its_key_and_dropped_by_any_other_key_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".clickhouse");
+        let grant = crate::cloud::grant::AccessGrant {
+            api_key: "issued".into(),
+            key_id: "key-id".into(),
+            organization_id: "org".into(),
+            request_id: "request".into(),
+            expires_at: Some("2026-11-19T09:58:23Z".into()),
+            roles: vec![crate::cloud::grant::GrantedRole {
+                id: "role-id".into(),
+                name: Some("Service Admin".into()),
+                policies: Some(vec![crate::cloud::grant::GrantPolicy {
+                    effect: "ALLOW".into(),
+                    permissions: vec!["control-plane:service:manage".into()],
+                    resources: vec!["instance/*".into()],
+                }]),
+            }],
+        };
+        let saved = grant.clone();
+        set_api_credentials_in(
+            &dir,
+            "issued".into(),
+            "secret".into(),
+            "https://api.clickhouse.cloud/v1",
+            |creds| creds.access_grant = Some(saved),
+        )
+        .unwrap();
+        let path = dir.join(CREDENTIALS_FILE);
+        let loaded = load_credentials_from(&path).unwrap().unwrap();
+        assert_eq!(loaded.access_grant.as_ref(), Some(&grant));
+        assert_eq!(loaded.api_credentials(), Some(("issued", "secret")));
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["access_grant"]["roles"][0]["name"], "Service Admin");
+        assert!(!raw["access_grant"].to_string().contains("secret"));
+
+        // `auth login --api-key` (set_api_credentials) drops it.
+        set_api_credentials_in(
+            &dir,
+            "other".into(),
+            "other-secret".into(),
+            "https://api.clickhouse.cloud/v1",
+            |creds| creds.access_grant = None,
+        )
+        .unwrap();
+        let loaded = load_credentials_from(&path).unwrap().unwrap();
+        assert!(loaded.access_grant.is_none());
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("access_grant")
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_grant_still_loads() {
+        let creds: Credentials =
+            serde_json::from_str(r#"{"api_key":"k","api_secret":"s"}"#).unwrap();
+        assert_eq!(creds.api_credentials(), Some(("k", "s")));
+        #[cfg(feature = "experimental-access-negotiation")]
+        assert!(creds.access_grant.is_none());
+    }
 
     #[test]
     fn only_a_non_prod_api_url_is_recorded() {

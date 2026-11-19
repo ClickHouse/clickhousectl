@@ -173,21 +173,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         Conditional::new("Removing IPs/endpoints/tags", &[&op::INSTANCE_GET]),
     ]),
-    Permission::api("service query", &[])
-        .when(&[
-            Conditional::new("service ID", &[&op::INSTANCE_GET]),
-            Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
-            Conditional::new(
-                "auto-enable",
-                &[
-                    &op::WHOAMI_GET,
-                    &op::OPENAPI_KEY_GET,
-                    &op::INSTANCE_QUERY_ENDPOINT_GET,
-                    &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
-                ],
-            ),
-        ])
-        .authorization("SQL uses database privileges; OAuth permits read-only SELECT."),
+    SERVICE_QUERY,
     Permission::api("service client", &[])
         .when(&[
             Conditional::new("service ID", &[&op::INSTANCE_GET]),
@@ -195,6 +181,52 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         ])
         .authorization("SQL runs as the Cloud user who signs in through the browser."),
 ];
+
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const SERVICE_QUERY: Permission = Permission::api("service query", &[])
+    .when(&[
+        Conditional::new("service ID", &[&op::INSTANCE_GET]),
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new(
+            "auto-enable",
+            &[
+                &op::WHOAMI_GET,
+                &op::OPENAPI_KEY_GET,
+                &op::INSTANCE_QUERY_ENDPOINT_GET,
+                &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
+            ],
+        ),
+    ])
+    .authorization("SQL uses database privileges; OAuth permits read-only SELECT.");
+
+// First use identifies the caller's key with `whoami` (no named permission),
+// reads the endpoint (a refusal there fails the bind) and upserts it. The
+// per-key lookup only prunes bindings of deleted keys and keeps a binding
+// whenever it fails, so `view-api-keys` is not a need: checked against real
+// ClickHouse Cloud on 2026-11-19, a Service Admin key whose `key get`/`key
+// list` answer FORBIDDEN still bound itself and ran SQL.
+#[cfg(feature = "experimental-access-negotiation")]
+const SERVICE_QUERY: Permission = Permission::api("service query", &[])
+    .when(&[
+        Conditional::new("service ID", &[&op::INSTANCE_GET]),
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new(
+            "first use",
+            &[
+                &op::WHOAMI_GET,
+                &op::INSTANCE_QUERY_ENDPOINT_GET,
+                &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
+            ],
+        ),
+        Conditional::tolerated(
+            "Pruning bindings of deleted keys on first use",
+            &[&op::OPENAPI_KEY_GET],
+        ),
+    ])
+    .authorization(
+        "SQL runs with the endpoint's role (`sql_console_admin` if the CLI creates it). \
+         OAuth: read-only SQL.",
+    );
 
 pub(crate) use native_client::service_client;
 
