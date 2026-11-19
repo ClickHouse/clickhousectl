@@ -192,10 +192,11 @@ async fn dispatched_cloud_500_remains_a_generic_error() {
     assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 }
 
-/// The API's plain 401 to a request sent with the saved key (no grant here)
-/// names the file and how to replace or clear the key, since it outranks the
-/// OAuth login; exit 4 and `auth_required` are kept. The same 401 under
-/// `--api-key/--api-secret` or env vars keeps the API's message.
+/// The API's 401 to a request sent with the saved key (no grant here) keeps
+/// the API's text first, then names the file and how to replace or clear the
+/// key, since it outranks the OAuth login; exit 4 and `auth_required` are
+/// kept. The same 401 under `--api-key/--api-secret` or env vars keeps the
+/// API's message.
 #[tokio::test]
 async fn a_401_on_the_saved_key_names_the_file_and_the_way_out() {
     let mock = MockServer::start().await;
@@ -203,7 +204,7 @@ async fn a_401_on_the_saved_key_names_the_file_and_the_way_out() {
         .and(path("/v1/organizations/org-1/services"))
         .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
             "status": 401,
-            "error": "Invalid credentials",
+            "error": "UNAUTHORIZED: Key is not active",
             "requestId": "stub-401",
         })))
         .mount(&mock)
@@ -248,7 +249,7 @@ async fn a_401_on_the_saved_key_names_the_file_and_the_way_out() {
         assert_eq!(messages[0], messages[1]);
         let message = &messages[0];
         assert!(
-            message.starts_with("Invalid credentials: the API refused the saved API key"),
+            message.starts_with("UNAUTHORIZED: Key is not active. The saved API key"),
             "{message}"
         );
         let key_line = format!(
@@ -284,7 +285,7 @@ async fn a_401_on_the_saved_key_names_the_file_and_the_way_out() {
         assert_eq!(output.status.code(), Some(4), "{output:?}");
         let error = cloud_runtime_error(&output);
         assert_eq!(error["code"], "auth_required");
-        assert_eq!(error["message"], "Invalid credentials");
+        assert_eq!(error["message"], "UNAUTHORIZED: Key is not active");
     }
 }
 

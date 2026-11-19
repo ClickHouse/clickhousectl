@@ -5,9 +5,6 @@
 
 use crate::cloud::client::{AuthSource, CloudClient, CloudError, CloudErrorKind};
 
-/// The API's plain refusal of the credentials themselves (HTTP 401).
-const API_REFUSAL: &str = "Invalid credentials";
-
 /// Whether the locally saved OAuth login is usable, by the test `auth status`
 /// uses (`load_tokens` + `is_token_valid`).
 pub(crate) fn oauth_login_valid() -> bool {
@@ -65,26 +62,49 @@ pub(crate) fn recovery_lines(path: &str, granted: Option<&str>, oauth_valid: boo
     lines
 }
 
-/// The message for the API's 401 to a request sent with the saved key.
-pub(crate) fn unauthorized_message(path: &str, granted: Option<&str>, oauth_valid: bool) -> String {
-    let mut lines = vec![format!(
-        "{API_REFUSAL}: the API refused the saved API key for this project (expired, disabled or \
-         deleted). It takes priority over the OAuth login here."
-    )];
+/// The first line for the API's 401 `api_message` under the saved key: the
+/// API's own text (trimmed, without one trailing period; `Unauthorized` when
+/// empty), then what it means for the saved key.
+fn refusal_line(api_message: &str) -> String {
+    let trimmed = api_message.trim();
+    let message = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    let message = if message.is_empty() {
+        "Unauthorized"
+    } else {
+        message
+    };
+    let reason = if message.contains("Key is not active") {
+        "The saved API key for this project is expired or disabled"
+    } else if message.contains("Key is not found") {
+        "The saved API key for this project was deleted, or its id or secret is wrong"
+    } else {
+        "The API refused the saved API key for this project"
+    };
+    format!("{message}. {reason}, and it takes priority over the OAuth login here.")
+}
+
+/// The message for the API's 401 (`api_message`) to a request sent with the
+/// saved key.
+pub(crate) fn unauthorized_message(
+    api_message: &str,
+    path: &str,
+    granted: Option<&str>,
+    oauth_valid: bool,
+) -> String {
+    let mut lines = vec![refusal_line(api_message)];
     lines.extend(recovery_lines(path, granted, oauth_valid));
     lines.join("\n")
 }
 
-/// Rewrite the API's plain credential refusal (HTTP 401 `Invalid
-/// credentials`) to a request authenticated with the saved credentials file
-/// into [`unauthorized_message`]. Every other error, including a 401 under
-/// CLI flags, env vars or OAuth, or one with its own reason, is returned
-/// unchanged; the kind, exit code and classification are kept.
+/// Rewrite any HTTP 401 to a request authenticated with the saved
+/// credentials file into [`unauthorized_message`], keeping the API's text at
+/// the front. Every other error, including a 401 under CLI flags, env vars or
+/// OAuth, is returned unchanged; the kind, exit code and classification are
+/// kept.
 pub(crate) fn explain_unauthorized(client: &CloudClient, error: CloudError) -> CloudError {
     if client.auth_source() != AuthSource::CredentialsFile
         || error.kind != CloudErrorKind::Auth
         || error.failure.and_then(|failure| failure.http_status) != Some(401)
-        || error.message.trim() != API_REFUSAL
     {
         return error;
     }
@@ -94,6 +114,7 @@ pub(crate) fn explain_unauthorized(client: &CloudClient, error: CloudError) -> C
     #[cfg(not(feature = "experimental-access-negotiation"))]
     let granted: Option<String> = None;
     let message = unauthorized_message(
+        &error.message,
         &credentials_path_display(),
         granted.as_deref(),
         oauth_login_valid(),
@@ -166,15 +187,44 @@ mod tests {
     }
 
     #[test]
+    fn refusal_line_keeps_the_api_text_and_says_what_it_means_for_the_saved_key() {
+        for (api, expected) in [
+            (
+                "UNAUTHORIZED: Key is not active",
+                "UNAUTHORIZED: Key is not active. The saved API key for this project is expired or disabled, and it takes priority over the OAuth login here.",
+            ),
+            (
+                "UNAUTHORIZED: Key is not found",
+                "UNAUTHORIZED: Key is not found. The saved API key for this project was deleted, or its id or secret is wrong, and it takes priority over the OAuth login here.",
+            ),
+            (
+                "Invalid credentials",
+                "Invalid credentials. The API refused the saved API key for this project, and it takes priority over the OAuth login here.",
+            ),
+            (
+                " UNAUTHORIZED: No Authorization header provided. ",
+                "UNAUTHORIZED: No Authorization header provided. The API refused the saved API key for this project, and it takes priority over the OAuth login here.",
+            ),
+            (
+                "UNAUTHORIZED: Key is not active.",
+                "UNAUTHORIZED: Key is not active. The saved API key for this project is expired or disabled, and it takes priority over the OAuth login here.",
+            ),
+            (
+                "",
+                "Unauthorized. The API refused the saved API key for this project, and it takes priority over the OAuth login here.",
+            ),
+        ] {
+            assert_eq!(refusal_line(api), expected, "{api:?}");
+        }
+    }
+
+    #[test]
     fn unauthorized_message_leads_with_the_refusal_and_the_key_priority() {
-        let message = unauthorized_message(PATH, None, true);
+        let message = unauthorized_message("UNAUTHORIZED: Key is not found", PATH, None, true);
         let lines: Vec<_> = message.lines().collect();
-        assert_eq!(
-            lines[0],
-            "Invalid credentials: the API refused the saved API key for this project (expired, disabled or deleted). It takes priority over the OAuth login here."
-        );
+        assert_eq!(lines[0], refusal_line("UNAUTHORIZED: Key is not found"));
         assert_eq!(lines[1..], recovery_lines(PATH, None, true));
-        let granted = unauthorized_message(PATH, Some("roles A, B"), false);
+        let granted = unauthorized_message("Invalid credentials", PATH, Some("roles A, B"), false);
         assert!(
             granted.contains(
                 "  Key: /home/dev/work/.clickhouse/credentials.json (from `cloud access request`, roles A, B)\n"
@@ -188,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_plain_401_under_the_saved_key_is_rewritten() {
+    fn any_401_under_the_saved_key_is_rewritten() {
         use crate::failure::{ApiFailure, FailureKind};
         let refused = |status: u16, message: &str| {
             CloudError::auth(message)
@@ -199,25 +249,27 @@ mod tests {
         let kept = explain_unauthorized(&flags, refused(401, "Invalid credentials"));
         assert_eq!(kept.message, "Invalid credentials");
         let saved = CloudClient::for_tests_saved_key("http://localhost:1/v1");
-        // A 401 with its own reason, and other statuses, are kept.
-        let own = explain_unauthorized(&saved, refused(401, "UNAUTHORIZED: invalid code"));
-        assert_eq!(own.message, "UNAUTHORIZED: invalid code");
+        // Other statuses are kept.
         let other = explain_unauthorized(&saved, refused(403, "Invalid credentials"));
         assert_eq!(other.message, "Invalid credentials");
-        // The plain refusal under the saved key is rewritten, keeping the
-        // kind and classification.
-        let rewritten = explain_unauthorized(&saved, refused(401, " Invalid credentials "));
-        assert!(
-            rewritten
-                .message
-                .starts_with("Invalid credentials: the API refused the saved API key"),
-            "{}",
-            rewritten.message
-        );
-        assert_eq!(rewritten.kind, CloudErrorKind::Auth);
-        assert_eq!(
-            rewritten.failure.and_then(|failure| failure.http_status),
-            Some(401)
-        );
+        // Any 401 under the saved key is rewritten, the API's text first,
+        // keeping the kind and classification.
+        for api in [
+            "UNAUTHORIZED: Key is not active",
+            "UNAUTHORIZED: Key is not found",
+            "UNAUTHORIZED: something new",
+            " Invalid credentials ",
+            "Unauthorized",
+        ] {
+            let rewritten = explain_unauthorized(&saved, refused(401, api));
+            let first = rewritten.message.lines().next().unwrap();
+            assert_eq!(first, refusal_line(api), "{api:?}");
+            assert!(first.starts_with(api.trim()), "{first}");
+            assert_eq!(rewritten.kind, CloudErrorKind::Auth);
+            assert_eq!(
+                rewritten.failure.and_then(|failure| failure.http_status),
+                Some(401)
+            );
+        }
     }
 }
