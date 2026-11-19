@@ -21,6 +21,9 @@ pub(super) struct Conditional {
     pub condition: &'static str,
     pub operations: Operations,
     flag: Option<&'static str>,
+    /// False for a best-effort call whose refusal the command tolerates: it
+    /// stays declared and validated, but is never rendered as a need.
+    rendered: bool,
 }
 
 impl Conditional {
@@ -29,6 +32,7 @@ impl Conditional {
             condition,
             operations,
             flag: None,
+            rendered: true,
         }
     }
 
@@ -38,6 +42,19 @@ impl Conditional {
             condition: flag,
             operations,
             flag: Some(flag),
+            rendered: true,
+        }
+    }
+
+    /// A best-effort call: the command carries on when it is refused, so its
+    /// permissions are declared (and validated) but not listed as needs.
+    #[cfg_attr(not(feature = "experimental-access-negotiation"), allow(dead_code))]
+    pub const fn tolerated(condition: &'static str, operations: Operations) -> Self {
+        Self {
+            condition,
+            operations,
+            flag: None,
+            rendered: false,
         }
     }
 
@@ -173,17 +190,7 @@ fn permission_lines(declaration: &Declaration) -> Vec<String> {
     if required.is_empty() && !declaration.required.is_empty() {
         lines.push("  API key: valid key; no additional named permissions declared.".into());
     }
-    let mut conditional = BTreeMap::<_, Vec<_>>::new();
-    for group in declaration.groups() {
-        for permission in permission_set(group.operations).difference(&required) {
-            let conditions = conditional.entry(*permission).or_default();
-            let label = group.label();
-            if !conditions.contains(&label) {
-                conditions.push(label);
-            }
-        }
-    }
-    for (permission, conditions) in conditional {
+    for (permission, conditions) in conditional_permissions(declaration, &required) {
         lines.push(format!(
             "  API key ({}): {permission}",
             conditions.join(" or ")
@@ -193,6 +200,97 @@ fn permission_lines(declaration: &Declaration) -> Vec<String> {
         lines.push(format!("  Authorization: {authorization}"));
     }
     lines
+}
+
+/// The permissions only some runs need, beyond `required`, each with the
+/// labels of the conditions that need it. Tolerated calls are left out.
+fn conditional_permissions(
+    declaration: &Declaration,
+    required: &BTreeSet<&'static str>,
+) -> BTreeMap<&'static str, Vec<String>> {
+    let mut conditional = BTreeMap::<_, Vec<_>>::new();
+    for group in declaration.groups().filter(|group| group.rendered) {
+        for permission in permission_set(group.operations).difference(required) {
+            let conditions = conditional.entry(*permission).or_default();
+            let label = group.label();
+            if !conditions.contains(&label) {
+                conditions.push(label);
+            }
+        }
+    }
+    conditional
+}
+
+/// The named permissions a command declares, as its help renders them:
+/// the required ones, then each conditional one with its condition labels.
+#[cfg(feature = "experimental-access-negotiation")]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct DeclaredNeeds {
+    pub required: Vec<&'static str>,
+    /// `(condition labels joined with " or ", permission)`.
+    pub conditional: Vec<(String, &'static str)>,
+}
+
+#[cfg(feature = "experimental-access-negotiation")]
+impl DeclaredNeeds {
+    pub fn is_empty(&self) -> bool {
+        self.required.is_empty() && self.conditional.is_empty()
+    }
+
+    /// Every declared permission, required ones first, without labels.
+    pub fn permissions(&self) -> Vec<&'static str> {
+        let mut all = self.required.clone();
+        for (_, permission) in &self.conditional {
+            if !all.contains(permission) {
+                all.push(permission);
+            }
+        }
+        all
+    }
+
+    /// `a, b, (<condition>): c`, comma-separated as the help lists them.
+    pub fn render(&self) -> String {
+        self.required
+            .iter()
+            .map(|permission| permission.to_string())
+            .chain(
+                self.conditional
+                    .iter()
+                    .map(|(label, permission)| format!("({label}): {permission}")),
+            )
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// What the command at `path` (e.g. `service update`) declares it needs.
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn declared_needs(path: &str) -> Option<DeclaredNeeds> {
+    let declaration = declarations().find(|declaration| declaration.path == path)?;
+    let required = permission_set(declaration.required);
+    let conditional = conditional_permissions(declaration, &required)
+        .into_iter()
+        .map(|(permission, labels)| (labels.join(" or "), permission))
+        .collect();
+    Some(DeclaredNeeds {
+        required: required.into_iter().collect(),
+        conditional,
+    })
+}
+
+/// The cloud command path this process runs (e.g. `service update`), set
+/// once from the parsed command line so errors can name what it declares.
+#[cfg(feature = "experimental-access-negotiation")]
+static RUNNING_COMMAND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn set_running_command(path: String) {
+    let _ = RUNNING_COMMAND.set(path);
+}
+
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn running_command() -> Option<&'static str> {
+    RUNNING_COMMAND.get().map(String::as_str)
 }
 
 fn validate_declaration(declaration: &Declaration) -> Result<(), String> {
@@ -529,6 +627,47 @@ mod tests {
         assert!(local.authorization.is_some());
         assert!(!permission_lines(&api).is_empty());
         assert!(!permission_lines(&local).is_empty());
+    }
+
+    #[test]
+    fn tolerated_calls_stay_declared_but_are_never_rendered() {
+        const DECLARATION: Declaration = Declaration::api("sample", &[])
+            .when(&[Conditional::tolerated(
+                "best effort",
+                &[&operations::INSTANCE_GET],
+            )])
+            .unscoped();
+        validate_declaration(&DECLARATION).unwrap();
+        assert!(permission_lines(&DECLARATION).is_empty());
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn declared_needs_match_the_rendered_help() {
+        let needs = declared_needs("service update").unwrap();
+        assert_eq!(needs.required, vec!["control-plane:service:manage"]);
+        assert_eq!(
+            needs.render(),
+            "control-plane:service:manage, (Removing IPs/endpoints/tags): control-plane:service:view"
+        );
+        assert_eq!(
+            needs.permissions(),
+            vec!["control-plane:service:manage", "control-plane:service:view"]
+        );
+        assert!(declared_needs("service list").unwrap().is_empty());
+        assert!(declared_needs("no such command").is_none());
+        // `service query` first use does not list the tolerated key lookup.
+        let query = declared_needs("service query").unwrap();
+        assert!(
+            !query
+                .permissions()
+                .contains(&"control-plane:organization:view-api-keys")
+        );
+        assert!(
+            query
+                .render()
+                .contains("(first use): control-plane:service:manage-query-api-endpoints")
+        );
     }
 
     fn is_api_key_line(line: &str) -> bool {

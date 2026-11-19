@@ -739,9 +739,29 @@ fn convert_query_error(
         // already established (#450).
         .with_failure(ApiFailure::new(FailureKind::ServiceStopped)),
         clickhouse_cloud_api::Error::QueryTimeout => query_timeout_error(target),
+        #[cfg(feature = "experimental-access-negotiation")]
+        clickhouse_cloud_api::Error::Sql { ref code, .. }
+            if client.is_bearer_auth() && is_readonly_sql_error(code) =>
+        {
+            let mut error = client.convert_error(error);
+            error.message.push_str(OAUTH_READONLY_SQL_HINT);
+            error
+        }
         other => client.convert_error(other),
     }
 }
+
+/// ClickHouse error 164 (`READONLY`): the statement needs write access.
+#[cfg(feature = "experimental-access-negotiation")]
+fn is_readonly_sql_error(code: &str) -> bool {
+    matches!(code.trim(), "164" | "READONLY")
+}
+
+/// Appended to a read-only SQL error on the OAuth login.
+#[cfg(feature = "experimental-access-negotiation")]
+const OAUTH_READONLY_SQL_HINT: &str = "\nRan on the read-only OAuth login: no API key in this \
+     directory or above.\nSQL writes need a key: `clickhousectl cloud access request` (see \
+     `cloud access --help`).";
 
 /// What stdin holds when `--query` is validated (#641). Derived from the file
 /// descriptor only, never from anything the user typed.
@@ -1353,6 +1373,51 @@ mod tests {
                 "status {status}"
             );
         }
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn readonly_sql_error_hints_at_access_only_on_the_oauth_login() {
+        let readonly = || clickhouse_cloud_api::Error::Sql {
+            status: 500,
+            code: "164".into(),
+            details: "Cannot execute query in readonly mode".into(),
+        };
+        let bearer = CloudClient::for_tests_bearer("https://api.example.com/v1");
+        let hinted = convert_query_error(&bearer, readonly(), test_query_target(None));
+        let original = readonly().to_string();
+        assert!(hinted.message.starts_with(&original), "{hinted}");
+        assert!(hinted.message.contains("read-only OAuth login"), "{hinted}");
+        assert!(
+            hinted
+                .message
+                .contains("`clickhousectl cloud access request`"),
+            "{hinted}"
+        );
+        assert_eq!(
+            hinted.failure,
+            Some(ApiFailure::with_status(FailureKind::SqlError, 500))
+        );
+
+        let key = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let plain = convert_query_error(&key, readonly(), test_query_target(None));
+        assert_eq!(plain.message, original);
+        // Another SQL error on the OAuth login is unchanged.
+        let other = convert_query_error(
+            &bearer,
+            clickhouse_cloud_api::Error::Sql {
+                status: 400,
+                code: "62".into(),
+                details: "Syntax error".into(),
+            },
+            test_query_target(None),
+        );
+        assert!(!other.message.contains("OAuth"), "{other}");
     }
 
     #[test]

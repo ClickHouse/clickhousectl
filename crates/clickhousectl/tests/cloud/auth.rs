@@ -540,10 +540,26 @@ async fn oauth_writes_are_rejected_before_input_org_or_target_lookups() {
         assert_eq!(output.status.code(), Some(4), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
+        #[cfg(not(feature = "experimental-access-negotiation"))]
         assert!(
             stderr.contains("clickhousectl cloud auth login --api-key"),
             "{stderr}"
         );
+        // With access negotiation the block names the command's needs and the
+        // access commands instead of API-key setup.
+        #[cfg(feature = "experimental-access-negotiation")]
+        {
+            assert!(
+                stderr.contains("Write refused: the OAuth login is read-only."),
+                "{stderr}"
+            );
+            assert!(stderr.contains("needs: control-plane:"), "{stderr}");
+            assert!(
+                stderr.contains("clickhousectl cloud access request --perms role:<UUID> --purpose"),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("--api-secret"), "{stderr}");
+        }
         if json {
             assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
         }

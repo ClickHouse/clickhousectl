@@ -1167,7 +1167,14 @@ async fn first_use_binds_the_caller_key_alongside_the_existing_bindings() {
     // Every call the run made is one `service query --help` advertises.
     let help_mock = MockServer::start().await;
     let help = permission_help(&help_mock, &["service", "query"], "--help");
-    assert_observed_permissions_advertised(&control, &help).await;
+    // With access negotiation, the bound-key lookup is declared as tolerated:
+    // it only prunes deleted keys and keeps a binding when refused, so help
+    // does not list `view-api-keys` (checked on real Cloud, 2026-11-19).
+    #[cfg(feature = "experimental-access-negotiation")]
+    let tolerated: &[&str] = &["openapiKeyGet"];
+    #[cfg(not(feature = "experimental-access-negotiation"))]
+    let tolerated: &[&str] = &[];
+    assert_observed_permissions_advertised_except(&control, &help, tolerated).await;
 }
 
 #[tokio::test]
