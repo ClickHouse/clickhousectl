@@ -105,7 +105,7 @@ impl AccessGrant {
     }
 
     /// The `role X` / `roles X, Y` phrase.
-    fn roles_phrase(&self) -> String {
+    pub fn roles_phrase(&self) -> String {
         let noun = if self.roles.len() == 1 {
             "role"
         } else {
@@ -178,8 +178,60 @@ pub fn status_write_access(grant: &AccessGrant, now: DateTime<Utc>) -> String {
     text
 }
 
-const FIX_LINE: &str = "  Fix: `clickhousectl cloud access roles`, then `clickhousectl cloud access request \
-     --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`.";
+/// The `cloud access request` command line every recovery hint prints.
+macro_rules! access_request {
+    () => {
+        "clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\""
+    };
+}
+
+/// [`access_request!`] as a constant, for messages built at run time.
+pub(crate) const ACCESS_REQUEST: &str = access_request!();
+
+const FIX_LINE: &str = concat!(
+    "  Fix: `clickhousectl cloud access roles`, then `",
+    access_request!(),
+    "`."
+);
+
+/// The message for a command that would send the saved key after its grant
+/// expired (`expired`, `%Y-%m-%dT%H:%MZ`): it takes priority over the OAuth
+/// login, so say how to replace or clear it.
+pub fn expired_key_message(
+    grant: &AccessGrant,
+    expired: &str,
+    path: &str,
+    oauth_valid: bool,
+) -> String {
+    let mut lines = vec![format!(
+        "the saved API key for this project expired {expired}, and it takes priority over the \
+         OAuth login here."
+    )];
+    lines.extend(crate::cloud::saved_key::recovery_lines(
+        path,
+        Some(&grant.roles_phrase()),
+        oauth_valid,
+    ));
+    lines.join("\n")
+}
+
+/// Refuse, before any request, a command authenticated with the saved key
+/// once its `cloud access request` grant has expired: the API would answer a
+/// bare 401. A saved key without a grant or an expiry is not refused here.
+pub fn refuse_expired_saved_key(source: AuthSource) -> Result<(), CloudError> {
+    let Some(grant) = active_grant(source) else {
+        return Ok(());
+    };
+    let Some(expired) = status_expired(&grant, Utc::now()) else {
+        return Ok(());
+    };
+    Err(CloudError::auth(expired_key_message(
+        &grant,
+        &expired,
+        &crate::cloud::saved_key::credentials_path_display(),
+        crate::cloud::saved_key::oauth_login_valid(),
+    )))
+}
 
 /// `it` / `them` for a count.
 fn pronoun(count: usize) -> &'static str {
@@ -551,6 +603,45 @@ mod tests {
                 policies: None,
             }]))
             .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_key_message_with_a_valid_oauth_login_offers_a_new_key_or_clearing_it() {
+        let message = expired_key_message(
+            &grant(vec![role("Service API Reader", &[])]),
+            "2026-11-18T17:45Z",
+            "/home/dev/work/.clickhouse/credentials.json",
+            true,
+        );
+        assert_eq!(
+            message,
+            "the saved API key for this project expired 2026-11-18T17:45Z, and it takes priority over the OAuth login here.\n  \
+             Key: /home/dev/work/.clickhouse/credentials.json (from `cloud access request`, role Service API Reader)\n  \
+             OAuth login: valid (read-only).\n  \
+             New key: `clickhousectl cloud access roles`, then `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`\n  \
+             Or clear it to use the OAuth login: `clickhousectl cloud auth logout --api-keys`"
+        );
+    }
+
+    #[test]
+    fn expired_key_message_without_a_valid_oauth_login_asks_for_a_login_first() {
+        let message = expired_key_message(
+            &grant(vec![role("A", &[]), role("B", &[])]),
+            "2026-11-18T17:45Z",
+            "/home/dev/work/.clickhouse/credentials.json",
+            false,
+        );
+        let lines: Vec<_> = message.lines().collect();
+        assert_eq!(lines.len(), 4, "{message}");
+        assert_eq!(
+            lines[1],
+            "  Key: /home/dev/work/.clickhouse/credentials.json (from `cloud access request`, roles A, B)"
+        );
+        assert_eq!(lines[2], "  OAuth login: none valid.");
+        assert_eq!(
+            lines[3],
+            "  First log in (needs the user): `clickhousectl cloud auth login`. Then: `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`"
         );
     }
 

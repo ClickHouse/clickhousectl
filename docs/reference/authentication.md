@@ -127,6 +127,8 @@ Successful requests report the organization and request IDs, the server-saved pr
 
 The API URL comes from `--url` when provided, otherwise the API URL saved with your OAuth login. Token records without a saved API URL are rejected; run `cloud auth login` again. Local development requires an explicit local URL at login or through `--url`; there is no implicit localhost default. Other Cloud commands retain their normal credential precedence, so a saved negotiated key remains available for subsequent operations. Optional `--purpose` (1–200 characters, shown to the approver) and `--key-name` (1–100 characters) are sent with the request; the calling agent is identified by the CLI User-Agent and agent-session headers.
 
+Once a saved negotiated key's expiry has passed, Cloud commands that would send it exit 4 (`auth_required` in JSON) before any request. The saved key still outranks the OAuth login, so the message names the credentials file, says whether the OAuth login is valid, and gives the commands to request a new key or to clear the saved one with `cloud auth logout --api-keys`. `cloud access` and the local `cloud auth` commands (`status`, `login`, `logout`) still run.
+
 Access organization selection uses your OAuth user's complete, paginated membership list, not the saved API key's organization. A single membership is selected automatically; zero or multiple memberships require action (no remembered default or prompt). Find IDs with `cloud org list --json` and select `cloud access request --org <ID>` (`--org-id` remains supported), or use exact `--org-name`. Conflicting selectors, including across command depths, are usage errors.
 
 ### Approval timeout
