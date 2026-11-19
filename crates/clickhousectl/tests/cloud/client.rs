@@ -192,6 +192,102 @@ async fn dispatched_cloud_500_remains_a_generic_error() {
     assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 }
 
+/// The API's plain 401 to a request sent with the saved key (no grant here)
+/// names the file and how to replace or clear the key, since it outranks the
+/// OAuth login; exit 4 and `auth_required` are kept. The same 401 under
+/// `--api-key/--api-secret` or env vars keeps the API's message.
+#[tokio::test]
+async fn a_401_on_the_saved_key_names_the_file_and_the_way_out() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "status": 401,
+            "error": "Invalid credentials",
+            "requestId": "stub-401",
+        })))
+        .mount(&mock)
+        .await;
+    let args = ["clickhouse", "list", "--org-id", "org-1"];
+    for oauth in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud_dir = dir.path().join("home/.clickhouse");
+        std::fs::create_dir_all(&cloud_dir).unwrap();
+        if oauth {
+            write_oauth_tokens(&cloud_dir, &mock.uri());
+        }
+        write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
+        let mut messages = Vec::new();
+        for json in [false, true] {
+            let mut command = Command::new(clickhousectl_binary());
+            command
+                .isolated_env()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", dir.path().join("home"))
+                .current_dir(dir.path())
+                .arg("cloud")
+                .args(args);
+            if json {
+                command.arg("--json");
+            }
+            let output = command.stdin(Stdio::null()).output().unwrap();
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            messages.push(if json {
+                let error = cloud_runtime_error(&output);
+                assert_eq!(error["code"], "auth_required");
+                error["message"].as_str().unwrap().to_string()
+            } else {
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                // After the note naming the API saved with the key.
+                let (_, error) = stderr
+                    .split_once("Error: ")
+                    .unwrap_or_else(|| panic!("{stderr}"));
+                error.trim_end().to_string()
+            });
+        }
+        assert_eq!(messages[0], messages[1]);
+        let message = &messages[0];
+        assert!(
+            message.starts_with("Invalid credentials: the API refused the saved API key"),
+            "{message}"
+        );
+        let key_line = format!(
+            "  Key: {}",
+            dir.path().join(".clickhouse/credentials.json").display()
+        );
+        assert!(message.lines().any(|line| line == key_line), "{message}");
+        let recovery = if oauth {
+            "`clickhousectl cloud auth logout --api-keys`"
+        } else {
+            "`clickhousectl cloud auth login`"
+        };
+        assert!(message.contains(recovery), "{message}");
+        #[cfg(not(feature = "experimental-access-negotiation"))]
+        assert!(!message.contains("cloud access"), "{message}");
+        assert!(!message.contains("file-secret"));
+    }
+
+    // CLI flags (outranking a saved key) and env vars keep the API's message.
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
+    let flags = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit")
+        .args(["--api-key", "flag-key", "--api-secret", "flag-secret"])
+        .args(args)
+        .output()
+        .unwrap();
+    let env_dir = tempfile::tempdir().unwrap();
+    let env = cloud_runtime_error_command(env_dir.path(), &mock.uri(), "explicit")
+        .args(args)
+        .output()
+        .unwrap();
+    for output in [flags, env] {
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], "auth_required");
+        assert_eq!(error["message"], "Invalid credentials");
+    }
+}
+
 // ── Credential precedence visibility (issue #336) ─────────────────────────
 
 #[tokio::test]
