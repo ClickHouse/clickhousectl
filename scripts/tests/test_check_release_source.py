@@ -119,8 +119,9 @@ class Evidence:
 
 class AuthorizeTests(unittest.TestCase):
     def rejected(self, evidence):
-        with self.assertRaises(source.SourceRejected):
+        with self.assertRaises(source.SourceRejected) as error:
             source.authorize(COMMIT, REF, api=evidence)
+        self.assertEqual(error.exception.code, "source_rejected")
 
     def test_authorizes_exact_reviewed_main_tree(self):
         result = source.authorize(COMMIT, REF, api=Evidence())
@@ -293,6 +294,7 @@ class AuthorizeTests(unittest.TestCase):
     def test_rejects_repository_only_or_stale_org_protection(self):
         for kind in (
             "repo_only",
+            "foreign_org",
             "no_last_push",
             "no_stale_dismissal",
             "missing_floor",
@@ -302,6 +304,9 @@ class AuthorizeTests(unittest.TestCase):
                 if kind == "repo_only":
                     for rule in evidence.rules:
                         rule["ruleset_source_type"] = "Repository"
+                elif kind == "foreign_org":
+                    for rule in evidence.rules:
+                        rule["ruleset_source"] = "OtherOrg"
                 elif kind == "missing_floor":
                     evidence.rules.pop(0)
                 else:
@@ -331,6 +336,24 @@ class AuthorizeTests(unittest.TestCase):
             [COMMIT, previous],
         )
         self.assertEqual(result["release_history"]["main_fork_sha"], BASE)
+
+    def test_release_history_limit(self):
+        evidence = Evidence("release/0.5.x")
+        commits = [COMMIT] + [f"{i:040x}" for i in range(1, 201)]
+        evidence.data[f"{PREFIX}/git/commits/{COMMIT}"]["parents"] = [
+            {"sha": commits[1]}
+        ]
+        for i in range(1, 201):
+            parent = commits[i + 1] if i < 200 else BASE
+            evidence.add_commit(commits[i], f"{i + 1000:040x}", parent, i + 7)
+
+        last_allowed = evidence.data[f"{PREFIX}/git/commits/{commits[199]}"]
+        last_allowed["parents"] = [{"sha": BASE}]
+        result = source.authorize(COMMIT, REF, api=evidence)
+        self.assertEqual(len(result["release_history"]["commits"]), 200)
+
+        last_allowed["parents"] = [{"sha": commits[200]}]
+        self.rejected(evidence)
 
     def test_rejects_unreviewed_patch_branch_ancestry(self):
         evidence = Evidence("release/0.5.x")

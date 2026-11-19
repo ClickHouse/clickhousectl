@@ -68,7 +68,7 @@ Documentation paths alone do not select live suites.
 ## macOS build provenance
 
 Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or
-secrets. `release.yml` is not switched by this change; signing remains disabled.
+secrets. `release.yml` does not call the builder yet; signing remains disabled.
 Build jobs have no OIDC or AWS credentials. A separate job attests the raw
 binaries and their receipt.
 
@@ -91,8 +91,10 @@ PR/reviewer, artifact and attestation read access; cross-repository
 `GITHUB_TOKEN` access must be checked, not assumed.
 
 The handoff is a flat directory containing exactly two raw Mach-O binaries
-and one receipt. Use the pinned download action or a REST stream;
-`gh run download` 2.105.0 incorrectly assumes ZIP. The verifier requires
+and one receipt. Download the exact workflow output IDs (`aarch64-artifact-id`,
+`x86-artifact-id`, `receipt-artifact-id`), not name patterns, to preserve
+failed-job reruns. Use the pinned download action or a REST stream;
+`gh run download` 2.105.0 assumes ZIP. The verifier requires
 `gh >= 2.102.0` and rejects unapproved builders, mismatched provenance,
 expired artifacts, extra files, symlinks and changed bytes.
 
@@ -107,8 +109,8 @@ python3 builder/scripts/release_artifacts.py verify \
   --approved-builder-sha "$APPROVED_BUILDER_SHA"
 ```
 
-Signing enablement still requires a full authorized-tag build and receipt
-verification. Do not bypass a failed check or publish unsigned as a fallback.
+Before enabling signing, complete an authorized-tag build and receipt verification.
+Do not bypass a failed check or publish unsigned as a fallback.
 
 ## Live Cloud integration
 

@@ -27,6 +27,9 @@ RELEASE_BRANCH_RE = re.compile(r"release/[^/]+\Z")
 class SourceRejected(ProvenanceError):
     """The available evidence does not authorize this source commit."""
 
+    def __init__(self, message):
+        super().__init__(message, code="source_rejected")
+
 
 def require(condition, reason):
     if not condition:

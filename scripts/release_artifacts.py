@@ -26,11 +26,13 @@ REF = re.compile(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+\Z")
 
 
 class ProvenanceError(Exception):
-    pass
+    def __init__(self, message, *, code="evidence_unavailable"):
+        super().__init__(message)
+        self.code = code
 
 
-def fail(message):
-    raise ProvenanceError(message)
+def fail(message, *, code):
+    raise ProvenanceError(message, code=code)
 
 
 def command(args):
@@ -40,27 +42,29 @@ def command(args):
         )
         return result.stdout.decode("utf-8")
     except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
-        raise ProvenanceError("command failed: " + args[0]) from exc
+        raise ProvenanceError(
+            "command failed: " + args[0], code="command_failed"
+        ) from exc
 
 
 def github_api(path, *, paginate=False):
     if not isinstance(path, str) or not path or path.startswith("-"):
-        fail("invalid API path")
+        fail("invalid API path", code="api_error")
     args = ["gh", "api", "--hostname", "github.com", "--method", "GET"]
     if paginate:
         args += ["--paginate", "--slurp"]
     try:
         data = json.loads(command(args + [path]))
     except (ValueError, TypeError) as exc:
-        raise ProvenanceError("invalid GitHub API JSON") from exc
+        raise ProvenanceError("invalid GitHub API JSON", code="api_error") from exc
     if paginate:
         if not isinstance(data, list) or any(
             not isinstance(page, list) for page in data
         ):
-            fail("invalid paginated API response")
+            fail("invalid paginated API response", code="api_error")
         return [item for page in data for item in page]
     if not isinstance(data, (dict, list)):
-        fail("invalid API response")
+        fail("invalid API response", code="api_error")
     return data
 
 
@@ -75,18 +79,18 @@ def check_context(source, ref, run, builder):
         or not isinstance(builder, str)
         or not HEX40.fullmatch(builder)
     ):
-        fail("invalid source or builder SHA")
+        fail("invalid source or builder SHA", code="invalid_context")
     if not isinstance(ref, str) or not REF.fullmatch(ref) or not positive(run):
-        fail("invalid ref or run")
+        fail("invalid ref or run", code="invalid_context")
 
 
 def regular(path, limit):
     try:
         st = path.lstat()
     except OSError as exc:
-        raise ProvenanceError("missing file") from exc
+        raise ProvenanceError("missing file", code="file_error") from exc
     if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
-        fail("file is not regular or exceeds size limit")
+        fail("file is not regular or exceeds size limit", code="file_error")
     return st.st_size
 
 
@@ -98,12 +102,12 @@ def read_bounded(path, limit):
         with os.fdopen(fd, "rb") as stream:
             st = os.fstat(stream.fileno())
             if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
-                fail("invalid file")
+                fail("invalid file", code="file_error")
             data = stream.read(limit + 1)
     except OSError as exc:
-        raise ProvenanceError("cannot read file") from exc
+        raise ProvenanceError("cannot read file", code="file_error") from exc
     if len(data) > limit or len(data) != st.st_size:
-        fail("file changed or is oversized")
+        fail("file changed or is oversized", code="file_error")
     return data
 
 
@@ -114,43 +118,45 @@ def binary_info(path, target):
         with os.fdopen(fd, "rb") as stream:
             st = os.fstat(stream.fileno())
             if not stat.S_ISREG(st.st_mode) or not 32 <= st.st_size <= MAX_BINARY:
-                fail("invalid binary size or type")
+                fail("invalid binary size or type", code="file_error")
             header = stream.read(32)
             if (
                 len(header) != 32
                 or header[:4] != b"\xcf\xfa\xed\xfe"
                 or struct.unpack_from("<I", header, 4)[0] != TARGETS[target]
             ):
-                fail("invalid Mach-O architecture")
+                fail("invalid Mach-O architecture", code="binary_mismatch")
             digest = hashlib.sha256(header)
             size = len(header)
             while chunk := stream.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_BINARY:
-                    fail("binary exceeds size limit")
+                    fail("binary exceeds size limit", code="file_error")
                 digest.update(chunk)
     except OSError as exc:
-        raise ProvenanceError("cannot read binary") from exc
+        raise ProvenanceError("cannot read binary", code="file_error") from exc
     if size != st.st_size:
-        fail("binary changed while being read")
+        fail("binary changed while being read", code="file_error")
     return {"sha256": digest.hexdigest(), "size": size, "cputype": TARGETS[target]}
 
 
 def inventory(directory):
     try:
         if not directory.is_dir() or directory.is_symlink():
-            fail("invalid directory")
+            fail("invalid directory", code="inventory_mismatch")
         return {p.name: p for p in directory.iterdir()}
     except OSError as exc:
-        raise ProvenanceError("cannot enumerate directory") from exc
+        raise ProvenanceError(
+            "cannot enumerate directory", code="inventory_mismatch"
+        ) from exc
 
 
 def artifact(id_, source, run, target, digest):
     if not positive(id_) or not isinstance(digest, str) or not HEX64.fullmatch(digest):
-        fail("invalid artifact ID or digest")
+        fail("invalid artifact ID or digest", code="artifact_mismatch")
     obj = github_api(f"repos/{REPO}/actions/artifacts/{id_}")
     if not isinstance(obj, dict):
-        fail("invalid artifact response")
+        fail("invalid artifact response", code="api_error")
     wr = obj.get("workflow_run")
     if (
         not isinstance(wr, dict)
@@ -158,47 +164,55 @@ def artifact(id_, source, run, target, digest):
         or wr["id"] != run
         or wr.get("head_sha") != source
     ):
-        fail("artifact run or source mismatch")
+        fail("artifact run or source mismatch", code="artifact_run_mismatch")
     if (
         not positive(obj.get("id"))
         or obj["id"] != id_
         or obj.get("expired") is not False
         or obj.get("digest") != "sha256:" + digest
     ):
-        fail("artifact identity, expiration or digest mismatch")
+        fail(
+            "artifact identity, expiration or digest mismatch",
+            code="artifact_identity_mismatch",
+        )
     name = obj.get("name")
     if not isinstance(name, str) or not re.fullmatch(
         re.escape(f"clickhousectl-{target}-{run}-") + r"[1-9][0-9]*", name
     ):
-        fail("artifact name mismatch")
+        fail("artifact name mismatch", code="artifact_name_mismatch")
     # GitHub has returned repository identity both at the top level and in workflow_run.
     for container in (obj, wr):
         for key in ("repository_id", "head_repository_id"):
             if key in container and container[key] != REPO_ID:
-                fail("artifact repository mismatch")
+                fail(
+                    "artifact repository mismatch", code="artifact_repository_mismatch"
+                )
         for key in ("repository", "head_repository"):
             if key in container:
                 repo = container[key]
                 if not isinstance(repo, dict) or repo.get("id") != REPO_ID:
-                    fail("artifact repository mismatch")
+                    fail(
+                        "artifact repository mismatch",
+                        code="artifact_repository_mismatch",
+                    )
                 if "owner" in repo and (
                     not isinstance(repo["owner"], dict)
                     or repo["owner"].get("id") != OWNER_ID
                 ):
-                    fail("artifact owner mismatch")
+                    fail("artifact owner mismatch", code="artifact_repository_mismatch")
     return name
 
 
 def receipt(directory, source, ref, run, attempt, builder, inputs):
     check_context(source, ref, run, builder)
     if not positive(attempt) or set(inputs) != set(TARGETS):
-        fail("invalid receipt inputs")
+        fail("invalid receipt inputs", code="receipt_mismatch")
     ids = [inputs[t][0] for t in TARGETS]
     if len(set(ids)) != 2:
-        fail("artifact IDs must be distinct")
+        fail("artifact IDs must be distinct", code="artifact_duplicate")
     files = inventory(directory)
     if len(files) != 2:
-        fail("expected exactly two artifacts")
+        fail("expected exactly two artifacts", code="inventory_mismatch")
     for path in files.values():
         regular(path, MAX_BINARY)
     records = {}
@@ -206,10 +220,10 @@ def receipt(directory, source, ref, run, attempt, builder, inputs):
         id_, digest = inputs[target]
         name = artifact(id_, source, run, target, digest)
         if name not in files:
-            fail("artifact file missing")
+            fail("artifact file missing", code="inventory_mismatch")
         info = binary_info(files[name], target)
         if info["sha256"] != digest:
-            fail("artifact content digest mismatch")
+            fail("artifact content digest mismatch", code="artifact_content_mismatch")
         records[target] = {"artifact_id": id_, "name": name, **info}
     result = {
         "schema": 1,
@@ -230,7 +244,7 @@ def receipt(directory, source, ref, run, attempt, builder, inputs):
             json.dump(result, stream, sort_keys=True, separators=(",", ":"))
             stream.write("\n")
     except OSError as exc:
-        raise ProvenanceError("cannot create receipt") from exc
+        raise ProvenanceError("cannot create receipt", code="file_error") from exc
     return result
 
 
@@ -238,7 +252,7 @@ def gh_version():
     text = command(["gh", "--version"])
     match = re.match(r"gh version (\d+)\.(\d+)\.(\d+)(?:\s|$)", text)
     if not match or tuple(map(int, match.groups())) < (2, 102, 0):
-        fail("gh 2.102.0 or newer required")
+        fail("gh 2.102.0 or newer required", code="old_verifier")
 
 
 def verify_attestation(path, sha, source, ref, run, digest):
@@ -271,9 +285,11 @@ def verify_attestation(path, sha, source, ref, run, digest):
     try:
         results = json.loads(command(args))
     except (ValueError, TypeError) as exc:
-        raise ProvenanceError("invalid attestation verification output") from exc
+        raise ProvenanceError(
+            "invalid attestation verification output", code="attestation_mismatch"
+        ) from exc
     if not isinstance(results, list):
-        fail("invalid attestation results")
+        fail("invalid attestation results", code="attestation_mismatch")
     for entry in results:
         try:
             result = entry["verificationResult"]
@@ -313,14 +329,14 @@ def verify_attestation(path, sha, source, ref, run, digest):
                 return result
         except (KeyError, TypeError, AttributeError):
             continue
-    fail("no attestation matches trusted identity and run")
+    fail("no attestation matches trusted identity and run", code="attestation_mismatch")
 
 
 def verify(directory, source, ref, run, approved):
     if not approved or any(
         not isinstance(s, str) or not HEX40.fullmatch(s) for s in approved
     ):
-        fail("invalid approved builder list")
+        fail("invalid approved builder list", code="unapproved_builder")
     check_context(source, ref, run, approved[0])
     gh_version()
     files = inventory(directory)
@@ -332,16 +348,16 @@ def verify(directory, source, ref, run, approved):
         )
     ]
     if len(files) != 3 or len(matches) != 1:
-        fail("expected two artifacts and one receipt")
+        fail("expected two artifacts and one receipt", code="inventory_mismatch")
     path = files[matches[0]]
     raw = read_bounded(path, MAX_RECEIPT)
     try:
         data = json.loads(raw)
         builder = data["builder_sha"]
     except (ValueError, TypeError, KeyError, RecursionError) as exc:
-        raise ProvenanceError("invalid receipt") from exc
+        raise ProvenanceError("invalid receipt", code="receipt_mismatch") from exc
     if not isinstance(builder, str) or builder not in approved:
-        fail("unapproved builder")
+        fail("unapproved builder", code="unapproved_builder")
     verify_attestation(path, builder, source, ref, run, hashlib.sha256(raw).hexdigest())
     expected = {
         "schema": 1,
@@ -358,16 +374,16 @@ def verify(directory, source, ref, run, approved):
         type(data.get(k)) is not type(v) or data.get(k) != v
         for k, v in expected.items()
     ):
-        fail("receipt context mismatch")
+        fail("receipt context mismatch", code="receipt_mismatch")
     attempt = data.get("run_attempt")
     if (
         not positive(attempt)
         or path.name != f"macos-build-receipt-{run}-{attempt}.json"
     ):
-        fail("receipt attempt mismatch")
+        fail("receipt attempt mismatch", code="receipt_mismatch")
     records = data.get("targets")
     if not isinstance(records, dict) or set(records) != set(TARGETS):
-        fail("invalid target inventory")
+        fail("invalid target inventory", code="receipt_mismatch")
     ids, names = set(), {path.name}
     for target, record in records.items():
         if not isinstance(record, dict) or set(record) != {
@@ -377,7 +393,7 @@ def verify(directory, source, ref, run, approved):
             "size",
             "cputype",
         }:
-            fail("invalid target record")
+            fail("invalid target record", code="receipt_mismatch")
         id_, digest, name = record["artifact_id"], record["sha256"], record["name"]
         if (
             not positive(id_)
@@ -385,19 +401,19 @@ def verify(directory, source, ref, run, approved):
             or not isinstance(name, str)
             or name in names
         ):
-            fail("duplicate or invalid artifact")
+            fail("duplicate or invalid artifact", code="artifact_duplicate")
         ids.add(id_)
         names.add(name)
         if artifact(id_, source, run, target, digest) != name or name not in files:
-            fail("artifact metadata mismatch")
+            fail("artifact metadata mismatch", code="artifact_mismatch")
         info = binary_info(files[name], target)
         if any(
             type(record[k]) is not type(v) or record[k] != v for k, v in info.items()
         ):
-            fail("artifact content mismatch")
+            fail("artifact content mismatch", code="artifact_content_mismatch")
         verify_attestation(files[name], builder, source, ref, run, digest)
     if names != set(files):
-        fail("unexpected file")
+        fail("unexpected file", code="inventory_mismatch")
     return data
 
 
