@@ -1754,6 +1754,11 @@ async fn auth_status_reports_the_identity_and_never_fails_on_it() {
             assert_eq!(status["verification"], verification, "{stdout}");
             assert_eq!(status["identity"].is_null(), verification != "verified");
             assert_eq!(status["warning"].is_string(), verification != "verified");
+            // A refused saved key keeps the API's short message here: the
+            // table and summary already explain it.
+            if verification == "rejected" {
+                assert_eq!(status["warning"], "Invalid credentials", "{stdout}");
+            }
             let active: Vec<_> = status["sources"]
                 .as_array()
                 .unwrap()

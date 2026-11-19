@@ -18,7 +18,6 @@ pub mod output;
 pub(crate) mod permissions;
 pub mod postgres;
 pub mod query_api_endpoints;
-#[cfg(feature = "experimental-access-negotiation")]
 pub(crate) mod saved_key;
 pub mod saved_queries;
 pub mod services;
@@ -194,6 +193,9 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         // the running command declares and what the saved grant lacks.
         #[cfg(feature = "experimental-access-negotiation")]
         let error = grant::explain_forbidden(&client, error);
+        // A bare 401 under the saved key hides that it outranks the OAuth
+        // login: name the file and how to replace or clear it.
+        let error = saved_key::explain_unauthorized(&client, error);
         cloud_error_to_top_level(error)
     })
 }
