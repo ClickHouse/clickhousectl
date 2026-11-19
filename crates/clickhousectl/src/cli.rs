@@ -412,11 +412,12 @@ mod tests {
                     ));
                 }
                 let content: Vec<_> = lines.collect();
-                // The access-negotiation `access request` context carries one extra line.
-                let max = if path == "clickhousectl cloud access request" {
-                    9
-                } else {
-                    8
+                // The access-negotiation `access request` context carries one extra line;
+                // `cloud access` also says how its OAuth-only commands treat saved keys.
+                let max = match path {
+                    "clickhousectl cloud access" => 10,
+                    "clickhousectl cloud access request" => 9,
+                    _ => 8,
                 };
                 if content.is_empty() || content.len() > max {
                     failures.push(format!(
@@ -430,7 +431,13 @@ mod tests {
                             "{path}: context content must be indented by at least two spaces"
                         ));
                     }
-                    if line.chars().count() > 120 {
+                    // A rendered `Authorization:` line carries its label and may run longer.
+                    let limit = if line.starts_with("  Authorization: ") {
+                        132
+                    } else {
+                        120
+                    };
+                    if line.chars().count() > limit {
                         failures.push(format!(
                             "{path}: context line exceeds 120 characters: {line}"
                         ));

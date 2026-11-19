@@ -34,12 +34,14 @@ use crate::cloud::permissions::Declaration as Permission;
 pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::non_api(
         "access roles",
-        "Requires OAuth user identity (`cloud auth login`); reads the verified-CLI assignable-role lane.",
+        "This command always uses OAuth credentials and ignores saved API keys. OAuth is required to list assignable roles.\n    \
+         Reads the verified-CLI assignable-role lane. Not logged in: `cloud auth login`.",
     )
     .unscoped(),
     Permission::non_api(
         "access request",
-        "Requires OAuth user identity (`cloud auth login`); runs the browser PKCE approval handshake.",
+        "This command always uses OAuth credentials and ignores saved API keys. OAuth is required to send access requests.\n    \
+         Runs the browser PKCE approval handshake. Not logged in: `cloud auth login`.",
     )
     .unscoped(),
 ];
