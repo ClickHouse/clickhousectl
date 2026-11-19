@@ -1227,7 +1227,7 @@ async fn access_request_refreshes_oauth_despite_stored_basic_and_preserves_login
     assert_eq!(tokens["access_token"], "refreshed-bearer-token");
     assert_eq!(tokens["refresh_token"], "refresh-secret");
     assert_eq!(tokens["api_url"], format!("{}/v1", issuer.uri()));
-    assert!(tokens["expires_at"].as_i64().unwrap() > chrono::Utc::now().timestamp() + 60);
+    assert!(tokens["expires_at"].as_i64().unwrap() > jiff::Timestamp::now().as_second() + 60);
 }
 
 #[tokio::test]

@@ -691,8 +691,8 @@ fn key_expiry(value: Option<i64>) -> CloudResult<Option<String>> {
         .map(|millis| {
             Some(millis)
                 .filter(|millis| (1..=MAX_EPOCH_MILLIS).contains(millis))
-                .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-                .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .and_then(|millis| jiff::Timestamp::from_second(millis / 1000).ok())
+                .map(|time| time.to_string())
                 .ok_or_else(|| CloudError::new("exchange authorization code: invalid keyExpiresAt"))
         })
         .transpose()
