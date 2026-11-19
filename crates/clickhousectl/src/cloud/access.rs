@@ -87,7 +87,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   User approves or declines in their browser: no go-ahead needed first.
-  --perms role:<UUID> (from `cloud access roles`): one role covering every write in the task, fewest extras.
+  --perms role:<UUID>[,role:<UUID>...] (from `cloud access roles`):
+    the role or roles covering every write in the task, fewest extras.
   --purpose: required, shown to the approver.
   Blocks until approved (120s default; --timeout-seconds). Approver may change the roles: output names what was granted.
   Key becomes the project's active credential until expiry. Wider role: new request.")]
