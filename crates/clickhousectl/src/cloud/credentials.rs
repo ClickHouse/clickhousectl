@@ -55,6 +55,28 @@ pub fn credentials_path() -> std::io::Result<PathBuf> {
     Ok(init::local_dir()?.join(CREDENTIALS_FILE))
 }
 
+/// The directory the OAuth fallback can truthfully say holds no API key "or
+/// above": the current directory, when discovery searched from it upward and
+/// found no project, so there was no `credentials.json` to read. `None` when a
+/// project was found or named ([`init::PROJECT_DIR_ENV`]): only that project's
+/// key was read, and one in a directory above may exist. `this directory`
+/// when the current directory cannot be read.
+#[cfg(feature = "experimental-access-negotiation")]
+pub(crate) fn no_key_search_dir() -> Option<String> {
+    no_key_search_dir_for(init::project_root())
+}
+
+#[cfg(feature = "experimental-access-negotiation")]
+fn no_key_search_dir_for(root: std::io::Result<&init::ProjectRoot>) -> Option<String> {
+    match root {
+        Ok(root) if root.kind == init::ProjectRootKind::Unmarked => {
+            Some(root.dir.display().to_string())
+        }
+        Ok(_) => None,
+        Err(_) => Some("this directory".to_string()),
+    }
+}
+
 pub(crate) fn ensure_dir(dir: &Path) -> CloudResult<()> {
     std::fs::create_dir_all(dir)?;
     let gitignore = dir.join(".gitignore");
@@ -238,6 +260,31 @@ fn take_legacy_service_query_key_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn the_no_key_directory_is_named_only_when_no_project_was_found() {
+        let root = |kind| init::ProjectRoot {
+            dir: PathBuf::from("/work/dir"),
+            kind,
+        };
+        assert_eq!(
+            no_key_search_dir_for(Ok(&root(init::ProjectRootKind::Unmarked))).as_deref(),
+            Some("/work/dir")
+        );
+        // A found or named project: only its key was read.
+        for kind in [
+            init::ProjectRootKind::Marked,
+            init::ProjectRootKind::Override,
+        ] {
+            assert_eq!(no_key_search_dir_for(Ok(&root(kind))), None, "{kind:?}");
+        }
+        let unreadable = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            no_key_search_dir_for(Err(unreadable)).as_deref(),
+            Some("this directory")
+        );
+    }
 
     #[cfg(feature = "experimental-access-negotiation")]
     #[test]

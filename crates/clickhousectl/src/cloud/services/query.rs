@@ -744,7 +744,10 @@ fn convert_query_error(
             if client.is_bearer_auth() && is_readonly_sql_error(code) =>
         {
             let mut error = client.convert_error(error);
-            error.message.push_str(OAUTH_READONLY_SQL_HINT);
+            let searched = crate::cloud::credentials::no_key_search_dir();
+            error
+                .message
+                .push_str(&oauth_readonly_sql_hint(searched.as_deref()));
             error
         }
         other => client.convert_error(other),
@@ -757,11 +760,26 @@ fn is_readonly_sql_error(code: &str) -> bool {
     matches!(code.trim(), "164" | "READONLY")
 }
 
-/// Appended to a read-only SQL error on the OAuth login.
+/// Appended to a read-only SQL error on the OAuth login. `searched` is
+/// [`no_key_search_dir`](crate::cloud::credentials::no_key_search_dir): the
+/// directory no key was found in or above. `None` (a project was found or
+/// named, so a key above may exist) keeps the hint that names no directory.
 #[cfg(feature = "experimental-access-negotiation")]
-const OAUTH_READONLY_SQL_HINT: &str = "\nRan on the read-only OAuth login: no API key in this \
-     directory or above.\nSQL writes need a key: `clickhousectl cloud access request` (see \
-     `cloud access --help`).";
+fn oauth_readonly_sql_hint(searched: Option<&str>) -> String {
+    match searched {
+        Some(dir) => format!(
+            "\nRan on the read-only OAuth login: no API key in {dir} or above.\n\
+             If you already requested a key, it is active only in the project it was requested \
+             from: cd there and rerun.\n\
+             If not, SQL writes need one: `clickhousectl cloud access request` (see \
+             `cloud access --help`)."
+        ),
+        None => "\nRan on the read-only OAuth login: no API key in this directory or above.\n\
+                 SQL writes need a key: `clickhousectl cloud access request` (see \
+                 `cloud access --help`)."
+            .to_string(),
+    }
+}
 
 /// What stdin holds when `--query` is validated (#641). Derived from the file
 /// descriptor only, never from anything the user typed.
@@ -1373,6 +1391,32 @@ mod tests {
                 "status {status}"
             );
         }
+    }
+
+    #[cfg(feature = "experimental-access-negotiation")]
+    #[test]
+    fn readonly_sql_hint_names_the_directory_searched_and_points_back_to_the_project() {
+        assert_eq!(
+            oauth_readonly_sql_hint(Some("/work/dir")),
+            "\nRan on the read-only OAuth login: no API key in /work/dir or above.\n\
+             If you already requested a key, it is active only in the project it was requested \
+             from: cd there and rerun.\n\
+             If not, SQL writes need one: `clickhousectl cloud access request` (see \
+             `cloud access --help`)."
+        );
+        // An unreadable current directory is named in words.
+        assert!(
+            oauth_readonly_sql_hint(Some("this directory"))
+                .starts_with("\nRan on the read-only OAuth login: no API key in this directory or above.\nIf you already requested a key")
+        );
+        // A found or named project: the claim would not hold, so the
+        // directory and the cd advice are left out.
+        assert_eq!(
+            oauth_readonly_sql_hint(None),
+            "\nRan on the read-only OAuth login: no API key in this directory or above.\n\
+             SQL writes need a key: `clickhousectl cloud access request` (see \
+             `cloud access --help`)."
+        );
     }
 
     #[cfg(feature = "experimental-access-negotiation")]
