@@ -48,7 +48,6 @@ impl Conditional {
 
     /// A best-effort call: the command carries on when it is refused, so its
     /// permissions are declared (and validated) but not listed as needs.
-    #[cfg_attr(not(feature = "experimental-access-negotiation"), allow(dead_code))]
     pub const fn tolerated(condition: &'static str, operations: Operations) -> Self {
         Self {
             condition,
