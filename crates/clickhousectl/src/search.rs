@@ -355,7 +355,7 @@ mod tests {
         let root = <Cli as clap::Args>::augment_args(Command::new("clickhousectl"));
         let entries = index(&root);
         let indexed: BTreeSet<String> = entries.iter().map(Entry::command).collect();
-        assert!(indexed.contains("cloud service update"), "{indexed:?}");
+        assert!(indexed.contains("cloud clickhouse update"), "{indexed:?}");
         assert!(indexed.contains("search"));
 
         fn walk(
@@ -476,8 +476,8 @@ mod tests {
     fn ip_allow_list_finds_service_update_first_and_create_nearby() {
         let output = search(&real_index(), &query("ip allow list"), 5);
         let found = commands(&output);
-        assert_eq!(found.first(), Some(&"cloud service update"), "{found:?}");
-        assert!(found.contains(&"cloud service create"), "{found:?}");
+        assert_eq!(found.first(), Some(&"cloud clickhouse update"), "{found:?}");
+        assert!(found.contains(&"cloud clickhouse create"), "{found:?}");
         let flags: Vec<&str> = output.results[0]
             .flags
             .iter()
@@ -492,8 +492,8 @@ mod tests {
         let output = search(&real_index(), &query("IP access list"), 5);
         let found = commands(&output);
         for command in [
-            "cloud service create",
-            "cloud service update",
+            "cloud clickhouse create",
+            "cloud clickhouse update",
             "cloud postgres update",
         ] {
             assert!(found.contains(&command), "{found:?}");
@@ -546,7 +546,7 @@ mod tests {
     fn idle_timeout_finds_service_create_and_scale() {
         let output = search(&real_index(), &query("idle timeout"), 5);
         let found = commands(&output);
-        for command in ["cloud service create", "cloud service scale"] {
+        for command in ["cloud clickhouse create", "cloud clickhouse scale"] {
             assert!(found.contains(&command), "{found:?}");
         }
     }

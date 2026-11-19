@@ -1170,7 +1170,7 @@ async fn parse_failures_reach_the_wire_as_outcomes_without_their_tokens() {
     let event = &sandbox.wait_for_requests(2).await[1];
     assert_eq!(event["command"], "cloud");
     assert_eq!(event["outcome"], "invalid_subcommand");
-    assert_eq!(event["suggestion"], "service");
+    assert_eq!(event["suggestion"], "clickhouse");
     assert!(!serde_json::to_string(event).unwrap().contains("servce"));
 }
 
@@ -1598,7 +1598,7 @@ async fn closed_stderr_never_panics_or_bypasses_telemetry() {
 
 // -- query failure classification (#450) -------------------------------------
 //
-// `cloud service query` is the command whose exit-1 events were opaque, so it
+// `cloud clickhouse query` is the command whose exit-1 events were opaque, so it
 // is the one whose stages are pinned end-to-end here: each test drives the
 // real binary against a mock control plane and a mock query host, then reads
 // the exact payload the process would have sent.
@@ -1609,7 +1609,7 @@ async fn closed_stderr_never_panics_or_bypasses_telemetry() {
 
 const QUERY_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
 
-/// Control plane that answers the service lookup `cloud service query`
+/// Control plane that answers the service lookup `cloud clickhouse query`
 /// performs before it talks to the query host.
 async fn start_control_plane(service_status: u16) -> MockServer {
     let mock = MockServer::start().await;
@@ -1672,7 +1672,7 @@ fn debug_payload(output: &Output) -> Value {
         .unwrap_or_else(|| panic!("no telemetry debug payload on stderr:\n{stderr}"))
 }
 
-/// Run `cloud service query` against the mocks, in a throwaway project
+/// Run `cloud clickhouse query` against the mocks, in a throwaway project
 /// directory, with telemetry enabled in debug mode.
 fn run_query(
     sandbox: &Sandbox,
@@ -1686,7 +1686,7 @@ fn run_query(
         "cloud",
         "--url",
         &url,
-        "service",
+        "clickhouse",
         "query",
         "--id",
         QUERY_SERVICE_ID,
@@ -1739,7 +1739,7 @@ async fn a_sql_error_is_classified_without_the_sql_reaching_the_payload() {
     assert_eq!(output.status.code(), Some(1));
 
     let event = debug_payload(&output);
-    assert_eq!(event["command"], "cloud service query");
+    assert_eq!(event["command"], "cloud clickhouse query");
     assert_eq!(event["outcome"], "error");
     assert_eq!(event["exit_code"], 1);
     // The service ran the request and rejected the statement: that is a
@@ -2003,7 +2003,7 @@ async fn start_bind_control_plane(org_id: &str) -> MockServer {
     mock
 }
 
-/// Run `cloud service query` with API-key auth in `org_id`, in a fresh
+/// Run `cloud clickhouse query` with API-key auth in `org_id`, in a fresh
 /// project with no stored record, so a rejected key takes the bind path.
 fn run_api_key_query(
     sandbox: &Sandbox,
@@ -2019,7 +2019,7 @@ fn run_api_key_query(
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             QUERY_SERVICE_ID,
@@ -2188,7 +2188,7 @@ async fn closed_stdout_query_stream_is_quiet_and_records_success() {
             "cloud",
             "--url",
             &control.uri(),
-            "service",
+            "clickhouse",
             "query",
             "--id",
             QUERY_SERVICE_ID,
@@ -2238,7 +2238,7 @@ async fn closed_stdout_large_list_records_success_in_human_and_json_modes() {
             "test-key",
             "--api-secret",
             "test-secret",
-            "service",
+            "clickhouse",
             "list",
             "--org-id",
             "org-1",
@@ -2318,7 +2318,7 @@ async fn closed_stdout_does_not_hide_a_later_response_stream_failure() {
             "cloud",
             "--url",
             &control.uri(),
-            "service",
+            "clickhouse",
             "query",
             "--id",
             QUERY_SERVICE_ID,
@@ -2439,7 +2439,7 @@ async fn an_organization_lookup_failure_names_its_own_stage() {
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             QUERY_SERVICE_ID,

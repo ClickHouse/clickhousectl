@@ -232,7 +232,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Irreversible: the service and its data cannot be recovered.
-  Deletes from any state, including running — no stop first, unlike `cloud service delete`.
+  Deletes from any state, including running — no stop first, unlike `cloud clickhouse delete`.
   Rejected while deletion protection is on (`cloud postgres update --deletion-protection false`).")]
     Delete {
         /// Postgres service ID (from `cloud postgres list`)

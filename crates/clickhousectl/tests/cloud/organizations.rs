@@ -1574,8 +1574,10 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
         .await;
 
     // A name found only on the second page resolves to that organization.
-    let named =
-        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-name", "second-org"]);
+    let named = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickhouse", "list", "--org-name", "second-org"],
+    );
     assert_success(&named);
     assert_eq!(
         serde_json::from_slice::<Value>(&named.stdout).unwrap(),
@@ -1584,7 +1586,7 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
 
     // One organization per page is still two organizations, not an auto-detected
     // one: a usage error (exit 2, clap text even in JSON mode) that lists both.
-    let detected = invoke_cli_with_cloud_credentials(&mock, &["service", "list"]);
+    let detected = invoke_cli_with_cloud_credentials(&mock, &["clickhouse", "list"]);
     assert_eq!(detected.status.code(), Some(2), "{detected:?}");
     assert!(detected.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&detected.stderr);

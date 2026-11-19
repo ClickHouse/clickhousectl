@@ -993,7 +993,7 @@ fn classify_wake_state(state: Option<&ServiceState>) -> CloudResult<Outcome> {
             };
             Ok(Outcome::Failed(
                 format!(
-                    "the service is {state}; start it with `cloud service start <id>` before attaching"
+                    "the service is {state}; start it with `cloud clickhouse start <id>` before attaching"
                 ),
                 code,
             ))
@@ -1014,7 +1014,7 @@ async fn wait_for_service_running(
         format!("the wake of service {service}"),
         timeout,
         verbose,
-        &format!("clickhousectl cloud service get {service}"),
+        &format!("clickhousectl cloud clickhouse get {service}"),
         || client.get_service(org, service),
         |service| classify_wake_state(service.state.as_ref()),
     )
@@ -1268,7 +1268,7 @@ async fn check_deploy_target(
         return Ok(());
     };
     if !wake && state == ServiceState::Idle {
-        let command = format!("clickhousectl cloud service wake {service}");
+        let command = format!("clickhousectl cloud clickhouse wake {service}");
         return Err(deploy_target_error(
             format!(
                 "Service {service} is idle; rerun without --no-wake, or run `{command}` and retry once it is running."
@@ -1281,7 +1281,7 @@ async fn check_deploy_target(
         return Ok(());
     };
     if code == CloudErrorCode::ServiceStopped {
-        let command = format!("clickhousectl cloud service start {service}");
+        let command = format!("clickhousectl cloud clickhouse start {service}");
         return Err(deploy_target_error(
             format!("Service {service} is {state}; start it with `{command}` and retry."),
             code,
@@ -1472,8 +1472,8 @@ fn attach_unavailable_error(
     if !context.is_empty() {
         message.push_str(&format!(" ({})", context.join(", ")));
     }
-    let wake_command = format!("clickhousectl cloud service wake {service}");
-    let start_command = format!("clickhousectl cloud service start {service}");
+    let wake_command = format!("clickhousectl cloud clickhouse wake {service}");
+    let start_command = format!("clickhousectl cloud clickhouse start {service}");
     let (hint, command) = match wake_action(response) {
         // Deploy appends the attach that resumes it, `--wake` included.
         WakeAction::Wake | WakeAction::WaitOnly if caller == AttachCaller::Deploy => (None, None),
@@ -2420,14 +2420,17 @@ mod tests {
         let stopped = outcome(classify_wake_state(Some(&ServiceState::Stopped)));
         assert!(stopped.starts_with("failed:"), "{stopped}");
         assert!(stopped.contains("stopped"), "{stopped}");
-        assert!(stopped.contains("`cloud service start <id>`"), "{stopped}");
+        assert!(
+            stopped.contains("`cloud clickhouse start <id>`"),
+            "{stopped}"
+        );
         assert!(outcome(classify_wake_state(None)).starts_with("error:"));
 
         let timeout = wait_timeout_error(
             "the wake of service svc-1",
             Duration::from_secs(7),
             "awaking",
-            &check_hint("clickhousectl cloud service get svc-1"),
+            &check_hint("clickhousectl cloud clickhouse get svc-1"),
         );
         // What timed out, the bound, then the follow-up command.
         assert!(
@@ -2438,7 +2441,7 @@ mod tests {
         assert!(
             timeout
                 .message
-                .ends_with("`clickhousectl cloud service get svc-1`"),
+                .ends_with("`clickhousectl cloud clickhouse get svc-1`"),
             "{timeout}"
         );
         assert_eq!(timeout.failure.unwrap().kind, FailureKind::Timeout);
@@ -2471,14 +2474,14 @@ mod tests {
         assert_eq!(first, "service is idle (SERVICE_IDLE)");
         assert!(hint.contains("--wake"), "{hint}");
         assert!(
-            hint.contains("`clickhousectl cloud service wake svc-1`"),
+            hint.contains("`clickhousectl cloud clickhouse wake svc-1`"),
             "{hint}"
         );
         assert_eq!(
             detail(&error),
             Some((
                 CloudErrorCode::ServiceIdle,
-                Some("clickhousectl cloud service wake svc-1".into())
+                Some("clickhousectl cloud clickhouse wake svc-1".into())
             ))
         );
         assert_eq!(error.details.as_deref().unwrap().message, error.message);
@@ -2509,7 +2512,7 @@ mod tests {
             "{first}"
         );
         assert!(hint.contains("--wake"), "{hint}");
-        assert!(!hint.contains("cloud service wake"), "{hint}");
+        assert!(!hint.contains("cloud clickhouse wake"), "{hint}");
         assert_eq!(
             detail(&error),
             Some((CloudErrorCode::ServiceNotRunning, None))
@@ -2531,7 +2534,7 @@ mod tests {
         let (first, hint) = error.message.split_once('\n').expect("a hint line");
         assert_eq!(first, "stopped (SERVICE_STOPPED)");
         assert!(
-            hint.contains("`clickhousectl cloud service start svc-1`"),
+            hint.contains("`clickhousectl cloud clickhouse start svc-1`"),
             "{hint}"
         );
         assert!(!hint.contains("--wake"), "{hint}");
@@ -2539,7 +2542,7 @@ mod tests {
             detail(&error),
             Some((
                 CloudErrorCode::ServiceStopped,
-                Some("clickhousectl cloud service start svc-1".into())
+                Some("clickhousectl cloud clickhouse start svc-1".into())
             ))
         );
 
@@ -2645,13 +2648,13 @@ mod tests {
             detail(&error),
             (
                 CloudErrorCode::ServiceStopped,
-                Some("clickhousectl cloud service start svc-1".into())
+                Some("clickhousectl cloud clickhouse start svc-1".into())
             )
         );
         assert!(
             error
                 .message
-                .contains("`clickhousectl cloud service start svc-1`")
+                .contains("`clickhousectl cloud clickhouse start svc-1`")
         );
         assert!(
             error

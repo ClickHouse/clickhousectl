@@ -1027,7 +1027,7 @@ pub(crate) fn error_code(error: &Error) -> LocalErrorCode {
 
 /// The code and recovery command this module reports for a failure to select
 /// or launch an installed ClickHouse client, or `None` for any other error.
-/// `cloud service client` runs the same pre-flight as `local client`, and
+/// `cloud clickhouse client` runs the same pre-flight as `local client`, and
 /// reuses this classification so the two report a broken local install
 /// alike (#1443). Every variant here maps at parity: the message is the
 /// error's own text.

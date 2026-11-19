@@ -5,7 +5,7 @@
 `clickhousectl feedback` sends a short free-text message to the clickhousectl team. Use it to say what the CLI could not do, what you expected, or what you would like to see. Coding agents are invited to send feedback on their own when the CLI lacked a capability, flag, or output they needed, or when its help or errors misled them.
 
 ```bash
-clickhousectl feedback "cloud service create should accept a --wait flag"
+clickhousectl feedback "cloud clickhouse create should accept a --wait flag"
 clickhousectl feedback local server start cannot pick a free port automatically
 clickhousectl feedback --json "postgres client should accept a database name"
 ```

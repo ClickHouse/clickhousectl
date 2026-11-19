@@ -720,49 +720,49 @@ mod selector_tests {
         // Each row is a leaf with an existing named target. Required options
         // follow the selector; child parent IDs are part of the prefix.
         let cases: &[(&[&str], &[&str])] = &[
-            (&["service", "get"], &[]),
-            (&["service", "delete"], &[]),
-            (&["service", "start"], &[]),
-            (&["service", "wake"], &[]),
-            (&["service", "stop"], &[]),
-            (&["service", "update"], &["--new-name", "replacement"]),
-            (&["service", "scale"], &[]),
-            (&["service", "reset-password"], &[]),
-            (&["service", "prometheus"], &[]),
-            (&["service", "settings", "list"], &[]),
-            (&["service", "settings", "schema"], &[]),
+            (&["clickhouse", "get"], &[]),
+            (&["clickhouse", "delete"], &[]),
+            (&["clickhouse", "start"], &[]),
+            (&["clickhouse", "wake"], &[]),
+            (&["clickhouse", "stop"], &[]),
+            (&["clickhouse", "update"], &["--new-name", "replacement"]),
+            (&["clickhouse", "scale"], &[]),
+            (&["clickhouse", "reset-password"], &[]),
+            (&["clickhouse", "prometheus"], &[]),
+            (&["clickhouse", "settings", "list"], &[]),
+            (&["clickhouse", "settings", "schema"], &[]),
             (
-                &["service", "settings", "set"],
+                &["clickhouse", "settings", "set"],
                 &["--setting", "max_threads=4"],
             ),
-            (&["service", "scaling-schedule", "get"], &[]),
+            (&["clickhouse", "scaling-schedule", "get"], &[]),
             (
-                &["service", "scaling-schedule", "set"],
+                &["clickhouse", "scaling-schedule", "set"],
                 &["--file", "schedule.json"],
             ),
-            (&["service", "scaling-schedule", "delete"], &[]),
-            (&["service", "query-endpoint", "get"], &[]),
+            (&["clickhouse", "scaling-schedule", "delete"], &[]),
+            (&["clickhouse", "query-endpoint", "get"], &[]),
             (
-                &["service", "query-endpoint", "create"],
+                &["clickhouse", "query-endpoint", "create"],
                 &["--role", "sql_console_read_only"],
             ),
-            (&["service", "query-endpoint", "delete"], &[]),
-            (&["service", "private-endpoint", "get-config"], &[]),
+            (&["clickhouse", "query-endpoint", "delete"], &[]),
+            (&["clickhouse", "private-endpoint", "get-config"], &[]),
             (
-                &["service", "private-endpoint", "create"],
+                &["clickhouse", "private-endpoint", "create"],
                 &["--endpoint-id", "endpoint"],
             ),
-            (&["service", "backup-config", "get"], &[]),
+            (&["clickhouse", "backup-config", "get"], &[]),
             (
-                &["service", "backup-config", "update"],
+                &["clickhouse", "backup-config", "update"],
                 &["--backup-period-hours", "24"],
             ),
-            (&["service", "upgrade-window", "get"], &[]),
+            (&["clickhouse", "upgrade-window", "get"], &[]),
             (
-                &["service", "upgrade-window", "set"],
+                &["clickhouse", "upgrade-window", "set"],
                 &["--weekday", "1", "--start-hour", "0"],
             ),
-            (&["service", "upgrade-window", "delete"], &[]),
+            (&["clickhouse", "upgrade-window", "delete"], &[]),
             (&["postgres", "get"], &[]),
             (
                 &["postgres", "logs"],
@@ -878,7 +878,7 @@ mod selector_tests {
     #[test]
     fn setting_natural_key_cannot_be_consumed_as_service_id() {
         for operation in ["get", "unset"] {
-            let prefix = ["chctl", "cloud", "service", "settings", operation];
+            let prefix = ["chctl", "cloud", "clickhouse", "settings", operation];
             let cli = Cli::try_parse_from(prefix.into_iter().chain([
                 "--name",
                 "analytics",
@@ -918,7 +918,7 @@ mod selector_tests {
 
     #[test]
     fn query_positional_id_and_legacy_id_are_exclusive_and_legacy_is_hidden() {
-        let prefix = ["chctl", "cloud", "service", "query"];
+        let prefix = ["chctl", "cloud", "clickhouse", "query"];
         for selector in [
             vec!["opaque-id"],
             vec!["--id", "opaque-id"],
@@ -939,7 +939,7 @@ mod selector_tests {
         let query = root
             .find_subcommand("cloud")
             .unwrap()
-            .find_subcommand("service")
+            .find_subcommand("clickhouse")
             .unwrap()
             .find_subcommand("query")
             .unwrap();
@@ -991,7 +991,7 @@ mod selector_tests {
             if missing {
                 assert_eq!(
                     detail.unwrap().command.as_deref(),
-                    Some("clickhousectl cloud service list --org-id org-1")
+                    Some("clickhousectl cloud clickhouse list --org-id org-1")
                 );
             }
         }
@@ -1007,7 +1007,7 @@ mod scoped_selector_tests {
 
     #[test]
     fn organization_selector_conflicts_across_every_command_depth() {
-        let path = ["service", "settings", "get", "service-id", "setting"];
+        let path = ["clickhouse", "settings", "get", "service-id", "setting"];
         for org_id_at in 0..=path.len() {
             for org_name_at in 0..=path.len() {
                 let mut args = vec!["chctl", "cloud"];
@@ -1139,7 +1139,7 @@ mod scoped_selector_tests {
     #[test]
     fn settings_keep_both_keys_across_options_and_reject_incomplete_forms() {
         for operation in ["get", "unset"] {
-            let prefix = ["chctl", "cloud", "service", "settings", operation];
+            let prefix = ["chctl", "cloud", "clickhouse", "settings", operation];
             for args in [
                 vec!["id", "--org-id", "org", "key"],
                 vec!["id", "--json", "key"],
@@ -1261,7 +1261,7 @@ mod wait_tests {
             Wait {
                 what: "the test wait",
                 timeout,
-                hint: "check `clickhousectl cloud service get svc-1`",
+                hint: "check `clickhousectl cloud clickhouse get svc-1`",
                 interval: Duration::ZERO,
                 settle_first: false,
             },
@@ -1312,7 +1312,7 @@ mod wait_tests {
         assert!(
             error
                 .message
-                .ends_with("`clickhousectl cloud service get svc-1`"),
+                .ends_with("`clickhousectl cloud clickhouse get svc-1`"),
             "{error}"
         );
     }

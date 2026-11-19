@@ -428,11 +428,11 @@ mod tests {
     #[test]
     fn flag_conditions_and_operation_catalog_references_are_validated() {
         const MISSING_FLAG: Declaration =
-            Declaration::api("service get", &[&operations::INSTANCE_GET]).when(&[
+            Declaration::api("clickhouse get", &[&operations::INSTANCE_GET]).when(&[
                 Conditional::flag("missing", &[&operations::INSTANCE_GET_LIST]),
             ]);
         let registry = declarations()
-            .filter(|declaration| declaration.path != "service get")
+            .filter(|declaration| declaration.path != "clickhouse get")
             .chain([&MISSING_FLAG]);
         assert!(
             decorate_with(raw_command(), registry)
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn parser_and_command_factory_use_the_same_permission_help() {
-        let error = Cli::try_parse_from(["chctl", "cloud", "service", "get", "--help"])
+        let error = Cli::try_parse_from(["chctl", "cloud", "clickhouse", "get", "--help"])
             .err()
             .unwrap();
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
@@ -493,7 +493,7 @@ mod tests {
         let leaf = command
             .find_subcommand_mut("cloud")
             .unwrap()
-            .find_subcommand_mut("service")
+            .find_subcommand_mut("clickhouse")
             .unwrap()
             .find_subcommand_mut("get")
             .unwrap();

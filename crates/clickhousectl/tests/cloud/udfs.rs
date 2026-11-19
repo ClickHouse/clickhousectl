@@ -912,7 +912,7 @@ async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
     assert_eq!(error["error"]["code"], "service_idle", "{error}");
     assert_eq!(
         error["error"]["command"],
-        "clickhousectl cloud service wake svc-1"
+        "clickhousectl cloud clickhouse wake svc-1"
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
@@ -1510,7 +1510,10 @@ async fn udf_deploy_failures_after_publish_name_the_built_version() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("SERVICE_STOPPED"), "{message}");
-    assert!(message.contains("cloud service start svc-1"), "{message}");
+    assert!(
+        message.contains("cloud clickhouse start svc-1"),
+        "{message}"
+    );
     assert!(
         message.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
         "{message}"
@@ -1584,7 +1587,7 @@ async fn udf_deploy_idle_at_attach_resumes_with_a_waking_attach() {
         "{error}"
     );
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(!message.contains("cloud service wake"), "{message}");
+    assert!(!message.contains("cloud clickhouse wake"), "{message}");
     assert!(
         message.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1 --wake`"),
         "{message}"
@@ -1707,19 +1710,19 @@ async fn udf_deploy_rejects_an_unusable_service_before_publishing() {
             "idle",
             true,
             "service_idle",
-            Some("clickhousectl cloud service wake svc-1"),
+            Some("clickhousectl cloud clickhouse wake svc-1"),
         ),
         (
             "stopped",
             false,
             "service_stopped",
-            Some("clickhousectl cloud service start svc-1"),
+            Some("clickhousectl cloud clickhouse start svc-1"),
         ),
         (
             "stopped",
             true,
             "service_stopped",
-            Some("clickhousectl cloud service start svc-1"),
+            Some("clickhousectl cloud clickhouse start svc-1"),
         ),
         ("terminated", false, "service_not_running", None),
     ] {

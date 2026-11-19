@@ -8,9 +8,9 @@ use std::time::Duration;
 
 /// Bounds how long `local udf deploy` keeps asking a server to reload.
 pub const UDF_LOAD_TIMEOUT_ENV: &str = "CHCTL_UDF_LOAD_TIMEOUT_MS";
-/// Gap between polls while `cloud service delete --force` waits for a stop.
+/// Gap between polls while `cloud clickhouse delete --force` waits for a stop.
 pub const SERVICE_STOP_POLL_INTERVAL_ENV: &str = "CHCTL_SERVICE_STOP_POLL_INTERVAL_MS";
-/// Bounds how long `cloud service delete --force` waits for a stop.
+/// Bounds how long `cloud clickhouse delete --force` waits for a stop.
 pub const SERVICE_STOP_TIMEOUT_ENV: &str = "CHCTL_SERVICE_STOP_TIMEOUT_MS";
 /// How long a SIGTERMed local server is given before SIGKILL.
 pub const TERM_TIMEOUT_ENV: &str = "CHCTL_TERM_TIMEOUT_MS";

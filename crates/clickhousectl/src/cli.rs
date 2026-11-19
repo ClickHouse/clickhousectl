@@ -22,7 +22,7 @@ CONTEXT FOR AGENTS:
   Postgres for an app's transactional data: `local postgres start` (needs Docker), `cloud postgres create`
   Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
   (`cloud auth login --api-key X --api-secret Y`) allow writes.
-  Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
+  Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud clickhouse create`
   Check state first: `clickhousectl cloud auth status --json`, `clickhousectl local status --json`
   Find a command or flag by keyword: `clickhousectl search <words>`
   Install the ClickHouse and Postgres agent skills: `clickhousectl skills --agent claude`"
@@ -93,7 +93,7 @@ CONTEXT FOR AGENTS:
   `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
   delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list` or `cloud postgres list`")]
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud clickhouse list` or `cloud postgres list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
@@ -524,7 +524,7 @@ mod tests {
             [
                 "auth",
                 "org",
-                "service",
+                "clickhouse",
                 "postgres",
                 "query-api-endpoint",
                 "saved-query",

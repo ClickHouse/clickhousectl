@@ -68,7 +68,7 @@ pub(super) struct PrivateEndpointPatch {
 /// Merge the requested changes into `current` and return a patch that sends only
 /// the lists that change, because each list sent replaces the stored one in full.
 ///
-/// Removals apply before additions. As with `cloud service update`, removing an
+/// Removals apply before additions. As with `cloud clickhouse update`, removing an
 /// entry that is not there is idempotent: it adds a warning instead of failing,
 /// so a typo stays visible. Adding an approved VPC endpoint again updates its
 /// description when one is given.

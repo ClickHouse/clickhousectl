@@ -28,7 +28,7 @@ pub enum ServiceCommands {
 CONTEXT FOR AGENTS:
   Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT (native TLS), CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER and
   CLICKHOUSE_SECURE to .env in the current directory (.env.local with --local).
-  No password: the API returns it only once, and `cloud service create --dotenv` writes it.
+  No password: the API returns it only once, and `cloud clickhouse create --dotenv` writes it.
   An existing file is edited in place: only these keys are replaced, so a CLICKHOUSE_PASSWORD
   already in it is kept.")]
     Dotenv {
@@ -64,9 +64,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Omitting --ip-allow opens the service to 0.0.0.0/0 (\"Allow all\").
-  The initial password is printed once — save it; `cloud service reset-password <id>` issues a new one.
+  The initial password is printed once — save it; `cloud clickhouse reset-password <id>` issues a new one.
   --dotenv writes it and the connection settings to the file instead, keeping it out of the output.
-  Returns before the service is up: poll `cloud service get <id>` until state is `running` (minutes).")]
+  Returns before the service is up: poll `cloud clickhouse get <id>` until state is `running` (minutes).")]
     Create {
         /// Service name
         #[arg(long)]
@@ -232,10 +232,10 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Irreversible. A running service cannot be deleted: stop it first, or pass --force.
   A service with deletion protection on is refused, and --force does not stop it: turn it off
-    first (`cloud service update <id> --deletion-protection false`).
+    first (`cloud clickhouse update <id> --deletion-protection false`).
   --force stops the service and waits up to 10 minutes for the stop, with progress lines on stderr.
   If the wait times out (code `timeout`) or the service leaves the stop path, nothing is deleted:
-    check `cloud service get <id>`, then rerun.")]
+    check `cloud clickhouse get <id>`, then rerun.")]
     Delete {
         /// Service ID
         #[command(flatten)]
@@ -250,7 +250,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Resumes a stopped service; an idle service wakes on its own when queried.
-  Returns as soon as the start is accepted: poll `cloud service get <id>` until state is `running`.")]
+  Returns as soon as the start is accepted: poll `cloud clickhouse get <id>` until state is `running`.")]
     Start {
         /// Service ID
         #[command(flatten)]
@@ -260,8 +260,8 @@ CONTEXT FOR AGENTS:
     /// Wake an idled service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Wakes an idle service; use `cloud service start <id>` for a stopped service.
-  Returns as soon as the wake is accepted: poll `cloud service get <id>` until state is `running`.")]
+  Wakes an idle service; use `cloud clickhouse start <id>` for a stopped service.
+  Returns as soon as the wake is accepted: poll `cloud clickhouse get <id>` until state is `running`.")]
     Wake {
         /// Service ID
         #[command(flatten)]
@@ -272,7 +272,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Idles the service: compute billing stops, data is preserved.
-  Returns as soon as the stop is accepted: poll `cloud service get <id>` until state is `stopped`
+  Returns as soon as the stop is accepted: poll `cloud clickhouse get <id>` until state is `stopped`
     or `idle`.")]
     Stop {
         /// Service ID
@@ -378,7 +378,7 @@ CONTEXT FOR AGENTS:
         ///
         /// Omit to keep the current profile. A BYOC profile needs both memory flags equal to its
         /// size; any other profile cannot be combined with a memory change.
-        /// `cloud service profile list` shows the available profiles.
+        /// `cloud clickhouse profile list` shows the available profiles.
         #[arg(long)]
         profile: Option<String>,
 
@@ -408,7 +408,7 @@ CONTEXT FOR AGENTS:
         /// Target autoscaling mode
         ///
         /// Omit to keep the service on its current mode. See
-        /// `cloud service create --autoscaling-mode` for what each mode scales.
+        /// `cloud clickhouse create --autoscaling-mode` for what each mode scales.
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
@@ -451,9 +451,9 @@ CONTEXT FOR AGENTS:
         name = "query-endpoint",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Only needed to share Query API access with other tools: `cloud service query` binds the
+  Only needed to share Query API access with other tools: `cloud clickhouse query` binds the
     authenticated API key itself.
-  Hand edits can unbind the key `cloud service query` uses; the next query rebinds it unless
+  Hand edits can unbind the key `cloud clickhouse query` uses; the next query rebinds it unless
     `--no-auto-enable` is passed."
     )]
     QueryEndpoint {
@@ -537,7 +537,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
   First use binds the API key to the endpoint, a write. A read-only key must be bound by a write key:
-    `cloud service query-endpoint create <id> --role <role> --open-api-key <key-id>`."
+    `cloud clickhouse query-endpoint create <id> --role <role> --open-api-key <key-id>`."
     )]
     Query {
         /// Service ID to query
@@ -577,12 +577,12 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Needs a person at a browser: the client signs in as their Cloud user (device flow), no password.
-  Not for CI or agents; use `cloud service query` there. The Cloud credentials only look up the host.
+  Not for CI or agents; use `cloud clickhouse query` there. The Cloud credentials only look up the host.
   Needs ClickHouse 25.12+ installed (`clickhousectl local install latest`).")]
     Client(ServiceClientArgs),
 }
 
-/// `cloud service client`: the service, the local build to run, and the
+/// `cloud clickhouse client`: the service, the local build to run, and the
 /// native client's own arguments.
 #[derive(clap::Args, Debug)]
 pub struct ServiceClientArgs {
@@ -1209,12 +1209,12 @@ mod tests {
     #[test]
     fn primary_json_file_argument_contract() {
         crate::cloud::config::assert_primary_json_input(
-            &["cloud", "service", "settings", "set", "svc-1"],
+            &["cloud", "clickhouse", "settings", "set", "svc-1"],
             "settings_file",
             &["settings-file"],
         );
         crate::cloud::config::assert_primary_json_input(
-            &["cloud", "service", "scaling-schedule", "set", "svc-1"],
+            &["cloud", "clickhouse", "scaling-schedule", "set", "svc-1"],
             "file",
             &[],
         );
@@ -1256,7 +1256,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "default-service",
@@ -1332,7 +1332,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "maximal-service",
@@ -1456,7 +1456,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "s",
@@ -1472,7 +1472,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "s",
@@ -1491,7 +1491,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "byoc-service",
@@ -1522,7 +1522,7 @@ mod tests {
 
     #[test]
     fn parses_service_list_filters_and_org_id() {
-        let command = parse_service(&["clickhousectl", "cloud", "service", "list"]);
+        let command = parse_service(&["clickhousectl", "cloud", "clickhouse", "list"]);
         let crate::cloud::cli::ServiceCommands::List { filter } = command else {
             panic!("expected service list");
         };
@@ -1532,7 +1532,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "list",
             "--filter",
             "tag:env=prod",
@@ -1554,7 +1554,7 @@ mod tests {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "list",
                 "--filter",
                 value,
@@ -1575,7 +1575,7 @@ mod tests {
             let error = Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "list",
                 "--filter",
                 value,
@@ -1591,7 +1591,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "dotenv",
             "svc-1",
             "--org-id",
@@ -1607,7 +1607,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "dotenv",
             "--name",
             "analytics",
@@ -1633,7 +1633,7 @@ mod tests {
             let mut args = vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "create",
                 "--name",
                 "svc",
@@ -1648,7 +1648,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "svc",
@@ -1673,7 +1673,7 @@ mod tests {
                 Some("byoc-1"),
             ),
         ] {
-            let mut args = vec!["clickhousectl", "cloud", "service", "profile", "list"];
+            let mut args = vec!["clickhousectl", "cloud", "clickhouse", "profile", "list"];
             args.extend(flags);
             let command = parse_service(&args);
             assert!(!command.is_write());
@@ -1687,9 +1687,10 @@ mod tests {
             assert_eq!(byoc_id.as_deref(), expected_byoc);
         }
 
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
-            .err()
-            .expect("missing both region and BYOC should fail");
+        let error =
+            Cli::try_parse_from(["clickhousectl", "cloud", "clickhouse", "profile", "list"])
+                .err()
+                .expect("missing both region and BYOC should fail");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
@@ -1697,7 +1698,7 @@ mod tests {
     }
 
     fn jwt_provider_command(args: &[&str]) -> JwtProviderCommands {
-        let mut full = vec!["clickhousectl", "cloud", "service", "jwt-provider"];
+        let mut full = vec!["clickhousectl", "cloud", "clickhouse", "jwt-provider"];
         full.extend(args);
         let ServiceCommands::JwtProvider { command } = parse_service(&full) else {
             panic!("expected service jwt-provider");
@@ -1761,7 +1762,7 @@ mod tests {
                 true,
             ),
         ] {
-            let mut full = vec!["clickhousectl", "cloud", "service", "jwt-provider"];
+            let mut full = vec!["clickhousectl", "cloud", "clickhouse", "jwt-provider"];
             full.extend(args);
             assert_write(&full, write);
         }
@@ -1792,7 +1793,7 @@ mod tests {
                 let mut args = vec![
                     "clickhousectl",
                     "cloud",
-                    "service",
+                    "clickhouse",
                     "jwt-provider",
                     action,
                     "svc-1",
@@ -1831,7 +1832,13 @@ mod tests {
             assert!(selector.id.is_none());
             assert_eq!(provider_name, "okta");
 
-            let prefix = ["clickhousectl", "cloud", "service", "jwt-provider", action];
+            let prefix = [
+                "clickhousectl",
+                "cloud",
+                "clickhouse",
+                "jwt-provider",
+                action,
+            ];
             for suffix in [
                 vec!["svc-1"],
                 vec!["--name", "analytics"],
@@ -1872,7 +1879,7 @@ mod tests {
         let get = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "get",
             "svc-1",
@@ -1888,7 +1895,7 @@ mod tests {
         let set = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "set",
             "svc-1",
@@ -1910,7 +1917,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "scaling-schedule",
                 "get",
                 "svc-1",
@@ -1921,7 +1928,7 @@ mod tests {
             let mut args = vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "scaling-schedule",
                 leaf,
                 "svc-1",
@@ -1938,7 +1945,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "set",
             "svc-1",
@@ -1956,7 +1963,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "upgrade-window",
             "set",
             "svc-1",
@@ -1986,7 +1993,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "get",
                 "svc-1",
@@ -1997,7 +2004,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "set",
                 "svc-1",
@@ -2012,7 +2019,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "delete",
                 "svc-1",
@@ -2023,7 +2030,12 @@ mod tests {
 
     #[test]
     fn parses_replica_aware_routing_commands_and_classifies_writes() {
-        let base = ["clickhousectl", "cloud", "service", "replica-aware-routing"];
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "clickhouse",
+            "replica-aware-routing",
+        ];
         let parse_update = |flags: &[&str]| {
             let mut args = base.to_vec();
             args.extend(["update", "svc-1"]);
@@ -2061,7 +2073,7 @@ mod tests {
         } = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "replica-aware-routing",
             "get",
             "--name",
@@ -2085,7 +2097,7 @@ mod tests {
         let base = [
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "replica-aware-routing",
             "update",
             "svc-1",
@@ -2116,7 +2128,7 @@ mod tests {
             vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "set",
                 "svc-1",
@@ -2126,7 +2138,7 @@ mod tests {
             vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "set",
                 "svc-1",
@@ -2149,7 +2161,7 @@ mod tests {
             let mut args = vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "upgrade-window",
                 "set",
                 "svc-1",
@@ -2170,7 +2182,7 @@ mod tests {
 
     #[test]
     fn parses_service_body_command_defaults() {
-        let update = parse_service(&["clickhousectl", "cloud", "service", "update", "svc-1"]);
+        let update = parse_service(&["clickhousectl", "cloud", "clickhouse", "update", "svc-1"]);
         let crate::cloud::cli::ServiceCommands::Update {
             name,
             add_ip_allow,
@@ -2202,7 +2214,7 @@ mod tests {
         assert!(remove_tag.is_empty());
         assert!(enable_core_dumps.is_none());
 
-        let scale = parse_service(&["clickhousectl", "cloud", "service", "scale", "svc-1"]);
+        let scale = parse_service(&["clickhousectl", "cloud", "clickhouse", "scale", "svc-1"]);
         let crate::cloud::cli::ServiceCommands::Scale {
             min_replica_memory_gb,
             max_replica_memory_gb,
@@ -2231,7 +2243,7 @@ mod tests {
         let reset = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "reset-password",
             "svc-1",
         ]);
@@ -2249,7 +2261,7 @@ mod tests {
         let query_endpoint = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query-endpoint",
             "create",
             "svc-1",
@@ -2277,7 +2289,7 @@ mod tests {
         let private_endpoint = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "private-endpoint",
             "create",
             "svc-1",
@@ -2300,7 +2312,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--id",
             "svc-1",
@@ -2322,7 +2334,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--add-ip-allow",
@@ -2373,7 +2385,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--new-name",
@@ -2453,7 +2465,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--remove-tag",
@@ -2497,7 +2509,7 @@ mod tests {
             let error = Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "update",
                 "svc-1",
                 first_flag,
@@ -2522,7 +2534,7 @@ mod tests {
             Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "create",
                 "--name",
                 "s",
@@ -2543,7 +2555,7 @@ mod tests {
             Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "create",
                 "--name",
                 "s",
@@ -2563,7 +2575,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "scale",
             "svc-1",
             "--autoscaling-mode",
@@ -2615,7 +2627,7 @@ mod tests {
             Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "scale",
                 "svc-1",
                 "--num-replicas",
@@ -2629,12 +2641,12 @@ mod tests {
         );
     }
 
-    /// `service client` is a read: OAuth may run it. Its version selector
+    /// `clickhouse client` is a read: OAuth may run it. Its version selector
     /// keeps the installed-numeric rule, `--query` repeats, and everything
     /// after `--` reaches the native client untouched, even its own flags.
     #[test]
     fn parses_service_client_options() {
-        let base = ["clickhousectl", "cloud", "service", "client"];
+        let base = ["clickhousectl", "cloud", "clickhouse", "client"];
         let parse_client = |extra: &[&str]| {
             let args: Vec<&str> = base.iter().chain(extra).copied().collect();
             let crate::cloud::cli::ServiceCommands::Client(client) = parse_service(&args) else {
@@ -2694,7 +2706,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--id",
             "svc-1",
@@ -2724,7 +2736,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--name",
             "analytics",
@@ -2767,7 +2779,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--id",
             "svc-1",
@@ -2793,7 +2805,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--query",
             "SELECT 1",
@@ -2815,7 +2827,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query",
             "--name",
             "analytics",
@@ -2832,7 +2844,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query-endpoint",
             "create",
             "svc-1",
@@ -2873,7 +2885,7 @@ mod tests {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "query-endpoint",
                 action,
                 "svc-1",
@@ -2900,7 +2912,7 @@ mod tests {
         let prefix = [
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query-endpoint",
             "create",
             "svc-1",
@@ -2936,7 +2948,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "query-endpoint",
             "create",
             "svc-1",
@@ -2952,7 +2964,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "private-endpoint",
             "create",
             "svc-1",
@@ -2997,7 +3009,7 @@ mod tests {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "private-endpoint",
                 "create",
                 "svc-1",
@@ -3022,7 +3034,7 @@ mod tests {
             let error = Cli::try_parse_from([
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "private-endpoint",
                 "create",
                 "svc-1",
@@ -3044,7 +3056,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--add-private-endpoint-id",
@@ -3062,7 +3074,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--remove-private-endpoint-id",
@@ -3144,7 +3156,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "get",
             "svc-1",
             "--org-id",
@@ -3159,7 +3171,7 @@ mod tests {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 action,
                 "svc-1",
                 "--org-id",
@@ -3175,7 +3187,13 @@ mod tests {
             }
         }
 
-        let command = parse_service(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"]);
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "clickhouse",
+            "prometheus",
+            "svc-1",
+        ]);
         let crate::cloud::cli::ServiceCommands::Prometheus {
             filtered_metrics, ..
         } = command
@@ -3188,7 +3206,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "prometheus",
             "svc-1",
             "--filtered-metrics",
@@ -3210,16 +3228,16 @@ mod tests {
 
     #[test]
     fn top_level_write_classification_covers_every_service_command() {
-        assert_write(&["clickhousectl", "cloud", "service", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "clickhouse", "list"], false);
         assert_write(
-            &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            &["clickhousectl", "cloud", "clickhouse", "get", "svc-1"],
             false,
         );
         assert_write(
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "profile",
                 "list",
                 "--region",
@@ -3232,7 +3250,7 @@ mod tests {
                 &[
                     "clickhousectl",
                     "cloud",
-                    "service",
+                    "clickhouse",
                     "settings",
                     action,
                     "svc-1",
@@ -3244,7 +3262,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "settings",
                 "get",
                 "svc-1",
@@ -3256,7 +3274,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "settings",
                 "set",
                 "svc-1",
@@ -3269,7 +3287,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "settings",
                 "unset",
                 "svc-1",
@@ -3278,14 +3296,20 @@ mod tests {
             true,
         );
         assert_write(
-            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickhouse",
+                "prometheus",
+                "svc-1",
+            ],
             false,
         );
         assert_write(
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "query",
                 "--id",
                 "svc-1",
@@ -3295,7 +3319,14 @@ mod tests {
             false,
         );
         assert_write(
-            &["clickhousectl", "cloud", "service", "create", "--name", "s"],
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickhouse",
+                "create",
+                "--name",
+                "s",
+            ],
             true,
         );
         for action in [
@@ -3308,7 +3339,7 @@ mod tests {
             "reset-password",
         ] {
             assert_write(
-                &["clickhousectl", "cloud", "service", action, "svc-1"],
+                &["clickhousectl", "cloud", "clickhouse", action, "svc-1"],
                 true,
             );
         }
@@ -3316,7 +3347,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "query-endpoint",
                 "get",
                 "svc-1",
@@ -3327,7 +3358,7 @@ mod tests {
             let mut args = vec![
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "query-endpoint",
                 action,
                 "svc-1",
@@ -3341,7 +3372,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "private-endpoint",
                 "get-config",
                 "svc-1",
@@ -3352,7 +3383,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "private-endpoint",
                 "create",
                 "svc-1",
@@ -3365,7 +3396,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "backup-config",
                 "get",
                 "svc-1",
@@ -3376,7 +3407,7 @@ mod tests {
             &[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "backup-config",
                 "update",
                 "svc-1",
@@ -3392,7 +3423,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "svc",
@@ -3412,7 +3443,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",
@@ -3441,7 +3472,7 @@ mod tests {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",
@@ -3462,7 +3493,7 @@ mod tests {
         let missing = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",
@@ -3477,7 +3508,7 @@ mod tests {
         let conflict = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",

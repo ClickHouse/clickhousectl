@@ -627,7 +627,7 @@ pub(super) struct NativeEndpoint {
 }
 
 /// What the query path knows about its target service when it has to render
-/// an error: enough to name the service, to point at `service start`, and to
+/// an error: enough to name the service, to point at `clickhouse start`, and to
 /// spell out the native-protocol command that routes around the Query API
 /// gateway timeout (#644).
 #[derive(Debug, Clone, Copy)]
@@ -663,14 +663,14 @@ pub(super) fn native_secure_endpoint(
     })
 }
 
-/// The `cloud service client` command that reruns the statement over the
+/// The `cloud clickhouse client` command that reruns the statement over the
 /// native protocol, signed in as the user's Cloud identity: no password.
 ///
 /// The SQL is always a literal placeholder: the user's statement is never
 /// echoed back into an error message.
 fn native_client_command(target: QueryTarget<'_>) -> String {
     format!(
-        "clickhousectl cloud service client {} --org-id {} --query '<your SQL>'",
+        "clickhousectl cloud clickhouse client {} --org-id {} --query '<your SQL>'",
         target.service_id, target.org_id
     )
 }
@@ -681,7 +681,7 @@ fn native_client_command(target: QueryTarget<'_>) -> String {
 fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
     let details = if target.may_be_waking {
         let command = format!(
-            "clickhousectl cloud service get {} --org-id {}",
+            "clickhousectl cloud clickhouse get {} --org-id {}",
             target.service_id, target.org_id
         );
         let message = format!(
@@ -732,7 +732,7 @@ fn convert_query_error(
 ) -> CloudError {
     match error {
         clickhouse_cloud_api::Error::ServiceStopped => CloudError::new(format!(
-            "service '{}' is stopped; start it with `clickhousectl cloud service start {} --org-id {}` and retry",
+            "service '{}' is stopped; start it with `clickhousectl cloud clickhouse start {} --org-id {}` and retry",
             target.service_name, target.service_id, target.org_id
         ))
         // Rewriting the message must not lose the classification the variant
@@ -764,7 +764,7 @@ enum StdinInput {
 const INLINE_QUERY_WITH_STDIN_ERROR: &str = "--query cannot be combined with SQL or data on stdin. \
      The Query API sends one request body, so redirected data is never read. Pipe the statement \
      and its data together on stdin instead: \
-     printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud service query \
+     printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud clickhouse query \
      <service-id>. Or read a whole statement from stdin with --queries-file -.";
 
 /// Whether `--query` conflicts with what is on stdin. Pure, so the decision is
@@ -846,7 +846,7 @@ fn decode_query_sql(bytes: Vec<u8>, source: &str) -> CloudResult<String> {
                 "and text-format data; use the native protocol for binary formats such as ",
                 "RowBinary or Native, and for bulk input. Install ClickHouse 25.12 or newer ",
                 "with `clickhousectl local use latest`, then stream the data with:\n  ",
-                "clickhousectl cloud service client <service-id> --query ",
+                "clickhousectl cloud clickhouse client <service-id> --query ",
                 "'INSERT INTO <table> FORMAT RowBinary' < <data-file>\n",
                 "It signs in as your Cloud user through a browser; no password is needed."
             ),
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     /// The gateway timeout warns before a rerun and hands over a
-    /// `cloud service client` command for the same service and org (#644,
+    /// `cloud clickhouse client` command for the same service and org (#644,
     /// #1154): one that clap accepts, needs no password, and never carries
     /// the statement.
     #[test]
@@ -1232,7 +1232,7 @@ mod tests {
                 command: crate::cloud::cli::ServiceCommands::Client(args),
             } = cloud.command
             else {
-                panic!("expected `cloud service client`: {command}");
+                panic!("expected `cloud clickhouse client`: {command}");
             };
             assert_eq!(args.service_id.id.as_deref(), Some("svc-1"));
             assert_eq!(args.query, ["<your SQL>"]);
@@ -1263,7 +1263,7 @@ mod tests {
         assert_eq!(details.message, error.message);
         assert_eq!(
             details.command.as_deref(),
-            Some("clickhousectl cloud service get svc-1 --org-id org-1")
+            Some("clickhousectl cloud clickhouse get svc-1 --org-id org-1")
         );
         assert!(details.host.is_none());
         assert!(details.port.is_none());
@@ -1313,7 +1313,7 @@ mod tests {
         assert!(
             stopped
                 .message
-                .contains("`clickhousectl cloud service start svc-1 --org-id org-1`"),
+                .contains("`clickhousectl cloud clickhouse start svc-1 --org-id org-1`"),
             "{stopped}"
         );
         assert_eq!(

@@ -1,4 +1,4 @@
-//! `cloud service`, except `query` and `client` (src/cloud/services/).
+//! `cloud clickhouse`, except `query` and `client` (src/cloud/services/).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -21,7 +21,14 @@ fn invoke_service_wake(mock: &MockServer, json: bool) -> std::process::Output {
     std::fs::create_dir(&home).unwrap();
     let url = mock.uri();
     let mut args = vec![
-        "cloud", "--url", &url, "service", "wake", "svc-1", "--org-id", "org-1",
+        "cloud",
+        "--url",
+        &url,
+        "clickhouse",
+        "wake",
+        "svc-1",
+        "--org-id",
+        "org-1",
     ];
     if json {
         args.push("--json");
@@ -66,7 +73,7 @@ async fn service_wake_sends_awake_with_basic_auth_and_prints_json() {
     assert_eq!(service["state"], "awaking");
     assert_eq!(
         service["next"]["command"],
-        "clickhousectl cloud service get svc-1 --org-id org-1 --json"
+        "clickhousectl cloud clickhouse get svc-1 --org-id org-1 --json"
     );
     assert_eq!(mock.received_requests().await.unwrap().len(), 1);
 }
@@ -118,7 +125,7 @@ async fn service_start_and_stop_human_output_reports_acceptance_and_returned_sta
 
         let output = invoke_cli_with_cloud_credentials_human(
             &mock,
-            &["service", command, "svc-1", "--org-id", "org-1"],
+            &["clickhouse", command, "svc-1", "--org-id", "org-1"],
         );
 
         // One line naming the service, the command and the returned state.
@@ -132,7 +139,7 @@ async fn service_start_and_stop_human_output_reports_acceptance_and_returned_sta
     }
 }
 
-/// `service scale` wiring: one PATCH to the service's replicaScaling route,
+/// `clickhouse scale` wiring: one PATCH to the service's replicaScaling route,
 /// carrying every flag in its own field; JSON mode prints the response.
 #[tokio::test]
 async fn service_scale_sends_the_builder_body_to_the_replica_scaling_route() {
@@ -161,7 +168,7 @@ async fn service_scale_sends_the_builder_body_to_the_replica_scaling_route() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "scale",
             "svc-1",
             "--autoscaling-mode",
@@ -222,7 +229,7 @@ async fn service_start_and_stop_preserve_json_responses_and_name_the_poll() {
 
         let output = invoke_cli_with_cloud_credentials(
             &mock,
-            &["service", command, "svc-1", "--org-id", "org-1"],
+            &["clickhouse", command, "svc-1", "--org-id", "org-1"],
         );
 
         assert_success(&output);
@@ -232,7 +239,7 @@ async fn service_start_and_stop_preserve_json_responses_and_name_the_poll() {
         let next = next.expect("an accepted state change names its poll");
         assert_eq!(
             next["command"],
-            "clickhousectl cloud service get svc-1 --org-id org-1 --json"
+            "clickhousectl cloud clickhouse get svc-1 --org-id org-1 --json"
         );
         assert_eq!(next["field"], "state");
         assert_eq!(next["until"], until, "{command}");
@@ -296,7 +303,7 @@ async fn scaling_schedule_get_uses_oauth_and_preserves_the_full_response() {
             "--url",
             &mock.uri(),
             "--json",
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "get",
             "svc-1",
@@ -373,7 +380,7 @@ async fn scaling_schedule_set_reads_stdin_and_sends_the_exact_complete_body() {
             "--url",
             &mock.uri(),
             "--json",
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "set",
             "svc-1",
@@ -423,7 +430,7 @@ async fn scaling_schedule_delete_uses_the_exact_route_and_preserves_metadata() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "scaling-schedule",
             "delete",
             "svc-1",
@@ -458,7 +465,7 @@ async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
 
     let output = invoke_cli_with_cloud_credentials(
         &mock,
-        &["service", "delete", "svc-1", "--org-id", "org-1"],
+        &["clickhouse", "delete", "svc-1", "--org-id", "org-1"],
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -468,7 +475,7 @@ async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
     let message = error["message"].as_str().unwrap();
     assert!(message.contains("--force"), "{message}");
     assert!(
-        message.contains("`clickhousectl cloud service stop svc-1`"),
+        message.contains("`clickhousectl cloud clickhouse stop svc-1`"),
         "{message}"
     );
     assert!(message.ends_with("opaque conflict response"), "{message}");
@@ -508,7 +515,7 @@ fn assert_deletion_protected(output: &std::process::Output) {
         [
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "update",
             TEST_SERVICE_ID,
             "--deletion-protection",
@@ -602,7 +609,7 @@ fn write_service_query_key(root: &Path, organization_id: Option<&str>, api_key_i
     .unwrap();
 }
 
-/// Start a `service delete` without waiting for it, so a test can close the
+/// Start a `clickhouse delete` without waiting for it, so a test can close the
 /// child's pipes while the command is still running (see the #598 tests).
 fn spawn_service_delete(
     mock: &MockServer,
@@ -628,7 +635,7 @@ fn spawn_service_delete_with_env(
         "--url",
         &url,
         "--json",
-        "service",
+        "clickhouse",
         "delete",
         TEST_SERVICE_ID,
         "--org-id",
@@ -728,7 +735,7 @@ async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
     let next = next.expect("an accepted delete names its poll");
     assert_eq!(
         next["command"],
-        format!("clickhousectl cloud service get {TEST_SERVICE_ID} --org-id org-1 --json")
+        format!("clickhousectl cloud clickhouse get {TEST_SERVICE_ID} --org-id org-1 --json")
     );
     assert_eq!(next["until_error_code"], "resource_not_found");
 
@@ -987,7 +994,7 @@ async fn forced_service_delete_times_out_waiting_for_the_stop() {
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("stopping"), "{message}");
     assert!(
-        message.contains(&format!("cloud service get {TEST_SERVICE_ID}")),
+        message.contains(&format!("cloud clickhouse get {TEST_SERVICE_ID}")),
         "{message}"
     );
 }
@@ -1127,7 +1134,7 @@ async fn tag_filters_preserve_repeated_equality_and_existence_filters_on_wire() 
         "tag:expression=a=b & c",
     ];
     for mut args in [
-        vec!["service", "list"],
+        vec!["clickhouse", "list"],
         vec![
             "org",
             "usage",
@@ -1156,7 +1163,7 @@ async fn tag_filters_preserve_repeated_equality_and_existence_filters_on_wire() 
 
 // ── Generated service passwords are never silently dropped ─────────────────
 //
-// `service reset-password` without either hash flag sends an empty PATCH
+// `clickhouse reset-password` without either hash flag sends an empty PATCH
 // body, which asks the API to generate a password returned exactly once. A
 // response without one loses that credential, so both output modes must fail
 // instead of reporting a successful reset.
@@ -1183,7 +1190,7 @@ async fn run_service_reset_password(
         "cloud",
         "--url",
         &url,
-        "service",
+        "clickhouse",
         "reset-password",
         "svc-id",
         "--org-id",
@@ -1246,7 +1253,7 @@ async fn service_reset_password_sends_both_hashes_and_accepts_no_password() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "reset-password",
             "svc-1",
             "--new-password-hash",
@@ -1269,7 +1276,7 @@ async fn service_reset_password_sends_both_hashes_and_accepts_no_password() {
     );
 }
 
-// ── `service update --remove-*` warns on unmatched entries (issue #612) ────
+// ── `clickhouse update --remove-*` warns on unmatched entries (issue #612) ─
 
 /// Mount a `GET` returning the given `ipAccessList`/`privateEndpointIds`/`tags`
 /// snapshot and a `PATCH` that echoes it back unchanged, both scoped to
@@ -1314,7 +1321,7 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--org-id",
@@ -1378,7 +1385,7 @@ async fn service_update_skips_get_when_no_removals_requested() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "update",
             "svc-1",
             "--org-id",
@@ -1432,7 +1439,7 @@ async fn private_endpoint_create_sends_well_formed_endpoint_id() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "private-endpoint",
             "create",
             "svc-1",
@@ -1453,10 +1460,16 @@ async fn private_endpoint_create_sends_well_formed_endpoint_id() {
     );
 }
 
-/// A `service delete` for an id no service has, with the organization id also
+/// A `clickhouse delete` for an id no service has, with the organization id also
 /// a well-formed UUID so every path identifier passes the structural test.
 fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process::Output {
-    let mut args = vec!["service", "delete", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID];
+    let mut args = vec![
+        "clickhouse",
+        "delete",
+        UNKNOWN_UUID,
+        "--org-id",
+        LOOKUP_ORG_ID,
+    ];
     if force {
         args.push("--force");
     }
@@ -1466,7 +1479,7 @@ fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process
 /// `--force` reads the service first to decide whether to stop it. That read
 /// must treat the 400 the way it treats a 404 (see
 /// `forced_service_delete_surfaces_not_found_for_an_absent_service`): carry
-/// on to the delete, rather than aborting on an id `service get` reports as
+/// on to the delete, rather than aborting on an id `clickhouse get` reports as
 /// missing. The delete's own 400 is then confirmed by a second read (#1226).
 #[tokio::test]
 async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id() {
@@ -1554,7 +1567,7 @@ async fn service_profile_list_sends_exact_queries_and_preserves_json() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "profile",
             "list",
             "--region",
@@ -1615,7 +1628,7 @@ async fn service_profile_list_renders_sparse_unknown_profiles() {
     let output = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "profile",
             "list",
             "--region",
@@ -1691,7 +1704,7 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "byoc-service",
@@ -1736,7 +1749,7 @@ async fn service_create_sends_an_unlisted_region_and_hints_when_cloud_rejects_it
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "s",
@@ -1793,7 +1806,7 @@ async fn mount_service_create_with_backup_encryption_config(mock: &MockServer) {
 }
 
 const BACKUP_RESTORE_ARGS: [&str; 7] = [
-    "service",
+    "clickhouse",
     "create",
     "--name",
     "restored",
@@ -1834,7 +1847,7 @@ async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "byoc-service",
@@ -1870,7 +1883,7 @@ fn invoke_service_settings_with_oauth(
     std::fs::create_dir_all(&cloud_dir).unwrap();
     write_oauth_tokens(&cloud_dir, &mock.uri());
     let url = mock.uri();
-    let mut args = vec!["cloud", "--url", &url, "--json", "service", "settings"];
+    let mut args = vec!["cloud", "--url", &url, "--json", "clickhouse", "settings"];
     args.extend(cli_args);
     let mut command = Command::new(clickhousectl_binary());
     command.isolated_env();
@@ -1978,7 +1991,7 @@ async fn service_settings_get_renders_the_setting_in_human_mode() {
     let output = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "settings",
             "get",
             "svc-1",
@@ -2042,7 +2055,7 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
     let set = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",
@@ -2066,7 +2079,7 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
     let unset = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "settings",
             "unset",
             "svc-1",
@@ -2110,8 +2123,18 @@ async fn service_settings_set_reads_a_map_from_stdin() {
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(cwd.path())
         .args([
-            "cloud", "--url", &url, "--json", "service", "settings", "set", "svc-1", "--file", "-",
-            "--org-id", "org-1",
+            "cloud",
+            "--url",
+            &url,
+            "--json",
+            "clickhouse",
+            "settings",
+            "set",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2195,7 +2218,7 @@ async fn service_jwt_provider_commands_send_exact_requests_and_print_json() {
         .mount(&mock)
         .await;
 
-    let prefix = ["service", "jwt-provider"];
+    let prefix = ["clickhouse", "jwt-provider"];
     let run = |args: &[&str]| {
         let mut full = prefix.to_vec();
         full.extend(args);
@@ -2265,7 +2288,7 @@ async fn service_jwt_provider_list_renders_a_table_with_absent_fields() {
     let output = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "jwt-provider",
             "list",
             "svc-1",
@@ -2328,7 +2351,7 @@ async fn upgrade_window_get_supports_oauth_and_preserves_sparse_json() {
             "--url",
             &mock.uri(),
             "--json",
-            "service",
+            "clickhouse",
             "upgrade-window",
             "get",
             "svc-1",
@@ -2362,7 +2385,7 @@ async fn upgrade_window_get_human_output_names_weekday_and_labels_duration() {
     let output = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "upgrade-window",
             "get",
             "svc-1",
@@ -2402,7 +2425,7 @@ async fn upgrade_window_set_sends_exact_body_with_basic_auth() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "upgrade-window",
             "set",
             "svc-1",
@@ -2441,7 +2464,7 @@ async fn upgrade_window_delete_uses_basic_auth_and_prints_delete_envelope() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "upgrade-window",
             "delete",
             "svc-1",
@@ -2467,7 +2490,7 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "settings",
             "set",
             "svc-1",
@@ -2516,7 +2539,14 @@ async fn service_settings_list_renders_mixed_json_types_and_sparse_rows() {
         .await;
     // JSON mode passes the response through; the OAuth read-routes test
     // covers it. The table is the handler's own rendering.
-    let args = ["service", "settings", "list", "svc-1", "--org-id", "org-1"];
+    let args = [
+        "clickhouse",
+        "settings",
+        "list",
+        "svc-1",
+        "--org-id",
+        "org-1",
+    ];
     let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
     assert_success(&human);
     let stdout = String::from_utf8(human.stdout).unwrap();
@@ -2577,7 +2607,7 @@ async fn service_snapshot_reads_use_exact_routes_and_preserve_json() {
             .expect(1)
             .mount(&mock)
             .await;
-        let mut full = vec!["service", "snapshot"];
+        let mut full = vec!["clickhouse", "snapshot"];
         full.extend(args);
         full.extend(["--org-id", "org-1"]);
         let json = invoke_cli_with_cloud_credentials(&mock, &full);
@@ -2605,7 +2635,13 @@ async fn service_snapshot_config_patch_sends_the_builder_body() {
         .mount(&mock)
         .await;
     let mut args = vec![
-        "service", "snapshot", "config", "update", "svc-1", "--org-id", "org-1",
+        "clickhouse",
+        "snapshot",
+        "config",
+        "update",
+        "svc-1",
+        "--org-id",
+        "org-1",
     ];
     args.extend(["--enabled", "true", "--gap", "30", "--time-frame", "1440"]);
     let output = invoke_cli_with_cloud_credentials(&mock, &args);
@@ -2661,7 +2697,7 @@ async fn replica_aware_routing_get_supports_oauth_and_human_output() {
             "--url",
             &mock.uri(),
             "--json",
-            "service",
+            "clickhouse",
             "replica-aware-routing",
             "get",
             "svc-1",
@@ -2680,7 +2716,7 @@ async fn replica_aware_routing_get_supports_oauth_and_human_output() {
     let human = invoke_cli_with_cloud_credentials_human(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "replica-aware-routing",
             "get",
             "svc-1",
@@ -2716,7 +2752,7 @@ async fn replica_aware_routing_update_sends_each_flag_to_its_field_with_basic_au
         .mount(&mock)
         .await;
     let mut args = vec![
-        "service",
+        "clickhouse",
         "replica-aware-routing",
         "update",
         "svc-1",
@@ -2755,7 +2791,14 @@ async fn snapshot_list_reads_every_page_in_json_and_human_output() {
         2,
     )
     .await;
-    let args = ["service", "snapshot", "list", "svc-1", "--org-id", "org-1"];
+    let args = [
+        "clickhouse",
+        "snapshot",
+        "list",
+        "svc-1",
+        "--org-id",
+        "org-1",
+    ];
     let json = invoke_cli_with_cloud_credentials(&mock, &args);
     assert_success(&json);
     assert_eq!(
@@ -2843,7 +2886,13 @@ async fn service_dotenv_edits_env_in_place_without_a_password() {
         &mock,
         dir.path(),
         true,
-        &["service", "dotenv", DOTENV_SERVICE_ID, "--org-id", "org-1"],
+        &[
+            "clickhouse",
+            "dotenv",
+            DOTENV_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ],
     );
     assert_success(&output);
     assert_eq!(
@@ -2877,7 +2926,7 @@ async fn service_dotenv_edits_env_in_place_without_a_password() {
         dir.path(),
         false,
         &[
-            "service",
+            "clickhouse",
             "dotenv",
             DOTENV_SERVICE_ID,
             "--org-id",
@@ -2904,7 +2953,13 @@ async fn service_dotenv_without_endpoints_fails_and_writes_nothing() {
         &mock,
         dir.path(),
         true,
-        &["service", "dotenv", DOTENV_SERVICE_ID, "--org-id", "org-1"],
+        &[
+            "clickhouse",
+            "dotenv",
+            DOTENV_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ],
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
@@ -2938,7 +2993,7 @@ async fn service_create_dotenv_writes_the_password_and_keeps_it_off_stdout() {
             dir.path(),
             json,
             &[
-                "service",
+                "clickhouse",
                 "create",
                 "--name",
                 "analytics",
@@ -2979,7 +3034,7 @@ async fn service_create_without_dotenv_still_prints_the_password() {
         dir.path(),
         true,
         &[
-            "service",
+            "clickhouse",
             "create",
             "--name",
             "analytics",
@@ -2993,7 +3048,7 @@ async fn service_create_without_dotenv_still_prints_the_password() {
     assert!(result.get("dotenv").is_none());
     assert_eq!(
         result["next"]["command"],
-        format!("clickhousectl cloud service get {DOTENV_SERVICE_ID} --org-id org-1 --json")
+        format!("clickhousectl cloud clickhouse get {DOTENV_SERVICE_ID} --org-id org-1 --json")
     );
     assert!(!dir.path().join(".env").exists());
 }
@@ -3009,7 +3064,7 @@ async fn service_create_dotenv_rejects_an_unwritable_target_before_creating() {
             dir.path(),
             true,
             &[
-                "service",
+                "clickhouse",
                 "create",
                 "--name",
                 "analytics",

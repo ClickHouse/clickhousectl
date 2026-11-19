@@ -253,7 +253,7 @@ CONTEXT FOR AGENTS:
   --tag and --search match only the tags and displayName stored on the alert, not those
   inherited from its saved search or dashboard.")]
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -261,7 +261,7 @@ CONTEXT FOR AGENTS:
     },
     /// Get ClickStack alert details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -277,7 +277,7 @@ CONTEXT FOR AGENTS:
   or dashboard's (inline alerts default to none).
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -299,7 +299,7 @@ CONTEXT FOR AGENTS:
   or dashboard's (inline alerts default to none).
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -315,7 +315,7 @@ CONTEXT FOR AGENTS:
     },
     /// Delete a ClickStack alert
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -421,14 +421,14 @@ impl AlertCommands {
 pub enum WebhookCommands {
     /// List ClickStack webhooks
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Create a ClickStack webhook
     #[command(after_help = WEBHOOK_BODY_CONTEXT)]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -443,7 +443,7 @@ pub enum WebhookCommands {
     /// Replace a ClickStack webhook
     #[command(after_help = WEBHOOK_BODY_CONTEXT)]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -459,7 +459,7 @@ pub enum WebhookCommands {
     },
     /// Delete a ClickStack webhook
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -471,7 +471,7 @@ CONTEXT FOR AGENTS:
   Validation never persists the webhook and does not check name uniqueness.
   Uses API key authentication under the CLI's write-command policy.")]
     Validate {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Webhook JSON body path, or `-` for stdin
@@ -503,13 +503,13 @@ impl WebhookCommands {
 pub enum DashboardCommands {
     /// List ClickStack dashboards
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack dashboard details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -521,7 +521,7 @@ CONTEXT FOR AGENTS:
   Requires name and tiles; each tile needs name, x, y, w and h, and its config holds the chart.
   Check a body first with `clickstack dashboard validate`.")]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -540,7 +540,7 @@ CONTEXT FOR AGENTS:
   Every existing filter must retain its `id` in the request body.
   Serialize edits to one dashboard; concurrent updates can overwrite each other.")]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -556,7 +556,7 @@ CONTEXT FOR AGENTS:
     },
     /// Delete a ClickStack dashboard
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -569,7 +569,7 @@ CONTEXT FOR AGENTS:
   Validation never persists the dashboard.
   Uses API key authentication under the CLI's write-command policy.")]
     Validate {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// Dashboard create JSON body path, or `-` for stdin
@@ -601,13 +601,13 @@ impl DashboardCommands {
 pub enum SavedSearchCommands {
     /// List ClickStack saved searches
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack saved search details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -616,7 +616,7 @@ pub enum SavedSearchCommands {
     /// Create a ClickStack saved search
     #[command(after_help = SAVED_SEARCH_BODY_CONTEXT)]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -631,7 +631,7 @@ pub enum SavedSearchCommands {
     /// Replace a ClickStack saved search
     #[command(after_help = SAVED_SEARCH_BODY_CONTEXT)]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -647,7 +647,7 @@ pub enum SavedSearchCommands {
     },
     /// Delete a ClickStack saved search
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -668,13 +668,13 @@ impl SavedSearchCommands {
 pub enum SourceCommands {
     /// List ClickStack sources
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack source details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -683,7 +683,7 @@ pub enum SourceCommands {
     /// Create a ClickStack source
     #[command(after_help = SOURCE_BODY_CONTEXT)]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -698,7 +698,7 @@ pub enum SourceCommands {
     /// Replace a ClickStack source
     #[command(after_help = SOURCE_BODY_CONTEXT)]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -714,7 +714,7 @@ pub enum SourceCommands {
     },
     /// Delete a ClickStack source
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -735,13 +735,13 @@ impl SourceCommands {
 pub enum RoleCommands {
     /// List ClickStack roles
     List {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
     /// Get ClickStack role details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -753,7 +753,7 @@ CONTEXT FOR AGENTS:
   Requires name and permissions (description optional). Each permission needs action, subject
   and integration (clickhouse or mongodb); conditions, fields and inverted are optional.")]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         /// JSON request body path, or `-` for stdin
@@ -771,7 +771,7 @@ CONTEXT FOR AGENTS:
   Requires permissions, shaped as for `role create`; name and description are optional.
   `permissions` is the complete role permission set.")]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]
@@ -787,7 +787,7 @@ CONTEXT FOR AGENTS:
     },
     /// Delete a ClickStack role
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
         #[command(flatten)]

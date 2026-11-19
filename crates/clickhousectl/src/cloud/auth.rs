@@ -185,7 +185,7 @@ pub async fn run_with_client(
 
 impl CloudClient {
     /// Resolve the caller behind the active credentials; not organization-scoped.
-    /// Also identifies the key `cloud service query` binds to an endpoint (#1043).
+    /// Also identifies the key `cloud clickhouse query` binds to an endpoint (#1043).
     pub(crate) async fn get_whoami(&self) -> CloudResult<Whoami> {
         let response = self.api().whoami_get().await.map_err(|error| {
             // whoami answers any credential the API accepts, so its 403

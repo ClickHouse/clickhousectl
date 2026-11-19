@@ -15,43 +15,43 @@ use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
-    Permission::api("service list", &[&op::INSTANCE_GET_LIST]),
-    Permission::api("service get", &[&op::INSTANCE_GET])
+    Permission::api("clickhouse list", &[&op::INSTANCE_GET_LIST]),
+    Permission::api("clickhouse get", &[&op::INSTANCE_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service dotenv", &[&op::INSTANCE_GET])
+    Permission::api("clickhouse dotenv", &[&op::INSTANCE_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service profile list", &[&op::SERVICE_PROFILES_LIST]),
+    Permission::api("clickhouse profile list", &[&op::SERVICE_PROFILES_LIST]),
     Permission::api(
-        "service settings list",
+        "clickhouse settings list",
         &[&op::SERVICE_CLICKHOUSE_SETTINGS_LIST_GET],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service settings get",
+        "clickhouse settings get",
         &[&op::SERVICE_CLICKHOUSE_SETTING_GET],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service settings schema",
+        "clickhouse settings schema",
         &[&op::SERVICE_CLICKHOUSE_SETTINGS_SCHEMA_GET],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service settings set",
+        "clickhouse settings set",
         &[&op::SERVICE_CLICKHOUSE_SETTINGS_UPDATE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service settings unset",
+        "clickhouse settings unset",
         &[&op::SERVICE_CLICKHOUSE_SETTING_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service scaling-schedule get", &[&op::SCALING_SCHEDULE_GET]).when(&[
+    Permission::api("clickhouse scaling-schedule get", &[&op::SCALING_SCHEDULE_GET]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service scaling-schedule set",
+        "clickhouse scaling-schedule set",
         &[&op::SCALING_SCHEDULE_UPSERT],
     )
     .when(&[
@@ -59,25 +59,25 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service scaling-schedule delete",
+        "clickhouse scaling-schedule delete",
         &[&op::SCALING_SCHEDULE_DELETE],
     )
     .when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
-    Permission::api("service start", &[&op::INSTANCE_STATE_UPDATE])
+    Permission::api("clickhouse start", &[&op::INSTANCE_STATE_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service wake", &[&op::INSTANCE_STATE_UPDATE])
+    Permission::api("clickhouse wake", &[&op::INSTANCE_STATE_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service stop", &[&op::INSTANCE_STATE_UPDATE])
+    Permission::api("clickhouse stop", &[&op::INSTANCE_STATE_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service scale", &[&op::INSTANCE_REPLICA_SCALING_UPDATE])
+    Permission::api("clickhouse scale", &[&op::INSTANCE_REPLICA_SCALING_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service reset-password", &[&op::INSTANCE_PASSWORD_UPDATE])
+    Permission::api("clickhouse reset-password", &[&op::INSTANCE_PASSWORD_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service query-endpoint get",
+        "clickhouse query-endpoint get",
         &[&op::INSTANCE_QUERY_ENDPOINT_GET],
     )
     .when(&[
@@ -85,7 +85,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service query-endpoint create",
+        "clickhouse query-endpoint create",
         &[
             &op::INSTANCE_QUERY_ENDPOINT_GET,
             &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
@@ -96,7 +96,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service query-endpoint delete",
+        "clickhouse query-endpoint delete",
         &[&op::INSTANCE_QUERY_ENDPOINT_DELETE],
     )
     .when(&[
@@ -104,28 +104,28 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service private-endpoint create",
+        "clickhouse private-endpoint create",
         &[&op::INSTANCE_PRIVATE_ENDPOINT_CREATE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service private-endpoint get-config",
+        "clickhouse private-endpoint get-config",
         &[&op::INSTANCE_PRIVATE_ENDPOINT_CONFIG_GET],
     )
     .when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
-    Permission::api("service upgrade-window get", &[&op::UPGRADE_WINDOW_GET]).when(&[
+    Permission::api("clickhouse upgrade-window get", &[&op::UPGRADE_WINDOW_GET]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
-    Permission::api("service upgrade-window set", &[&op::UPGRADE_WINDOW_UPDATE]).when(&[
+    Permission::api("clickhouse upgrade-window set", &[&op::UPGRADE_WINDOW_UPDATE]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service upgrade-window delete",
+        "clickhouse upgrade-window delete",
         &[&op::UPGRADE_WINDOW_DELETE],
     )
     .when(&[
@@ -133,7 +133,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service replica-aware-routing get",
+        "clickhouse replica-aware-routing get",
         &[&op::REPLICA_AWARE_ROUTING_GET],
     )
     .when(&[
@@ -141,26 +141,26 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service replica-aware-routing update",
+        "clickhouse replica-aware-routing update",
         &[&op::REPLICA_AWARE_ROUTING_UPDATE],
     )
     .when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         CONFIRM_SERVICE,
     ]),
-    Permission::api("service jwt-provider list", &[&op::JWT_PROVIDER_GET_LIST])
+    Permission::api("clickhouse jwt-provider list", &[&op::JWT_PROVIDER_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service jwt-provider get", &[&op::JWT_PROVIDER_GET])
+    Permission::api("clickhouse jwt-provider get", &[&op::JWT_PROVIDER_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service jwt-provider create", &[&op::JWT_PROVIDER_CREATE])
+    Permission::api("clickhouse jwt-provider create", &[&op::JWT_PROVIDER_CREATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service jwt-provider update", &[&op::JWT_PROVIDER_UPDATE])
+    Permission::api("clickhouse jwt-provider update", &[&op::JWT_PROVIDER_UPDATE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service jwt-provider delete", &[&op::JWT_PROVIDER_DELETE])
+    Permission::api("clickhouse jwt-provider delete", &[&op::JWT_PROVIDER_DELETE])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
+    Permission::api("clickhouse prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service create", &[&op::INSTANCE_CREATE])
+    Permission::api("clickhouse create", &[&op::INSTANCE_CREATE])
         .when(&[Conditional::new(
             "Dynamic BYOC profile",
             &[&op::SERVICE_PROFILES_LIST],
@@ -169,12 +169,12 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             "--deletion-protection also needs control-plane:service:delete on every service in \
              the organization.",
         ),
-    Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
+    Permission::api("clickhouse delete", &[&op::INSTANCE_DELETE]).when(&[
         Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
         Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
         Conditional::new("Diagnosing a rejected delete", &[&op::INSTANCE_GET]),
     ]),
-    Permission::api("service update", &[&op::INSTANCE_UPDATE])
+    Permission::api("clickhouse update", &[&op::INSTANCE_UPDATE])
         .when(&[
             Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
             Conditional::new("Removing IPs/endpoints/tags", &[&op::INSTANCE_GET]),
@@ -182,7 +182,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .authorization(
             "Changing --deletion-protection also needs control-plane:service:delete on the service.",
         ),
-    Permission::api("service query", &[])
+    Permission::api("clickhouse query", &[])
         .when(&[
             Conditional::new("service ID", &[&op::INSTANCE_GET]),
             Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
@@ -197,7 +197,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             ),
         ])
         .authorization("SQL uses database privileges; OAuth permits read-only SELECT."),
-    Permission::api("service client", &[])
+    Permission::api("clickhouse client", &[])
         .when(&[
             Conditional::new("service ID", &[&op::INSTANCE_GET]),
             Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
@@ -763,7 +763,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         // It execs a local program and fails with local errors, so
         // `cloud::run` hands it to `service_client` before this router.
         ServiceCommands::Client(_) => Err(crate::cloud::client::CloudError::new(
-            "`cloud service client` is not routed through the Cloud command dispatcher",
+            "`cloud clickhouse client` is not routed through the Cloud command dispatcher",
         )),
     }
 }

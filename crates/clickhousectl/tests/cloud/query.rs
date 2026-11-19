@@ -1,4 +1,4 @@
-//! `cloud service query` and `cloud service client`: auth modes, first-use key binding, waking and
+//! `cloud clickhouse query` and `cloud clickhouse client`: auth modes, first-use key binding, waking and
 //! timeouts (src/cloud/services/query.rs, query_key.rs, native_client.rs).
 
 use std::io::Write as _;
@@ -13,7 +13,7 @@ use crate::support::*;
 
 // ── Service query auth modes (issue #247) ──────────────────────────────────
 //
-// `cloud service query` has two auth paths:
+// `cloud clickhouse query` has two auth paths:
 //   - API key auth: the active API key is tried directly, and bound to the
 //     endpoint only if the endpoint rejects it (#1043).
 //   - OAuth: the user's own bearer token is sent directly to the query host
@@ -58,7 +58,7 @@ async fn invoke_oauth_service_query_response(
         "cloud".to_string(),
         "--url".to_string(),
         url,
-        "service".to_string(),
+        "clickhouse".to_string(),
         "query".to_string(),
         "--id".to_string(),
         TEST_SERVICE_ID.to_string(),
@@ -117,7 +117,7 @@ enum StdinPlan<'a> {
     IdleOpen,
 }
 
-/// Run `cloud service query` over OAuth with a caller-chosen stdin. Returns
+/// Run `cloud clickhouse query` over OAuth with a caller-chosen stdin. Returns
 /// the process output plus both mocks so a test can assert that nothing was
 /// requested at all.
 async fn invoke_oauth_service_query_with_stdin(
@@ -142,7 +142,7 @@ async fn invoke_oauth_service_query_with_stdin(
         "cloud".to_string(),
         "--url".to_string(),
         control.uri(),
-        "service".to_string(),
+        "clickhouse".to_string(),
         "query".to_string(),
         "--id".to_string(),
         TEST_SERVICE_ID.to_string(),
@@ -305,7 +305,7 @@ fn assert_invalid_utf8_query_input(output: &std::process::Output) {
     // The native-client way out, by its commands.
     for expected in [
         "clickhousectl local use latest",
-        "clickhousectl cloud service client <service-id> --query",
+        "clickhousectl cloud clickhouse client <service-id> --query",
     ] {
         assert!(
             stderr.contains(expected),
@@ -456,7 +456,7 @@ async fn service_query_runs_with_each_selector_form() {
             "cloud",
             "--url",
             url.as_str(),
-            "service",
+            "clickhouse",
             "query",
             "--org-id",
             "org-1",
@@ -511,7 +511,7 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
                 "cloud",
                 "--url",
                 control_url.as_str(),
-                "service",
+                "clickhouse",
                 "query",
                 "--id",
                 TEST_SERVICE_ID,
@@ -596,7 +596,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -669,7 +669,7 @@ async fn service_query_uses_an_already_authorized_api_key_without_provisioning()
             "cloud",
             "--url",
             &control.uri(),
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -1164,9 +1164,9 @@ async fn first_use_binds_the_caller_key_alongside_the_existing_bindings() {
         })
     );
 
-    // Every call the run made is one `service query --help` advertises.
+    // Every call the run made is one `clickhouse query --help` advertises.
     let help_mock = MockServer::start().await;
-    let help = permission_help(&help_mock, &["service", "query"], "--help");
+    let help = permission_help(&help_mock, &["clickhouse", "query"], "--help");
     assert_observed_permissions_advertised(&control, &help).await;
 }
 
@@ -1404,7 +1404,7 @@ async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_wh
     for fragment in [
         CALLER_KEY_UUID,
         "2s",
-        "cloud service query-endpoint get",
+        "cloud clickhouse query-endpoint get",
         "cloud key get",
     ] {
         assert!(message.contains(fragment), "{fragment}: {message}");
@@ -1643,7 +1643,7 @@ async fn a_forbidden_first_use_bind_exits_1_with_its_own_code() {
     assert_eq!(
         error["command"],
         format!(
-            "clickhousectl cloud service query-endpoint get {TEST_SERVICE_ID} --org-id \
+            "clickhousectl cloud clickhouse query-endpoint get {TEST_SERVICE_ID} --org-id \
              {FIRST_USE_ORG_ID}"
         )
     );
@@ -1705,7 +1705,7 @@ async fn first_use_query_from_a_read_only_directory_writes_nothing_locally() {
             "fake-key-for-tests",
             "--api-secret",
             "fake-secret-for-tests",
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -2033,7 +2033,7 @@ async fn first_use_query_fails_immediately_when_the_service_is_stopped() {
     assert!(lines[1].starts_with("Error: "), "{stderr}");
     assert!(
         lines[1].contains(&format!(
-            "`clickhousectl cloud service start {TEST_SERVICE_ID} --org-id {FIRST_USE_ORG_ID}`"
+            "`clickhousectl cloud clickhouse start {TEST_SERVICE_ID} --org-id {FIRST_USE_ORG_ID}`"
         )),
         "{stderr}"
     );
@@ -2069,7 +2069,7 @@ async fn invoke_oauth_service_query_error(body: &str) -> std::process::Output {
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -2166,7 +2166,7 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -2230,7 +2230,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             "cloud",
             "--url",
             &url,
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -2258,7 +2258,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
     );
     assert!(
         stderr.contains(&format!(
-            "`clickhousectl cloud service start {TEST_SERVICE_ID} --org-id org-1`"
+            "`clickhousectl cloud clickhouse start {TEST_SERVICE_ID} --org-id org-1`"
         )),
         "{stderr}"
     );
@@ -2358,7 +2358,7 @@ async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
     // The rerun names the same service and org; it needs no password.
     assert!(
         stderr.contains(&format!(
-            "clickhousectl cloud service client {TEST_SERVICE_ID} --org-id org-1 \
+            "clickhousectl cloud clickhouse client {TEST_SERVICE_ID} --org-id org-1 \
              --query '<your SQL>'"
         )),
         "{stderr}"
@@ -2404,7 +2404,7 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
     assert_eq!(
         error["error"]["command"],
         format!(
-            "clickhousectl cloud service client {TEST_SERVICE_ID} --org-id org-1 \
+            "clickhousectl cloud clickhouse client {TEST_SERVICE_ID} --org-id org-1 \
              --query '<your SQL>'"
         )
     );
@@ -2417,9 +2417,9 @@ async fn query_gateway_timeout_json_emits_a_structured_error() {
     );
 }
 
-// ── cloud service client (#1154) ───────────────────────────────────────────
+// ── cloud clickhouse client (#1154) ────────────────────────────────────────
 
-/// `cloud service client` looks the service's native endpoint up with the
+/// `cloud clickhouse client` looks the service's native endpoint up with the
 /// Cloud credentials, then execs the installed `clickhouse client` with that
 /// host and port, `--secure --login`, the queries, and the passthrough last.
 /// The fake client prints its argv, so the handoff is observed exactly; no
@@ -2442,7 +2442,7 @@ async fn service_client_execs_the_installed_client_against_the_native_endpoint()
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(project.path())
         .args(["cloud", "--url", &control.uri(), "--org-id", "org-1"])
-        .args(["service", "client", TEST_SERVICE_ID, "-q", "SELECT 1"])
+        .args(["clickhouse", "client", TEST_SERVICE_ID, "-q", "SELECT 1"])
         .args(["--", "--format", "CSV"])
         .stdin(Stdio::null())
         .output()
@@ -2475,7 +2475,7 @@ async fn service_client_execs_the_installed_client_against_the_native_endpoint()
         assert!(!argv.contains(&secret));
     }
 
-    let help = permission_help(&control, &["service", "client"], "--help");
+    let help = permission_help(&control, &["clickhouse", "client"], "--help");
     assert_observed_permissions_advertised(&control, &help).await;
 }
 
@@ -2506,7 +2506,7 @@ async fn service_client_too_old_build_reports_a_typed_json_error() {
             "org-1",
             "--json",
         ])
-        .args(["service", "client", TEST_SERVICE_ID])
+        .args(["clickhouse", "client", TEST_SERVICE_ID])
         .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
@@ -2576,7 +2576,7 @@ fn assert_query_wake_timeout_in_org(output: &std::process::Output, json: bool, o
         assert_eq!(error["code"], "query_timeout");
         assert_eq!(
             error["command"],
-            format!("clickhousectl cloud service get {TEST_SERVICE_ID} --org-id {org_id}")
+            format!("clickhousectl cloud clickhouse get {TEST_SERVICE_ID} --org-id {org_id}")
         );
         assert!(error.get("host").is_none());
         assert!(error.get("port").is_none());
@@ -2588,7 +2588,7 @@ fn assert_query_wake_timeout_in_org(output: &std::process::Output, json: bool, o
     // diagnosis's statement check or native client.
     assert!(
         message.contains(&format!(
-            "`clickhousectl cloud service get {TEST_SERVICE_ID} --org-id {org_id}`"
+            "`clickhousectl cloud clickhouse get {TEST_SERVICE_ID} --org-id {org_id}`"
         )),
         "{message}"
     );

@@ -277,7 +277,7 @@ async fn mount_backup_config_patch(mock: &MockServer) {
 
 fn backup_config_update_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
-        "service",
+        "clickhouse",
         "backup-config",
         "update",
         "svc-1",
@@ -386,7 +386,7 @@ async fn backup_config_clear_start_time_sends_an_explicit_null() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service",
+            "clickhouse",
             "backup-config",
             "update",
             "svc-1",

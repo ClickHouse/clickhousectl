@@ -1,4 +1,4 @@
-//! `cloud service client`: hand the terminal to the local `clickhouse client`,
+//! `cloud clickhouse client`: hand the terminal to the local `clickhouse client`,
 //! connected to the service's native TLS endpoint and signed in with the
 //! client's own `--login` browser flow (#1154).
 //!

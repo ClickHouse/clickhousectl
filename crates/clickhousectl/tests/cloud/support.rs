@@ -449,7 +449,7 @@ pub(crate) fn service_query_process_in_org(
             "cloud",
             "--url",
             &control.uri(),
-            "service",
+            "clickhouse",
             "query",
             "--id",
             TEST_SERVICE_ID,
@@ -492,7 +492,7 @@ pub(crate) fn cdc_scaling_envelope(result: Value) -> ResponseTemplate {
     }))
 }
 
-/// Run `cloud service query` with API-key auth against a query host that
+/// Run `cloud clickhouse query` with API-key auth against a query host that
 /// fails with `status`/`body`. Returns the process output and the query host,
 /// so a test can count how many times the statement was actually sent.
 pub(crate) async fn invoke_service_query_against_failing_query_host(

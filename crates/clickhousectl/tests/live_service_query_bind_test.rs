@@ -1,4 +1,4 @@
-//! Live coverage of `cloud service query` Query API access through the real
+//! Live coverage of `cloud clickhouse query` Query API access through the real
 //! `clickhousectl` binary.
 //!
 //! It covers first use (#1043): the CLI binds the caller's own API key (its
@@ -308,7 +308,7 @@ impl Cli {
     /// [`Self::query`] with extra flags.
     fn query_with(&self, service_id: &str, json: bool, extra: &[&str]) -> TestResult<Output> {
         let mut args = vec![
-            "service",
+            "clickhouse",
             "query",
             "--id",
             service_id,

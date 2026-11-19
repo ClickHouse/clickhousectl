@@ -113,7 +113,7 @@ async fn corrupt_credentials_file_fails_closed_and_is_reported_by_status() {
     std::fs::write(credentials_dir.join("credentials.json"), b"{corrupt\n").unwrap();
 
     let output = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit")
-        .args(["service", "list", "--org-id", "org-1"])
+        .args(["clickhouse", "list", "--org-id", "org-1"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -160,7 +160,7 @@ async fn invoke_service_list_api_error(status: u16, message: &str) -> std::proce
         .mount(&mock)
         .await;
 
-    invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", "org-1"])
+    invoke_cli_with_cloud_credentials(&mock, &["clickhouse", "list", "--org-id", "org-1"])
 }
 
 #[tokio::test]
@@ -464,8 +464,8 @@ async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode()
         (
             format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}"),
             "service",
-            vec!["service", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
-            format!("clickhousectl cloud service list --org-id {LOOKUP_ORG_ID}"),
+            vec!["clickhouse", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            format!("clickhousectl cloud clickhouse list --org-id {LOOKUP_ORG_ID}"),
         ),
         (
             format!("/v1/organizations/{UNKNOWN_UUID}"),
@@ -502,7 +502,7 @@ async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode()
 }
 
 /// The API answers a bare 400 to a DELETE of a service that is still
-/// provisioning. The service exists, so neither `service delete` (with or
+/// provisioning. The service exists, so neither `clickhouse delete` (with or
 /// without `--force`) nor `postgres delete` may report it as
 /// `resource_not_found`, which automation reads as already gone (#1226).
 #[tokio::test]
@@ -517,13 +517,19 @@ async fn delete_rejected_with_400_for_an_existing_service_is_not_resource_not_fo
     let postgres_path = unknown_postgres_path("");
     for (args, resource_path, reads) in [
         (
-            vec!["service", "delete", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            vec![
+                "clickhouse",
+                "delete",
+                UNKNOWN_UUID,
+                "--org-id",
+                LOOKUP_ORG_ID,
+            ],
             service_path.clone(),
             1,
         ),
         (
             vec![
-                "service",
+                "clickhouse",
                 "delete",
                 UNKNOWN_UUID,
                 "--org-id",
@@ -568,7 +574,7 @@ async fn delete_rejected_with_400_for_an_existing_service_is_not_resource_not_fo
         let error = cloud_runtime_error(&output);
         assert_eq!(error["code"], "http_4xx", "{args:?}: {error}");
         assert!(error.get("command").is_none(), "{args:?}: {error}");
-        if args[0] == "service" {
+        if args[0] == "clickhouse" {
             let message = error["message"].as_str().unwrap();
             assert!(message.contains(UNKNOWN_UUID), "{message}");
             assert!(message.contains("'provisioning'"), "{message}");
@@ -596,8 +602,8 @@ async fn deleted_resource_404_get_and_delete_have_structured_scope_and_guidance(
     // Each wrapper's lookup refinement once; the output mode alternates because
     // human and JSON rendering of the refined error is shared.
     for (domain, collection, operation, human) in [
-        ("service", "services", "get", false),
-        ("service", "services", "delete", true),
+        ("clickhouse", "services", "get", false),
+        ("clickhouse", "services", "delete", true),
         ("postgres", "postgres", "get", true),
         ("postgres", "postgres", "delete", false),
         ("org", "", "get", false),
@@ -687,7 +693,7 @@ async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing
         let output = invoke_cli_with_cloud_credentials(
             &mock,
             &[
-                "service",
+                "clickhouse",
                 "query-endpoint",
                 "get",
                 UNKNOWN_UUID,
@@ -729,14 +735,18 @@ async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing
 async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
     const SERVICE: &str = "11111111-2222-4333-8444-555555555555";
     let org = LOOKUP_ORG_ID;
-    let service_list = format!("clickhousectl cloud service list --org-id {org}");
+    let service_list = format!("clickhousectl cloud clickhouse list --org-id {org}");
     let in_service =
         |command: &str| format!("clickhousectl cloud {command} {SERVICE} --org-id {org}");
     let cases: Vec<(Vec<&str>, &[&str], String)> = vec![
         // The service itself is missing.
-        (vec!["service", "stop", SERVICE], &[], service_list.clone()),
         (
-            vec!["service", "settings", "list", SERVICE],
+            vec!["clickhouse", "stop", SERVICE],
+            &[],
+            service_list.clone(),
+        ),
+        (
+            vec!["clickhouse", "settings", "list", SERVICE],
             &[],
             service_list.clone(),
         ),
@@ -786,27 +796,27 @@ async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
         // A service's singleton settings, and a Postgres service's
         // observability, name the missing parent (#1315).
         (
-            vec!["service", "upgrade-window", "get", SERVICE],
+            vec!["clickhouse", "upgrade-window", "get", SERVICE],
             &[],
             service_list.clone(),
         ),
         (
-            vec!["service", "replica-aware-routing", "get", SERVICE],
+            vec!["clickhouse", "replica-aware-routing", "get", SERVICE],
             &[],
             service_list.clone(),
         ),
         (
-            vec!["service", "scaling-schedule", "get", SERVICE],
+            vec!["clickhouse", "scaling-schedule", "get", SERVICE],
             &[],
             service_list.clone(),
         ),
         (
-            vec!["service", "private-endpoint", "get-config", SERVICE],
+            vec!["clickhouse", "private-endpoint", "get-config", SERVICE],
             &[],
             service_list.clone(),
         ),
         (
-            vec!["service", "snapshot", "config", "get", SERVICE],
+            vec!["clickhouse", "snapshot", "config", "get", SERVICE],
             &[],
             service_list.clone(),
         ),
@@ -816,7 +826,7 @@ async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
             service_list.clone(),
         ),
         (
-            vec!["service", "backup-config", "get", SERVICE],
+            vec!["clickhouse", "backup-config", "get", SERVICE],
             &[],
             service_list.clone(),
         ),
@@ -857,7 +867,7 @@ async fn missing_resources_report_resource_not_found_on_by_id_and_name_paths() {
         ),
         // A name or email that matches nothing.
         (
-            vec!["service", "delete", "--name", "ghost"],
+            vec!["clickhouse", "delete", "--name", "ghost"],
             &["services"],
             service_list.clone(),
         ),
@@ -919,7 +929,7 @@ async fn subresource_404_under_an_existing_parent_keeps_the_original_error() {
     let postgres_path = format!("/v1/organizations/{org}/postgres/{SERVICE}");
     for (args, parent_path, leaf_path) in [
         (
-            vec!["service", "upgrade-window", "get", SERVICE],
+            vec!["clickhouse", "upgrade-window", "get", SERVICE],
             service_path.clone(),
             format!("{service_path}/upgradeWindow"),
         ),
@@ -1061,7 +1071,7 @@ async fn cloud_runtime_errors_classify_http_statuses_in_explicit_and_agent_json(
             .await;
         let dir = tempfile::tempdir().unwrap();
         let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(
@@ -1096,7 +1106,7 @@ async fn cloud_runtime_errors_cover_missing_auth_validation_transport_and_usage(
         missing_auth
             .env_remove("CLICKHOUSE_CLOUD_API_KEY")
             .env_remove("CLICKHOUSE_CLOUD_API_SECRET");
-        let missing_auth = missing_auth.args(["service", "list"]).output().unwrap();
+        let missing_auth = missing_auth.args(["clickhouse", "list"]).output().unwrap();
         assert_eq!(missing_auth.status.code(), Some(4));
         assert!(missing_auth.stdout.is_empty());
         assert_eq!(cloud_runtime_error(&missing_auth)["code"], "auth_required");
@@ -1110,7 +1120,7 @@ async fn cloud_runtime_errors_cover_missing_auth_validation_transport_and_usage(
         assert_eq!(cloud_runtime_error(&validation)["code"], "other");
 
         let transport = cloud_runtime_error_command(dir.path(), &closed_url, mode)
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(transport.status.code(), Some(1));
@@ -1118,7 +1128,7 @@ async fn cloud_runtime_errors_cover_missing_auth_validation_transport_and_usage(
         assert_eq!(cloud_runtime_error(&transport)["code"], "transport");
 
         let usage = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
-            .args(["service", "list", "--not-a-flag"])
+            .args(["clickhouse", "list", "--not-a-flag"])
             .output()
             .unwrap();
         assert_eq!(usage.status.code(), Some(2));
@@ -1166,7 +1176,7 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         let dir = tempfile::tempdir().unwrap();
         write_project_api_credentials(dir.path(), "file-key", "file-secret", &mock.uri());
         let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -1194,7 +1204,7 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
             // Even configured env values must not repair an unknown legacy issuer.
             .env("CLICKHOUSECTL_AUTH_URL", mock.uri())
             .env("CLICKHOUSECTL_CLIENT_ID", "must-not-be-used")
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(4));
@@ -1231,7 +1241,7 @@ async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
     )
     .unwrap();
     let output = command
-        .args(["service", "list", "--org-id", "org-1"])
+        .args(["clickhouse", "list", "--org-id", "org-1"])
         .output()
         .unwrap();
 
@@ -1351,7 +1361,7 @@ async fn api_key_precedence_skips_oauth_refresh_and_preserves_tokens() {
             _ => unreachable!(),
         }
         let output = command
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_eq!(
@@ -1417,7 +1427,7 @@ async fn incomplete_lower_priority_keys_do_not_prevent_oauth_refresh() {
             _ => unreachable!(),
         }
         let output = command
-            .args(["service", "list", "--org-id", "org-1"])
+            .args(["clickhouse", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
         assert_success(&output);
@@ -1464,7 +1474,7 @@ async fn closed_stdout_large_cloud_list_succeeds_in_human_and_json_modes() {
                 "test-key",
                 "--api-secret",
                 "test-secret",
-                "service",
+                "clickhouse",
                 "list",
                 "--org-id",
                 "org-1",
@@ -1506,7 +1516,7 @@ async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
                 "test-key",
                 "--api-secret",
                 "test-secret",
-                "service",
+                "clickhouse",
                 "list",
                 "--org-id",
                 "org-1",
@@ -1544,7 +1554,7 @@ async fn ambiguous_org_name_points_to_org_id_with_every_match() {
     .await;
 
     let output =
-        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-name", "shared"]);
+        invoke_cli_with_cloud_credentials(&mock, &["clickhouse", "list", "--org-name", "shared"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(output.stdout.is_empty());
     let message = cloud_runtime_error(&output)["message"]

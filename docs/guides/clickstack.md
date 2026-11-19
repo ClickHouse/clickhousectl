@@ -11,7 +11,7 @@ clickhousectl cloud clickstack source list <service-id>
 clickhousectl cloud clickstack source get <service-id> <source-id>
 ```
 
-The service ID comes from `cloud service list`. Child IDs come from each ClickStack resource's list command; a child's `--name` never selects the parent service. Use a source appropriate for the data you want to chart.
+The service ID comes from `cloud clickhouse list`. Child IDs come from each ClickStack resource's list command; a child's `--name` never selects the parent service. Use a source appropriate for the data you want to chart.
 
 ## Validate and create a dashboard
 

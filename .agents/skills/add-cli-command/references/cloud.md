@@ -29,7 +29,7 @@ other endpoints.
    `Conditional` groups. `Conditional::flag` also checks that the flag exists.
 
    ```rust
-   Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
+   Permission::api("clickhouse delete", &[&op::INSTANCE_DELETE]).when(&[
        Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
        Conditional::new("Diagnosing a rejected delete", &[&op::INSTANCE_GET]),
    ])

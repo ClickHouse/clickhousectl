@@ -10,12 +10,12 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("backup bucket create", &[&op::BACKUP_BUCKET_CREATE]).when(&[CONFIRM_SERVICE]),
     Permission::api("backup bucket update", &[&op::BACKUP_BUCKET_UPDATE]).when(&[CONFIRM_SERVICE]),
     Permission::api("backup bucket delete", &[&op::BACKUP_BUCKET_DELETE]).when(&[CONFIRM_SERVICE]),
-    Permission::api("service snapshot list", &[&op::SNAPSHOT_GET_LIST])
+    Permission::api("clickhouse snapshot list", &[&op::SNAPSHOT_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
-    Permission::api("service snapshot get", &[&op::SNAPSHOT_GET])
+    Permission::api("clickhouse snapshot get", &[&op::SNAPSHOT_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api(
-        "service snapshot config get",
+        "clickhouse snapshot config get",
         &[&op::SNAPSHOT_CONFIGURATION_GET],
     )
     .when(&[
@@ -23,7 +23,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service snapshot config update",
+        "clickhouse snapshot config update",
         &[&op::SNAPSHOT_CONFIGURATION_UPDATE],
     )
     .when(&[
@@ -31,7 +31,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service backup-config get",
+        "clickhouse backup-config get",
         &[&op::BACKUP_CONFIGURATION_GET],
     )
     .when(&[
@@ -39,7 +39,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_SERVICE,
     ]),
     Permission::api(
-        "service backup-config update",
+        "clickhouse backup-config update",
         &[&op::BACKUP_CONFIGURATION_UPDATE],
     )
     .when(&[
@@ -82,7 +82,7 @@ pub enum SnapshotCommands {
     Get {
         #[command(flatten)]
         service_id: NameSelector,
-        /// Snapshot ID (from `cloud service snapshot list`)
+        /// Snapshot ID (from `cloud clickhouse snapshot list`)
         #[arg(long)]
         snapshot_id: String,
     },
@@ -246,7 +246,7 @@ pub enum BackupCommands {
 
     /// Get backup details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
@@ -289,7 +289,7 @@ CONTEXT FOR AGENTS:
 pub enum BackupBucketCommands {
     /// Get backup bucket details
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
@@ -297,7 +297,7 @@ pub enum BackupBucketCommands {
     /// Create a backup bucket
     #[command(after_help = BUCKET_CREATE_CONTEXT)]
     Create {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
@@ -309,7 +309,7 @@ pub enum BackupBucketCommands {
     /// Update a backup bucket
     #[command(after_help = BUCKET_UPDATE_CONTEXT)]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
 
@@ -320,7 +320,7 @@ pub enum BackupBucketCommands {
 
     /// Delete a backup bucket
     Delete {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[arg(value_parser = NonEmptyStringValueParser::new())]
         service_id: String,
     },
@@ -341,7 +341,7 @@ impl BackupBucketCommands {
 pub enum BackupConfigCommands {
     /// Get the backup configuration
     Get {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[command(flatten)]
         service_id: NameSelector,
     },
@@ -359,7 +359,7 @@ pub enum BackupConfigCommands {
             ])
     ))]
     Update {
-        /// Service ID (from `cloud service list`)
+        /// Service ID (from `cloud clickhouse list`)
         #[command(flatten)]
         service_id: NameSelector,
 
@@ -1035,7 +1035,7 @@ mod tests {
                 true,
             ),
         ] {
-            let mut full = vec!["chctl", "cloud", "service", "snapshot"];
+            let mut full = vec!["chctl", "cloud", "clickhouse", "snapshot"];
             full.extend(args);
             let cli = Cli::try_parse_from(full).unwrap();
             let Commands::Cloud(cloud) = cli.command else {
@@ -1059,7 +1059,13 @@ mod tests {
         }
         for flags in [vec![], vec!["--gap", "30"], vec!["--time-frame", "1440"]] {
             let mut full = vec![
-                "chctl", "cloud", "service", "snapshot", "config", "update", "svc-1",
+                "chctl",
+                "cloud",
+                "clickhouse",
+                "snapshot",
+                "config",
+                "update",
+                "svc-1",
             ];
             full.extend(flags);
             assert_eq!(
@@ -1185,7 +1191,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "backup-config",
             "update",
             "svc-1",
@@ -1235,7 +1241,7 @@ mod tests {
         let result = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "backup-config",
             "update",
             "svc-1",
@@ -1270,7 +1276,7 @@ mod tests {
             !parse_backup_config(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "backup-config",
                 "get",
                 "svc-1",
@@ -1281,7 +1287,7 @@ mod tests {
             parse_backup_config(&[
                 "clickhousectl",
                 "cloud",
-                "service",
+                "clickhouse",
                 "backup-config",
                 "update",
                 "svc-1",
@@ -1581,7 +1587,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "backup-config",
             "update",
             "svc-1",
@@ -1618,7 +1624,7 @@ mod tests {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
-            "service",
+            "clickhouse",
             "backup-config",
             "update",
             "svc-1",

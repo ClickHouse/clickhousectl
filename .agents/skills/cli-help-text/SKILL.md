@@ -75,7 +75,7 @@ facts onto one line. Permission lines added by `permissions.rs` don't count towa
 Include only what changes what the agent does next:
 
 - An auth requirement or precondition ("must be stopped first"). If meeting it takes a command or flag, name
-  it: "stop first (`cloud service stop`)". The agent shouldn't have to guess or read more help to find it.
+  it: "stop first (`cloud clickhouse stop`)". The agent shouldn't have to guess or read more help to find it.
 - Runtime behaviour the flags don't show, when it affects how the command is used: timeouts, stdin handling,
   irreversibility, long waits, retry safety.
 - An output note, only if it changes what the agent does with the output.
@@ -85,7 +85,7 @@ Include only what changes what the agent does next:
 NEVER include implementation details, crate or file names, HTTP and API mechanics, storage paths, history or
 compatibility notes, reassurance, or anything already in the `about` line, the flag list or `[default:]`.
 
-Put shared context (auth model, typical flow) on the parent command, such as `cloud service` or
+Put shared context (auth model, typical flow) on the parent command, such as `cloud clickhouse` or
 `local clickhouse`. A leaf gets a block only for its own gotcha. A plain `get` or `list` usually needs none.
 
 Write it plainly. State the fact and, where it isn't obvious, the reason. Don't use capitals or "MUST" for
@@ -103,7 +103,7 @@ After:
 
 ```
 CONTEXT FOR AGENTS:
-Irreversible. Running service must be stopped first (--force or `cloud service stop`).
+Irreversible. Running service must be stopped first (--force or `cloud clickhouse stop`).
 ```
 
 ## Tests

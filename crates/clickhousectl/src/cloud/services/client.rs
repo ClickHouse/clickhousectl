@@ -467,8 +467,8 @@ impl CloudClient {
             // The API answers 400 rather than 404 for a well-formed id no
             // service has, and this GET has no other user-controlled input,
             // so that rejection is its way of saying the same thing (#666).
-            // Without this, `service delete --force` aborted on an id
-            // `service get` reports as missing.
+            // Without this, `clickhouse delete --force` aborted on an id
+            // `clickhouse get` reports as missing.
             Err(error) if lookup.rejected_well_formed_ids(&error) => Ok(None),
             Err(error) => Err(self.convert_error_for_lookup(error, lookup)),
         }

@@ -26,7 +26,7 @@ the workflow; those files are the rules.
 2. Work from the typed findings: `spec_pointer` is an RFC 6901 location in the live spec, `rust_item` the intended
    Rust location. The analyzer exits 0 even when it finds drift — read `has_drift`/`actionable_count`.
 3. Group the findings by library domain (`src/client/<domain>.rs`, `src/models/<domain>.rs`) and by the CLI command
-   group they would appear in (`cloud service`, `cloud postgres`, `cloud clickpipe`, `cloud org`, ...). Note the
+   group they would appear in (`cloud clickhouse`, `cloud postgres`, `cloud clickpipe`, `cloud org`, ...). Note the
    cross-cutting ones separately: enum values, deprecations, beta lists, stale exemptions, the snapshot itself.
 
 ## 2. Plan the PR pairs
