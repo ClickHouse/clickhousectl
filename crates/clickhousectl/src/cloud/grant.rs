@@ -105,7 +105,7 @@ impl AccessGrant {
     }
 
     /// The `role X` / `roles X, Y` phrase.
-    fn roles_phrase(&self) -> String {
+    pub fn roles_phrase(&self) -> String {
         let noun = if self.roles.len() == 1 {
             "role"
         } else {
@@ -115,17 +115,7 @@ impl AccessGrant {
     }
 }
 
-/// `expires 09:56Z`, with the date (`2026-11-20T09:56Z`) when it is not today
-/// in UTC, and `expired` once past.
-pub fn expiry_phrase(expires: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let verb = if expires <= now { "expired" } else { "expires" };
-    let time = if expires.date_naive() == now.date_naive() {
-        expires.format("%H:%MZ").to_string()
-    } else {
-        expires.format("%Y-%m-%dT%H:%MZ").to_string()
-    };
-    format!("{verb} {time}")
-}
+pub use crate::cloud::auth::expiry_phrase;
 
 /// The grant saved for the active credential, when that credential is the
 /// saved API key and the grant belongs to it.
@@ -146,12 +136,23 @@ pub fn grant_of(credentials: &crate::cloud::credentials::Credentials) -> Option<
         .filter(|grant| grant.api_key == key)
 }
 
-/// `auth status` Scope cell of the saved key: `<roles>, expires HH:MMZ`.
+/// `auth status` Scope cell of the saved key: `<roles>, expires HH:MMZ`, or
+/// only the roles once expired (the Status cell then names the expiry).
 pub fn status_scope(grant: &AccessGrant, now: DateTime<Utc>) -> String {
     match grant.expires() {
-        Some(expires) => format!("{}, {}", grant.role_labels(), expiry_phrase(expires, now)),
-        None => grant.role_labels(),
+        Some(expires) if expires > now => {
+            format!("{}, {}", grant.role_labels(), expiry_phrase(expires, now))
+        }
+        _ => grant.role_labels(),
     }
+}
+
+/// When the saved key's grant expired (`%Y-%m-%dT%H:%MZ`), once it is past.
+pub fn status_expired(grant: &AccessGrant, now: DateTime<Utc>) -> Option<String> {
+    grant
+        .expires()
+        .filter(|expires| *expires <= now)
+        .map(|expires| expires.format("%Y-%m-%dT%H:%MZ").to_string())
 }
 
 /// `auth status` JSON `write_access` of the saved key.
@@ -167,8 +168,60 @@ pub fn status_write_access(grant: &AccessGrant, now: DateTime<Utc>) -> String {
     text
 }
 
-const FIX_LINE: &str = "  Fix: `clickhousectl cloud access roles`, then `clickhousectl cloud access request \
-     --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`.";
+/// The `cloud access request` command line every recovery hint prints.
+macro_rules! access_request {
+    () => {
+        "clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\""
+    };
+}
+
+/// [`access_request!`] as a constant, for messages built at run time.
+pub(crate) const ACCESS_REQUEST: &str = access_request!();
+
+const FIX_LINE: &str = concat!(
+    "  Fix: `clickhousectl cloud access roles`, then `",
+    access_request!(),
+    "`."
+);
+
+/// The message for a command that would send the saved key after its grant
+/// expired (`expired`, `%Y-%m-%dT%H:%MZ`): it takes priority over the OAuth
+/// login, so say how to replace or clear it.
+pub fn expired_key_message(
+    grant: &AccessGrant,
+    expired: &str,
+    path: &str,
+    oauth_valid: bool,
+) -> String {
+    let mut lines = vec![format!(
+        "the saved API key for this project expired {expired}, and it takes priority over the \
+         OAuth login here."
+    )];
+    lines.extend(crate::cloud::saved_key::recovery_lines(
+        path,
+        Some(&grant.roles_phrase()),
+        oauth_valid,
+    ));
+    lines.join("\n")
+}
+
+/// Refuse, before any request, a command authenticated with the saved key
+/// once its `cloud access request` grant has expired: the API would answer a
+/// bare 401. A saved key without a grant or an expiry is not refused here.
+pub fn refuse_expired_saved_key(source: AuthSource) -> Result<(), CloudError> {
+    let Some(grant) = active_grant(source) else {
+        return Ok(());
+    };
+    let Some(expired) = status_expired(&grant, Utc::now()) else {
+        return Ok(());
+    };
+    Err(CloudError::auth(expired_key_message(
+        &grant,
+        &expired,
+        &crate::cloud::saved_key::credentials_path_display(),
+        crate::cloud::saved_key::oauth_login_valid(),
+    )))
+}
 
 /// `it` / `them` for a count.
 fn pronoun(count: usize) -> &'static str {
@@ -380,14 +433,17 @@ mod tests {
             status_write_access(&saved, now),
             "API key from cloud access request: Member, unnamed-id; expires 2026-11-19T09:56:10Z"
         );
+        assert_eq!(status_expired(&saved, now), None);
         saved.expires_at = Some("2026-11-19T09:00:00Z".into());
+        assert_eq!(status_scope(&saved, now), "Member, unnamed-id");
         assert_eq!(
-            status_scope(&saved, now),
-            "Member, unnamed-id, expired 09:00Z"
+            status_expired(&saved, now).as_deref(),
+            Some("2026-11-19T09:00Z")
         );
         assert!(status_write_access(&saved, now).ends_with("; expired 2026-11-19T09:00:00Z"));
         saved.expires_at = None;
         assert_eq!(status_scope(&saved, now), "Member, unnamed-id");
+        assert_eq!(status_expired(&saved, now), None);
     }
 
     #[test]
@@ -537,6 +593,45 @@ mod tests {
                 policies: None,
             }]))
             .is_none()
+        );
+    }
+
+    #[test]
+    fn expired_key_message_with_a_valid_oauth_login_offers_a_new_key_or_clearing_it() {
+        let message = expired_key_message(
+            &grant(vec![role("Service API Reader", &[])]),
+            "2026-11-18T17:45Z",
+            "/home/dev/work/.clickhouse/credentials.json",
+            true,
+        );
+        assert_eq!(
+            message,
+            "the saved API key for this project expired 2026-11-18T17:45Z, and it takes priority over the OAuth login here.\n  \
+             Key: /home/dev/work/.clickhouse/credentials.json (from `cloud access request`, role Service API Reader)\n  \
+             OAuth login: valid (read-only).\n  \
+             New key: `clickhousectl cloud access roles`, then `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`\n  \
+             Or clear it to use the OAuth login: `clickhousectl cloud auth logout --api-keys`"
+        );
+    }
+
+    #[test]
+    fn expired_key_message_without_a_valid_oauth_login_asks_for_a_login_first() {
+        let message = expired_key_message(
+            &grant(vec![role("A", &[]), role("B", &[])]),
+            "2026-11-18T17:45Z",
+            "/home/dev/work/.clickhouse/credentials.json",
+            false,
+        );
+        let lines: Vec<_> = message.lines().collect();
+        assert_eq!(lines.len(), 4, "{message}");
+        assert_eq!(
+            lines[1],
+            "  Key: /home/dev/work/.clickhouse/credentials.json (from `cloud access request`, roles A, B)"
+        );
+        assert_eq!(lines[2], "  OAuth login: none valid.");
+        assert_eq!(
+            lines[3],
+            "  First log in (needs the user): `clickhousectl cloud auth login`. Then: `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`"
         );
     }
 

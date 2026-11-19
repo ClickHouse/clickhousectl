@@ -186,7 +186,9 @@ CONTEXT FOR AGENTS:
   Key is saved in the project's `.clickhouse/` (nearest up the tree, else here);
     found from that directory and below, not above.
   `cloud auth status`: roles held, expiry. On FORBIDDEN the error lists what the key lacks: request a role covering it.
-  Requires OAuth (`cloud auth login`). Several orgs: pass --org-id.")]
+  These commands always use OAuth credentials and ignore saved API keys. OAuth is required to send access requests.
+  Check `cloud auth status`: if it shows no valid OAuth login, run `cloud auth login` (needs the user).
+  Several orgs: pass --org-id.")]
     Access {
         /// Organization ID (conflicts with --org-name)
         #[arg(long, global = true, value_name = "ID", conflicts_with = "org_name")]

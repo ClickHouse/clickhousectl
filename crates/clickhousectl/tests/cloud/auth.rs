@@ -85,8 +85,9 @@ async fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
     assert_eq!(status["verification"], "verified");
     let rows = status["sources"].as_array().unwrap();
     let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
-    assert_eq!(saved["status"], "Active");
-    assert_eq!(saved["scope"], "read/write");
+    assert_eq!(saved["status"], "Valid");
+    // No key record to read: the role is unknown.
+    assert_eq!(saved["scope"], "role unknown");
     assert_eq!(saved["active"], "yes");
     assert_eq!(saved["api_url"], api_url.as_str());
 }
@@ -189,6 +190,7 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
         .respond_with(whoami_envelope(whoami_api_key_identity()))
         .mount(&mock)
         .await;
+    mount_key_get(&mock, key_record(&["Service API Reader"], Value::Null)).await;
     // Both output formats render the same rows, so each runs once.
     for (configure_other_sources, json) in [(false, true), (true, false)] {
         let dir = tempfile::tempdir().unwrap();
@@ -264,6 +266,15 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
         } else {
             assert!(stdout.contains("Identity:\n"), "{stdout}");
             assert!(stdout.contains("key-123"), "{stdout}");
+            let header: Vec<_> = stdout
+                .lines()
+                .next()
+                .unwrap()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            assert_eq!(header, ["Type", "Status", "Scope", "In use", "API URL"]);
             stdout
                 .lines()
                 .skip(2)
@@ -280,23 +291,29 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
                 })
                 .collect()
         };
-        assert_eq!(rows.len(), 4);
+        let types: Vec<_> = rows.iter().map(|row| row.0.as_str()).collect();
+        assert_eq!(types, ["CLI flags", "API key", "Env vars", "OAuth"]);
         assert_eq!(rows.iter().filter(|row| row.3 == "yes").count(), 1);
         let flags = rows.iter().find(|row| row.0 == "CLI flags").unwrap();
-        assert_eq!(flags.1, "Active");
-        assert_eq!(flags.2, "read/write");
+        assert_eq!(flags.1, "Valid");
+        assert_eq!(flags.2, "Service API Reader");
         assert_eq!(flags.3, "yes");
         for source in ["API key", "Env vars", "OAuth"] {
             let row = rows.iter().find(|row| row.0 == source).unwrap();
             assert_eq!(row.3, "-");
             if configure_other_sources {
-                assert!(row.1.starts_with("Configured"), "{row:?}");
+                if source == "OAuth" {
+                    assert_eq!(row.1, "Valid");
+                } else {
+                    assert_eq!(row.1, "Configured, not in use (outranked by CLI flags)");
+                }
+                // Outranked keys are never looked up.
                 assert_eq!(
                     row.2,
                     if source == "OAuth" {
                         "read-only"
                     } else {
-                        "read/write"
+                        "role unknown"
                     }
                 );
             } else {
@@ -305,11 +322,15 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials() {
             }
         }
     }
-    // The identity check uses the winning source: the explicit flags.
+    // The identity check and the role lookup use the winning source: the
+    // explicit flags.
     let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2);
+    let paths: Vec<_> = requests.iter().map(|request| request.url.path()).collect();
+    assert_eq!(
+        paths,
+        [WHOAMI_PATH, KEY_PATH, WHOAMI_PATH, KEY_PATH].map(String::from)
+    );
     for request in requests {
-        assert_eq!(request.url.path(), "/v1/whoami");
         assert_eq!(
             request.headers.get("authorization").unwrap(),
             "Basic ZmxhZy1rZXk6ZmxhZy1zZWNyZXQ=" // flag-key:flag-secret
@@ -403,6 +424,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
             stdout
                 .lines()
                 .skip(2)
+                .take_while(|line| !line.is_empty())
                 .map(|line| {
                     // The fifth column, the API URL, has no JSON counterpart
                     // for these rows.
@@ -425,13 +447,19 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
                 assert!(row[1].contains(missing), "{row:?}");
                 assert_eq!(row[2], "-");
             } else if Some(row[0].as_str()) == configured_source {
-                assert_eq!(row[1], "Configured (inactive)");
+                // Incomplete flags block fallback; a valid OAuth login is
+                // still valid locally.
+                if row[0] == "OAuth" {
+                    assert_eq!(row[1], "Valid");
+                } else {
+                    assert_eq!(row[1], "Configured, not in use (outranked by CLI flags)");
+                }
                 assert_eq!(
                     row[2],
                     if row[0] == "OAuth" {
                         "read-only"
                     } else {
-                        "read/write"
+                        "role unknown"
                     }
                 );
             } else {
@@ -444,7 +472,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
 }
 
 #[tokio::test]
-async fn auth_status_marks_outranked_environment_credentials_inactive() {
+async fn auth_status_marks_outranked_environment_credentials_not_in_use() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/whoami"))
@@ -479,10 +507,13 @@ async fn auth_status_marks_outranked_environment_credentials_inactive() {
     let env = row("Env vars");
     assert_eq!(env["active"], "-");
     assert_eq!(row("API key")["active"], "yes");
-    // The inactive row names the source that outranks it.
-    let env_status = env["status"].as_str().unwrap();
-    assert!(env_status.starts_with("Configured"), "{env_status}");
-    assert!(env_status.contains("credentials file"), "{env_status}");
+    assert_eq!(row("API key")["status"], "Valid");
+    // The row not in use names the source that outranks it.
+    assert_eq!(
+        env["status"],
+        "Configured, not in use (outranked by saved API key)"
+    );
+    assert_eq!(status["summary"], "Commands here use the saved API key.");
 }
 
 /// The one end-to-end copy of the OAuth write check (`cloud::run`); which
@@ -1566,7 +1597,277 @@ async fn auth_status_without_credentials_skips_the_identity_check() {
     assert_eq!(status["verification"], "skipped");
     assert!(status["identity"].is_null());
     assert_eq!(status["sources"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        status["summary"],
+        "Not logged in: `cloud auth login` (needs the user)."
+    );
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// A saved `cloud access request` key past its expiry, with a valid OAuth
+/// login: the key is in use but expired, and the summary says so and points
+/// at the OAuth login.
+#[cfg(feature = "experimental-access-negotiation")]
+#[tokio::test]
+async fn auth_status_reports_an_expired_saved_key_beside_a_valid_oauth_login() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_rejected())
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let cloud_dir = project.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &server.uri());
+    let credentials_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": "granted-key", "api_secret": "granted-secret",
+            "api_url": format!("{}/v1", server.uri()),
+            "access_grant": {
+                "api_key": "granted-key", "key_id": "key-id", "organization_id": "org",
+                "request_id": "request-1", "expires_at": "2026-01-02T17:45:00Z",
+                "roles": [{"id": "role-1", "name": "Service API Reader"}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let summary = "Commands here use the saved API key, which has expired, so they fail.\n\
+                   The OAuth login is valid: `cloud access request` works and replaces the key.";
+    for json in [false, true] {
+        let output = invoke_auth(project.path(), &server.uri(), json, &["status"]);
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let rows: Vec<Vec<String>> = if json {
+            let status: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(status["summary"], summary);
+            assert_eq!(status["verification"], "rejected");
+            status["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    ["type", "status", "scope", "active"]
+                        .map(|field| row[field].as_str().unwrap().to_owned())
+                        .to_vec()
+                })
+                .collect()
+        } else {
+            let tail = stdout.split("\n\n").nth(1).unwrap();
+            assert_eq!(tail, summary, "{stdout}");
+            stdout
+                .lines()
+                .skip(2)
+                .take_while(|line| !line.is_empty())
+                .map(|line| {
+                    line.trim_matches('|')
+                        .split('|')
+                        .map(|cell| cell.trim().to_owned())
+                        .take(4)
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(
+            rows,
+            [
+                ["CLI flags", "Not configured", "-", "-"],
+                [
+                    "API key",
+                    "Expired 2026-01-02T17:45Z",
+                    "Service API Reader",
+                    "yes"
+                ],
+                ["Env vars", "Not configured", "-", "-"],
+                ["OAuth", "Valid", "read-only", "-"],
+            ],
+            "{stdout}"
+        );
+    }
+}
+
+const WHOAMI_PATH: &str = "/v1/whoami";
+const KEY_PATH: &str = "/v1/organizations/55555555-6666-4777-8888-999999999999/keys/key-123";
+
+/// `GET` of the API key `whoami_api_key_identity` names (`cloud key get`).
+async fn mount_key_get(server: &MockServer, response: ResponseTemplate) {
+    assert!(KEY_PATH.contains(WHOAMI_ORG_ID));
+    Mock::given(method("GET"))
+        .and(path(KEY_PATH))
+        .respond_with(response)
+        .mount(server)
+        .await;
+}
+
+/// A key record whose `assignedRoles` have these names.
+fn key_record(roles: &[&str], expire_at: Value) -> ResponseTemplate {
+    let roles: Vec<Value> = roles
+        .iter()
+        .map(|name| serde_json::json!({"roleId": WHOAMI_USER_ID, "roleName": name}))
+        .collect();
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "key-get",
+        "result": {"name": "ci deploy", "assignedRoles": roles, "expireAt": expire_at}
+    }))
+}
+
+/// The Scope cell of the `API key` row, from either output format.
+fn saved_key_scope(stdout: &str, json: bool) -> String {
+    if json {
+        let status: Value = serde_json::from_str(stdout).unwrap();
+        let rows = status["sources"].as_array().unwrap();
+        let row = rows.iter().find(|row| row["type"] == "API key").unwrap();
+        row["scope"].as_str().unwrap().to_owned()
+    } else {
+        let line = stdout
+            .lines()
+            .find(|line| line.starts_with("| API key"))
+            .unwrap();
+        line.trim_matches('|')
+            .split('|')
+            .nth(2)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+}
+
+/// A key saved with `auth login --api-key` (no access grant): status reads
+/// its roles once whoami has verified it, and a refused lookup only leaves
+/// the role unknown.
+#[tokio::test]
+async fn auth_status_shows_the_role_of_a_saved_key_without_a_grant() {
+    let forbidden = ResponseTemplate::new(403).set_body_json(serde_json::json!({
+        "status": 403, "requestId": "key-403", "error": "Forbidden"
+    }));
+    // (key response, JSON, Scope cell, JSON write_access)
+    let cases = [
+        (
+            key_record(&["Service API Reader"], Value::Null),
+            false,
+            "Service API Reader",
+            "",
+        ),
+        (
+            key_record(
+                &["Service API Reader", "Service Admin"],
+                "2099-01-02T03:04:00Z".into(),
+            ),
+            true,
+            "Service API Reader, Service Admin, expires 2099-01-02T03:04Z",
+            "API key: Service API Reader, Service Admin; expires 2099-01-02T03:04:00Z",
+        ),
+        (forbidden.clone(), false, "role unknown", ""),
+        (forbidden, true, "role unknown", "API key: role unknown"),
+    ];
+    for (response, json, scope, write_access) in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(WHOAMI_PATH))
+            .respond_with(whoami_envelope(whoami_api_key_identity()))
+            .mount(&server)
+            .await;
+        mount_key_get(&server, response).await;
+        let project = tempfile::tempdir().unwrap();
+        write_project_api_credentials(project.path(), "file-key", "file-secret", &server.uri());
+        let output = invoke_auth(project.path(), &server.uri(), json, &["status"]);
+        assert_success(&output);
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(saved_key_scope(&stdout, json), scope, "{stdout}");
+        if json {
+            let status: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(status["verification"], "verified");
+            assert_eq!(status["write_access"], write_access);
+            assert!(status.get("warning").is_none(), "{stdout}");
+        }
+        let paths: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .collect();
+        assert_eq!(paths, [WHOAMI_PATH, KEY_PATH]);
+    }
+}
+
+/// A key whoami rejects is not looked up, and its role is unknown.
+#[tokio::test]
+async fn auth_status_never_looks_up_a_rejected_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(WHOAMI_PATH))
+        .respond_with(whoami_rejected())
+        .mount(&server)
+        .await;
+    mount_key_get(&server, key_record(&["Service API Reader"], Value::Null)).await;
+    let project = tempfile::tempdir().unwrap();
+    write_project_api_credentials(project.path(), "file-key", "file-secret", &server.uri());
+    let output = invoke_auth(project.path(), &server.uri(), true, &["status"]);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let status: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(status["verification"], "rejected");
+    assert_eq!(saved_key_scope(&stdout, true), "role unknown");
+    assert_eq!(status["write_access"], "API key: role unknown");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), WHOAMI_PATH);
+}
+
+/// A saved `cloud access request` key shows its grant's roles and expiry;
+/// status never reads its key record.
+#[cfg(feature = "experimental-access-negotiation")]
+#[tokio::test]
+async fn auth_status_takes_a_grant_keys_role_from_the_grant() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(WHOAMI_PATH))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .mount(&server)
+        .await;
+    mount_key_get(&server, key_record(&[], Value::Null)).await;
+    let project = tempfile::tempdir().unwrap();
+    let credentials_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": "granted-key", "api_secret": "granted-secret",
+            "api_url": format!("{}/v1", server.uri()),
+            "access_grant": {
+                "api_key": "granted-key", "key_id": "key-123", "organization_id": WHOAMI_ORG_ID,
+                "request_id": "request-1", "expires_at": "2099-01-02T03:04:00Z",
+                "roles": [{"id": "role-1", "name": "Service API Reader"}]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = invoke_auth(project.path(), &server.uri(), true, &["status"]);
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        saved_key_scope(&stdout, true),
+        "Service API Reader, expires 2099-01-02T03:04Z"
+    );
+    let status: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        status["write_access"]
+            .as_str()
+            .unwrap()
+            .starts_with("API key from cloud access request: Service API Reader"),
+        "{stdout}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), WHOAMI_PATH);
 }
 
 #[tokio::test]
@@ -1630,20 +1931,33 @@ async fn auth_status_reports_the_identity_and_never_fails_on_it() {
         let output = invoke_auth(project.path(), &url, json, &["status"]);
         assert_success(&output);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let in_use_status = match verification {
+            "verified" => "Valid",
+            "rejected" => "Rejected by the API",
+            _ => "Configured (not verified)",
+        };
         if json {
             let status: Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(status["verification"], verification, "{stdout}");
             assert_eq!(status["identity"].is_null(), verification != "verified");
             assert_eq!(status["warning"].is_string(), verification != "verified");
-            let active = status["sources"]
+            // A refused saved key keeps the API's short message here: the
+            // table and summary already explain it.
+            if verification == "rejected" {
+                assert_eq!(status["warning"], "Invalid credentials", "{stdout}");
+            }
+            let active: Vec<_> = status["sources"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .filter(|row| row["active"] == "yes")
-                .count();
-            assert_eq!(active, 1);
+                .collect();
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0]["status"], in_use_status, "{stdout}");
         } else {
             assert!(stdout.contains(human), "missing {human}: {stdout}");
+            let row = stdout.lines().find(|line| line.contains("| yes ")).unwrap();
+            assert!(row.contains(&format!("| {in_use_status} ")), "{stdout}");
         }
     }
 }
