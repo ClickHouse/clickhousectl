@@ -164,7 +164,7 @@ pub fn status_write_access(grant: &AccessGrant, now: Timestamp) -> String {
 }
 
 const FIX_LINE: &str = "  Fix: `clickhousectl cloud access roles`, then `clickhousectl cloud access request \
-     --perms role:<UUID> --purpose \"<what, why>\"`.";
+     --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`.";
 
 /// `it` / `them` for a count.
 fn pronoun(count: usize) -> &'static str {

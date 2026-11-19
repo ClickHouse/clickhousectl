@@ -64,7 +64,7 @@ CONTEXT FOR AGENTS:
 #[cfg(feature = "experimental-access-negotiation")]
 const OAUTH_WRITE_ACCESS: Option<&str> = Some(
     "none: OAuth is read-only. Run `clickhousectl cloud access roles`, then \
-     `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\"`; the user approves it in their browser.",
+     `clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`; the user approves it in their browser.",
 );
 #[cfg(not(feature = "experimental-access-negotiation"))]
 const OAUTH_WRITE_ACCESS: Option<&str> = None;
