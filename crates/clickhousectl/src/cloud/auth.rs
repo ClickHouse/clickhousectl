@@ -1,4 +1,4 @@
-use super::permissions::Declaration as Permission;
+use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -8,7 +8,14 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "auth logout",
         "Clears local credentials; no Cloud API call.",
     ),
-    Permission::api("auth status", &[&op::WHOAMI_GET]).unscoped(),
+    // The role of an API key in use without a saved grant is best effort:
+    // many roles cannot read API keys, and status then says `role unknown`.
+    Permission::api("auth status", &[&op::WHOAMI_GET])
+        .when(&[Conditional::tolerated(
+            "Showing the role of the API key in use",
+            &[&op::OPENAPI_KEY_GET],
+        )])
+        .unscoped(),
     Permission::non_api("auth signup", "Opens account signup; no Cloud API call."),
     Permission::api("auth whoami", &[&op::WHOAMI_GET]).unscoped(),
 ];
@@ -22,7 +29,7 @@ use crate::cloud::{
 use crate::error::Error;
 use crate::failure::{ApiFailure, FailureKind};
 use clap::Subcommand;
-use clickhouse_cloud_api::models::Whoami;
+use clickhouse_cloud_api::models::{ApiKey, Whoami};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -317,7 +324,6 @@ pub async fn run(
             use tabled::{Table, settings::Style};
 
             let active = resolve_active_auth_source(api_key, api_secret);
-            #[cfg(feature = "experimental-access-negotiation")]
             let now = jiff::Timestamp::now();
 
             let mut oauth_warning = None;
@@ -347,19 +353,19 @@ pub async fn run(
             let saved_key = match saved.as_ref() {
                 _ if credentials_warning.is_some() => SavedKeyState::Unreadable,
                 Some(creds) if creds.api_credentials().is_some() => {
-                    let scope = String::from("read/write");
+                    let grant_scope = None;
                     let expired = None;
                     #[cfg(feature = "experimental-access-negotiation")]
-                    let (scope, expired) = match saved_grant {
+                    let (grant_scope, expired) = match saved_grant {
                         Some(grant) => (
-                            crate::cloud::grant::status_scope(grant, now),
+                            Some(crate::cloud::grant::status_scope(grant, now)),
                             crate::cloud::grant::status_expired(grant, now),
                         ),
-                        None => (scope, expired),
+                        None => (grant_scope, expired),
                     };
                     SavedKeyState::Complete {
                         api_url: creds.api_base_url(),
-                        scope,
+                        grant_scope,
                         expired,
                     }
                 }
@@ -394,15 +400,33 @@ pub async fn run(
                 }
             }
 
+            // A saved key with a grant takes its Scope from the grant.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let saved_has_grant = saved_grant.is_some();
+            #[cfg(not(feature = "experimental-access-negotiation"))]
+            let saved_has_grant = false;
+
+            let mut key_roles = KeyRoles::Unknown;
             let identity = match active {
-                Some(_) => IdentityCheck::from(
-                    verify_identity(CloudClient::new_with_timeout(
+                Some(source) => IdentityCheck::from(
+                    match CloudClient::new_with_timeout(
                         api_key,
                         api_secret,
                         api_url,
                         VERIFY_TIMEOUT,
-                    ))
-                    .await,
+                    ) {
+                        Ok(client) => {
+                            let verification = classify_whoami(client.get_whoami().await);
+                            // Any other API key in use: read its roles, once verified.
+                            let ungranted_key = source != AuthSource::OAuthTokens
+                                && !(source == AuthSource::CredentialsFile && saved_has_grant);
+                            if ungranted_key && let Verification::Verified(whoami) = &verification {
+                                key_roles = lookup_key_roles(&client, whoami).await;
+                            }
+                            verification
+                        }
+                        Err(error) => classify_whoami(Err(error)),
+                    },
                 ),
                 None => IdentityCheck::skipped(),
             };
@@ -416,15 +440,17 @@ pub async fn run(
                 env: (env_creds.key, env_creds.secret),
                 env_provenance: dotenv_env_provenance(),
                 oauth,
+                in_use_key_scope: key_roles.scope(now),
             };
             let rows = facts.rows();
             let summary = facts.summary();
 
-            // Only an active OAuth login lacks write access it could obtain.
-            let write_access: Option<String> = if active == Some(AuthSource::OAuthTokens) {
-                OAUTH_WRITE_ACCESS.map(str::to_string)
-            } else {
-                None
+            // Only an active OAuth login lacks write access it could obtain;
+            // JSON names the roles of an API key in use.
+            let write_access: Option<String> = match active {
+                Some(AuthSource::OAuthTokens) => OAUTH_WRITE_ACCESS.map(str::to_string),
+                Some(_) if json => Some(key_roles.write_access()),
+                _ => None,
             };
             // JSON names what the saved `cloud access request` key may write.
             #[cfg(feature = "experimental-access-negotiation")]
@@ -554,8 +580,9 @@ enum SavedKeyState {
     NotConfigured,
     Complete {
         api_url: String,
-        /// `read/write`, or the roles of its `cloud access request` grant.
-        scope: String,
+        /// The Scope from its `cloud access request` grant; `None` without
+        /// one, when the Scope is the key's looked-up role.
+        grant_scope: Option<String>,
         /// The grant's expiry, `%Y-%m-%dT%H:%MZ`, once it is past.
         expired: Option<String>,
     },
@@ -574,6 +601,105 @@ struct StatusFacts {
     env: (bool, bool),
     env_provenance: Option<PathBuf>,
     oauth: OAuthState,
+    /// The Scope of the API key in use when it has no saved grant
+    /// ([`KeyRoles::scope`]); a key not in use is never looked up.
+    in_use_key_scope: String,
+}
+
+/// The Scope of an API key whose roles `auth status` could not read.
+const ROLE_UNKNOWN: &str = "role unknown";
+
+/// The roles of the API key in use, read from its management record (the
+/// `cloud key get` call) when it did not come from `cloud access request`.
+#[derive(Debug, Clone, PartialEq)]
+enum KeyRoles {
+    /// Not looked up, or the lookup was refused or failed.
+    Unknown,
+    Known {
+        /// Role names, else ids, in the API's order; may be empty.
+        roles: Vec<String>,
+        expires: Option<jiff::Timestamp>,
+    },
+}
+
+impl KeyRoles {
+    fn of(key: &ApiKey) -> Self {
+        let Some(assigned) = &key.assigned_roles else {
+            return Self::Unknown;
+        };
+        let roles = assigned
+            .iter()
+            .filter_map(|role| {
+                role.role_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| role.role_id.map(|id| id.to_string()))
+            })
+            .collect();
+        Self::Known {
+            roles,
+            expires: key.expire_at,
+        }
+    }
+
+    /// The Scope cell: `<roles>[, expires <time>]`, `no roles`, or `role unknown`.
+    fn scope(&self, now: jiff::Timestamp) -> String {
+        match self {
+            Self::Unknown => ROLE_UNKNOWN.into(),
+            Self::Known { roles, .. } if roles.is_empty() => "no roles".into(),
+            Self::Known { roles, expires } => {
+                let mut scope = roles.join(", ");
+                if let Some(expires) = expires {
+                    scope.push_str(&format!(", {}", expiry_phrase(*expires, now)));
+                }
+                scope
+            }
+        }
+    }
+
+    /// JSON `write_access`: `API key: <roles>[; expires <RFC 3339>]`.
+    fn write_access(&self) -> String {
+        match self {
+            Self::Unknown => format!("API key: {ROLE_UNKNOWN}"),
+            Self::Known { roles, .. } if roles.is_empty() => "API key: no roles".into(),
+            Self::Known { roles, expires } => {
+                let mut text = format!("API key: {}", roles.join(", "));
+                if let Some(expires) = expires {
+                    text.push_str(&format!("; expires {expires:.0}"));
+                }
+                text
+            }
+        }
+    }
+}
+
+/// The roles of the verified API key `whoami` names, or `Unknown` when the
+/// lookup is refused or fails. Never an error: many roles cannot read keys.
+async fn lookup_key_roles(client: &CloudClient, whoami: &Whoami) -> KeyRoles {
+    let Whoami::WhoamiApiKey(key) = whoami else {
+        return KeyRoles::Unknown;
+    };
+    let (Some(org_id), Some(key_id)) = (key.organization_id, key.key_id.as_deref()) else {
+        return KeyRoles::Unknown;
+    };
+    match client.get_api_key(&org_id.to_string(), key_id).await {
+        Ok(record) => KeyRoles::of(&record),
+        Err(_) => KeyRoles::Unknown,
+    }
+}
+
+/// `expires 09:56Z`, with the date (`2026-11-20T09:56Z`) when it is not today
+/// in UTC, and `expired` once past.
+pub fn expiry_phrase(expires: jiff::Timestamp, now: jiff::Timestamp) -> String {
+    use jiff::tz::TimeZone;
+    let verb = if expires <= now { "expired" } else { "expires" };
+    let expires = expires.to_zoned_datetime(TimeZone::UTC);
+    let time = if expires.date() == now.to_zoned_datetime(TimeZone::UTC).date() {
+        expires.strftime("%H:%MZ").to_string()
+    } else {
+        expires.strftime("%Y-%m-%dT%H:%MZ").to_string()
+    };
+    format!("{verb} {time}")
 }
 
 #[cfg(feature = "experimental-access-negotiation")]
@@ -620,6 +746,16 @@ impl StatusFacts {
         (source == AuthSource::EnvVars && saved).then_some("saved API key")
     }
 
+    /// The Scope of a configured API key source without a saved grant: the
+    /// looked-up role of the key in use, else unknown.
+    fn key_scope(&self, source: AuthSource) -> String {
+        if self.in_use(source) {
+            self.in_use_key_scope.clone()
+        } else {
+            ROLE_UNKNOWN.into()
+        }
+    }
+
     /// The Status of a configured API key source.
     fn key_status(&self, source: AuthSource, provenance: &str) -> String {
         if self.in_use(source) {
@@ -638,7 +774,7 @@ impl StatusFacts {
             (true, true) => AuthRow::new(
                 "CLI flags",
                 self.key_status(CliFlags, ""),
-                "read/write",
+                self.key_scope(CliFlags),
                 self.in_use(CliFlags),
                 None,
             ),
@@ -672,7 +808,7 @@ impl StatusFacts {
             }
             SavedKeyState::Complete {
                 api_url,
-                scope,
+                grant_scope,
                 expired,
             } => {
                 let status = match expired {
@@ -682,7 +818,9 @@ impl StatusFacts {
                 AuthRow::new(
                     "API key",
                     status,
-                    scope.as_str(),
+                    grant_scope
+                        .clone()
+                        .unwrap_or_else(|| self.key_scope(CredentialsFile)),
                     self.in_use(CredentialsFile),
                     Some(api_url.clone()),
                 )
@@ -698,7 +836,7 @@ impl StatusFacts {
                 AuthRow::new(
                     "Env vars",
                     self.key_status(EnvVars, &provenance),
-                    "read/write",
+                    self.key_scope(EnvVars),
                     self.in_use(EnvVars),
                     None,
                 )
@@ -793,10 +931,13 @@ enum Verification {
 }
 
 async fn verify_identity(client: CloudResult<CloudClient>) -> Verification {
-    let result = match client {
-        Ok(client) => client.get_whoami().await,
-        Err(error) => Err(error),
-    };
+    match client {
+        Ok(client) => classify_whoami(client.get_whoami().await),
+        Err(error) => classify_whoami(Err(error)),
+    }
+}
+
+fn classify_whoami(result: CloudResult<Whoami>) -> Verification {
     match result {
         Ok(identity) => Verification::Verified(identity),
         Err(error) if error.kind == super::CloudErrorKind::Auth => Verification::Rejected(error),
@@ -2405,13 +2546,14 @@ mod tests {
             env: (false, false),
             env_provenance: None,
             oauth: OAuthState::NotConfigured,
+            in_use_key_scope: ROLE_UNKNOWN.into(),
         }
     }
 
     fn saved_key(expired: Option<&str>) -> SavedKeyState {
         SavedKeyState::Complete {
             api_url: "https://api.example/v1".into(),
-            scope: "Service API Reader".into(),
+            grant_scope: Some("Service API Reader".into()),
             expired: expired.map(String::from),
         }
     }
@@ -2578,6 +2720,98 @@ mod tests {
             env.summary(),
             "Commands here use the API key from environment variables."
         );
+    }
+
+    fn key_record(value: serde_json::Value) -> ApiKey {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn key_roles_come_from_the_key_record_or_are_unknown() {
+        let now = "2026-11-19T12:00:00Z".parse().unwrap();
+        let one = KeyRoles::of(&key_record(serde_json::json!({
+            "assignedRoles": [{"roleName": "Service API Reader"}]
+        })));
+        assert_eq!(one.scope(now), "Service API Reader");
+        assert_eq!(one.write_access(), "API key: Service API Reader");
+
+        // A role without a name shows its id; the key's expiry follows the roles.
+        let several = KeyRoles::of(&key_record(serde_json::json!({
+            "assignedRoles": [
+                {"roleName": "Service API Reader"},
+                {"roleId": "11111111-2222-4333-8444-555555555555", "roleName": " "}
+            ],
+            "expireAt": "2026-11-19T17:45:00Z"
+        })));
+        assert_eq!(
+            several.scope(now),
+            "Service API Reader, 11111111-2222-4333-8444-555555555555, expires 17:45Z"
+        );
+        assert_eq!(
+            several.write_access(),
+            "API key: Service API Reader, 11111111-2222-4333-8444-555555555555; \
+             expires 2026-11-19T17:45:00Z"
+        );
+
+        let none = KeyRoles::of(&key_record(serde_json::json!({"assignedRoles": []})));
+        assert_eq!(none.scope(now), "no roles");
+        assert_eq!(none.write_access(), "API key: no roles");
+
+        // A record without assignedRoles says nothing about them.
+        assert_eq!(
+            KeyRoles::of(&key_record(serde_json::json!({}))),
+            KeyRoles::Unknown
+        );
+        assert_eq!(KeyRoles::Unknown.scope(now), "role unknown");
+        assert_eq!(KeyRoles::Unknown.write_access(), "API key: role unknown");
+    }
+
+    #[test]
+    fn only_the_api_key_in_use_shows_its_looked_up_role() {
+        let ungranted = SavedKeyState::Complete {
+            api_url: "https://api.example/v1".into(),
+            grant_scope: None,
+            expired: None,
+        };
+        let flags = StatusFacts {
+            active: Some(AuthSource::CliFlags),
+            verification: "verified",
+            flags: (true, true),
+            saved_key: ungranted,
+            env: (true, true),
+            in_use_key_scope: "Organization Admin".into(),
+            ..status_facts()
+        };
+        let cells = status_cells(&flags);
+        assert_eq!(cell(&cells, "CLI flags").2, "Organization Admin");
+        // Configured keys not in use are never looked up.
+        assert_eq!(cell(&cells, "API key").2, "role unknown");
+        assert_eq!(cell(&cells, "Env vars").2, "role unknown");
+
+        // An outranked saved key with a grant keeps the grant's Scope.
+        let granted = StatusFacts {
+            saved_key: saved_key(None),
+            ..flags
+        };
+        assert_eq!(
+            cell(&status_cells(&granted), "API key").2,
+            "Service API Reader"
+        );
+
+        let saved = StatusFacts {
+            active: Some(AuthSource::CredentialsFile),
+            flags: (false, false),
+            saved_key: SavedKeyState::Complete {
+                api_url: "https://api.example/v1".into(),
+                grant_scope: None,
+                expired: None,
+            },
+            in_use_key_scope: "no roles".into(),
+            ..granted
+        };
+        let cells = status_cells(&saved);
+        assert_eq!(cell(&cells, "API key").2, "no roles");
+        assert_eq!(cell(&cells, "Env vars").2, "role unknown");
     }
 
     #[test]

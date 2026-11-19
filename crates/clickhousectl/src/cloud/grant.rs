@@ -113,18 +113,7 @@ impl AccessGrant {
     }
 }
 
-/// `expires 09:56Z`, with the date (`2026-11-20T09:56Z`) when it is not today
-/// in UTC, and `expired` once past.
-pub fn expiry_phrase(expires: Timestamp, now: Timestamp) -> String {
-    let verb = if expires <= now { "expired" } else { "expires" };
-    let expires = expires.to_zoned_datetime(TimeZone::UTC);
-    let time = if expires.date() == now.to_zoned_datetime(TimeZone::UTC).date() {
-        expires.strftime("%H:%MZ").to_string()
-    } else {
-        expires.strftime("%Y-%m-%dT%H:%MZ").to_string()
-    };
-    format!("{verb} {time}")
-}
+pub use crate::cloud::auth::expiry_phrase;
 
 /// The grant saved for the active credential, when that credential is the
 /// saved API key and the grant belongs to it.
