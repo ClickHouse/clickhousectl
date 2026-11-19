@@ -1626,3 +1626,109 @@ async fn forbidden_under_a_granted_key_names_what_the_role_lacks() {
         "note: this key's role lacks control-plane:service:view; an empty list may mean no access."
     ));
 }
+
+/// A saved `cloud access request` key past its expiry outranks the OAuth
+/// login, so a read refuses it before any request (exit 4, `auth_required`),
+/// names the file and says how to replace or clear it; `cloud access roles`
+/// keeps working on the OAuth login.
+#[tokio::test]
+async fn an_expired_saved_grant_is_refused_before_any_request() {
+    let server = MockServer::start().await;
+    for oauth in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud_dir = dir.path().join("home/.clickhouse");
+        std::fs::create_dir_all(&cloud_dir).unwrap();
+        if oauth {
+            write_oauth_tokens(&cloud_dir, &server.uri());
+        }
+        let project = dir.path().join(".clickhouse");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("credentials.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "api_key": "granted-key", "api_secret": "granted-secret",
+                "api_url": format!("{}/v1", server.uri()),
+                "access_grant": {
+                    "api_key": "granted-key", "key_id": "key-id", "organization_id": "org",
+                    "request_id": "request-1", "expires_at": "2026-01-02T17:45:00Z",
+                    "roles": [{"id": "role-1", "name": "Service API Reader"}]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut messages = Vec::new();
+        for json in [false, true] {
+            let mut command = Command::new(clickhousectl_binary());
+            command
+                .isolated_env()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", dir.path().join("home"))
+                .current_dir(dir.path())
+                .args(["cloud", "org", "list"]);
+            if json {
+                command.arg("--json");
+            }
+            let output = command.stdin(Stdio::null()).output().unwrap();
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            assert!(output.stdout.is_empty());
+            let message = if json {
+                let error = cloud_runtime_error(&output);
+                assert_eq!(error["code"], "auth_required");
+                error["message"].as_str().unwrap().to_string()
+            } else {
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                // After the note naming the API saved with the key.
+                let (_, error) = stderr
+                    .split_once("Error: ")
+                    .unwrap_or_else(|| panic!("{stderr}"));
+                error.trim_end().to_string()
+            };
+            messages.push(message);
+        }
+        assert_eq!(messages[0], messages[1]);
+        let message = &messages[0];
+        assert!(message.contains("expired 2026-01-02T17:45Z"), "{message}");
+        let key_line = format!(
+            "  Key: {} (from `cloud access request`, role Service API Reader)",
+            project.join("credentials.json").display()
+        );
+        assert!(message.lines().any(|line| line == key_line), "{message}");
+        assert!(
+            message.contains("clickhousectl cloud access request --perms role:<UUID>"),
+            "{message}"
+        );
+        if oauth {
+            assert!(message.contains("clickhousectl cloud auth logout --api-keys"));
+        } else {
+            assert!(
+                message.contains("`clickhousectl cloud auth login`"),
+                "{message}"
+            );
+        }
+        assert!(!message.contains("granted-secret"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        if oauth {
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org/roles"))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"result": assignable_roles_fixture()})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let output = Command::new(clickhousectl_binary())
+                .isolated_env()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", dir.path().join("home"))
+                .current_dir(dir.path())
+                .args(["cloud", "access", "roles", "--json", "--org", "org"])
+                .output()
+                .unwrap();
+            assert_success(&output);
+        }
+    }
+}
