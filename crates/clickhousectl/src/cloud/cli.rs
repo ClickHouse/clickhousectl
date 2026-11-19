@@ -182,7 +182,7 @@ CONTEXT FOR AGENTS:
   Write access: a short-lived API key the user approves in their browser.
   1. List the task's writes; each command's `--help` gives its `API key permission:` needs.
   2. `cloud access roles`: pick one role covering all of them, fewest extras.
-  3. `cloud access request --perms role:<UUID> --purpose \"<what, why>\"`: one request per task.
+  3. `cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"`: one request per task.
   Key is saved in the project's `.clickhouse/` (nearest up the tree, else here);
     found from that directory and below, not above.
   `cloud auth status`: roles held, expiry. On FORBIDDEN the error lists what the key lacks: request a role covering it.

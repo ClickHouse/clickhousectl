@@ -212,7 +212,7 @@ fn oauth_write_refused(path: Option<&str>, searched: Option<&str>) -> String {
     message.push_str(
         "\n  Get a key (user approves in browser):\n    \
          clickhousectl cloud access roles\n    \
-         clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\"",
+         clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"",
     );
     message
 }
@@ -435,7 +435,7 @@ mod runtime_tests {
         );
         assert!(message.contains("    clickhousectl cloud access roles\n"));
         assert!(message.contains(
-            "    clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\""
+            "    clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\""
         ));
         assert!(!message.contains("--api-secret"), "{message}");
         // No declaration (or an unknown command): no `needs:` line.
@@ -459,7 +459,7 @@ mod runtime_tests {
              in its project: cd there and rerun.\n  \
              Get a key (user approves in browser):\n    \
              clickhousectl cloud access roles\n    \
-             clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why>\""
+             clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\""
         );
         // A found or named project: no directory line at all.
         let message = oauth_write_refused(Some("service update"), None);
