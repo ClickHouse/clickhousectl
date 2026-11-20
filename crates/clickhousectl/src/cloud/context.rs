@@ -22,6 +22,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[Permission::api("use", &[])
     .unscoped()];
 
 const CONTEXT_FILE: &str = "context.json";
+/// The file format's version, not clickhousectl's: it changes only when a
+/// later format cannot be read as this one, since added keys are carried
+/// through by [`Context::other`].
 const CONTEXT_VERSION: u32 = 1;
 
 #[derive(Args)]
@@ -122,7 +125,15 @@ fn lookup(context: Option<Context>, base_url: &str) -> PinLookup {
 /// stderr that the pin is used, or why it is ignored.
 pub(crate) fn pinned_org_for(dir: &Path, base_url: &str) -> CloudResult<Option<ActivePin>> {
     let path = context_path(dir);
-    match lookup(load(dir)?, base_url) {
+    let context = match load(dir)? {
+        Stored::Missing => None,
+        Stored::Newer { version } => {
+            warn_newer(&path, version);
+            return Ok(None);
+        }
+        Stored::Current(context) => Some(context),
+    };
+    match lookup(context, base_url) {
         PinLookup::Unset => Ok(None),
         PinLookup::OtherApi { pinned_api } => {
             eprintln!(
@@ -205,9 +216,68 @@ fn parse(path: &Path, data: &str) -> CloudResult<Context> {
     })
 }
 
-fn load(dir: &Path) -> CloudResult<Option<Context>> {
+/// The format version `data` declares when it is newer than this one's,
+/// read before the rest, so a newer file is recognized even when this
+/// version cannot parse it. `None` when it is not JSON or declares no newer
+/// version: such a file is this version's to parse, or to clear.
+fn newer_version(data: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Header {
+        version: Option<serde_json::Value>,
+    }
+    let version = serde_json::from_str::<Header>(data)
+        .ok()?
+        .version?
+        .as_u64()?;
+    (version > u64::from(CONTEXT_VERSION)).then_some(version)
+}
+
+fn newer_reason(version: u64) -> String {
+    format!(
+        "written by a newer clickhousectl (format version {version}, this one understands \
+         {CONTEXT_VERSION})"
+    )
+}
+
+fn warn_newer(path: &Path, version: u64) {
+    eprintln!(
+        "warning: ignoring the pin in {}: it was {}; upgrade clickhousectl to use it",
+        display_path(path),
+        newer_reason(version)
+    );
+}
+
+/// Pinning and clearing never rewrite or remove a newer file: it may hold
+/// pins only the version that wrote it understands.
+fn newer_error(path: &Path, version: u64) -> CloudError {
+    CloudError::new(format!(
+        "{} was {}; upgrade clickhousectl to change it",
+        display_path(path),
+        newer_reason(version)
+    ))
+    .with_failure(ApiFailure::new(FailureKind::Other))
+}
+
+/// What the project's `context.json` holds for this version.
+#[derive(Debug)]
+enum Stored {
+    Missing,
+    /// Written in a newer format than this version reads.
+    Newer {
+        version: u64,
+    },
+    Current(Context),
+}
+
+fn load(dir: &Path) -> CloudResult<Stored> {
     let path = context_path(dir);
-    read(&path)?.map(|data| parse(&path, &data)).transpose()
+    let Some(data) = read(&path)? else {
+        return Ok(Stored::Missing);
+    };
+    if let Some(version) = newer_version(&data) {
+        return Ok(Stored::Newer { version });
+    }
+    parse(&path, &data).map(Stored::Current)
 }
 
 fn write(dir: &Path, context: &Context) -> CloudResult<()> {
@@ -227,7 +297,11 @@ fn remove(path: &Path) -> CloudResult<()> {
 
 /// Pin `org` for `api_url` in `dir`, keeping any other keys in the file.
 fn save_org(dir: &Path, api_url: &str, org: PinnedOrg) -> CloudResult<()> {
-    let mut context = load(dir)?.unwrap_or_default();
+    let mut context = match load(dir)? {
+        Stored::Missing => Context::default(),
+        Stored::Newer { version } => return Err(newer_error(&context_path(dir), version)),
+        Stored::Current(context) => context,
+    };
     context.api_url = Some(crate::cloud::auth::normalize_api_url(api_url));
     context.org = Some(org);
     write(dir, &context)
@@ -235,12 +309,16 @@ fn save_org(dir: &Path, api_url: &str, org: PinnedOrg) -> CloudResult<()> {
 
 /// Remove the organization pin from `dir`, returning the one removed. The
 /// file goes when nothing else is left in it, or when it cannot be parsed:
-/// clearing is the remedy the parse error suggests.
+/// clearing is the remedy the parse error suggests. A file in a newer format
+/// is refused and left as it is.
 fn clear_org(dir: &Path) -> CloudResult<Option<PinnedOrg>> {
     let path = context_path(dir);
     let Some(data) = read(&path)? else {
         return Ok(None);
     };
+    if let Some(version) = newer_version(&data) {
+        return Err(newer_error(&path, version));
+    }
     let Ok(mut context) = parse(&path, &data) else {
         remove(&path)?;
         return Ok(None);
@@ -261,6 +339,10 @@ struct UseOutput<'a> {
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cleared: Option<bool>,
+    /// The file's format version when a newer clickhousectl wrote it, so
+    /// this one cannot use its pin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    newer_format_version: Option<u64>,
 }
 
 /// Show or clear the pin: neither needs credentials or the network.
@@ -275,6 +357,7 @@ pub(super) fn run_local(args: &UseArgs, json: bool) -> CloudResult<()> {
                 api_url: None,
                 path,
                 cleared: Some(removed.is_some()),
+                newer_format_version: None,
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else if let Some(org) = removed {
@@ -285,17 +368,31 @@ pub(super) fn run_local(args: &UseArgs, json: bool) -> CloudResult<()> {
         return Ok(());
     }
 
-    let context = load(&dir)?;
+    let (context, newer) = match load(&dir)? {
+        Stored::Missing => (None, None),
+        Stored::Newer { version } => (None, Some(version)),
+        Stored::Current(context) => (Some(context), None),
+    };
     let org = context.as_ref().and_then(|context| context.org.as_ref());
     let api_url = org.and(context.as_ref()).map(Context::api_base_url);
     if json {
+        if let Some(version) = newer {
+            warn_newer(&context_path(&dir), version);
+        }
         let output = UseOutput {
             org,
             api_url,
             path,
             cleared: None,
+            newer_format_version: newer,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if let Some(version) = newer {
+        println!(
+            "No usable organization pin: {path} was {}. Upgrade clickhousectl to use or \
+             change it.",
+            newer_reason(version)
+        );
     } else if let (Some(org), Some(api_url)) = (org, api_url) {
         println!("Organization: {}", org.label());
         println!("API: {api_url}");
@@ -368,6 +465,7 @@ pub(super) async fn run(client: &CloudClient, args: UseArgs, json: bool) -> Clou
             api_url: Some(crate::cloud::auth::normalize_api_url(client.base_url())),
             path,
             cleared: None,
+            newer_format_version: None,
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -399,7 +497,7 @@ pub(crate) mod tests {
     fn pinning_creates_a_gitignored_file_and_clearing_removes_it_idempotently() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join(".clickhouse");
-        assert!(load(&dir).unwrap().is_none());
+        assert!(matches!(load(&dir).unwrap(), Stored::Missing));
 
         pin(&dir, "https://api.clickhouse.cloud", "org-1");
         assert_eq!(
@@ -455,6 +553,67 @@ pub(crate) mod tests {
         assert!(error.message.contains("cloud use --clear"));
         assert_eq!(clear_org(dir).unwrap(), None);
         assert!(!context_path(dir).exists());
+    }
+
+    /// A file from a newer clickhousectl, in a shape this version cannot
+    /// parse.
+    const NEWER: &str = r#"{"version": 2, "org": ["a", "shape", "v1", "cannot", "read"]}"#;
+
+    #[test]
+    fn a_newer_format_is_ignored_on_lookup_without_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(context_path(dir), NEWER).unwrap();
+        assert!(matches!(load(dir).unwrap(), Stored::Newer { version: 2 }));
+        assert!(
+            pinned_org_for(dir, "https://api.clickhouse.cloud")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pinning_and_clearing_refuse_a_newer_format_and_leave_it_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(context_path(dir), NEWER).unwrap();
+        for error in [
+            save_org(dir, "https://api.clickhouse.cloud", org("org-1")).unwrap_err(),
+            clear_org(dir).unwrap_err(),
+        ] {
+            assert!(
+                error.message.contains("newer clickhousectl"),
+                "{}",
+                error.message
+            );
+            assert!(
+                error.message.contains("format version 2"),
+                "{}",
+                error.message
+            );
+            assert!(
+                error.message.contains("upgrade clickhousectl"),
+                "{}",
+                error.message
+            );
+        }
+        assert_eq!(std::fs::read_to_string(context_path(dir)).unwrap(), NEWER);
+    }
+
+    #[test]
+    fn a_broken_file_of_this_format_or_no_readable_version_is_still_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        for broken in [
+            r#"{"version": 1, "org": "not an object"}"#,
+            r#"{"org": "not an object"}"#,
+            r#"{"version": 2, "org""#,
+        ] {
+            std::fs::write(context_path(dir), broken).unwrap();
+            assert!(load(dir).is_err(), "{broken}");
+            assert_eq!(clear_org(dir).unwrap(), None, "{broken}");
+            assert!(!context_path(dir).exists(), "{broken}");
+        }
     }
 
     #[test]
