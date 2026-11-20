@@ -16,6 +16,10 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+## 0.6.1
+
+No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.
+
 ## 0.6.0
 
 Timestamp fields are now `jiff::Timestamp` instead of
