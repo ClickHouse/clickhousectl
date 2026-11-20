@@ -65,6 +65,53 @@ Each classifier fails closed for one set of paths, and a new or renamed file nee
 
 Documentation paths alone do not select live suites.
 
+## macOS build provenance
+
+Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or
+secrets. `release.yml` does not call the builder yet; signing remains disabled.
+Build jobs have no OIDC or AWS credentials. A separate job attests the raw
+binaries and their receipt.
+
+Source must be a pushed `vX.Y.Z` tag naming an exact reviewed PR merge into
+`main` or a single-level `release/*` branch. The released tree must equal the
+approved PR head. Source branches need active organization rules blocking
+deletion/force-push and requiring fresh, last-push-separated approval.
+Approval must come from a human writer other than the PR author or linked
+commit contributors; missing linked identities are rejected.
+Patch history must be linear, with every commit reviewed back to `main`
+(maximum 200 commits). Use squash merges or single-commit rebases.
+
+`main` history is a trusted baseline, not retrospectively checked. Review
+permissions are current; linked Git identities do not prove actual authorship.
+Audit organization-rule bypass access separately before enabling signing.
+
+Caller permissions: `contents: read`, `pull-requests: read`, `actions: read`,
+`id-token: write`, `attestations: write`. Verification needs source-repository
+PR/reviewer, artifact and attestation read access; cross-repository
+`GITHUB_TOKEN` access must be checked, not assumed.
+
+The handoff is a flat directory containing exactly two raw Mach-O binaries
+and one receipt. Download the exact workflow output IDs (`aarch64-artifact-id`,
+`x86-artifact-id`, `receipt-artifact-id`), not name patterns, to preserve
+failed-job reruns. Use the pinned download action or a REST stream;
+`gh run download` 2.105.0 assumes ZIP. The verifier requires
+`gh >= 2.102.0` and rejects unapproved builders, mismatched provenance,
+expired artifacts, extra files, symlinks and changed bytes.
+
+Before requesting signing credentials, run helpers from the approved builder
+revision with expected values derived from trusted policy and run context:
+
+```bash
+python3 builder/scripts/check-release-source.py --sha "$SOURCE_SHA" --ref "$RELEASE_REF"
+python3 builder/scripts/release_artifacts.py verify \
+  --directory "$UNSIGNED_DIRECTORY" --source-sha "$SOURCE_SHA" \
+  --ref "$RELEASE_REF" --run-id "$RUN_ID" \
+  --approved-builder-sha "$APPROVED_BUILDER_SHA"
+```
+
+Before enabling signing, complete an authorized-tag build and receipt verification.
+Do not bypass a failed check or publish unsigned as a fallback.
+
 ## Live Cloud integration
 
 Use a dedicated test workspace: these tests create and change real Cloud resources. Maintainer labels, exact-SHA overrides, stacked-PR policy, and required checks are documented in [the CI guide](../.github/CLOUD_INTEGRATION.md). Affected suites run with `run-cloud-integration`; the decision check passes without the label when no suites are selected.
