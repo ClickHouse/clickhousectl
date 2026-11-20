@@ -127,7 +127,7 @@ fn initial_entry<'a>(
     let mut entry = serde_json::Map::new();
     entry.insert(
         "timestamp".into(),
-        json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        json!(format!("{:.3}", jiff::Timestamp::now())),
     );
     entry.insert("pid".into(), json!(std::process::id()));
     entry.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
@@ -168,10 +168,16 @@ fn is_relevant_env(key: &str) -> bool {
 fn append_line(path: &Path, value: &Value) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(value)?;
     line.push(b'\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    // The log is unredacted (argv, environment, `.env` values), so a newly
+    // created file is readable by its owner only, not the umask default.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     file.write_all(&line)
 }
 
@@ -231,6 +237,17 @@ mod tests {
         );
         assert_eq!(entry["agent"], Value::Null);
         assert_eq!(entry["pid"], json!(std::process::id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_line_creates_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("debug.jsonl");
+        append_line(&path, &json!({"n": 1})).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

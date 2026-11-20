@@ -356,7 +356,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     // command. Shown on every command that does not emit machine-readable JSON.
     let show_notice = should_show_update_notice(&cli.command);
     #[cfg(feature = "debug-log")]
-    debug_log::set_json_output(command_json_flag(&cli.command).map(json_output));
+    debug_log::set_json_output(debug_log_json_flag(&cli.command).map(json_output));
     let is_local = matches!(cli.command, Commands::Local(_));
     let local_json = match &cli.command {
         Commands::Local(args) => json_output(args.json),
@@ -479,6 +479,18 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Telemetry(args) => Some(args.json),
         #[cfg(feature = "feedback")]
         Commands::Feedback(args) => Some(args.json),
+    }
+}
+
+/// The `--json` flag the debug log resolves into its `json_output` field.
+/// Unlike [`command_json_flag`], which hides `update` to keep the notice off
+/// it, this reports `update`'s real flag, since `update` emits JSON too. Only
+/// `completions`, which has no JSON mode, stays `None`.
+#[cfg(feature = "debug-log")]
+fn debug_log_json_flag(cmd: &Commands) -> Option<bool> {
+    match cmd {
+        Commands::Update(args) => Some(args.json),
+        _ => command_json_flag(cmd),
     }
 }
 
@@ -1060,6 +1072,27 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[cfg(feature = "debug-log")]
+    #[test]
+    fn debug_log_json_flag_reports_update_but_not_completions() {
+        assert_eq!(
+            debug_log_json_flag(&parse(&["clickhousectl", "update"])),
+            Some(false)
+        );
+        assert_eq!(
+            debug_log_json_flag(&parse(&["clickhousectl", "update", "--json"])),
+            Some(true)
+        );
+        assert_eq!(
+            debug_log_json_flag(&parse(&["clickhousectl", "completions", "zsh"])),
+            None
+        );
+        assert_eq!(
+            debug_log_json_flag(&parse(&["clickhousectl", "skills", "--json"])),
+            Some(true)
+        );
     }
 
     #[test]
