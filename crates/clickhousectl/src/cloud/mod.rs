@@ -8,6 +8,7 @@ pub mod clickpipes;
 pub mod clickstack;
 pub mod client;
 pub(crate) mod config;
+pub mod context;
 pub mod credentials;
 pub mod organizations;
 pub mod output;
@@ -70,6 +71,10 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
                 json,
             )
             .await;
+        }
+        // Showing or clearing the pin is local; pinning resolves the org.
+        CloudCommands::Use(use_args) if args.org_id.is_none() && args.org_name.is_none() => {
+            return context::run_local(&use_args, json).map_err(cloud_error_to_top_level);
         }
         command => command,
     };
@@ -155,9 +160,12 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         return services::service_client(&client, args).await;
     }
 
-    dispatch(&client, command, json)
-        .await
-        .map_err(cloud_error_to_top_level)
+    match dispatch(&client, command, json).await {
+        Ok(()) => Ok(()),
+        Err(error) => Err(cloud_error_to_top_level(
+            client.explain_pinned_org_error(error).await,
+        )),
+    }
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
@@ -186,6 +194,7 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
 async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> client::Result<()> {
     match command {
         CloudCommands::Auth { command } => auth::run_with_client(client, command, json).await,
+        CloudCommands::Use(args) => context::run(client, args, json).await,
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
         CloudCommands::Service { command } => services::run(client, command, json).await,
         CloudCommands::Member { command } => organizations::run_member(client, command, json).await,

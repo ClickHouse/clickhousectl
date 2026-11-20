@@ -686,7 +686,8 @@ impl CloudClient {
 fn multiple_organizations_message(organizations: &[Organization]) -> String {
     let mut message = String::from(
         "these credentials can see more than one organization; \
-         choose one with --org-id <ID> or --org-name <NAME>:",
+         choose one with --org-id <ID> or --org-name <NAME>, or pin one for \
+         this project with `clickhousectl cloud use --org-name <NAME>`:",
     );
     for organization in organizations {
         let id = organization

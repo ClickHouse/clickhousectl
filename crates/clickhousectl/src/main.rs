@@ -232,6 +232,16 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
             "--org-id cannot be used with --org-name",
         ));
     }
+    if args.has_use_clear_selector_conflict() {
+        let use_command = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("use"))
+            .expect("cloud use command must exist");
+        return Err(use_command.error(
+            ErrorKind::ArgumentConflict,
+            "--clear cannot be used with --org-name or --org-id",
+        ));
+    }
 
     // Login's credentials are global arguments. Validate after propagation so
     // a pair split across command levels remains valid.

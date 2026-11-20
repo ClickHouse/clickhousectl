@@ -90,7 +90,7 @@ CONTEXT FOR AGENTS:
   CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
   API keys are read+write; OAuth is read-only and every write command fails on it.
   `cloud auth login` and `cloud auth whoami` print who you are and your orgs.
-  `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
+  `cloud auth status` shows the active source. Org: --org-id/--org-name, else the `cloud use` pin, else your only org.
   delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
   Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud clickhouse list` or `cloud postgres list`")]
@@ -523,6 +523,7 @@ mod tests {
             visible_subcommands(cloud),
             [
                 "auth",
+                "use",
                 "org",
                 "clickhouse",
                 "postgres",

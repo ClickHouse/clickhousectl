@@ -90,6 +90,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/cloud/backups.rs",
         "crates/clickhousectl/tests/cloud/clickpipes.rs",
         "crates/clickhousectl/tests/cloud/clickstack.rs",
+        "crates/clickhousectl/tests/cloud/context.rs",
         "crates/clickhousectl/tests/cloud/client.rs",
         "crates/clickhousectl/tests/cloud/main.rs",
         "crates/clickhousectl/tests/cloud/organizations.rs",

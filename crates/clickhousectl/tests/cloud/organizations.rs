@@ -1594,6 +1594,7 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
     for token in [
         "--org-id",
         "--org-name",
+        "cloud use",
         PAGED_ORG_FIRST,
         "first-org",
         PAGED_ORG_SECOND,
