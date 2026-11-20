@@ -1,6 +1,6 @@
 [package]
 name = "clickhousectl"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "The CLI for ClickHouse and Postgres: local and cloud."
@@ -60,7 +60,7 @@ tar = "0.4.45"
 open = "5.3.3"
 url = "2.5.8"
 tabled = "0.22"
-clickhouse-cloud-api = { version = "0.6.0", path = "../clickhouse-cloud-api" }
+clickhouse-cloud-api = { version = "0.6.1", path = "../clickhouse-cloud-api" }
 uuid = { version = "1.23.0", features = ["serde", "v4"] }
 is-ai-agent = "0.7.0"
 base64 = "0.23"
