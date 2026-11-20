@@ -1593,7 +1593,7 @@ async fn org_name_resolution_and_auto_detection_read_every_page() {
     assert!(serde_json::from_str::<Value>(&stderr).is_err(), "{stderr}");
     for token in [
         "--org-id",
-        "--org",
+        "--org-name",
         "cloud use",
         PAGED_ORG_FIRST,
         "first-org",

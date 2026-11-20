@@ -27,14 +27,7 @@ pub struct CloudArgs {
     pub org_id: Option<String>,
 
     /// Exact organization name
-    #[arg(
-        long = "org",
-        alias = "org-name",
-        value_name = "NAME",
-        global = true,
-        conflicts_with = "org_id",
-        display_order = crate::cli::help_order::ORG_NAME
-    )]
+    #[arg(long, global = true, conflicts_with = "org_id", display_order = crate::cli::help_order::ORG_NAME)]
     pub org_name: Option<String>,
 
     /// Output as JSON
@@ -131,8 +124,8 @@ pub enum CloudCommands {
     /// Pin the organization this project uses
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Like `git switch` for orgs: `use --org <NAME>` or `use --org-id <ID>` pins one for this project
-    (per checkout, gitignored); later cloud commands use it unless --org/--org-id is passed.
+  Like `git switch` for orgs: `use --org-name <NAME>` or `use --org-id <ID>` pins one for this project
+    (per checkout, gitignored); later cloud commands use it unless --org-name/--org-id is passed.
   Bare `use` shows the pin; `use --clear` removes it. A stderr note says when the pin is used.
   A pin applies only to the API it was set against; another API ignores it with a warning.")]
     Use(UseArgs),
@@ -630,7 +623,7 @@ pub(crate) mod tests {
                 &["auth", "login", "--api-key", "k", "--api-secret", "s"],
                 false,
             ),
-            (&["use", "--org", "acme"], false),
+            (&["use", "--org-name", "acme"], false),
             (&["use", "--clear"], false),
             (&["org", "list"], false),
             (&["org", "get"], false),
@@ -813,30 +806,39 @@ pub(crate) mod tests {
         *cloud
     }
 
-    /// `--org` is the name selector's primary spelling and `--org-name` keeps
-    /// working; either still conflicts with `--org-id` (#1509).
+    /// `--org-name` is the name selector at any depth, `cloud use` included,
+    /// and conflicts with `--org-id`; there is no `--org` spelling (#1509).
     #[test]
-    fn org_and_org_name_select_the_same_name_and_conflict_with_org_id() {
-        for flag in ["--org", "--org-name"] {
-            let cloud = cloud_args(&["org", "get", flag, "acme"]);
-            assert_eq!(cloud.org_name.as_deref(), Some("acme"), "{flag}");
-            let cloud = cloud_args(&["use", flag, "acme"]);
-            assert_eq!(cloud.org_name.as_deref(), Some("acme"), "{flag}");
-            let error = Cli::try_parse_from([
-                "chctl", "cloud", "org", "get", flag, "acme", "--org-id", "org-1",
-            ])
+    fn org_name_selects_by_name_and_conflicts_with_org_id() {
+        let cloud = cloud_args(&["org", "get", "--org-name", "acme"]);
+        assert_eq!(cloud.org_name.as_deref(), Some("acme"));
+        let cloud = cloud_args(&["use", "--org-name", "acme"]);
+        assert_eq!(cloud.org_name.as_deref(), Some("acme"));
+        let error = Cli::try_parse_from([
+            "chctl",
+            "cloud",
+            "org",
+            "get",
+            "--org-name",
+            "acme",
+            "--org-id",
+            "org-1",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let error = Cli::try_parse_from(["chctl", "cloud", "use", "--org", "acme"])
             .err()
             .unwrap();
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-        }
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn use_clear_conflicts_with_an_organization_selector_at_any_depth() {
         assert!(!cloud_args(&["use", "--clear"]).has_use_clear_selector_conflict());
-        assert!(!cloud_args(&["use", "--org", "acme"]).has_use_clear_selector_conflict());
+        assert!(!cloud_args(&["use", "--org-name", "acme"]).has_use_clear_selector_conflict());
         for args in [
-            &["use", "--clear", "--org", "acme"][..],
+            &["use", "--clear", "--org-name", "acme"][..],
             &["--org-id", "org-1", "use", "--clear"],
         ] {
             assert!(

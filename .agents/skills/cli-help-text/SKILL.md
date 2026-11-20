@@ -44,14 +44,14 @@ No `long_about`, `before_help`, `after_long_help`, or any other `after_help` hea
 - Add a second doc-comment paragraph (up to about 3 lines) only for a constraint the flag's name and type
   can't convey.
 - Use enums (`value_enum`) rather than describing valid strings in prose, so clap lists and checks them.
-- Shared flags (`--org-id`, `--org`, `--api-key`, `--api-secret`, `--url`, `--json`, `--debug`) read the same
+- Shared flags (`--org-id`, `--org-name`, `--api-key`, `--api-secret`, `--url`, `--json`, `--debug`) read the same
   everywhere. Copy the wording from an existing declaration.
 - Resource names stay positional, under `Arguments`. Compatibility flags stay hidden.
 
 ## Option order
 
 - Command-specific flags first, with display ranks below 900.
-- Then the shared block, in this order: `--org-id`, `--org`, `--api-key`, `--api-secret`,
+- Then the shared block, in this order: `--org-id`, `--org-name` (where it exists), `--api-key`, `--api-secret`,
   `--url`, `--json`, `--debug`. Use the `help_order` ranks in `src/cli.rs` (900–906). clap adds `--help` at 999.
 - Set the rank at every declaration, including local `--json` and auth flags, so inherited flags keep the block
   together.

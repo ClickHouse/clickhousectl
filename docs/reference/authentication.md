@@ -48,23 +48,23 @@ A saved API key works only against the API it was saved for. When `auth login --
 ```bash
 clickhousectl cloud org list
 clickhousectl cloud clickhouse list --org-id <org-id>
-clickhousectl cloud clickhouse get --name analytics --org <org-name>
+clickhousectl cloud clickhouse get --name analytics --org-id <org-id>
 ```
 
-Organization-scoped commands choose the organization in this order: `--org-id <ID>` or exact `--org <NAME>` (`--org-name` still works), then the project's pinned organization, then the only organization the credentials reach. When credentials reach several organizations and nothing selects one, the command exits 2 as a usage error and lists each organization's ID and name. Organization names need not be unique: when `--org` matches more than one, the command exits 1 and lists the matching IDs to pass to `--org-id`.
+Organization-scoped commands choose the organization in this order: `--org-id <ID>` or, where supported, exact `--org-name <NAME>`, then the project's pinned organization, then the only organization the credentials reach. When credentials reach several organizations and nothing selects one, the command exits 2 as a usage error and lists each organization's ID and name. Organization names need not be unique: when `--org-name` matches more than one, the command exits 1 and lists the matching IDs to pass to `--org-id`.
 
 ### Pin an organization for a project
 
 Like `git switch`, `cloud use` pins the organization a project works on, so later commands need no `--org-id`:
 
 ```bash
-clickhousectl cloud use --org <org-name>   # or --org-id <org-id>: pin
-clickhousectl cloud org get                # acts on the pinned organization
-clickhousectl cloud use                    # show the pin (--json for JSON)
-clickhousectl cloud use --clear            # unpin
+clickhousectl cloud use --org-name <org-name>   # or --org-id <org-id>: pin
+clickhousectl cloud org get                     # acts on the pinned organization
+clickhousectl cloud use                         # show the pin (--json for JSON)
+clickhousectl cloud use --clear                 # unpin
 ```
 
-A name is resolved to its ID when you pin it, and an ID is verified; an ambiguous name fails and lists the IDs to pin with `--org-id`. The pin is saved in `.clickhouse/context.json` beside `credentials.json`, covered by `.clickhouse/.gitignore`, so it belongs to one checkout. Every command that uses the pin prints a note naming it to stderr; stdout, including JSON, is unchanged. A pin applies only to the API it was set against: when credentials or `--url` resolve to a different API, the pin is ignored with a warning on stderr. If a request under the pin is refused and the pinned organization is no longer among the organizations your credentials can list, the error names the pin; run `clickhousectl cloud use --clear` or pin another organization. A `context.json` written by a newer clickhousectl is ignored with a warning, and this version refuses to change or clear it; upgrade to use it. `--org` or `--org-id` on a command always wins over the pin. Showing and clearing the pin need no credentials and make no request.
+A name is resolved to its ID when you pin it, and an ID is verified; an ambiguous name fails and lists the IDs to pin with `--org-id`. The pin is saved in `.clickhouse/context.json` beside `credentials.json`, covered by `.clickhouse/.gitignore`, so it belongs to one checkout. Every command that uses the pin prints a note naming it to stderr; stdout, including JSON, is unchanged. A pin applies only to the API it was set against: when credentials or `--url` resolve to a different API, the pin is ignored with a warning on stderr. If a request under the pin is refused and the pinned organization is no longer among the organizations your credentials can list, the error names the pin; run `clickhousectl cloud use --clear` or pin another organization. A `context.json` written by a newer clickhousectl is ignored with a warning, and this version refuses to change or clear it; upgrade to use it. `--org-name` or `--org-id` on a command always wins over the pin. Showing and clearing the pin need no credentials and make no request.
 
 Most resource commands accept a positional ID or exact `--name`. Name lookup needs list permission within the selected organization or required parent service, and ambiguous matches fail. A child name selects the child, never its parent service. Member and invitation `--email` matching is exact, including case.
 

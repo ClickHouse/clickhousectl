@@ -781,7 +781,7 @@ impl CloudClient {
         self
     }
 
-    /// The `--org-id` and `--org` selectors as given, unresolved.
+    /// The `--org-id` and `--org-name` selectors as given, unresolved.
     pub(super) fn organization_selector(&self) -> (Option<&str>, Option<&str>) {
         (
             self.organization_id.as_deref(),

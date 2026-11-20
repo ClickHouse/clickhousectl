@@ -384,7 +384,7 @@ mod tests {
 
         let shared = [
             "--org-id",
-            "--org",
+            "--org-name",
             "--api-key",
             "--api-secret",
             "--url",

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub(super) const PERMISSIONS: &[Permission] = &[Permission::api("use", &[])
     .when(&[
         Conditional::new("With --org-id", &[&op::ORGANIZATION_GET]),
-        Conditional::new("With --org", &[&op::ORGANIZATION_GET_LIST]),
+        Conditional::new("With --org-name", &[&op::ORGANIZATION_GET_LIST]),
     ])
     .unscoped()];
 
@@ -162,7 +162,7 @@ pub(crate) fn stale_pin_error(error: CloudError, pin: &ActivePin) -> CloudError 
     let message = format!(
         "{}\nOrganization {} comes from the pin in {}. Unpin it with \
          `clickhousectl cloud use --clear`, or pin another with \
-         `clickhousectl cloud use --org <NAME>`.",
+         `clickhousectl cloud use --org-name <NAME>`.",
         error.message,
         pin.org.label(),
         display_path(&pin.path),
@@ -399,7 +399,7 @@ pub(super) fn run_local(args: &UseArgs, json: bool) -> CloudResult<()> {
         println!("Pinned in: {path}");
     } else {
         println!(
-            "No organization pinned. Pin one with `clickhousectl cloud use --org <NAME>` \
+            "No organization pinned. Pin one with `clickhousectl cloud use --org-name <NAME>` \
              or `--org-id <ID>`."
         );
     }
@@ -421,7 +421,7 @@ fn pin_dir() -> CloudResult<PathBuf> {
     Ok(crate::init::local_dir()?)
 }
 
-/// Resolve the `--org`/`--org-id` selector and pin it for this project.
+/// Resolve the `--org-name`/`--org-id` selector and pin it for this project.
 pub(super) async fn run(client: &CloudClient, args: UseArgs, json: bool) -> CloudResult<()> {
     if client.organization_selector() == (None, None) {
         return run_local(&args, json);

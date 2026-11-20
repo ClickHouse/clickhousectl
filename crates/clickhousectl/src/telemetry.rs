@@ -1874,7 +1874,7 @@ mod tests {
                     "--new-name",
                     "SECRET-REPLACEMENT",
                 ],
-                vec!["name", "new-name", "org"],
+                vec!["name", "new-name", "org-name"],
             ),
             (
                 vec!["member", "get", "--email", "SECRET-EMAIL"],

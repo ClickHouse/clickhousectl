@@ -36,7 +36,7 @@ async fn a_pinned_org_scopes_later_commands_until_cleared() {
             .unwrap()
     };
 
-    let pinned = run(&["use", "--org", "acme"]);
+    let pinned = run(&["use", "--org-name", "acme"]);
     assert_success(&pinned);
     let shown: Value = serde_json::from_slice(&pinned.stdout).unwrap();
     assert_eq!(shown["org"]["id"], ACME);
