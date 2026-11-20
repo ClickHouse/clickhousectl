@@ -56,7 +56,7 @@ fn ensure_local_dir() -> CloudResult<PathBuf> {
     Ok(dir)
 }
 
-fn ensure_dir(dir: &Path) -> CloudResult<()> {
+pub(crate) fn ensure_dir(dir: &Path) -> CloudResult<()> {
     std::fs::create_dir_all(dir)?;
     let gitignore = dir.join(".gitignore");
     if !gitignore.exists() {

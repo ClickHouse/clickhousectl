@@ -229,7 +229,17 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
             .expect("cloud command must exist");
         return Err(cloud.error(
             ErrorKind::ArgumentConflict,
-            "--org-id cannot be used with --org-name",
+            "--org-id cannot be used with --org",
+        ));
+    }
+    if args.has_use_clear_selector_conflict() {
+        let use_command = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("use"))
+            .expect("cloud use command must exist");
+        return Err(use_command.error(
+            ErrorKind::ArgumentConflict,
+            "--clear cannot be used with --org or --org-id",
         ));
     }
 

@@ -4,6 +4,7 @@ pub(crate) use crate::cloud::auth::AuthCommands;
 pub(crate) use crate::cloud::backups::BackupCommands;
 pub(crate) use crate::cloud::clickpipes::ClickPipeCommands;
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
+pub(crate) use crate::cloud::context::UseArgs;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
@@ -21,12 +22,19 @@ pub struct CloudArgs {
     #[arg(long, global = true, display_order = crate::cli::help_order::API_SECRET)]
     pub api_secret: Option<String>,
 
-    /// Organization ID (auto-detected only if you have one org)
+    /// Organization ID (else the `cloud use` pin, or your only org)
     #[arg(long, global = true, conflicts_with = "org_name", display_order = crate::cli::help_order::ORG_ID)]
     pub org_id: Option<String>,
 
     /// Exact organization name
-    #[arg(long, global = true, conflicts_with = "org_id", display_order = crate::cli::help_order::ORG_NAME)]
+    #[arg(
+        long = "org",
+        alias = "org-name",
+        value_name = "NAME",
+        global = true,
+        conflicts_with = "org_id",
+        display_order = crate::cli::help_order::ORG_NAME
+    )]
     pub org_name: Option<String>,
 
     /// Output as JSON
@@ -51,6 +59,13 @@ impl CloudArgs {
     /// Clap validates conflicts before propagating globals from other depths.
     pub fn has_organization_selector_conflict(&self) -> bool {
         self.org_id.is_some() && self.org_name.is_some()
+    }
+
+    /// `cloud use --clear` takes no organization selector. The selectors are
+    /// global, so clap cannot see a clash given at another depth.
+    pub fn has_use_clear_selector_conflict(&self) -> bool {
+        matches!(&self.command, CloudCommands::Use(args) if args.clear)
+            && (self.org_id.is_some() || self.org_name.is_some())
     }
 
     pub fn has_explicit_json_format_conflict(&self) -> bool {
@@ -112,6 +127,15 @@ pub enum CloudCommands {
         #[command(subcommand)]
         command: AuthCommands,
     },
+
+    /// Pin the organization this project uses
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Like `git switch` for orgs: `use --org <NAME>` or `use --org-id <ID>` pins one for this project
+    (per checkout, gitignored); later cloud commands use it unless --org/--org-id is passed.
+  Bare `use` shows the pin; `use --clear` removes it. A stderr note says when the pin is used.
+  A pin applies only to the API it was set against; another API ignores it with a warning.")]
+    Use(UseArgs),
 
     /// Manage organizations
     #[command(after_help = "\
@@ -290,6 +314,8 @@ impl CloudCommands {
     pub fn is_write_command(&self) -> bool {
         match self {
             CloudCommands::Auth { command } => command.is_write(),
+            // Writes only the project's own pin file, never Cloud state.
+            CloudCommands::Use(_) => false,
             CloudCommands::Org { command } => command.is_write(),
             CloudCommands::Service { command } => command.is_write(),
             CloudCommands::Backup { command } => command.is_write(),
@@ -604,6 +630,8 @@ pub(crate) mod tests {
                 &["auth", "login", "--api-key", "k", "--api-secret", "s"],
                 false,
             ),
+            (&["use", "--org", "acme"], false),
+            (&["use", "--clear"], false),
             (&["org", "list"], false),
             (&["org", "get"], false),
             (&["org", "balance"], false),
@@ -763,14 +791,59 @@ pub(crate) mod tests {
             "query-api-endpoint",
             "saved-query",
             "udf",
+            "use",
         ];
         assert_eq!(reads, all.into_iter().collect());
         assert_eq!(
             writes,
             all.into_iter()
-                .filter(|domain| !matches!(*domain, "activity" | "auth"))
+                .filter(|domain| !matches!(*domain, "activity" | "auth" | "use"))
                 .collect()
         );
+    }
+
+    fn cloud_args(args: &[&str]) -> super::CloudArgs {
+        let argv: Vec<_> = ["clickhousectl", "cloud"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        let Commands::Cloud(cloud) = Cli::try_parse_from(&argv).unwrap().command else {
+            panic!("expected cloud command for {argv:?}");
+        };
+        *cloud
+    }
+
+    /// `--org` is the name selector's primary spelling and `--org-name` keeps
+    /// working; either still conflicts with `--org-id` (#1509).
+    #[test]
+    fn org_and_org_name_select_the_same_name_and_conflict_with_org_id() {
+        for flag in ["--org", "--org-name"] {
+            let cloud = cloud_args(&["org", "get", flag, "acme"]);
+            assert_eq!(cloud.org_name.as_deref(), Some("acme"), "{flag}");
+            let cloud = cloud_args(&["use", flag, "acme"]);
+            assert_eq!(cloud.org_name.as_deref(), Some("acme"), "{flag}");
+            let error = Cli::try_parse_from([
+                "chctl", "cloud", "org", "get", flag, "acme", "--org-id", "org-1",
+            ])
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn use_clear_conflicts_with_an_organization_selector_at_any_depth() {
+        assert!(!cloud_args(&["use", "--clear"]).has_use_clear_selector_conflict());
+        assert!(!cloud_args(&["use", "--org", "acme"]).has_use_clear_selector_conflict());
+        for args in [
+            &["use", "--clear", "--org", "acme"][..],
+            &["--org-id", "org-1", "use", "--clear"],
+        ] {
+            assert!(
+                cloud_args(args).has_use_clear_selector_conflict(),
+                "{args:?}"
+            );
+        }
     }
 
     fn cloud_command(args: &[&str]) -> super::CloudCommands {

@@ -15,6 +15,7 @@ mod backups;
 mod clickpipes;
 mod clickstack;
 mod client;
+mod context;
 mod organizations;
 mod permissions;
 mod postgres;

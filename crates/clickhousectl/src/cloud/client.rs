@@ -734,10 +734,24 @@ pub struct LookupPage<T> {
     pub next_cursor: Option<String>,
 }
 
+/// Where a client looks for the project's `cloud use` pin.
+enum PinDir {
+    /// The project's `.clickhouse/`, found when an organization is needed.
+    Project,
+    /// Nowhere: unit tests must not read the developer's own pin.
+    #[cfg(test)]
+    Off,
+    #[cfg(test)]
+    Dir(std::path::PathBuf),
+}
+
 pub struct CloudClient {
     organization_id: Option<String>,
     organization_name: Option<String>,
     resolved_organization_id: tokio::sync::OnceCell<String>,
+    pin_dir: PinDir,
+    /// The pin that supplied the organization, once one has.
+    active_pin: std::sync::OnceLock<crate::cloud::context::ActivePin>,
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
     auth_source: AuthSource,
@@ -767,7 +781,65 @@ impl CloudClient {
         self
     }
 
-    /// Resolve organization scope only when needed, caching successful detection.
+    /// The `--org-id` and `--org` selectors as given, unresolved.
+    pub(super) fn organization_selector(&self) -> (Option<&str>, Option<&str>) {
+        (
+            self.organization_id.as_deref(),
+            self.organization_name.as_deref(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_pin_dir(mut self, dir: &std::path::Path) -> Self {
+        self.pin_dir = PinDir::Dir(dir.to_path_buf());
+        self
+    }
+
+    /// The project's pinned organization, when it belongs to this client's
+    /// API. Read only once an organization is needed and no flag gave one.
+    fn pinned_org(&self) -> Result<Option<String>> {
+        let dir = match &self.pin_dir {
+            PinDir::Project => crate::init::local_dir()?,
+            #[cfg(test)]
+            PinDir::Off => return Ok(None),
+            #[cfg(test)]
+            PinDir::Dir(dir) => dir.clone(),
+        };
+        let Some(pin) = crate::cloud::context::pinned_org_for(&dir, &self.base_url)? else {
+            return Ok(None);
+        };
+        let id = pin.org.id.clone();
+        let _ = self.active_pin.set(pin);
+        Ok(Some(id))
+    }
+
+    /// When the organization came from the pin and `error` is the API
+    /// refusing a request, confirm the pinned organization still resolves;
+    /// if it does not, say the pin is stale and how to change it.
+    pub(super) async fn explain_pinned_org_error(&self, error: CloudError) -> CloudError {
+        let Some(pin) = self.active_pin.get() else {
+            return error;
+        };
+        let refused = |failure: Option<ApiFailure>| {
+            matches!(
+                failure.and_then(|failure| failure.http_status),
+                Some(400 | 403 | 404)
+            )
+        };
+        if !refused(error.failure) {
+            return error;
+        }
+        match self.api().organization_get(&pin.org.id).await {
+            Err(confirm) if refused(Some(crate::failure::classify_api_error(&confirm))) => {
+                crate::cloud::context::stale_pin_error(error, pin)
+            }
+            _ => error,
+        }
+    }
+
+    /// Resolve organization scope only when needed, caching successful
+    /// detection. A flag wins, then the project's pin, then the only
+    /// organization the credentials can see.
     pub(super) async fn resolve_organization_id(&self) -> Result<String> {
         self.resolved_organization_id
             .get_or_try_init(|| async {
@@ -788,7 +860,10 @@ impl CloudClient {
                             |ids| format!("choose one with --org-id <ID>: {}", ids.join(", ")),
                         )
                     }
-                    (None, None) => self.get_default_org_id().await,
+                    (None, None) => match self.pinned_org()? {
+                        Some(id) => Ok(id),
+                        None => self.get_default_org_id().await,
+                    },
                 }
             })
             .await
@@ -885,6 +960,8 @@ impl CloudClient {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Project,
+            active_pin: std::sync::OnceLock::new(),
             auth_mode,
             auth_source: resolved.source,
             base_url: resolved.base_url,
@@ -910,6 +987,8 @@ impl CloudClient {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Off,
+            active_pin: std::sync::OnceLock::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -1294,6 +1373,8 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Off,
+            active_pin: std::sync::OnceLock::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -1333,6 +1414,95 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
+    /// A flag beats the project's pin, and the pin beats auto-detection
+    /// without a request; a pin for another API is ignored (#1509).
+    #[tokio::test]
+    async fn organization_precedence_is_flag_then_pin_then_auto_detection() {
+        use crate::cloud::context::tests::pin;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let only = "00000000-0000-0000-0000-000000000001";
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"id": only}]
+            })))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let client = || CloudClient::for_tests(&server.uri(), None).with_pin_dir(tmp.path());
+
+        pin(tmp.path(), &server.uri(), "pinned-org");
+        let flagged = client().with_organization_id(Some("flag-org".into()));
+        assert_eq!(flagged.resolve_organization_id().await.unwrap(), "flag-org");
+        assert!(flagged.active_pin.get().is_none());
+        let pinned = client();
+        assert_eq!(
+            pinned.resolve_organization_id().await.unwrap(),
+            "pinned-org"
+        );
+        assert!(pinned.active_pin.get().is_some());
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        pin(
+            tmp.path(),
+            "https://api.control-plane.example.com",
+            "pinned-org",
+        );
+        let other_api = client();
+        assert_eq!(other_api.resolve_organization_id().await.unwrap(), only);
+        assert!(other_api.active_pin.get().is_none());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    /// A refused request under a pinned organization that no longer resolves
+    /// names the pin and `cloud use --clear`, keeping kind and failure; one
+    /// that still resolves leaves the error as it was.
+    #[tokio::test]
+    async fn a_refusal_under_a_stale_pin_names_the_pin_and_how_to_clear_it() {
+        use crate::cloud::context::tests::pin;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let refused = || {
+            CloudError::new("NOT_FOUND")
+                .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 404))
+        };
+        for (org_status, stale) in [(404, true), (200, false)] {
+            server.reset().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/pinned-org"))
+                .respond_with(ResponseTemplate::new(org_status).set_body_json(
+                    serde_json::json!({"result": {"id": "00000000-0000-0000-0000-000000000002"}}),
+                ))
+                .mount(&server)
+                .await;
+            pin(tmp.path(), &server.uri(), "pinned-org");
+            let client = CloudClient::for_tests(&server.uri(), None).with_pin_dir(tmp.path());
+            client.resolve_organization_id().await.unwrap();
+
+            let error = client.explain_pinned_org_error(refused()).await;
+            assert_eq!(error.kind, CloudErrorKind::Generic);
+            assert_eq!(error.failure, refused().failure);
+            assert_eq!(
+                error.message.contains("cloud use --clear"),
+                stale,
+                "{error}"
+            );
+            assert_eq!(error.message.contains("pinned-org"), stale, "{error}");
+        }
+
+        // An organization from a flag is never blamed on the pin.
+        let client = CloudClient::for_tests(&server.uri(), None)
+            .with_pin_dir(tmp.path())
+            .with_organization_id(Some("flag-org".into()));
+        client.resolve_organization_id().await.unwrap();
+        let error = client.explain_pinned_org_error(refused()).await;
+        assert_eq!(error.message, "NOT_FOUND");
+    }
+
     #[test]
     fn is_bearer_auth_returns_true_for_bearer() {
         let http = reqwest::Client::builder().build().unwrap();
@@ -1346,6 +1516,8 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Off,
+            active_pin: std::sync::OnceLock::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -1609,6 +1781,8 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
+            pin_dir: PinDir::Off,
+            active_pin: std::sync::OnceLock::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
