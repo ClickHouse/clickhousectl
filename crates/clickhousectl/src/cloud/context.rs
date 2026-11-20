@@ -309,8 +309,28 @@ pub(super) fn run_local(args: &UseArgs, json: bool) -> CloudResult<()> {
     Ok(())
 }
 
+/// The project's `.clickhouse/` to pin into. Never the home directory's,
+/// which discovery selects from home itself: that one is global, so a pin
+/// there would follow every directory without a project of its own.
+fn pin_dir() -> CloudResult<PathBuf> {
+    if crate::init::project_root_is_home()? {
+        return Err(CloudError::usage(
+            "the current directory is the home directory, whose .clickhouse/ is global, \
+             not a project; run `clickhousectl cloud use` inside a project directory or set \
+             CLICKHOUSECTL_PROJECT_DIR",
+        )
+        .with_failure(ApiFailure::new(FailureKind::Other)));
+    }
+    Ok(crate::init::local_dir()?)
+}
+
 /// Resolve the `--org`/`--org-id` selector and pin it for this project.
 pub(super) async fn run(client: &CloudClient, args: UseArgs, json: bool) -> CloudResult<()> {
+    if client.organization_selector() == (None, None) {
+        return run_local(&args, json);
+    }
+    // Refused before any request: there is nowhere to keep the pin.
+    let dir = pin_dir()?;
     let org = match client.organization_selector() {
         (Some(id), _) => {
             let organization = client.get_organization(id).await?;
@@ -337,10 +357,9 @@ pub(super) async fn run(client: &CloudClient, args: UseArgs, json: bool) -> Clou
                 name: Some(name.to_string()),
             }
         }
-        (None, None) => return run_local(&args, json),
+        (None, None) => unreachable!("an empty selector shows the pin"),
     };
 
-    let dir = crate::init::local_dir()?;
     save_org(&dir, client.base_url(), org.clone())?;
     let path = display_path(&context_path(&dir));
     if json {

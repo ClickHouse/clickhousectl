@@ -198,7 +198,7 @@ pub fn project_root() -> std::io::Result<&'static ProjectRoot> {
         return Ok(root);
     }
     let cwd = std::env::current_dir()?.canonicalize()?;
-    let home = dirs::home_dir().and_then(|home| home.canonicalize().ok());
+    let home = canonical_home();
     let root = resolve_project_root(
         std::env::var_os(PROJECT_DIR_ENV).as_deref(),
         &cwd,
@@ -206,6 +206,21 @@ pub fn project_root() -> std::io::Result<&'static ProjectRoot> {
         owned_by_current_user,
     )?;
     Ok(PROJECT_ROOT.get_or_init(|| root))
+}
+
+/// The home directory, canonical as discovery compares it, or `None` when it
+/// is unknown or cannot be resolved.
+fn canonical_home() -> Option<PathBuf> {
+    dirs::home_dir().and_then(|home| home.canonicalize().ok())
+}
+
+/// Whether this invocation's project root is the home directory, whose
+/// `.clickhouse/` is the global one (installed versions, tokens, configs)
+/// rather than a project's. Discovery selects it when the current directory
+/// is home itself.
+pub fn project_root_is_home() -> std::io::Result<bool> {
+    let root = project_root()?;
+    Ok(canonical_home().is_some_and(|home| root.dir == home))
 }
 
 /// `<project root>/.clickhouse`: where this invocation's project state lives.
