@@ -814,8 +814,11 @@ impl CloudClient {
     }
 
     /// When the organization came from the pin and `error` is the API
-    /// refusing a request, confirm the pinned organization still resolves;
-    /// if it does not, say the pin is stale and how to change it.
+    /// refusing a request, list the caller's organizations, as pinning by
+    /// name does. Only when that list succeeds and lacks the pinned
+    /// organization is the pin stale, and the error then says how to change
+    /// it. A pin still listed (say, under a permission refusal) or a list
+    /// that fails keeps the original error.
     pub(super) async fn explain_pinned_org_error(&self, error: CloudError) -> CloudError {
         let Some(pin) = self.active_pin.get() else {
             return error;
@@ -829,11 +832,19 @@ impl CloudClient {
         if !refused(error.failure) {
             return error;
         }
-        match self.api().organization_get(&pin.org.id).await {
-            Err(confirm) if refused(Some(crate::failure::classify_api_error(&confirm))) => {
-                crate::cloud::context::stale_pin_error(error, pin)
-            }
-            _ => error,
+        let Ok(organizations) = self.list_organizations().await else {
+            return error;
+        };
+        // A row without an ID could be the pinned organization.
+        let absent = organizations.iter().all(|organization| {
+            organization
+                .id
+                .is_some_and(|id| !id.to_string().eq_ignore_ascii_case(&pin.org.id))
+        });
+        if absent {
+            crate::cloud::context::stale_pin_error(error, pin)
+        } else {
+            error
         }
     }
 
@@ -1456,9 +1467,10 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
-    /// A refused request under a pinned organization that no longer resolves
-    /// names the pin and `cloud use --clear`, keeping kind and failure; one
-    /// that still resolves leaves the error as it was.
+    /// A refused request under a pinned organization missing from the
+    /// caller's organization list names the pin and `cloud use --clear`,
+    /// keeping kind and failure. One still listed (a permission refusal under
+    /// a valid pin), or a list that fails, leaves the error as it was.
     #[tokio::test]
     async fn a_refusal_under_a_stale_pin_names_the_pin_and_how_to_clear_it() {
         use crate::cloud::context::tests::pin;
@@ -1466,32 +1478,51 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let server = MockServer::start().await;
         let tmp = tempfile::tempdir().unwrap();
-        let refused = || {
-            CloudError::new("NOT_FOUND")
-                .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 404))
+        let pinned = "00000000-0000-0000-0000-00000000000a";
+        let other = "00000000-0000-0000-0000-00000000000b";
+        let refused = |status| {
+            CloudError::new("REFUSED")
+                .with_failure(ApiFailure::with_status(FailureKind::Http4xx, status))
         };
-        for (org_status, stale) in [(404, true), (200, false)] {
+        let listed = |ids: &[&str]| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>()
+            }))
+        };
+        let forbidden = ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403, "error": "FORBIDDEN"
+        }));
+        for (original, list, stale) in [
+            (404, listed(&[other]), true),
+            (403, listed(&[]), true),
+            (403, listed(&[other, pinned]), false),
+            (404, forbidden.clone(), false),
+            (403, forbidden.clone(), false),
+        ] {
             server.reset().await;
             Mock::given(method("GET"))
-                .and(path("/v1/organizations/pinned-org"))
-                .respond_with(ResponseTemplate::new(org_status).set_body_json(
-                    serde_json::json!({"result": {"id": "00000000-0000-0000-0000-000000000002"}}),
-                ))
+                .and(path("/v1/organizations"))
+                .respond_with(list)
+                .expect(1)
                 .mount(&server)
                 .await;
-            pin(tmp.path(), &server.uri(), "pinned-org");
+            pin(tmp.path(), &server.uri(), pinned);
             let client = CloudClient::for_tests(&server.uri(), None).with_pin_dir(tmp.path());
             client.resolve_organization_id().await.unwrap();
 
-            let error = client.explain_pinned_org_error(refused()).await;
+            let error = client.explain_pinned_org_error(refused(original)).await;
             assert_eq!(error.kind, CloudErrorKind::Generic);
-            assert_eq!(error.failure, refused().failure);
+            assert_eq!(error.failure, refused(original).failure);
             assert_eq!(
                 error.message.contains("cloud use --clear"),
                 stale,
                 "{error}"
             );
-            assert_eq!(error.message.contains("pinned-org"), stale, "{error}");
+            assert_eq!(error.message.contains(pinned), stale, "{error}");
+            if !stale {
+                assert_eq!(error.message, "REFUSED");
+            }
+            server.verify().await;
         }
 
         // An organization from a flag is never blamed on the pin.
@@ -1499,8 +1530,8 @@ mod tests {
             .with_pin_dir(tmp.path())
             .with_organization_id(Some("flag-org".into()));
         client.resolve_organization_id().await.unwrap();
-        let error = client.explain_pinned_org_error(refused()).await;
-        assert_eq!(error.message, "NOT_FOUND");
+        let error = client.explain_pinned_org_error(refused(404)).await;
+        assert_eq!(error.message, "REFUSED");
     }
 
     #[test]
