@@ -3,6 +3,8 @@ pub mod config;
 pub mod discovery;
 pub mod docker;
 pub mod output;
+pub(crate) mod pg_bundle;
+pub(crate) mod pg_native;
 pub mod postgres;
 pub(crate) mod procinfo;
 pub mod server;
@@ -28,9 +30,10 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             version,
             binary,
             force,
+            docker,
         } => match (version, binary) {
             (None, Some(binary)) => install_binary(&binary, force, json).await,
-            (Some(version), None) => install(version, force, json).await,
+            (Some(version), None) => install(version, force, docker, json).await,
             _ => unreachable!("clap requires exactly one of a version or --binary"),
         },
         LocalCommands::List { remote } => {
@@ -82,8 +85,32 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
     }
 }
 
-async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
+/// `local install postgres@<version>`: fetch the native bundle, or with
+/// `--docker` pull the image.
+async fn install_postgres(tag: &str, force: bool, docker: bool, json: bool) -> Result<()> {
     postgres::validate_pg_tag(tag)?;
+    if docker {
+        return install_postgres_image(tag, force, json).await;
+    }
+    let Some(request) = pg_bundle::PgVersionRequest::parse(tag) else {
+        return Err(Error::usage(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!(
+                "postgres@{tag} is a Docker image tag; add `--docker` to pull it, or use 17, 18 \
+                 or <major>.<minor> for a native PostgreSQL build"
+            ),
+        ));
+    };
+    let bundle = pg_bundle::ensure_bundle(&request, force, json).await?;
+    let out = output::InstallOutput {
+        version: format!("postgres@{}", bundle.spec.postgres_version),
+        set_as_default: false,
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+async fn install_postgres_image(tag: &str, force: bool, json: bool) -> Result<()> {
     let docker = docker::connect().await?;
     if !force && docker::image_exists(&docker, tag).await? {
         let out = output::InstallOutput {
@@ -107,11 +134,19 @@ async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn install(version: InstallVersionArg, force: bool, json: bool) -> Result<()> {
+async fn install(version: InstallVersionArg, force: bool, docker: bool, json: bool) -> Result<()> {
     let spec = match version {
         InstallVersionArg::ClickHouse(spec) => spec,
-        InstallVersionArg::Postgres(tag) => return install_postgres(&tag, force, json).await,
+        InstallVersionArg::Postgres(tag) => {
+            return install_postgres(&tag, force, docker, json).await;
+        }
     };
+    if docker {
+        return Err(Error::usage(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--docker applies only to a Postgres selector such as postgres@18",
+        ));
+    }
     let platform = version_manager::platform::Platform::detect()?;
 
     let version =
@@ -1308,7 +1343,8 @@ pub(crate) fn list_project_servers(list: output::ProjectList, json: bool) -> Res
                     match e.info {
                         Some(info) => {
                             let is_ch = info.engine == server::Engine::Clickhouse;
-                            let pid = if is_ch && running {
+                            let native_pg = info.pg_runtime() == Some(server::PgRuntime::Native);
+                            let pid = if (is_ch || native_pg) && running {
                                 Some(info.pid)
                             } else {
                                 None

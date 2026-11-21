@@ -639,6 +639,33 @@ pub enum Error {
     #[error("Postgres error: {0}")]
     PostgresUsage(String),
 
+    /// No usable Postgres bundle for the native runtime: the manifest is not
+    /// readable by this version, or names nothing for this request and
+    /// platform. Self-composed, including its recovery guidance.
+    #[error("Postgres bundle unavailable: {0}")]
+    PostgresBundleUnavailable(String),
+
+    /// A downloaded Postgres bundle does not match the sha256 its manifest
+    /// names; nothing was extracted or installed.
+    #[error(
+        "Postgres bundle '{file}' failed verification: expected sha256 {expected}, got {actual}; nothing was installed"
+    )]
+    PostgresBundleChecksum {
+        file: String,
+        expected: String,
+        actual: String,
+    },
+
+    /// Run as root, native Postgres runs as an unprivileged user, and that
+    /// user cannot enter `dir`, which lies on the way to the PostgreSQL build
+    /// or to the instance. Nothing was started or created.
+    #[error(
+        "PostgreSQL cannot run as root, so it runs as user '{user}', who cannot enter '{dir}'. \
+         Use a project directory and HOME outside '{dir}', run `chmod o+x {dir}`, or pass `--docker`.",
+        dir = dir.display()
+    )]
+    PostgresServerUserAccess { user: String, dir: PathBuf },
+
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
     #[error("child process exited with code {0}")]

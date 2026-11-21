@@ -29,7 +29,8 @@ const NOUNS: &[&str] = &[
 ];
 
 /// Engine driving a server instance. ClickHouse is a managed binary process;
-/// Postgres is a managed Docker container.
+/// Postgres is a managed postmaster process or Docker container
+/// ([`PgRuntime`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
@@ -54,6 +55,16 @@ impl Engine {
     }
 }
 
+/// How a Postgres instance is run. An instance keeps the runtime it was
+/// created with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PgRuntime {
+    /// A postmaster from a downloaded bundle, run as a child process.
+    Native,
+    /// A container from a `postgres` image.
+    Docker,
+}
+
 fn default_engine() -> Engine {
     Engine::Clickhouse
 }
@@ -66,10 +77,12 @@ fn default_engine() -> Engine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
-    /// Active ClickHouse process PID; 0 when stopped or for Postgres.
+    /// Active ClickHouse process PID, or the postmaster's for native
+    /// Postgres; 0 when stopped or for Docker Postgres.
     pub pid: u32,
     /// Running ClickHouse version like "25.12.5.44", empty when stopped, or
-    /// "postgres:<tag>" for Postgres.
+    /// "postgres:<tag>" for Docker Postgres and "postgres:<version>" for
+    /// native Postgres.
     pub version: String,
     /// ClickHouse version this server was last seen ready on, so a restart
     /// without `--version` keeps its data dir on that version (issue #1230).
@@ -93,6 +106,19 @@ pub struct ServerInfo {
 }
 
 impl ServerInfo {
+    /// The runtime of a Postgres instance; `None` for ClickHouse.
+    ///
+    /// This is the one place that tells the runtimes apart: a Docker instance
+    /// always records its container, including ones created before the native
+    /// runtime existed, and a native instance never has one.
+    pub(crate) fn pg_runtime(&self) -> Option<PgRuntime> {
+        match (self.engine, &self.container_id) {
+            (Engine::Clickhouse, _) => None,
+            (Engine::Postgres, Some(_)) => Some(PgRuntime::Docker),
+            (Engine::Postgres, None) => Some(PgRuntime::Native),
+        }
+    }
+
     /// The ClickHouse version this server's data dir is known to run on: the
     /// one it was last seen ready on. A version whose start has not been seen
     /// ready is ignored, including a dead start whose metadata was not yet
@@ -427,6 +453,7 @@ fn save_server_info_at_with_sync(
         .and_then(|()| temporary.flush())
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| metadata_write_error(&path, error))?;
+    keep_owner(&path, temporary.path());
     temporary
         .persist(&path)
         .map_err(|error| metadata_write_error(&path, error.error))?;
@@ -434,6 +461,21 @@ fn save_server_info_at_with_sync(
     // must not make callers treat the child as untracked and terminate it.
     let _ = sync(dir, &path);
     Ok(())
+}
+
+/// Give `replacement` the owner of `existing`, the file it is about to
+/// replace. Only root can and needs to: without this, root acting on a
+/// user's project (`sudo clickhousectl ...`) would leave its owner-only
+/// files unreadable to that user. Best effort, and a no-op for a new file or
+/// one this user already owns.
+pub(crate) fn keep_owner(existing: &Path, replacement: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    if let (Ok(existing), Ok(replacement_meta)) =
+        (std::fs::metadata(existing), std::fs::metadata(replacement))
+        && (existing.uid(), existing.gid()) != (replacement_meta.uid(), replacement_meta.gid())
+    {
+        let _ = std::os::unix::fs::chown(replacement, Some(existing.uid()), Some(existing.gid()));
+    }
 }
 
 pub(crate) fn save_server_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
@@ -534,7 +576,7 @@ fn is_alive(info: &ServerInfo, lock: &MetadataLock) -> Result<bool> {
         )),
         Engine::Postgres => match info.container_id.as_deref() {
             Some(id) => docker::is_container_running_blocking(id),
-            None => Ok(false),
+            None => Ok(super::pg_native::is_running(&lock.dir.join(&info.name))),
         },
     }
 }
@@ -878,7 +920,7 @@ pub(crate) fn is_server_running_locked(name: &str, lock: &MetadataLock) -> Resul
 /// A process whose working directory cannot be read, such as one owned by
 /// another user, is not treated as ours: it is never signalled, and the server
 /// is reported as not running.
-fn is_server_process(pid: u32, data_dir: &Path) -> bool {
+pub(crate) fn is_server_process(pid: u32, data_dir: &Path) -> bool {
     if !is_process_alive(pid) {
         return false;
     }
@@ -891,13 +933,13 @@ fn is_server_process(pid: u32, data_dir: &Path) -> bool {
     std::fs::canonicalize(cwd).is_ok_and(|cwd| cwd == data_dir)
 }
 
-fn is_process_alive(pid: u32) -> bool {
+pub(crate) fn is_process_alive(pid: u32) -> bool {
     pid != 0 && i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) == 0 })
 }
 
 /// Send a signal to a process and return an error if the signal could not be delivered
 /// (e.g. EPERM from a process owned by another user).
-fn send_signal(pid: u32, signal: i32) -> Result<()> {
+pub(crate) fn send_signal(pid: u32, signal: i32) -> Result<()> {
     // A PID beyond `i32` would wrap to a negative value, which `kill` reads as
     // a process group, or as every process for -1.
     let target = i32::try_from(pid).map_err(|_| {
@@ -926,7 +968,7 @@ const TERM_TIMEOUT: Duration = Duration::from_millis(2500);
 const KILL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Poll until `pid` is gone, returning whether it went within `timeout`.
-fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+pub(crate) fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if !is_process_alive(pid) {
@@ -1019,9 +1061,10 @@ fn kill_escalated(pid: u32, supervised: std::io::Result<Vec<u32>>) -> Result<()>
 ///
 /// * ClickHouse: SIGTERM (then SIGKILL on timeout); metadata is retained with
 ///   PID 0 so the stopped instance remains discoverable.
-/// * Postgres: stops the container only — does **not** remove it, and keeps
-///   the metadata file so a subsequent `start` resumes the same container
-///   (preserving the password and any other PGDATA-encoded settings).
+/// * Postgres: stops the postmaster or the container only — the data, the
+///   container and the metadata file stay, so a subsequent `start` resumes
+///   the same instance (preserving the password and any other
+///   PGDATA-encoded settings).
 pub fn kill_server(name: &str) -> Result<()> {
     let Some(lock) = lock_existing_metadata()? else {
         validate_server_name(name)?;
@@ -1040,16 +1083,16 @@ pub(crate) fn kill_server_locked(name: &str, lock: &MetadataLock) -> Result<()> 
             kill_process(info.pid)?;
             mark_server_stopped_locked(name, info.pid, lock)?;
         }
-        Engine::Postgres => {
-            let id = info.container_id.as_deref().ok_or_else(|| {
-                Error::DockerError(format!(
-                    "Postgres server '{}' has no container_id in metadata",
-                    name
-                ))
-            })?;
-            docker::stop_blocking(id)?;
+        Engine::Postgres => match info.container_id.as_deref() {
             // Metadata + container preserved so `start` can resume.
-        }
+            Some(id) => docker::stop_blocking(id)?,
+            None => {
+                super::pg_native::stop(&lock.dir.join(name))?;
+                // The stored port stays: a resume starts on it again.
+                info.pid = 0;
+                save_server_info_locked(&info, lock)?;
+            }
+        },
     }
     Ok(())
 }
