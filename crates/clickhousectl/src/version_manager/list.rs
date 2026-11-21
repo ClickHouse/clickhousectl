@@ -76,7 +76,12 @@ pub struct VersionEntry {
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
     let client = network::client(network::METADATA_POLICY, NetworkStage::VersionList, url)?;
-    let response = network::send(client.get(url), NetworkStage::VersionList, url).await?;
+    let response = network::send(
+        network::github_api_get(&client, url),
+        NetworkStage::VersionList,
+        url,
+    )
+    .await?;
     let response = network::ensure_success(response, NetworkStage::VersionList, url)?;
     let releases: Vec<GitHubRelease> =
         network::json(response, NetworkStage::VersionList, url).await?;
