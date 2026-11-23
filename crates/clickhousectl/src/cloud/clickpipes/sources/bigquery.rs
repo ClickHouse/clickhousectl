@@ -151,14 +151,14 @@ pub struct BigQueryCreateArgs {
     #[arg(long, value_name = "true|false")]
     pub allow_nullable_columns: Option<bool>,
 
-    /// Parallel workers during the initial snapshot
+    /// Parallel workers during the initial snapshot (1-64)
     #[arg(
         long,
         value_name = "WORKERS",
-        value_parser = parse_finite_f64,
-        allow_hyphen_values = true
+        allow_negative_numbers = true,
+        value_parser = clap::value_parser!(i64).range(1..=64)
     )]
-    pub initial_load_parallelism: Option<f64>,
+    pub initial_load_parallelism: Option<i64>,
 
     /// Rows per partition during the snapshot
     #[arg(
@@ -169,14 +169,14 @@ pub struct BigQueryCreateArgs {
     )]
     pub snapshot_rows_per_partition: Option<f64>,
 
-    /// Tables to snapshot in parallel
+    /// Tables to snapshot in parallel (1-64)
     #[arg(
         long,
         value_name = "TABLES",
-        value_parser = parse_finite_f64,
-        allow_hyphen_values = true
+        allow_negative_numbers = true,
+        value_parser = clap::value_parser!(i64).range(1..=64)
     )]
-    pub snapshot_parallel_tables: Option<f64>,
+    pub snapshot_parallel_tables: Option<i64>,
 
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
@@ -199,17 +199,21 @@ fn parse_finite_f64(value: &str) -> Result<f64, String> {
 pub(in crate::cloud::clickpipes) fn validate_bigquery_create_args(
     args: &BigQueryCreateArgs,
 ) -> CloudResult<()> {
+    if args
+        .snapshot_rows_per_partition
+        .is_some_and(|value| !value.is_finite())
+    {
+        return Err(CloudError::usage(
+            "invalid --snapshot-rows-per-partition: expected a finite number",
+        ));
+    }
     for (flag, value) in [
         ("--initial-load-parallelism", args.initial_load_parallelism),
-        (
-            "--snapshot-rows-per-partition",
-            args.snapshot_rows_per_partition,
-        ),
         ("--snapshot-parallel-tables", args.snapshot_parallel_tables),
     ] {
-        if value.is_some_and(|value| !value.is_finite()) {
+        if value.is_some_and(|value| !(1..=64).contains(&value)) {
             return Err(CloudError::usage(format!(
-                "invalid {flag}: expected a finite number"
+                "{flag} must be between 1 and 64"
             )));
         }
     }
@@ -482,7 +486,7 @@ mod tests {
             "--allow-nullable-columns",
             "false",
             "--initial-load-parallelism",
-            "2.5",
+            "4",
             "--snapshot-rows-per-partition",
             "1000000",
             "--snapshot-parallel-tables",
@@ -508,9 +512,9 @@ mod tests {
         assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.replication_mode, "snapshot");
         assert_eq!(args.allow_nullable_columns, Some(false));
-        assert_eq!(args.initial_load_parallelism, Some(2.5));
+        assert_eq!(args.initial_load_parallelism, Some(4));
         assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000.0));
-        assert_eq!(args.snapshot_parallel_tables, Some(3.0));
+        assert_eq!(args.snapshot_parallel_tables, Some(3));
         assert_eq!(args.destination.destination_database, "analytics");
 
         let ClickPipeCommands::Create {
@@ -564,11 +568,11 @@ mod tests {
     }
 
     #[test]
-    fn bigquery_tuning_numbers_require_finite_values() {
+    fn bigquery_snapshot_rows_per_partition_requires_finite_values() {
         for (flag, value) in [
-            ("--initial-load-parallelism", "NaN"),
+            ("--snapshot-rows-per-partition", "NaN"),
             ("--snapshot-rows-per-partition", "inf"),
-            ("--snapshot-parallel-tables", "-inf"),
+            ("--snapshot-rows-per-partition", "-inf"),
         ] {
             let error = clickpipe_parse_error(&[
                 "create",
@@ -592,12 +596,34 @@ mod tests {
 
         assert_eq!(parse_finite_f64("-1.5"), Ok(-1.5));
         assert_eq!(parse_finite_f64("2.5"), Ok(2.5));
-        for flag in [
-            "--initial-load-parallelism",
-            "--snapshot-rows-per-partition",
-            "--snapshot-parallel-tables",
-        ] {
-            assert_bigquery_value(flag, "-1.5");
+        assert_bigquery_value("--snapshot-rows-per-partition", "-1.5");
+    }
+
+    #[test]
+    fn bigquery_parallelism_flags_accept_only_integers_from_1_to_64() {
+        for flag in ["--initial-load-parallelism", "--snapshot-parallel-tables"] {
+            for value in ["1", "64"] {
+                assert_bigquery_value(flag, value);
+            }
+            for value in ["2.5", "0", "65", "-1", "NaN"] {
+                let error = clickpipe_parse_error(&[
+                    "create",
+                    "bigquery",
+                    "svc-1",
+                    "--name",
+                    "pipe-1",
+                    "--service-account-file",
+                    "/tmp/account.json",
+                    "--staging-path",
+                    "gs://bucket/staging",
+                    "--table-mapping",
+                    "dataset.events:events",
+                    flag,
+                    value,
+                ]);
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert_names(&error.to_string(), &[flag]);
+            }
         }
     }
 
@@ -673,9 +699,9 @@ mod tests {
         args.destination.destination_database = "analytics".into();
         args.destination_roles.roles = vec!["analytics_reader".into()];
         args.allow_nullable_columns = Some(true);
-        args.initial_load_parallelism = Some(2.5);
+        args.initial_load_parallelism = Some(4);
         args.snapshot_rows_per_partition = Some(1_000_000.0);
-        args.snapshot_parallel_tables = Some(3.0);
+        args.snapshot_parallel_tables = Some(3);
 
         let request = build_bigquery_request(&args).unwrap();
 
@@ -715,27 +741,30 @@ mod tests {
         );
         assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
         assert_eq!(source.settings.allow_nullable_columns, Some(true));
-        assert_eq!(source.settings.initial_load_parallelism, Some(2.5));
+        assert_eq!(source.settings.initial_load_parallelism, Some(4));
         assert_eq!(
             source.settings.snapshot_num_rows_per_partition,
             Some(1_000_000.0)
         );
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
+        let settings = serde_json::to_value(&source.settings).unwrap();
+        assert_eq!(settings["initialLoadParallelism"], serde_json::json!(4));
         assert_eq!(
-            source.settings.snapshot_number_of_parallel_tables,
-            Some(3.0)
+            settings["snapshotNumberOfParallelTables"],
+            serde_json::json!(3)
         );
     }
 
     #[test]
-    fn build_bigquery_request_rejects_non_finite_settings_before_key_file() {
+    fn build_bigquery_request_rejects_invalid_settings_before_key_file() {
         fn set_initial_load_parallelism(args: &mut BigQueryCreateArgs) {
-            args.initial_load_parallelism = Some(f64::NAN);
+            args.initial_load_parallelism = Some(0);
         }
         fn set_snapshot_rows(args: &mut BigQueryCreateArgs) {
             args.snapshot_rows_per_partition = Some(f64::INFINITY);
         }
         fn set_snapshot_tables(args: &mut BigQueryCreateArgs) {
-            args.snapshot_parallel_tables = Some(f64::NEG_INFINITY);
+            args.snapshot_parallel_tables = Some(65);
         }
 
         for (flag, set_value) in [

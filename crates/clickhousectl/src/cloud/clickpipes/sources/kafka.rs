@@ -607,10 +607,13 @@ fn build_kafka_schema_registry(
                 .as_ref()
                 .map(|_| ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent),
             url: url.clone(),
-            // PLAIN is the only registry authentication the API defines.
+            // The CLI exposes only PLAIN (username and password) registry auth.
             authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
-            credentials,
+            credentials: credentials.into(),
             ca_certificate,
+            token_url: None,
+            scope: None,
+            audience: None,
         }
         .into(),
     ))
@@ -1426,8 +1429,14 @@ mod tests {
         };
         assert_eq!(registry.r#type, None);
         assert_eq!(registry.url, "https://registry.example");
-        assert_eq!(registry.credentials.username, "registry-user");
-        assert_eq!(registry.credentials.password, "registry-password");
+        let clickhouse_cloud_api::models::ClickPipeMutateKafkaConfluentSchemaRegistryCredentials::ClickPipeKafkaSchemaRegistryCredentials(
+            credentials,
+        ) = &registry.credentials
+        else {
+            panic!("PLAIN registry auth sends username and password credentials");
+        };
+        assert_eq!(credentials.username, "registry-user");
+        assert_eq!(credentials.password, "registry-password");
         assert_eq!(registry.ca_certificate.as_deref(), Some("REGISTRY_CA"));
     }
 
