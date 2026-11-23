@@ -24,6 +24,23 @@ fn deserialize_organization() {
 }
 
 #[test]
+fn deserialize_organization_ai_settings() {
+    let org: Organization = serde_json::from_value(serde_json::json!({
+        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "aiDataUseForProductImprovementEnabled": false,
+        "knowledgeBasedAiSupportEnabled": true
+    }))
+    .unwrap();
+    assert_eq!(org.ai_data_use_for_product_improvement_enabled, Some(false));
+    assert_eq!(org.knowledge_based_ai_support_enabled, Some(true));
+
+    // Both settings are read-only and absent from an older response.
+    let older: Organization = serde_json::from_value(serde_json::json!({"name": "Org"})).unwrap();
+    assert_eq!(older.ai_data_use_for_product_improvement_enabled, None);
+    assert_eq!(older.knowledge_based_ai_support_enabled, None);
+}
+
+#[test]
 fn serialize_organization() {
     let org = Organization {
         id: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap()),

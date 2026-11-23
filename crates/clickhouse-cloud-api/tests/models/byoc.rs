@@ -3,6 +3,8 @@ use clickhouse_cloud_api::models::*;
 #[test]
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
+        access_model: None,
+        restricted_facts: None,
         account_id: "123456789012".to_string(),
         availability_zone_suffixes: Some(vec![
             ByocAvailabilityZoneSuffix::A,
@@ -38,6 +40,8 @@ fn serialize_byoc_infrastructure_post_request() {
 fn byoc_infrastructure_post_request_requires_only_account_and_region() {
     // Compile-time strictness: accountId and regionId are the spec's only required fields.
     let req = ByocInfrastructurePostRequest {
+        access_model: None,
+        restricted_facts: None,
         account_id: "123456789012".to_string(),
         region_id: ByocInfrastructurePostRequestRegionid::Eastus,
         availability_zone_suffixes: None,
@@ -62,6 +66,8 @@ fn byoc_infrastructure_post_request_requires_only_account_and_region() {
 #[test]
 fn byoc_infrastructure_post_request_serializes_every_optional_field() {
     let req = ByocInfrastructurePostRequest {
+        access_model: None,
+        restricted_facts: None,
         account_id: "project-1".to_string(),
         region_id: ByocInfrastructurePostRequestRegionid::Us_central1,
         availability_zone_suffixes: Some(vec![ByocAvailabilityZoneSuffix::A]),
@@ -104,6 +110,8 @@ fn byoc_infrastructure_post_request_serializes_every_optional_field() {
 #[test]
 fn byoc_infrastructure_validate_post_request_is_strict_on_account_and_region() {
     let req = ByocInfrastructureValidatePostRequest {
+        access_model: None,
+        restricted_facts: None,
         account_id: "sub-1".to_string(),
         region_id: ByocInfrastructureValidatePostRequestRegionid::Westus3,
         availability_zone_suffixes: None,
@@ -541,4 +549,253 @@ fn byoc_customer_authorized_access_patch_request_omits_unset_fields() {
             "durationSeconds": 172800
         })
     );
+}
+
+fn minimal_restricted_facts() -> ByocRestrictedFacts {
+    // Compile-time strictness: the spec requires exactly these five facts.
+    ByocRestrictedFacts {
+        backup_bucket: "backups".to_string(),
+        cluster_name: "eks-1".to_string(),
+        data_bucket: "data".to_string(),
+        image_mode: "direct".to_string(),
+        storage_role_arn: "arn:aws:iam::1:role/storage".to_string(),
+        availability_zones: None,
+        enable_autoscaler: None,
+        enable_monitoring: None,
+        enable_snapshot_controller: None,
+        executor_role_arn: None,
+        image_registry: None,
+        namespace_prefix: None,
+        node_role_arns: None,
+        platform_node_group: None,
+        scraper_endpoint: None,
+    }
+}
+
+#[test]
+fn byoc_restricted_facts_minimal_sends_only_required_facts() {
+    assert_eq!(
+        serde_json::to_value(minimal_restricted_facts()).unwrap(),
+        serde_json::json!({
+            "backupBucket": "backups",
+            "clusterName": "eks-1",
+            "dataBucket": "data",
+            "imageMode": "direct",
+            "storageRoleArn": "arn:aws:iam::1:role/storage"
+        })
+    );
+}
+
+#[test]
+fn byoc_restricted_facts_serializes_every_optional_fact() {
+    let facts = ByocRestrictedFacts {
+        availability_zones: Some(vec![
+            "use1-az1".into(),
+            "use1-az2".into(),
+            "use1-az4".into(),
+        ]),
+        enable_autoscaler: Some(true),
+        enable_monitoring: Some(false),
+        enable_snapshot_controller: Some(false),
+        executor_role_arn: Some("arn:aws:iam::1:role/executor".into()),
+        image_registry: Some("registry.example/ch".into()),
+        namespace_prefix: Some("svc-".into()),
+        node_role_arns: Some(vec!["arn:aws:iam::1:role/node".into()]),
+        platform_node_group: Some("platform".into()),
+        scraper_endpoint: Some("http://scraper:9093/api/v1/write".into()),
+        ..minimal_restricted_facts()
+    };
+    assert_eq!(
+        serde_json::to_value(&facts).unwrap(),
+        serde_json::json!({
+            "availabilityZones": ["use1-az1", "use1-az2", "use1-az4"],
+            "backupBucket": "backups",
+            "clusterName": "eks-1",
+            "dataBucket": "data",
+            "enableAutoscaler": true,
+            "enableMonitoring": false,
+            "enableSnapshotController": false,
+            "executorRoleArn": "arn:aws:iam::1:role/executor",
+            "imageMode": "direct",
+            "imageRegistry": "registry.example/ch",
+            "namespacePrefix": "svc-",
+            "nodeRoleArns": ["arn:aws:iam::1:role/node"],
+            "platformNodeGroup": "platform",
+            "scraperEndpoint": "http://scraper:9093/api/v1/write",
+            "storageRoleArn": "arn:aws:iam::1:role/storage"
+        })
+    );
+}
+
+#[test]
+fn byoc_restricted_facts_request_rejects_missing_required_facts() {
+    let err = serde_json::from_value::<ByocRestrictedFacts>(serde_json::json!({
+        "clusterName": "eks-1",
+        "imageMode": "direct"
+    }))
+    .unwrap_err();
+    assert!(err.to_string().contains("backupBucket"), "{err}");
+}
+
+#[test]
+fn byoc_restricted_facts_response_writes_back_through_try_from() {
+    let response: ByocRestrictedFactsResponse = serde_json::from_value(serde_json::json!({
+        "clusterName": "eks-1",
+        "imageMode": "direct",
+        "dataBucket": "data",
+        "backupBucket": "backups",
+        "storageRoleArn": "arn:aws:iam::1:role/storage",
+        "nodeRoleArns": ["arn:aws:iam::1:role/node"],
+        "enableMonitoring": false
+    }))
+    .unwrap();
+    let request = ByocRestrictedFacts::try_from(response).unwrap();
+    assert_eq!(
+        request,
+        ByocRestrictedFacts {
+            node_role_arns: Some(vec!["arn:aws:iam::1:role/node".into()]),
+            enable_monitoring: Some(false),
+            ..minimal_restricted_facts()
+        }
+    );
+}
+
+#[test]
+fn byoc_restricted_facts_response_missing_required_facts_names_them() {
+    let response = ByocRestrictedFactsResponse {
+        cluster_name: Some("eks-1".into()),
+        image_mode: Some("direct".into()),
+        ..Default::default()
+    };
+    let err = ByocRestrictedFacts::try_from(response).unwrap_err();
+    assert_eq!(
+        err.fields(),
+        ["backupBucket", "dataBucket", "storageRoleArn"]
+    );
+}
+
+#[test]
+fn byoc_infrastructure_requests_send_access_model_and_restricted_facts() {
+    let create = ByocInfrastructurePostRequest {
+        access_model: Some("restricted".into()),
+        restricted_facts: Some(minimal_restricted_facts()),
+        account_id: "1".into(),
+        region_id: ByocInfrastructurePostRequestRegionid::Us_east_1,
+        availability_zone_suffixes: None,
+        display_name: None,
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
+        vpc_id: None,
+    };
+    let validate = ByocInfrastructureValidatePostRequest {
+        access_model: Some("restricted".into()),
+        restricted_facts: Some(minimal_restricted_facts()),
+        account_id: "1".into(),
+        region_id: ByocInfrastructureValidatePostRequestRegionid::Us_east_1,
+        availability_zone_suffixes: None,
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
+        vpc_id: None,
+    };
+    let expected = serde_json::json!({
+        "accessModel": "restricted",
+        "accountId": "1",
+        "regionId": "us-east-1",
+        "restrictedFacts": serde_json::to_value(minimal_restricted_facts()).unwrap()
+    });
+    assert_eq!(serde_json::to_value(&create).unwrap(), expected);
+    assert_eq!(serde_json::to_value(&validate).unwrap(), expected);
+}
+
+#[test]
+fn byoc_config_and_details_decode_access_model_facts_and_connector() {
+    let config: ByocConfig =
+        serde_json::from_value(serde_json::json!({"id": "infra-1", "accessModel": "standard"}))
+            .unwrap();
+    assert_eq!(config.access_model.as_deref(), Some("standard"));
+
+    let details: ByocInfrastructureDetails = serde_json::from_value(serde_json::json!({
+        "id": "infra-1",
+        "accessModel": "restricted",
+        "restrictedFacts": {"clusterName": "eks-1", "imageMode": "bundle"},
+        "connector": {
+            "lastHeartbeatAt": "2026-11-23T10:00:00Z",
+            "platformState": "waiting",
+            "platformDetail": "approve the node group",
+            "components": [{
+                "name": "executor",
+                "state": "healthy",
+                "version": "1.2.3",
+                "lastHeartbeatAt": "2026-11-23T10:00:05Z"
+            }]
+        }
+    }))
+    .unwrap();
+    assert_eq!(details.access_model.as_deref(), Some("restricted"));
+    let facts = details.restricted_facts.unwrap();
+    assert_eq!(facts.cluster_name.as_deref(), Some("eks-1"));
+    assert_eq!(facts.image_mode.as_deref(), Some("bundle"));
+    // Partial facts still deserialize: response fields are all optional.
+    assert_eq!(facts.data_bucket, None);
+    let connector = details.connector.unwrap();
+    assert_eq!(
+        connector.last_heartbeat_at,
+        Some("2026-11-23T10:00:00Z".parse().unwrap())
+    );
+    assert_eq!(
+        connector.platform_detail.as_deref(),
+        Some("approve the node group")
+    );
+    let component = &connector.components.unwrap()[0];
+    assert_eq!(component.name.as_deref(), Some("executor"));
+    assert_eq!(component.version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        component.last_heartbeat_at,
+        Some("2026-11-23T10:00:05Z".parse().unwrap())
+    );
+
+    // A connector that has not reported yet is an empty object.
+    let empty: ByocConnector = serde_json::from_str("{}").unwrap();
+    assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn byoc_enrollment_token_models() {
+    assert_eq!(
+        serde_json::to_value(ByocInfrastructureEnrollmentTokenPostRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(ByocInfrastructureEnrollmentTokenPostRequest {
+            ttl_seconds: Some(3600)
+        })
+        .unwrap(),
+        serde_json::json!({"ttlSeconds": 3600})
+    );
+    let token: ByocInfrastructureEnrollmentToken = serde_json::from_value(serde_json::json!({
+        "token": "enroll-secret",
+        "expiresAt": "2026-11-23T14:00:00Z"
+    }))
+    .unwrap();
+    assert_eq!(token.token.as_deref(), Some("enroll-secret"));
+    assert_eq!(
+        token.expires_at,
+        Some("2026-11-23T14:00:00Z".parse().unwrap())
+    );
+    let empty: ByocInfrastructureEnrollmentToken = serde_json::from_str("{}").unwrap();
+    assert_eq!(empty.token, None);
 }

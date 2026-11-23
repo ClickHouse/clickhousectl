@@ -608,6 +608,12 @@ impl std::fmt::Display for ByocInfrastructureValidationCloudprovider {
 /// `ByocConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocConfig {
+    /// How ClickHouse reaches the infrastructure: `standard` through a
+    /// management role in your account, or `restricted` through a connector
+    /// you install in a cluster you own. An open set on the wire, so it stays a
+    /// string.
+    #[serde(rename = "accessModel", skip_serializing_if = "Option::is_none")]
+    pub access_model: Option<String>,
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     #[cfg(feature = "deprecated-fields")]
@@ -674,6 +680,11 @@ pub struct ByocInfrastructureTagsResponse {
 /// `ByocInfrastructurePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ByocInfrastructurePostRequest {
+    /// How ClickHouse reaches the infrastructure: `standard` (the server
+    /// default) or `restricted`, which is AWS only and requires
+    /// `restricted_facts`. An open set on the wire, so it stays a string.
+    #[serde(rename = "accessModel", skip_serializing_if = "Option::is_none")]
+    pub access_model: Option<String>,
     #[serde(rename = "accountId")]
     pub account_id: String,
     #[serde(
@@ -701,6 +712,10 @@ pub struct ByocInfrastructurePostRequest {
     pub public_subnet_ids: Option<Vec<String>>,
     #[serde(rename = "regionId")]
     pub region_id: ByocInfrastructurePostRequestRegionid,
+    /// Facts about the cluster you own; required with `access_model`
+    /// `restricted`.
+    #[serde(rename = "restrictedFacts", skip_serializing_if = "Option::is_none")]
+    pub restricted_facts: Option<ByocRestrictedFacts>,
     #[serde(
         rename = "servicePrincipalClientId",
         skip_serializing_if = "Option::is_none"
@@ -721,6 +736,11 @@ pub struct ByocInfrastructurePostRequest {
 /// Preflight-checks cloud account permissions for a BYOC infrastructure without creating it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ByocInfrastructureValidatePostRequest {
+    /// How ClickHouse reaches the infrastructure: `standard` (the server
+    /// default) or `restricted`, which is AWS only and requires
+    /// `restricted_facts`. An open set on the wire, so it stays a string.
+    #[serde(rename = "accessModel", skip_serializing_if = "Option::is_none")]
+    pub access_model: Option<String>,
     #[serde(rename = "accountId")]
     pub account_id: String,
     #[serde(
@@ -746,6 +766,10 @@ pub struct ByocInfrastructureValidatePostRequest {
     pub public_subnet_ids: Option<Vec<String>>,
     #[serde(rename = "regionId")]
     pub region_id: ByocInfrastructureValidatePostRequestRegionid,
+    /// Facts about the cluster you own; required with `access_model`
+    /// `restricted`.
+    #[serde(rename = "restrictedFacts", skip_serializing_if = "Option::is_none")]
+    pub restricted_facts: Option<ByocRestrictedFacts>,
     #[serde(
         rename = "servicePrincipalClientId",
         skip_serializing_if = "Option::is_none"
@@ -769,6 +793,11 @@ pub type ByocInfrastructureTags = std::collections::BTreeMap<String, String>;
 /// `ByocInfrastructureDetails` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocInfrastructureDetails {
+    /// Access model of the infrastructure: `standard` or `restricted`. With
+    /// `restricted`, private link, load balancer and VPC fields are false or
+    /// absent. An open set on the wire, so it stays a string.
+    #[serde(rename = "accessModel", skip_serializing_if = "Option::is_none")]
+    pub access_model: Option<String>,
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     #[serde(rename = "byoVpcId", skip_serializing_if = "Option::is_none")]
@@ -790,6 +819,9 @@ pub struct ByocInfrastructureDetails {
     pub byo_vpc_shared_vpc_host_project_id: Option<String>,
     #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
     pub cloud_provider: Option<ByocInfrastructureDetailsCloudprovider>,
+    /// State of the connector a `restricted` infrastructure is reached through.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector: Option<ByocConnector>,
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(rename = "enablePrivateLink", skip_serializing_if = "Option::is_none")]
@@ -812,6 +844,9 @@ pub struct ByocInfrastructureDetails {
     pub is_byo_vpc: Option<bool>,
     #[serde(rename = "regionId", skip_serializing_if = "Option::is_none")]
     pub region_id: Option<ByocInfrastructureDetailsRegionid>,
+    /// Facts the `restricted` infrastructure was registered with.
+    #[serde(rename = "restrictedFacts", skip_serializing_if = "Option::is_none")]
+    pub restricted_facts: Option<ByocRestrictedFactsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ByocInfrastructureDetailsState>,
     #[serde(
@@ -922,4 +957,169 @@ pub struct ByocCustomerAuthorizedAccessPatchRequest {
     pub mode: Option<String>,
     #[serde(rename = "startTimestamp", skip_serializing_if = "Option::is_none")]
     pub start_timestamp: Option<jiff::Timestamp>,
+}
+
+/// `ByocRestrictedFacts` from the ClickHouse Cloud API.
+///
+/// Facts about the EKS cluster a `restricted` BYOC infrastructure is reached
+/// through, as sent when registering or validating it. The response variant is
+/// [`ByocRestrictedFactsResponse`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ByocRestrictedFacts {
+    /// At least three distinct availability zones of the region. Omitted: the
+    /// region default.
+    #[serde(rename = "availabilityZones", skip_serializing_if = "Option::is_none")]
+    pub availability_zones: Option<Vec<String>>,
+    /// S3 bucket services store backups in.
+    #[serde(rename = "backupBucket")]
+    pub backup_bucket: String,
+    /// Name of the EKS cluster the connector runs in.
+    #[serde(rename = "clusterName")]
+    pub cluster_name: String,
+    /// S3 bucket services store data in.
+    #[serde(rename = "dataBucket")]
+    pub data_bucket: String,
+    /// Install the ClickHouse autoscaler. Server default `false`.
+    #[serde(rename = "enableAutoscaler", skip_serializing_if = "Option::is_none")]
+    pub enable_autoscaler: Option<bool>,
+    /// Install the monitoring components. Server default `true`.
+    #[serde(rename = "enableMonitoring", skip_serializing_if = "Option::is_none")]
+    pub enable_monitoring: Option<bool>,
+    /// Install the volume snapshot controller. Server default `true`.
+    #[serde(
+        rename = "enableSnapshotController",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enable_snapshot_controller: Option<bool>,
+    /// Direct image mode only (required there): IAM role of the connector
+    /// executor, in `accountId`.
+    #[serde(rename = "executorRoleArn", skip_serializing_if = "Option::is_none")]
+    pub executor_role_arn: Option<String>,
+    /// How the connector pulls platform images: `direct` from the ClickHouse
+    /// registry, or `bundle` from `image_registry`. An open set on the wire, so
+    /// it stays a string.
+    #[serde(rename = "imageMode")]
+    pub image_mode: String,
+    /// Bundle image mode only (required there): OCI repository root holding the
+    /// platform images.
+    #[serde(rename = "imageRegistry", skip_serializing_if = "Option::is_none")]
+    pub image_registry: Option<String>,
+    /// Prefix of the namespace each service runs in. Must match the executor
+    /// configuration. Omitted: `ns-`.
+    #[serde(rename = "namespacePrefix", skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+    /// Direct image mode only (required there): IAM roles of the cluster nodes,
+    /// in `accountId`.
+    #[serde(rename = "nodeRoleArns", skip_serializing_if = "Option::is_none")]
+    pub node_role_arns: Option<Vec<String>>,
+    /// Node group the platform components run on. Omitted: `system`.
+    #[serde(rename = "platformNodeGroup", skip_serializing_if = "Option::is_none")]
+    pub platform_node_group: Option<String>,
+    /// Remote-write URL of the connector scraper. Required unless
+    /// `enable_monitoring` is `false`.
+    #[serde(rename = "scraperEndpoint", skip_serializing_if = "Option::is_none")]
+    pub scraper_endpoint: Option<String>,
+    /// IAM role services assume to reach the buckets, in `accountId`.
+    #[serde(rename = "storageRoleArn")]
+    pub storage_role_arn: String,
+}
+
+/// `ByocRestrictedFacts` as returned by the ClickHouse Cloud API.
+///
+/// Response variant of [`ByocRestrictedFacts`]; convert it with `TryFrom` to
+/// send the facts back.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocRestrictedFactsResponse {
+    #[serde(rename = "availabilityZones", skip_serializing_if = "Option::is_none")]
+    pub availability_zones: Option<Vec<String>>,
+    #[serde(rename = "backupBucket", skip_serializing_if = "Option::is_none")]
+    pub backup_bucket: Option<String>,
+    #[serde(rename = "clusterName", skip_serializing_if = "Option::is_none")]
+    pub cluster_name: Option<String>,
+    #[serde(rename = "dataBucket", skip_serializing_if = "Option::is_none")]
+    pub data_bucket: Option<String>,
+    #[serde(rename = "enableAutoscaler", skip_serializing_if = "Option::is_none")]
+    pub enable_autoscaler: Option<bool>,
+    #[serde(rename = "enableMonitoring", skip_serializing_if = "Option::is_none")]
+    pub enable_monitoring: Option<bool>,
+    #[serde(
+        rename = "enableSnapshotController",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enable_snapshot_controller: Option<bool>,
+    #[serde(rename = "executorRoleArn", skip_serializing_if = "Option::is_none")]
+    pub executor_role_arn: Option<String>,
+    #[serde(rename = "imageMode", skip_serializing_if = "Option::is_none")]
+    pub image_mode: Option<String>,
+    #[serde(rename = "imageRegistry", skip_serializing_if = "Option::is_none")]
+    pub image_registry: Option<String>,
+    #[serde(rename = "namespacePrefix", skip_serializing_if = "Option::is_none")]
+    pub namespace_prefix: Option<String>,
+    #[serde(rename = "nodeRoleArns", skip_serializing_if = "Option::is_none")]
+    pub node_role_arns: Option<Vec<String>>,
+    #[serde(rename = "platformNodeGroup", skip_serializing_if = "Option::is_none")]
+    pub platform_node_group: Option<String>,
+    #[serde(rename = "scraperEndpoint", skip_serializing_if = "Option::is_none")]
+    pub scraper_endpoint: Option<String>,
+    #[serde(rename = "storageRoleArn", skip_serializing_if = "Option::is_none")]
+    pub storage_role_arn: Option<String>,
+}
+
+/// `ByocConnector` from the ClickHouse Cloud API.
+///
+/// State of the connector a `restricted` BYOC infrastructure is reached
+/// through. The states are open sets on the wire, so they stay strings.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocConnector {
+    /// Components the connector reports on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<ByocConnectorComponent>>,
+    /// Last heartbeat of the connector; absent until it first reports.
+    #[serde(rename = "lastHeartbeatAt", skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<jiff::Timestamp>,
+    /// What you need to do when the platform layer waits on you.
+    #[serde(rename = "platformDetail", skip_serializing_if = "Option::is_none")]
+    pub platform_detail: Option<String>,
+    /// State of the platform layer the connector installs.
+    #[serde(rename = "platformState", skip_serializing_if = "Option::is_none")]
+    pub platform_state: Option<String>,
+}
+
+/// `ByocConnectorComponent` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocConnectorComponent {
+    /// Last heartbeat of the component.
+    #[serde(rename = "lastHeartbeatAt", skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<jiff::Timestamp>,
+    /// Connector component, such as `scraper`, `executor` or `troubleshooter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// State the component last reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Version the component last reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// `ByocInfrastructureEnrollmentTokenPostRequest` from the ClickHouse Cloud API (Beta).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocInfrastructureEnrollmentTokenPostRequest {
+    /// Lifetime of the token in seconds: whole minutes between 3600 and 86400.
+    /// Omitted: four hours.
+    #[serde(rename = "ttlSeconds", skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<i64>,
+}
+
+/// `ByocInfrastructureEnrollmentToken` from the ClickHouse Cloud API (Beta).
+///
+/// `token` is a one-time secret the connector enrolls with; it cannot be read
+/// again after this response.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocInfrastructureEnrollmentToken {
+    /// When the token expires.
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<jiff::Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }

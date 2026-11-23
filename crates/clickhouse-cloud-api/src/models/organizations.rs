@@ -88,6 +88,13 @@ pub struct PrometheusDiscoveryTargetGroup {
 /// `Organization` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Organization {
+    /// Whether the organization settings allow AI inputs, outputs and related
+    /// metadata to be used for product improvement and support. Read-only.
+    #[serde(
+        rename = "aiDataUseForProductImprovementEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ai_data_use_for_product_improvement_enabled: Option<bool>,
     #[serde(rename = "byocConfig", skip_serializing_if = "Option::is_none")]
     pub byoc_config: Option<Vec<ByocConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,6 +105,14 @@ pub struct Organization {
     pub enable_core_dumps: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<uuid::Uuid>,
+    /// Whether knowledge-based AI support, which answers support questions
+    /// with a model trained on public documentation, is turned on in the
+    /// organization settings. Read-only.
+    #[serde(
+        rename = "knowledgeBasedAiSupportEnabled",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub knowledge_based_ai_support_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]

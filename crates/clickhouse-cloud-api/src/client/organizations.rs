@@ -372,6 +372,34 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get organization AI inference usage costs (Beta)
+    ///
+    /// Returns a grand total and one record per UTC day, provider and model
+    /// for `from_date` to `to_date` inclusive (`YYYY-MM-DD`, at most 31 days).
+    pub async fn inference_usage_cost_get(
+        &self,
+        organization_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> Result<ApiResponse<InferenceUsageCost>, Error> {
+        let mut req = self.request(&operations::INFERENCE_USAGE_COST_GET, &[organization_id])?;
+        req = req.query(&[("from_date", from_date)]);
+        req = req.query(&[("to_date", to_date)]);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get list of organization preview features (Beta)
     pub async fn organization_public_previews_get_list(
         &self,

@@ -239,6 +239,42 @@ fn extracted_models_keep_root_and_models_paths() {
         PhantomData::<api::models::ByocAvailabilityZoneSuffix>,
     );
     assert_same_type(
+        PhantomData::<api::ByocConnector>,
+        PhantomData::<api::models::ByocConnector>,
+    );
+    assert_same_type(
+        PhantomData::<api::ByocConnectorComponent>,
+        PhantomData::<api::models::ByocConnectorComponent>,
+    );
+    assert_same_type(
+        PhantomData::<api::ByocInfrastructureEnrollmentToken>,
+        PhantomData::<api::models::ByocInfrastructureEnrollmentToken>,
+    );
+    assert_same_type(
+        PhantomData::<api::ByocInfrastructureEnrollmentTokenPostRequest>,
+        PhantomData::<api::models::ByocInfrastructureEnrollmentTokenPostRequest>,
+    );
+    assert_same_type(
+        PhantomData::<api::ByocRestrictedFacts>,
+        PhantomData::<api::models::ByocRestrictedFacts>,
+    );
+    assert_same_type(
+        PhantomData::<api::ByocRestrictedFactsResponse>,
+        PhantomData::<api::models::ByocRestrictedFactsResponse>,
+    );
+    assert_same_type(
+        PhantomData::<api::InferenceUsageCost>,
+        PhantomData::<api::models::InferenceUsageCost>,
+    );
+    assert_same_type(
+        PhantomData::<api::InferenceUsageCostMetric>,
+        PhantomData::<api::models::InferenceUsageCostMetric>,
+    );
+    assert_same_type(
+        PhantomData::<api::InferenceUsageCostRecord>,
+        PhantomData::<api::models::InferenceUsageCostRecord>,
+    );
+    assert_same_type(
         PhantomData::<api::NotificationType>,
         PhantomData::<api::models::NotificationType>,
     );

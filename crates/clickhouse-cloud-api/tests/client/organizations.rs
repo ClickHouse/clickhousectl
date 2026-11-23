@@ -161,6 +161,50 @@ async fn get_usage_cost_with_query_params() {
 }
 
 #[tokio::test]
+async fn get_inference_usage_cost_with_query_params() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/inferenceUsageCost"))
+        .and(query_param("from_date", "2026-10-01"))
+        .and(query_param("to_date", "2026-10-31"))
+        .respond_with(ok_json(serde_json::json!({
+            "grandTotalCHC": 12.5,
+            "costs": [{
+                "date": "2026-10-01",
+                "provider": "anthropic",
+                "model": "claude-opus-4-8",
+                "modelName": "Claude Opus 4.8",
+                "totalCHC": 12.5,
+                "locked": true,
+                "metrics": [{
+                    "metric": "input",
+                    "tokensMillions": 1.5,
+                    "pricePerMillionTokensCHC": 5.0,
+                    "totalCHC": 7.5
+                }]
+            }]
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let cost = c
+        .inference_usage_cost_get("org-1", "2026-10-01", "2026-10-31")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(cost.grand_total_chc, Some(12.5));
+    let record = &cost.costs.unwrap()[0];
+    assert_eq!(record.model_name.as_deref(), Some("Claude Opus 4.8"));
+    assert_eq!(record.locked, Some(true));
+    let metric = &record.metrics.as_ref().unwrap()[0];
+    assert_eq!(metric.metric.as_deref(), Some("input"));
+    assert_eq!(metric.tokens_millions, Some(1.5));
+}
+
+#[tokio::test]
 async fn get_prometheus_metrics() {
     let mock_server = MockServer::start().await;
 
