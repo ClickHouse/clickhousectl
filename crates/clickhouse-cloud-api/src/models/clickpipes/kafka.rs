@@ -36,6 +36,9 @@ impl std::fmt::Display for ClickPipeKafkaOffsetStrategy {
 pub enum ClickPipeKafkaConfluentSchemaRegistryAuthentication {
     #[default]
     PLAIN,
+    /// OAuth2 client credentials flow; needs `tokenUrl` and client credentials.
+    #[serde(rename = "CLIENT_CREDENTIALS")]
+    ClientCredentials,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -45,6 +48,7 @@ impl std::fmt::Display for ClickPipeKafkaConfluentSchemaRegistryAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PLAIN => write!(f, "PLAIN"),
+            Self::ClientCredentials => write!(f, "CLIENT_CREDENTIALS"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -154,6 +158,9 @@ impl std::fmt::Display for ClickPipeKafkaSourceType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication {
     PLAIN,
+    /// OAuth2 client credentials flow; needs `tokenUrl` and client credentials.
+    #[serde(rename = "CLIENT_CREDENTIALS")]
+    ClientCredentials,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -163,6 +170,7 @@ impl std::fmt::Display for ClickPipeMutateKafkaConfluentSchemaRegistryAuthentica
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PLAIN => write!(f, "PLAIN"),
+            Self::ClientCredentials => write!(f, "CLIENT_CREDENTIALS"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -391,6 +399,15 @@ pub struct ClickPipeKafkaConfluentSchemaRegistry {
     pub ca_certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// OAuth2 token endpoint, for `CLIENT_CREDENTIALS` authentication.
+    #[serde(rename = "tokenUrl", skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    /// Space-separated OAuth2 scopes, for `CLIENT_CREDENTIALS` authentication.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// OAuth2 audience, for `CLIENT_CREDENTIALS` authentication.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
 }
 
 /// Values of `ClickPipeKafkaGlueSchemaRegistry.type` in the Cloud API.
@@ -492,6 +509,16 @@ pub struct ClickPipeKafkaSchemaRegistryCredentials {
     pub username: String,
 }
 
+/// `ClickPipeKafkaSchemaRegistryClientCredentials` from the ClickHouse Cloud API:
+/// OAuth2 client credentials for a schema registry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClickPipeKafkaSchemaRegistryClientCredentials {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    #[serde(rename = "clientSecret")]
+    pub client_secret: String,
+}
+
 /// `ClickPipeKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKafkaSource {
@@ -555,8 +582,43 @@ pub struct ClickPipeMutateKafkaConfluentSchemaRegistry {
     pub authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: ClickPipeKafkaSchemaRegistryCredentials,
+    /// Username and password for `PLAIN`, or a client ID and secret for
+    /// `CLIENT_CREDENTIALS`.
+    pub credentials: ClickPipeMutateKafkaConfluentSchemaRegistryCredentials,
     pub url: String,
+    /// OAuth2 token endpoint (HTTPS); required for `CLIENT_CREDENTIALS`.
+    #[serde(rename = "tokenUrl", skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    /// Space-separated OAuth2 scopes; only used for `CLIENT_CREDENTIALS`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// OAuth2 audience; only used for `CLIENT_CREDENTIALS`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+}
+
+/// Inline `oneOf` for `ClickPipeMutateKafkaConfluentSchemaRegistry.credentials`.
+///
+/// The branches have disjoint required keys, so the untagged derive selects
+/// the arm from the payload without a discriminator.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickPipeMutateKafkaConfluentSchemaRegistryCredentials {
+    ClickPipeKafkaSchemaRegistryCredentials(ClickPipeKafkaSchemaRegistryCredentials),
+    ClickPipeKafkaSchemaRegistryClientCredentials(ClickPipeKafkaSchemaRegistryClientCredentials),
+}
+
+impl std::fmt::Display for ClickPipeMutateKafkaConfluentSchemaRegistryCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipeKafkaSchemaRegistryCredentials(_) => {
+                write!(f, "ClickPipeKafkaSchemaRegistryCredentials")
+            }
+            Self::ClickPipeKafkaSchemaRegistryClientCredentials(_) => {
+                write!(f, "ClickPipeKafkaSchemaRegistryClientCredentials")
+            }
+        }
+    }
 }
 
 /// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API, selected by `type`.
@@ -709,5 +771,21 @@ impl From<ClickPipeMutateKafkaConfluentSchemaRegistry> for ClickPipeMutateKafkaS
 impl From<ClickPipeKafkaGlueSchemaRegistry> for ClickPipeMutateKafkaSchemaRegistry {
     fn from(value: ClickPipeKafkaGlueSchemaRegistry) -> Self {
         Self::ClickPipeKafkaGlueSchemaRegistry(value)
+    }
+}
+
+impl From<ClickPipeKafkaSchemaRegistryCredentials>
+    for ClickPipeMutateKafkaConfluentSchemaRegistryCredentials
+{
+    fn from(value: ClickPipeKafkaSchemaRegistryCredentials) -> Self {
+        Self::ClickPipeKafkaSchemaRegistryCredentials(value)
+    }
+}
+
+impl From<ClickPipeKafkaSchemaRegistryClientCredentials>
+    for ClickPipeMutateKafkaConfluentSchemaRegistryCredentials
+{
+    fn from(value: ClickPipeKafkaSchemaRegistryClientCredentials) -> Self {
+        Self::ClickPipeKafkaSchemaRegistryClientCredentials(value)
     }
 }

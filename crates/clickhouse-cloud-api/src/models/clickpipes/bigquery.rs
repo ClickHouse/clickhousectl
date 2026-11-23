@@ -72,7 +72,7 @@ pub struct ClickPipeBigQueryPipeSettings {
         rename = "initialLoadParallelism",
         skip_serializing_if = "Option::is_none"
     )]
-    pub initial_load_parallelism: Option<f64>,
+    pub initial_load_parallelism: Option<i64>,
     #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode,
     #[serde(
@@ -84,7 +84,7 @@ pub struct ClickPipeBigQueryPipeSettings {
         rename = "snapshotNumberOfParallelTables",
         skip_serializing_if = "Option::is_none"
     )]
-    pub snapshot_number_of_parallel_tables: Option<f64>,
+    pub snapshot_number_of_parallel_tables: Option<i64>,
     #[serde(
         rename = "pullWindowSizeSeconds",
         skip_serializing_if = "Option::is_none"
@@ -130,7 +130,7 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
         rename = "initialLoadParallelism",
         skip_serializing_if = "Option::is_none"
     )]
-    pub initial_load_parallelism: Option<f64>,
+    pub initial_load_parallelism: Option<i64>,
     #[serde(rename = "replicationMode", skip_serializing_if = "Option::is_none")]
     pub replication_mode: Option<ClickPipeBigQueryPipeSettingsReplicationmode>,
     #[serde(
@@ -142,7 +142,7 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
         rename = "snapshotNumberOfParallelTables",
         skip_serializing_if = "Option::is_none"
     )]
-    pub snapshot_number_of_parallel_tables: Option<f64>,
+    pub snapshot_number_of_parallel_tables: Option<i64>,
     #[serde(
         rename = "pullWindowSizeSeconds",
         skip_serializing_if = "Option::is_none"

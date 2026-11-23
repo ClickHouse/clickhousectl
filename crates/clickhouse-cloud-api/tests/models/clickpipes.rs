@@ -1430,8 +1430,12 @@ fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
                     credentials: ClickPipeKafkaSchemaRegistryCredentials {
                         password: String::new(),
                         username: String::new(),
-                    },
+                    }
+                    .into(),
                     url: String::new(),
+                    token_url: None,
+                    scope: None,
+                    audience: None,
                 },
             ),
         ),
@@ -1766,8 +1770,12 @@ fn kafka_schema_registry_requests_serialize_each_variant_wire_shape() {
             credentials: ClickPipeKafkaSchemaRegistryCredentials {
                 username: "user".into(),
                 password: "secret".into(),
-            },
+            }
+            .into(),
             ca_certificate: None,
+            token_url: None,
+            scope: None,
+            audience: None,
         }
         .into();
     assert_eq!(
@@ -1831,6 +1839,192 @@ fn kafka_schema_registry_requests_serialize_each_variant_wire_shape() {
     assert_eq!(
         serde_json::to_value(source).unwrap()["schemaRegistry"]["type"],
         "glue"
+    );
+}
+
+#[test]
+fn kafka_schema_registry_plain_credentials_keep_their_wire_shape() {
+    // The username/password arm of the credentials union serializes exactly
+    // as the bare credentials struct did before the union existed.
+    let plain = ClickPipeKafkaSchemaRegistryCredentials {
+        username: "user".into(),
+        password: "secret".into(),
+    };
+    let before = serde_json::to_value(&plain).unwrap();
+    let credentials = ClickPipeMutateKafkaConfluentSchemaRegistryCredentials::from(plain.clone());
+    assert_eq!(serde_json::to_value(&credentials).unwrap(), before);
+    assert_eq!(
+        before,
+        serde_json::json!({"username": "user", "password": "secret"})
+    );
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistryCredentials>(before)
+            .unwrap(),
+        ClickPipeMutateKafkaConfluentSchemaRegistryCredentials::ClickPipeKafkaSchemaRegistryCredentials(
+            plain
+        )
+    );
+}
+
+#[test]
+fn kafka_schema_registry_client_credentials_serialize_with_oauth_fields() {
+    let client = ClickPipeKafkaSchemaRegistryClientCredentials {
+        client_id: "client".into(),
+        client_secret: "secret".into(),
+    };
+    let wire = serde_json::json!({"clientId": "client", "clientSecret": "secret"});
+    assert_eq!(serde_json::to_value(&client).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeKafkaSchemaRegistryClientCredentials>(wire.clone())
+            .unwrap(),
+        client
+    );
+    for field in ["clientId", "clientSecret"] {
+        let mut missing = wire.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ClickPipeKafkaSchemaRegistryClientCredentials>(missing)
+                .is_err()
+        );
+    }
+    let credentials = ClickPipeMutateKafkaConfluentSchemaRegistryCredentials::from(client.clone());
+    assert_eq!(serde_json::to_value(&credentials).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistryCredentials>(wire)
+            .unwrap(),
+        credentials
+    );
+    // A payload matching neither branch is rejected rather than guessed.
+    assert!(
+        serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistryCredentials>(
+            serde_json::json!({"clientId": "client"})
+        )
+        .is_err()
+    );
+
+    let registry: ClickPipeMutateKafkaSchemaRegistry =
+        ClickPipeMutateKafkaConfluentSchemaRegistry {
+            r#type: None,
+            url: "https://registry.example".into(),
+            authentication:
+                ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::ClientCredentials,
+            credentials: client.into(),
+            ca_certificate: None,
+            token_url: Some("https://auth.example/oauth2/token".into()),
+            scope: Some("schema_registry read".into()),
+            audience: Some("https://registry.example".into()),
+        }
+        .into();
+    let wire = serde_json::json!({
+        "url": "https://registry.example", "authentication": "CLIENT_CREDENTIALS",
+        "credentials": {"clientId": "client", "clientSecret": "secret"},
+        "tokenUrl": "https://auth.example/oauth2/token",
+        "scope": "schema_registry read", "audience": "https://registry.example"
+    });
+    assert_eq!(serde_json::to_value(&registry).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaSchemaRegistry>(wire).unwrap(),
+        registry
+    );
+    assert_eq!(
+        ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::ClientCredentials.to_string(),
+        "CLIENT_CREDENTIALS"
+    );
+}
+
+#[test]
+fn kafka_confluent_schema_registry_response_reads_oauth_fields() {
+    let wire = serde_json::json!({
+        "type": "confluent", "url": "https://registry.example",
+        "authentication": "CLIENT_CREDENTIALS",
+        "tokenUrl": "https://auth.example/oauth2/token",
+        "scope": "schema_registry", "audience": "https://registry.example"
+    });
+    let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(wire.clone()).unwrap();
+    let ClickPipeKafkaSchemaRegistry::ClickPipeKafkaConfluentSchemaRegistry(confluent) = &registry
+    else {
+        panic!("expected Confluent, got {registry:?}");
+    };
+    assert_eq!(
+        confluent.authentication,
+        Some(ClickPipeKafkaConfluentSchemaRegistryAuthentication::ClientCredentials)
+    );
+    assert_eq!(
+        confluent.token_url.as_deref(),
+        Some("https://auth.example/oauth2/token")
+    );
+    assert_eq!(confluent.scope.as_deref(), Some("schema_registry"));
+    assert_eq!(
+        confluent.audience.as_deref(),
+        Some("https://registry.example")
+    );
+    assert_eq!(serde_json::to_value(&registry).unwrap(), wire);
+
+    for value in [
+        serde_json::json!({"url": "https://registry.example"}),
+        serde_json::json!({
+            "url": "https://registry.example", "tokenUrl": null, "scope": null, "audience": null
+        }),
+    ] {
+        let confluent: ClickPipeKafkaConfluentSchemaRegistry =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(confluent.token_url, None);
+        assert_eq!(confluent.scope, None);
+        assert_eq!(confluent.audience, None);
+        assert_eq!(
+            serde_json::to_value(&confluent).unwrap(),
+            serde_json::json!({"url": "https://registry.example"})
+        );
+    }
+}
+
+#[test]
+fn bigquery_parallelism_settings_are_integers_on_the_wire() {
+    let mut settings = ClickPipeBigQueryPipeSettings {
+        replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+        allow_nullable_columns: None,
+        initial_load_parallelism: Some(4),
+        snapshot_num_rows_per_partition: None,
+        snapshot_number_of_parallel_tables: Some(2),
+        pull_window_size_seconds: None,
+        query_cdc_pull_sync_parallelism: None,
+        replication_method: None,
+        sync_cron: None,
+        sync_delay_seconds: None,
+        sync_interval_seconds: None,
+    };
+    let wire = serde_json::to_value(&settings).unwrap();
+    assert_eq!(
+        wire,
+        serde_json::json!({
+            "replicationMode": "snapshot", "initialLoadParallelism": 4,
+            "snapshotNumberOfParallelTables": 2
+        })
+    );
+    assert!(wire["initialLoadParallelism"].is_i64());
+    assert!(wire["snapshotNumberOfParallelTables"].is_i64());
+    assert_eq!(
+        serde_json::from_value::<ClickPipeBigQueryPipeSettings>(wire.clone()).unwrap(),
+        settings
+    );
+    assert!(
+        serde_json::from_value::<ClickPipeBigQueryPipeSettings>(serde_json::json!({
+            "replicationMode": "snapshot", "initialLoadParallelism": 2.5
+        }))
+        .is_err()
+    );
+
+    let response: ClickPipeBigQueryPipeSettingsResponse = serde_json::from_value(wire).unwrap();
+    assert_eq!(response.initial_load_parallelism, Some(4));
+    assert_eq!(response.snapshot_number_of_parallel_tables, Some(2));
+    let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+    assert_eq!(request, settings);
+
+    settings.initial_load_parallelism = None;
+    settings.snapshot_number_of_parallel_tables = None;
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({"replicationMode": "snapshot"})
     );
 }
 

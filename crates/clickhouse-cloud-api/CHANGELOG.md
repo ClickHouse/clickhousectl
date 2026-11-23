@@ -142,6 +142,36 @@ keys and values are discovered from text indexes and how a row is identified.
 fields. Struct-literal callers need them set to `None`, or
 `..Default::default()` on the response types.
 
+Kafka Confluent schema registries can authenticate with the OAuth2 client
+credentials flow:
+
+- `ClickPipeMutateKafkaConfluentSchemaRegistry` and
+  `ClickPipeKafkaConfluentSchemaRegistry` gain `token_url`, `scope` and
+  `audience`, all `Option<String>`. The token URL is required for
+  `CLIENT_CREDENTIALS`; scope and audience are optional.
+- `ClickPipeMutateKafkaConfluentSchemaRegistry.credentials` is now the
+  untagged union `ClickPipeMutateKafkaConfluentSchemaRegistryCredentials`, with
+  one arm for `ClickPipeKafkaSchemaRegistryCredentials` (username and password)
+  and one for the new `ClickPipeKafkaSchemaRegistryClientCredentials`
+  (`client_id` and `client_secret`). Both convert with `.into()`, so existing
+  callers write `credentials: ClickPipeKafkaSchemaRegistryCredentials { .. }.into()`.
+  The username and password JSON sent is unchanged.
+- `ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication` and
+  `ClickPipeKafkaConfluentSchemaRegistryAuthentication` gain a
+  `ClientCredentials` variant (`CLIENT_CREDENTIALS`), which used to
+  deserialize to `Unknown`. Exhaustive `match`es need an arm for it.
+
+Struct-literal callers need the new registry fields set to `None`, or
+`..Default::default()` on the response type.
+
+**Breaking:** `ClickPipeBigQueryPipeSettings` and
+`ClickPipeBigQueryPipeSettingsResponse` type `initial_load_parallelism` and
+`snapshot_number_of_parallel_tables` as `Option<i64>` instead of
+`Option<f64>`, as the spec declares them integers (1 to 64). They now
+serialize as `4` rather than `4.0`. Callers pass whole numbers, for example
+`Some(4)` instead of `Some(4.0)`; a fractional value from a response now fails
+to deserialize.
+
 ## 0.6.1
 
 No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.
