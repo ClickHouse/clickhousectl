@@ -1208,3 +1208,125 @@ async fn clickstack_alert_list_filters_and_name_selector_use_display_name() {
         assert_eq!(output["id"], "alert-1");
     }
 }
+
+// ── ClickStack alert silencing (issue #1522) ───────────────────────────────
+
+#[tokio::test]
+async fn clickstack_alert_silence_and_unsilence_send_the_silence_and_confirm_it() {
+    let mock = MockServer::start().await;
+    let silenced = "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1/silenced";
+    Mock::given(method("POST"))
+        .and(path(silenced))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result":{
+                "id":"alert-1", "displayName":"Checkout errors",
+                "silenced":{
+                    "at":"2026-11-23T12:00:00Z", "by":"user-1", "until":"2999-01-01T00:00:00Z"
+                }
+            }
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(silenced))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":200})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    // `--until` is sent as the instant given, normalized to UTC; `--json`
+    // passes the updated alert through.
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "alert",
+            "silence",
+            "svc-1",
+            "alert-1",
+            "--until",
+            "2999-01-01T02:00:00+02:00",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        true,
+    );
+    assert_success(&output);
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["id"], "alert-1");
+    assert_eq!(printed["silenced"]["until"], "2999-01-01T00:00:00Z");
+    assert_eq!(printed["silenced"]["by"], "user-1");
+
+    // `--for` counts from now; the human confirmation names the alert and
+    // shows the silence record.
+    let before = jiff::Timestamp::now().as_second();
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "alert",
+            "silence",
+            "svc-1",
+            "alert-1",
+            "--for",
+            "2h",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        false,
+    );
+    let after = jiff::Timestamp::now().as_second();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "alert-1",
+        "Checkout errors",
+        "2999-01-01T00:00:00Z",
+        "user-1",
+    ] {
+        assert!(stdout.contains(expected), "{expected}: {stdout}");
+    }
+
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "alert",
+            "unsilence",
+            "svc-1",
+            "alert-1",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        true,
+    );
+    assert_success(&output);
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed, serde_json::json!({"unsilenced":"alert-1"}));
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[0].body_json::<Value>().unwrap(),
+        serde_json::json!({"mutedUntil":"2999-01-01T00:00:00Z"})
+    );
+    let body = requests[1].body_json::<Value>().unwrap();
+    assert_eq!(body.as_object().unwrap().len(), 1, "{body}");
+    let muted_until = body["mutedUntil"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap()
+        .as_second();
+    let two_hours = 2 * 60 * 60;
+    assert!(
+        (before + two_hours..=after + two_hours).contains(&muted_until),
+        "{body}"
+    );
+    assert_eq!(requests[2].method, wiremock::http::Method::DELETE);
+    assert!(requests[2].body.is_empty());
+}

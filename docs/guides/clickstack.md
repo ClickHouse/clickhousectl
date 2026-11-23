@@ -45,6 +45,8 @@ clickhousectl cloud clickstack dashboard get <service-id> <dashboard-id>
 
 A chart config without `configType` is a builder chart that queries with `select`. Set `configType` to `sql` for a raw SQL chart (`connectionId` and `sqlTemplate`), or to `promql` for a PromQL chart, which queries `expressions` against a source of kind `promql`. Inline alert charts accept the same three kinds.
 
+A dashboard filter's `type` is `QUERY_EXPRESSION`, `STATIC_LIST`, `PROMETHEUS_LABEL`, `SOURCE_FILTER`, `DATA_SOURCE`, `CONNECTION`, `SQL_QUERY` or `ADHOC`. An `ADHOC` filter takes free-form key/operator/value conditions over its `sources`; save its conditions in `savedFilterValues` as `{"type":"adhoc","name":"<variable-name>","conditions":[...]}`. Log and trace sources also accept `rowKeyExpression`, `mapKeyIndexMaxParts` and `mapKeyIndexPartSelection`, and PromQL sources accept `promqlBackend`.
+
 Use the returned ID to inspect the saved resource, then open it in ClickStack to verify the chart against your source data. `--file -` accepts stdin. Validation checks a **create body** without saving it; it does not validate the separate update body. The CLI rejects unknown keys before sending a body but leaves its values to the API, so `create` and `update` report an invalid chart, filter or alert setting as an API error.
 
 ## Safely update an existing resource
@@ -108,7 +110,15 @@ clickhousectl cloud clickstack alert get <service-id> <alert-id>
 
 Inspect `state` and `executionErrors`, as well as notification destinations. A `saved_search` alert uses `savedSearchId` instead of dashboard/tile IDs. The `30s` interval requires that feature enabled for the team. Updates replace the alert, so retain the channel fields and every other desired setting.
 
-An alert's `displayName` is the name shown in the UI and in `alert list`; its optional `name` is a Handlebars template for the notification title. For `alert get`, `update` and `delete`, `--name` selects the alert whose `displayName` or `name` equals the value, and fails if more than one alert matches.
+An alert's `displayName` is the name shown in the UI and in `alert list`; its optional `name` is a Handlebars template for the notification title. For `alert get`, `update`, `delete`, `silence` and `unsilence`, `--name` selects the alert whose `displayName` or `name` equals the value, and fails if more than one alert matches.
+
+Silence an alert to pause its notifications (Beta). Give the end as an RFC 3339 time with `--until`, or as a length of time from now with `--for`: a whole number of minutes, hours or days, such as `30m`, `2h` or `1d`. The end must be in the future. `alert get` shows the silence in `silenced` (`until`, `by` and `at`); `unsilence` ends it early. Both require an API key:
+
+```bash
+clickhousectl cloud clickstack alert silence <service-id> <alert-id> --for 2h
+clickhousectl cloud clickstack alert silence <service-id> --name "API errors" --until 2026-12-01T09:00:00Z
+clickhousectl cloud clickstack alert unsilence <service-id> <alert-id>
+```
 
 `alert list` filters on the server. Repeat `--tag`, `--source` (`saved_search`, `tile` or `inline`) or `--state` (`ALERT`, `OK`, `INSUFFICIENT_DATA`, `DISABLED` or `PENDING`) to match any of several values; `--search` matches text in `displayName`, ignoring case. Different filters must all match. `--tag` and `--search` see only the tags and `displayName` stored on the alert, not those inherited from its saved search or dashboard. The API accepts up to 50 tags of at most 32 characters each and a search of at most 512 characters:
 

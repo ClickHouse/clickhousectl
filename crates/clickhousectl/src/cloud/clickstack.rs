@@ -68,6 +68,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
     Permission::api("clickstack alert delete", &[&op::CLICK_STACK_DELETE_ALERT])
         .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
+    Permission::api(
+        "clickstack alert silence",
+        &[&op::CLICK_STACK_SILENCE_ALERT],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
+    Permission::api(
+        "clickstack alert unsilence",
+        &[&op::CLICK_STACK_UNSILENCE_ALERT],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
     Permission::api("clickstack webhook list", &[&op::CLICK_STACK_LIST_WEBHOOKS]),
     Permission::api(
         "clickstack webhook create",
@@ -128,15 +138,15 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use crate::cloud::client::{CloudClient, CloudError, ResourceKind, Result as CloudResult, Scope};
 use crate::cloud::config::read_lossless_config;
 use crate::cloud::output::{or_absent, print_human};
-use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
+use crate::cloud::shared::{NameSelector, parse_rfc3339, resolve_org_id, select_named_id};
 use clap::Subcommand;
 use clap::builder::{NonEmptyStringValueParser, PossibleValuesParser, TypedValueParser};
 use clickhouse_cloud_api::models::{
     ClickStackAlertResponse, ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest,
     ClickStackCreateRoleRequest, ClickStackDashboardResponse, ClickStackListAlertsSource,
     ClickStackListAlertsState, ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchInput,
-    ClickStackSource, ClickStackSourceResponse, ClickStackUpdateAlertRequest,
-    ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
+    ClickStackSilenceAlertRequest, ClickStackSource, ClickStackSourceResponse,
+    ClickStackUpdateAlertRequest, ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
     ClickStackValidateDashboardResponse, ClickStackValidateWebhookResponse, ClickStackWebhook,
     ClickStackWebhookInput,
 };
@@ -321,6 +331,99 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         target: AlertSelector,
     },
+    /// Silence a ClickStack alert (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Notifications stop until the end time passes or `clickstack alert unsilence` clears it.")]
+    Silence {
+        /// Service ID (from `cloud clickhouse list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        service_id: String,
+        #[command(flatten)]
+        target: AlertSelector,
+        #[command(flatten)]
+        end: SilenceEnd,
+    },
+    /// Unsilence a ClickStack alert (Beta)
+    Unsilence {
+        /// Service ID (from `cloud clickhouse list`)
+        #[arg(value_parser = NonEmptyStringValueParser::new())]
+        service_id: String,
+        #[command(flatten)]
+        target: AlertSelector,
+    },
+}
+
+/// When an alert silence ends: a time, or a length of time from now.
+#[derive(clap::Args, Debug, Clone)]
+#[group(id = "silence_end", required = true, multiple = false)]
+pub struct SilenceEnd {
+    /// End of the silence, an RFC 3339 timestamp in the future
+    #[arg(long, value_name = "TIMESTAMP", value_parser = parse_silence_until)]
+    pub until: Option<jiff::Timestamp>,
+    /// Length of the silence from now in m, h or d, such as 30m, 2h or 1d
+    #[arg(long = "for", value_name = "DURATION", value_parser = parse_silence_duration)]
+    pub duration: Option<jiff::SignedDuration>,
+}
+
+fn parse_silence_until(value: &str) -> Result<jiff::Timestamp, String> {
+    let until =
+        parse_rfc3339(value).map_err(|error| format!("invalid timestamp '{value}': {error}"))?;
+    if until <= jiff::Timestamp::now() {
+        return Err(format!("'{value}' is not in the future"));
+    }
+    Ok(until)
+}
+
+/// A whole, positive number of minutes, hours or days: `30m`, `2h`, `1d`.
+fn parse_silence_duration(value: &str) -> Result<jiff::SignedDuration, String> {
+    let invalid = || {
+        format!(
+            "invalid duration '{value}': expected a whole number of minutes, hours or days, \
+             such as 30m, 2h or 1d"
+        )
+    };
+    if !value.is_ascii() || value.len() < 2 {
+        return Err(invalid());
+    }
+    let (count, unit) = value.split_at(value.len() - 1);
+    let unit_seconds: i64 = match unit {
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(invalid()),
+    };
+    if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let too_long = || format!("duration '{value}' is too long");
+    let count: i64 = count.parse().map_err(|_| too_long())?;
+    if count == 0 {
+        return Err(format!("duration '{value}' must be longer than zero"));
+    }
+    let duration = count
+        .checked_mul(unit_seconds)
+        .map(jiff::SignedDuration::from_secs)
+        .ok_or_else(too_long)?;
+    jiff::Timestamp::now()
+        .checked_add(duration)
+        .map_err(|_| too_long())?;
+    Ok(duration)
+}
+
+/// The silence request for `end`, with `--for` counted from `now` in whole seconds.
+fn build_silence_alert_request(
+    end: &SilenceEnd,
+    now: jiff::Timestamp,
+) -> CloudResult<ClickStackSilenceAlertRequest> {
+    let muted_until = match (end.until, end.duration) {
+        (Some(until), _) => until,
+        (None, Some(duration)) => jiff::Timestamp::from_second(now.as_second())
+            .and_then(|now| now.checked_add(duration))
+            .map_err(|_| CloudError::usage("the --for duration is too long"))?,
+        (None, None) => return Err(CloudError::usage("pass --until or --for")),
+    };
+    Ok(ClickStackSilenceAlertRequest { muted_until })
 }
 
 /// The API's alert-list limits, checked before credentials so an over-long
@@ -412,7 +515,11 @@ impl AlertCommands {
     pub fn is_write(&self) -> bool {
         match self {
             Self::List { .. } | Self::Get { .. } => false,
-            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
+            Self::Create { .. }
+            | Self::Update { .. }
+            | Self::Delete { .. }
+            | Self::Silence { .. }
+            | Self::Unsilence { .. } => true,
         }
     }
 }
@@ -1112,7 +1219,66 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
             print_deleted("ClickStack alert", &alert_id, json);
             Ok(())
         }
+        AlertCommands::Silence {
+            service_id,
+            target,
+            end,
+        } => {
+            let request = build_silence_alert_request(&end, jiff::Timestamp::now())?;
+            let org_id = resolve_org_id(client).await?;
+            let alert_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target.into(),
+                ClickStackResource::Alert,
+            )
+            .await?;
+            let alert = client
+                .click_stack_silence_alert(&org_id, &service_id, &alert_id, &request)
+                .await?;
+            print_silenced(&alert_id, &alert, json)
+        }
+        AlertCommands::Unsilence { service_id, target } => {
+            let org_id = resolve_org_id(client).await?;
+            let alert_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target.into(),
+                ClickStackResource::Alert,
+            )
+            .await?;
+            client
+                .click_stack_unsilence_alert(&org_id, &service_id, &alert_id)
+                .await?;
+            if json {
+                println!("{}", serde_json::json!({ "unsilenced": alert_id }));
+            } else {
+                println!("ClickStack alert {alert_id} unsilenced");
+            }
+            Ok(())
+        }
     }
+}
+
+fn print_silenced(alert_id: &str, alert: &ClickStackAlertResponse, json: bool) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(alert)?);
+        return Ok(());
+    }
+    match alert_display_name(alert) {
+        Some(name) => println!("ClickStack alert {alert_id} ({name}) silenced"),
+        None => println!("ClickStack alert {alert_id} silenced"),
+    }
+    let silenced = alert.silenced.as_ref();
+    println!("  Until: {}", or_absent(silenced.and_then(|s| s.until)));
+    println!(
+        "  By:    {}",
+        or_absent(silenced.and_then(|s| s.by.as_deref()))
+    );
+    println!("  At:    {}", or_absent(silenced.and_then(|s| s.at)));
+    Ok(())
 }
 
 async fn run_webhook(
@@ -1862,6 +2028,34 @@ impl CloudClient {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    async fn click_stack_silence_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+        request: &ClickStackSilenceAlertRequest,
+    ) -> CloudResult<ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_silence_alert(org_id, service_id, alert_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_unsilence_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+    ) -> CloudResult<()> {
+        self.api()
+            .click_stack_unsilence_alert(org_id, service_id, alert_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(())
     }
 
     async fn click_stack_list_webhooks(
@@ -2929,6 +3123,8 @@ mod tests {
             ("alert", "create", true),
             ("alert", "update", true),
             ("alert", "delete", true),
+            ("alert", "silence", true),
+            ("alert", "unsilence", true),
             ("webhook", "list", false),
             ("webhook", "create", true),
             ("webhook", "update", true),
@@ -2945,9 +3141,15 @@ mod tests {
             ];
             if matches!(
                 (resource, operation),
-                ("alert", "get" | "update" | "delete") | ("webhook", "update" | "delete")
+                (
+                    "alert",
+                    "get" | "update" | "delete" | "silence" | "unsilence"
+                ) | ("webhook", "update" | "delete")
             ) {
                 args.push("resource-1");
+            }
+            if operation == "silence" {
+                args.extend(["--for", "1h"]);
             }
             if matches!(operation, "create" | "update" | "validate") {
                 args.extend(["--file", "body.json"]);
@@ -3884,6 +4086,315 @@ mod tests {
                 error.message.contains(&format!("`{path}`")),
                 "{path}: {error}"
             );
+        }
+    }
+
+    fn silence_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+        let mut args = vec![
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "alert",
+            "silence",
+            "svc-1",
+        ];
+        args.extend_from_slice(extra);
+        args
+    }
+
+    fn parse_silence(extra: &[&str]) -> (AlertSelector, SilenceEnd) {
+        let ClickStackCommands::Alert {
+            command: AlertCommands::Silence { target, end, .. },
+        } = parse_clickstack(&silence_args(extra))
+        else {
+            panic!("expected alert silence")
+        };
+        (target, end)
+    }
+
+    #[test]
+    fn alert_silence_takes_exactly_one_of_until_or_for() {
+        use clap::error::ErrorKind;
+        let (target, end) = parse_silence(&["alert-1", "--until", "2999-01-01T02:00:00+02:00"]);
+        assert_eq!(target.id.as_deref(), Some("alert-1"));
+        assert_eq!(
+            end.until,
+            Some("2999-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap())
+        );
+        assert_eq!(end.duration, None);
+
+        for (value, seconds) in [("30m", 30 * 60), ("2h", 2 * 3600), ("1d", 86_400)] {
+            let (target, end) = parse_silence(&["--name", "Checkout errors", "--for", value]);
+            assert_eq!(target.name.as_deref(), Some("Checkout errors"));
+            assert_eq!(end.until, None);
+            assert_eq!(
+                end.duration,
+                Some(jiff::SignedDuration::from_secs(seconds)),
+                "{value}"
+            );
+        }
+
+        for (extra, expected) in [
+            (vec!["alert-1"], ErrorKind::MissingRequiredArgument),
+            (
+                vec!["alert-1", "--until", "2999-01-01T00:00:00Z", "--for", "1h"],
+                ErrorKind::ArgumentConflict,
+            ),
+            (vec!["--for", "1h"], ErrorKind::MissingRequiredArgument),
+        ] {
+            let error = Cli::try_parse_from(silence_args(&extra)).err().unwrap();
+            assert_eq!(error.kind(), expected, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn alert_silence_rejects_bad_durations_and_times_not_in_the_future() {
+        use clap::error::ErrorKind;
+        let past = jiff::Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_secs(60))
+            .unwrap()
+            .to_string();
+        for (flag, value) in [
+            ("--for", "0m"),
+            ("--for", "30"),
+            ("--for", "m"),
+            ("--for", ""),
+            ("--for", "1.5h"),
+            ("--for", "1h30m"),
+            ("--for", "-5m"),
+            ("--for", "+5m"),
+            ("--for", "5s"),
+            ("--for", "5M"),
+            ("--for", "5 m"),
+            ("--for", "5é"),
+            ("--for", "99999999999999999999d"),
+            ("--for", "99999999d"),
+            ("--until", "2000-01-01T00:00:00Z"),
+            ("--until", past.as_str()),
+            ("--until", "2999-01-01"),
+            ("--until", "tomorrow"),
+        ] {
+            // The `=` form keeps a value such as `-5m` from reading as a flag.
+            let arg = format!("{flag}={value}");
+            let error = Cli::try_parse_from(silence_args(&["alert-1", &arg]))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "{flag} {value}");
+            assert!(error.to_string().contains(flag), "{flag} {value}: {error}");
+        }
+    }
+
+    #[test]
+    fn alert_unsilence_selects_one_alert() {
+        use clap::error::ErrorKind;
+        let base = ["clickhousectl", "cloud", "clickstack", "alert", "unsilence"];
+        let args = [&base[..], &["svc-1", "--name", "Checkout errors"]].concat();
+        let ClickStackCommands::Alert {
+            command: AlertCommands::Unsilence { service_id, target },
+        } = parse_clickstack(&args)
+        else {
+            panic!("expected alert unsilence")
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(target.name.as_deref(), Some("Checkout errors"));
+        for (suffix, expected) in [
+            (&["svc-1"][..], ErrorKind::MissingRequiredArgument),
+            (
+                &["svc-1", "alert-1", "--name", "x"][..],
+                ErrorKind::ArgumentConflict,
+            ),
+        ] {
+            let error = Cli::try_parse_from([&base[..], suffix].concat())
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), expected, "{suffix:?}");
+        }
+    }
+
+    #[test]
+    fn silence_builder_sends_until_as_given_and_counts_for_from_now() {
+        let now: jiff::Timestamp = "2026-11-23T12:00:00.750Z".parse().unwrap();
+        let until: jiff::Timestamp = "2026-11-24T08:30:00Z".parse().unwrap();
+        let request = build_silence_alert_request(
+            &SilenceEnd {
+                until: Some(until),
+                duration: None,
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(request.muted_until, until);
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({"mutedUntil":"2026-11-24T08:30:00Z"})
+        );
+
+        let request = build_silence_alert_request(
+            &SilenceEnd {
+                until: None,
+                duration: Some(jiff::SignedDuration::from_hours(2)),
+            },
+            now,
+        )
+        .unwrap();
+        // `--for` counts from the start of the current second.
+        assert_eq!(
+            request.muted_until,
+            "2026-11-23T14:00:00Z".parse::<jiff::Timestamp>().unwrap()
+        );
+    }
+
+    /// Dashboard filter kinds and source fields added to the API reach the
+    /// wire as written: typed, not dropped and not left as `Unknown`.
+    #[test]
+    fn newer_dashboard_filters_and_source_fields_round_trip_unchanged() {
+        use clickhouse_cloud_api::models::{
+            ClickStackFilter, ClickStackFilterInput, ClickStackSavedFilterValue,
+        };
+        let filters = || {
+            vec![
+                serde_json::json!({
+                    "type":"DATA_SOURCE", "name":"Logs source", "variableName":"logs",
+                    "allowedSourceKinds":["log"], "connectionId":"$conn",
+                    "isGlobalRequirement":true, "minSelections":1, "maxSelections":1,
+                    "isBroadcastEnabled":false, "isVariableEnabled":true
+                }),
+                serde_json::json!({
+                    "type":"CONNECTION", "name":"Connection", "variableName":"conn",
+                    "isGlobalRequirement":false, "minSelections":1, "maxSelections":1,
+                    "isBroadcastEnabled":false, "isVariableEnabled":true
+                }),
+                serde_json::json!({
+                    "type":"SQL_QUERY", "name":"Environment", "connectionId":"conn-1",
+                    "sourceId":"src-1", "sqlTemplate":"SELECT DISTINCT env FROM default.envs",
+                    "variableName":"env", "minSelections":0, "maxSelections":1,
+                    "isGlobalRequirement":true, "isBroadcastEnabled":false, "isVariableEnabled":true
+                }),
+                serde_json::json!({
+                    "type":"ADHOC", "name":"Conditions", "sourceType":"sql", "sources":["src-1"],
+                    "where":"ServiceName:api", "whereLanguage":"lucene",
+                    "appliesToSourceIds":["src-1"], "isBroadcastEnabled":true,
+                    "isVariableEnabled":true, "variableName":"conditions"
+                }),
+            ]
+        };
+        let dashboard = |filters: Vec<Value>| {
+            serde_json::json!({
+                "name":"Filters", "tiles":[], "filters":filters,
+                "savedFilterValues":[{"type":"adhoc", "name":"conditions", "conditions":[
+                    {"key":"ServiceName", "operator":"=", "value":"api"},
+                    {"key":"SeverityText", "operator":"IN", "value":"error"}
+                ]}]
+            })
+        };
+
+        let create_body = dashboard(filters());
+        let create = deserialize_lossless_config::<ClickStackCreateDashboardRequest>(
+            create_body.clone(),
+            "test",
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                create.filters.as_deref(),
+                Some([
+                    ClickStackFilterInput::ClickStackDataSourceFilterInput(_),
+                    ClickStackFilterInput::ClickStackConnectionFilterInput(_),
+                    ClickStackFilterInput::ClickStackSqlQueryFilterInput(_),
+                    ClickStackFilterInput::ClickStackAdhocFilterInput(_),
+                ])
+            ),
+            "{:?}",
+            create.filters
+        );
+        assert!(matches!(
+            create.saved_filter_values.as_deref(),
+            Some(
+                [ClickStackSavedFilterValue::ClickStackAdhocSavedFilterValue(
+                    _
+                )]
+            )
+        ));
+        assert_eq!(serde_json::to_value(&create).unwrap(), create_body);
+
+        let mut with_ids = filters();
+        for (index, filter) in with_ids.iter_mut().enumerate() {
+            filter["id"] = Value::String(format!("filter-{index}"));
+        }
+        let update_body = dashboard(with_ids);
+        let update = deserialize_lossless_config::<ClickStackUpdateDashboardRequest>(
+            update_body.clone(),
+            "test",
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                update.filters.as_deref(),
+                Some([
+                    ClickStackFilter::ClickStackDataSourceFilter(_),
+                    ClickStackFilter::ClickStackConnectionFilter(_),
+                    ClickStackFilter::ClickStackSqlQueryFilter(_),
+                    ClickStackFilter::ClickStackAdhocFilter(_),
+                ])
+            ),
+            "{:?}",
+            update.filters
+        );
+        assert_eq!(serde_json::to_value(&update).unwrap(), update_body);
+
+        let text_index = |mut body: Value| {
+            body["rowKeyExpression"] = "Timestamp, ServiceName".into();
+            body["mapKeyIndexMaxParts"] = 40.into();
+            body["mapKeyIndexPartSelection"] = "largest".into();
+            body
+        };
+        let log = text_index(serde_json::json!({
+            "kind":"log", "name":"logs", "connection":"c",
+            "from":{"databaseName":"d","tableName":"logs"},
+            "defaultTableSelectExpression":"*", "timestampValueExpression":"Timestamp"
+        }));
+        let trace = text_index(serde_json::json!({
+            "kind":"trace", "name":"traces", "connection":"c",
+            "from":{"databaseName":"d","tableName":"traces"},
+            "defaultTableSelectExpression":"*", "timestampValueExpression":"ts",
+            "durationExpression":"duration", "durationPrecision":9,
+            "traceIdExpression":"trace", "spanIdExpression":"span",
+            "parentSpanIdExpression":"parent", "spanNameExpression":"name",
+            "spanKindExpression":"kind"
+        }));
+        let promql = serde_json::json!({
+            "kind":"promql", "name":"promql", "connection":"c",
+            "from":{"databaseName":"d","tableName":"metrics"},
+            "timestampValueExpression":"ts", "promqlBackend":"table-function"
+        });
+        for body in [log, trace, promql] {
+            let source =
+                deserialize_lossless_config::<ClickStackSource>(body.clone(), "test").unwrap();
+            match &source {
+                ClickStackSource::ClickStackLogSource(source) => {
+                    assert_eq!(
+                        source.row_key_expression.as_deref(),
+                        Some("Timestamp, ServiceName")
+                    );
+                    assert_eq!(source.map_key_index_max_parts, Some(40));
+                }
+                ClickStackSource::ClickStackTraceSource(source) => {
+                    assert_eq!(
+                        source.map_key_index_part_selection.as_deref(),
+                        Some("largest")
+                    );
+                }
+                ClickStackSource::ClickStackPromqlSource(source) => {
+                    assert_eq!(
+                        source.promql_backend,
+                        Some(
+                            clickhouse_cloud_api::models::ClickStackPromqlSourcePromqlbackend::TableFunction
+                        )
+                    );
+                }
+                other => panic!("unexpected source variant {other:?}"),
+            }
+            assert_eq!(serde_json::to_value(&source).unwrap(), body);
         }
     }
 }
