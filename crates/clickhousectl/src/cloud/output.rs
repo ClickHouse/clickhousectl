@@ -836,6 +836,68 @@ mod tests {
         assert!(!rendered.contains("maxTotalMemoryGb"));
     }
 
+    /// `cloud org byoc get` renders the access model, connector health and
+    /// restricted facts through the same generic path, from a real library
+    /// response.
+    #[test]
+    fn byoc_get_render_shows_access_model_and_connector_health() {
+        let details: clickhouse_cloud_api::models::ByocInfrastructureDetails =
+            serde_json::from_value(json!({
+                "id": "byoc-1",
+                "accessModel": "restricted",
+                "connector": {
+                    "platformState": "waiting-on-customer",
+                    "platformDetail": "admit the storage role",
+                    "lastHeartbeatAt": "2026-11-23T10:00:00Z",
+                    "components": [
+                        {"name": "executor", "state": "healthy", "version": "1.2.3",
+                         "lastHeartbeatAt": "2026-11-23T09:59:00Z"}
+                    ]
+                },
+                "restrictedFacts": {"clusterName": "eks-1"}
+            }))
+            .unwrap();
+        let rendered = render_to_string(&serde_json::to_value(&details).unwrap());
+        for line in [
+            "accessModel: restricted",
+            "  platformState: waiting-on-customer",
+            "  platformDetail: admit the storage role",
+            "  lastHeartbeatAt: 2026-11-23T10:00:00Z",
+            "    - lastHeartbeatAt: 2026-11-23T09:59:00Z",
+            "      name: executor",
+            "      state: healthy",
+            "      version: 1.2.3",
+            "  clusterName: eks-1",
+        ] {
+            assert!(
+                rendered.lines().any(|rendered| rendered == line),
+                "{line:?} missing from:\n{rendered}"
+            );
+        }
+    }
+
+    /// `cloud org get` renders the organization's read-only AI settings.
+    #[test]
+    fn org_get_render_shows_ai_settings() {
+        let organization: clickhouse_cloud_api::models::Organization =
+            serde_json::from_value(json!({
+                "name": "acme",
+                "aiDataUseForProductImprovementEnabled": false,
+                "knowledgeBasedAiSupportEnabled": true
+            }))
+            .unwrap();
+        let rendered = render_to_string(&serde_json::to_value(&organization).unwrap());
+        for line in [
+            "aiDataUseForProductImprovementEnabled: false",
+            "knowledgeBasedAiSupportEnabled: true",
+        ] {
+            assert!(
+                rendered.lines().any(|rendered| rendered == line),
+                "{line:?} missing from:\n{rendered}"
+            );
+        }
+    }
+
     /// The error codes are a closed vocabulary of snake_case literals: an
     /// agent branching on `error.code` can enumerate them.
     #[test]

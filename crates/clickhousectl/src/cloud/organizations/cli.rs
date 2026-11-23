@@ -112,6 +112,22 @@ CONTEXT FOR AGENTS:
         #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
     },
+
+    /// Get organization AI inference usage costs (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The date range is inclusive and may span at most 31 days; longer ranges are rejected.
+  Costs are in CHC at list price, one row per day, provider and model plus a grand total.
+  Unlocked rows may still change; --json adds the per-metric token breakdown.")]
+    InferenceUsage {
+        /// Report start date in UTC (YYYY-MM-DD)
+        #[arg(long, value_parser = parse_date_only)]
+        from_date: String,
+
+        /// Report end date in UTC, inclusive (YYYY-MM-DD)
+        #[arg(long, value_parser = parse_date_only)]
+        to_date: String,
+    },
 }
 
 impl OrgCommands {
@@ -130,6 +146,7 @@ impl OrgCommands {
                 command.as_ref().is_some_and(PrometheusCommands::is_write)
             }
             OrgCommands::Usage { .. } => false,
+            OrgCommands::InferenceUsage { .. } => false,
             OrgCommands::Update { .. } => true,
         }
     }
@@ -314,6 +331,8 @@ CONTEXT FOR AGENTS:
   Preflight the same flags with `cloud org byoc validate` before creating.
   Watch provisioning with `cloud org byoc progress <id>`.
   Wait for `cloud org byoc get <id>` to show state `infra-ready` before creating a service.
+  `--access-model restricted` registers an EKS cluster you own; once its roles are admitted,
+  enroll its connector with `cloud org byoc enrollment-token <id>`.
   Discover profiles with `cloud clickhouse profile list --region <region> --byoc-id <id>`.")]
     Create {
         #[command(flatten)]
@@ -344,6 +363,23 @@ CONTEXT FOR AGENTS:
         /// BYOC infrastructure ID
         #[command(flatten)]
         byoc_id: NameSelector,
+    },
+
+    /// Create a connector enrollment token for BYOC infrastructure (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  For restricted-access infrastructure: the connector in your cluster enrolls with the token.
+  The token is a secret printed once; capture stdout or create another.
+  Fails with 409 until the infrastructure's roles are admitted; retry later and check
+  `cloud org byoc get <id>`.")]
+    EnrollmentToken {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+
+        /// Token lifetime in seconds: 3600-86400, whole minutes; omit for 4 hours
+        #[arg(long, value_name = "SECONDS", value_parser = parse_enrollment_token_ttl)]
+        ttl_seconds: Option<i64>,
     },
 
     /// Manage when ClickHouse personnel may access BYOC infrastructure (Beta)
@@ -512,6 +548,53 @@ pub struct ByocInfrastructureArgs {
     /// Tag for the infrastructure's cloud resources (repeatable)
     #[arg(long = "tag", value_name = "KEY=VALUE")]
     pub(super) tags: Vec<String>,
+
+    /// How ClickHouse reaches the infrastructure; omit for the server default
+    #[arg(long, value_enum)]
+    pub(super) access_model: Option<ByocAccessModel>,
+
+    /// EKS cluster facts JSON path, or `-` for stdin; needs `--access-model restricted`
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "access_model",
+        required_if_eq("access_model", "restricted")
+    )]
+    pub(super) restricted_facts: Option<String>,
+}
+
+/// How ClickHouse reaches BYOC infrastructure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ByocAccessModel {
+    Standard,
+    Restricted,
+}
+
+impl ByocAccessModel {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Restricted => "restricted",
+        }
+    }
+}
+
+/// A connector enrollment token lifetime: whole minutes from one hour to one day.
+fn parse_enrollment_token_ttl(value: &str) -> Result<i64, String> {
+    let seconds: i64 = value
+        .parse()
+        .map_err(|_| format!("invalid TTL '{value}': expected a whole number of seconds"))?;
+    if !(3600..=86400).contains(&seconds) {
+        return Err(format!(
+            "invalid TTL '{value}': must be from 3600 to 86400 seconds"
+        ));
+    }
+    if seconds % 60 != 0 {
+        return Err(format!(
+            "invalid TTL '{value}': must be a whole number of minutes (a multiple of 60)"
+        ));
+    }
+    Ok(seconds)
 }
 
 impl ByocCommands {
@@ -527,6 +610,7 @@ impl ByocCommands {
             ByocCommands::Create { .. } => true,
             ByocCommands::Update { .. } => true,
             ByocCommands::Delete { .. } => true,
+            ByocCommands::EnrollmentToken { .. } => true,
             ByocCommands::Access { command } => command.is_write(),
         }
     }
@@ -1272,6 +1356,212 @@ mod tests {
                 assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
                 assert!(error.to_string().contains("YYYY-MM-DD"), "{error}");
             }
+        }
+    }
+
+    #[test]
+    fn org_inference_usage_is_a_read_and_checks_calendar_dates_on_either_flag() {
+        let args = [
+            "clickhousectl",
+            "cloud",
+            "org",
+            "inference-usage",
+            "--from-date",
+            "2026-01-01",
+            "--to-date",
+            "2026-01-31",
+        ];
+        assert_write(&args, false);
+        let CloudCommands::Org {
+            command: OrgCommands::InferenceUsage { from_date, to_date },
+        } = parse_cloud_command(&args)
+        else {
+            panic!("expected org inference-usage");
+        };
+        assert_eq!(
+            (from_date.as_str(), to_date.as_str()),
+            ("2026-01-01", "2026-01-31")
+        );
+
+        for bad in ["2026-01-01T00:00:00Z", "2026-02-30"] {
+            for (from, to) in [(bad, "2026-01-31"), ("2026-01-01", bad)] {
+                let error = Cli::try_parse_from([
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "inference-usage",
+                    "--from-date",
+                    from,
+                    "--to-date",
+                    to,
+                ])
+                .err()
+                .unwrap_or_else(|| panic!("accepted {from} .. {to}"));
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            }
+        }
+        for missing in ["--from-date", "--to-date"] {
+            let mut argv = args.to_vec();
+            let index = argv.iter().position(|arg| *arg == missing).unwrap();
+            argv.drain(index..index + 2);
+            let error = Cli::try_parse_from(argv)
+                .err()
+                .expect("both dates are required");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing}"
+            );
+        }
+    }
+
+    fn parse_enrollment_token(extra: &[&str]) -> Result<Option<i64>, clap::Error> {
+        let mut argv = vec![
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "enrollment-token",
+            "byoc-1",
+        ];
+        argv.extend(extra);
+        let cli = Cli::try_parse_from(argv)?;
+        let Commands::Cloud(cloud_args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org {
+            command:
+                OrgCommands::Byoc {
+                    command: ByocCommands::EnrollmentToken { ttl_seconds, .. },
+                },
+        } = cloud_args.command
+        else {
+            panic!("expected BYOC enrollment-token");
+        };
+        Ok(ttl_seconds)
+    }
+
+    #[test]
+    fn byoc_enrollment_token_is_a_write_selected_by_id_or_name() {
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                "enrollment-token",
+                "byoc-1",
+            ],
+            true,
+        );
+        let ByocCommands::EnrollmentToken {
+            byoc_id,
+            ttl_seconds,
+        } = parse_byoc_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "enrollment-token",
+            "--name",
+            "production",
+        ])
+        else {
+            panic!("expected BYOC enrollment-token");
+        };
+        assert_eq!(byoc_id.name.as_deref(), Some("production"));
+        assert_eq!(ttl_seconds, None);
+    }
+
+    #[test]
+    fn byoc_enrollment_token_ttl_is_whole_minutes_from_one_hour_to_one_day() {
+        assert_eq!(parse_enrollment_token(&[]).unwrap(), None);
+        for ttl in ["3600", "3660", "14400", "86400"] {
+            assert_eq!(
+                parse_enrollment_token(&["--ttl-seconds", ttl]).unwrap(),
+                Some(ttl.parse().unwrap()),
+                "{ttl}"
+            );
+        }
+        for ttl in ["3599", "3540", "86401", "86460", "3601", "7230", "0", "1h"] {
+            let error = parse_enrollment_token(&["--ttl-seconds", ttl])
+                .err()
+                .unwrap_or_else(|| panic!("accepted --ttl-seconds {ttl}"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{ttl}"
+            );
+            assert!(error.to_string().contains(&format!("'{ttl}'")), "{error}");
+        }
+    }
+
+    #[test]
+    fn byoc_restricted_facts_require_the_restricted_access_model() {
+        for subcommand in ["create", "validate"] {
+            let parse = |extra: &[&str]| {
+                let mut argv = vec![
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "byoc",
+                    subcommand,
+                    "--region",
+                    "us-east-1",
+                    "--account-id",
+                    "123456789012",
+                ];
+                argv.extend(extra);
+                Cli::try_parse_from(argv).map(|cli| {
+                    let Commands::Cloud(cloud_args) = cli.command else {
+                        panic!("expected cloud command");
+                    };
+                    let CloudCommands::Org {
+                        command: OrgCommands::Byoc { command },
+                    } = cloud_args.command
+                    else {
+                        panic!("expected BYOC command");
+                    };
+                    match command {
+                        ByocCommands::Create { infrastructure, .. }
+                        | ByocCommands::Validate { infrastructure } => *infrastructure,
+                        _ => panic!("expected BYOC {subcommand}"),
+                    }
+                })
+            };
+
+            let restricted = parse(&[
+                "--access-model",
+                "restricted",
+                "--restricted-facts",
+                "facts.json",
+            ])
+            .unwrap();
+            assert_eq!(restricted.access_model, Some(ByocAccessModel::Restricted));
+            assert_eq!(restricted.restricted_facts.as_deref(), Some("facts.json"));
+            let stdin =
+                parse(&["--access-model", "restricted", "--restricted-facts", "-"]).unwrap();
+            assert_eq!(stdin.restricted_facts.as_deref(), Some("-"));
+
+            let standard = parse(&["--access-model", "standard"]).unwrap();
+            assert_eq!(standard.access_model, Some(ByocAccessModel::Standard));
+            assert_eq!(standard.restricted_facts, None);
+
+            assert_eq!(parse(&[]).unwrap(), minimal_infrastructure_args());
+
+            for extra in [
+                &["--access-model", "restricted"][..],
+                &["--restricted-facts", "facts.json"][..],
+            ] {
+                let error = parse(extra).expect_err("must fail");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "{subcommand} {extra:?}"
+                );
+            }
+            let error = parse(&["--access-model", "open"]).expect_err("must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
         }
     }
 

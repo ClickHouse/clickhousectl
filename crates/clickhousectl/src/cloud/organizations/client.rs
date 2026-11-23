@@ -6,13 +6,15 @@ use crate::cloud::client::{
 use crate::cloud::types::DeleteResponse;
 use clickhouse_cloud_api::models::{
     ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
-    ByocInfrastructureDetails, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
-    ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
-    ByocInfrastructureValidation, InvitationPostRequest, MemberNotificationSettingsPatchRequest,
-    MemberNotificationSettingsPatchResponse, MemberPatchRequest, Notification, NotificationSetting,
-    NotificationType, Organization, OrganizationPatchRequest, PublicPreview,
-    PublicPreviewPatchRequest, RoleCreateRequest, RoleUpdateRequest,
+    ByocInfrastructureDetails, ByocInfrastructureEnrollmentToken,
+    ByocInfrastructureEnrollmentTokenPostRequest, ByocInfrastructurePatchRequest,
+    ByocInfrastructurePostRequest, ByocInfrastructurePrivateEndpointConfig,
+    ByocInfrastructureProgress, ByocInfrastructureTagsResponse,
+    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidation, InvitationPostRequest,
+    MemberNotificationSettingsPatchRequest, MemberNotificationSettingsPatchResponse,
+    MemberPatchRequest, Notification, NotificationSetting, NotificationType, Organization,
+    OrganizationPatchRequest, PublicPreview, PublicPreviewPatchRequest, RoleCreateRequest,
+    RoleUpdateRequest,
 };
 
 impl CloudClient {
@@ -327,6 +329,25 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn create_byoc_enrollment_token(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+        request: &ByocInfrastructureEnrollmentTokenPostRequest,
+    ) -> CloudResult<ByocInfrastructureEnrollmentToken> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_enrollment_token_create(org_id, byoc_id, request)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Byoc, byoc_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn delete_byoc_infrastructure(
         &self,
         org_id: &str,
@@ -389,6 +410,22 @@ impl CloudClient {
         let response = self
             .api()
             .usage_cost_get(org_id, from_date, to_date, &filters)
+            .await
+            .map_err(|error| {
+                self.convert_error_for_resource(error, ResourceLookup::organization(org_id))
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_org_inference_usage(
+        &self,
+        org_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CloudResult<clickhouse_cloud_api::models::InferenceUsageCost> {
+        let response = self
+            .api()
+            .inference_usage_cost_get(org_id, from_date, to_date)
             .await
             .map_err(|error| {
                 self.convert_error_for_resource(error, ResourceLookup::organization(org_id))

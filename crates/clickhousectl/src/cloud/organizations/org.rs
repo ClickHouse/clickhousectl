@@ -1,9 +1,9 @@
 use super::cli::NotificationListArgs;
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::output::{ABSENT, or_absent, print_human, yes_no};
 use crate::cloud::shared::resolve_org_id;
 use clickhouse_cloud_api::models::{
-    Notification, NotificationType, OrganizationPatchPrivateEndpoint,
+    InferenceUsageCostRecord, Notification, NotificationType, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, PublicPreview,
     PublicPreviewPatchRequest,
@@ -578,6 +578,98 @@ pub(super) async fn org_usage(
     Ok(())
 }
 
+/// The longest inference usage report the API accepts, in days, both ends
+/// included.
+const INFERENCE_USAGE_MAX_DAYS: i64 = 31;
+
+/// Check the inference usage window before any request: `--from-date` must not
+/// be after `--to-date`, and the inclusive range may span at most 31 days.
+/// Clap has already checked that both are calendar dates.
+pub(super) fn validate_inference_usage_window(from_date: &str, to_date: &str) -> CloudResult<()> {
+    let parse = |flag: &str, value: &str| {
+        jiff::civil::Date::strptime("%Y-%m-%d", value).map_err(|_| {
+            CloudError::usage(format!("invalid {flag} '{value}': expected YYYY-MM-DD"))
+        })
+    };
+    let from = parse("--from-date", from_date)?;
+    let to = parse("--to-date", to_date)?;
+    if from > to {
+        return Err(CloudError::usage(format!(
+            "--from-date {from_date} is after --to-date {to_date}"
+        )));
+    }
+    let days = i64::from((to - from).get_days()) + 1;
+    if days > INFERENCE_USAGE_MAX_DAYS {
+        return Err(CloudError::usage(format!(
+            "--from-date {from_date} to --to-date {to_date} spans {days} days; \
+             the range may span at most {INFERENCE_USAGE_MAX_DAYS} days"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) async fn org_inference_usage(
+    client: &CloudClient,
+    from_date: &str,
+    to_date: &str,
+    json: bool,
+) -> CloudResult<()> {
+    validate_inference_usage_window(from_date, to_date)?;
+    let org_id = resolve_org_id(client).await?;
+    let usage = client
+        .get_org_inference_usage(&org_id, from_date, to_date)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&usage)?);
+    } else {
+        println!(
+            "Grand Total: {} CHC",
+            or_absent(usage.grand_total_chc.map(|total| format!("{total:.2}")))
+        );
+        let costs = usage.costs.unwrap_or_default();
+        if costs.is_empty() {
+            println!("No inference usage cost records found");
+            return Ok(());
+        }
+        println!("{}", inference_usage_table(&costs));
+    }
+    Ok(())
+}
+
+fn inference_usage_table(costs: &[InferenceUsageCostRecord]) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Date")]
+        date: String,
+        #[tabled(rename = "Provider")]
+        provider: String,
+        #[tabled(rename = "Model")]
+        model: String,
+        #[tabled(rename = "Total (CHC)")]
+        total: String,
+        #[tabled(rename = "Locked")]
+        locked: String,
+    }
+    let rows: Vec<Row> = costs
+        .iter()
+        .map(|cost| Row {
+            date: or_absent(cost.date.as_deref()),
+            provider: or_absent(cost.provider.as_deref()),
+            // Prefer the display name; the raw model ID is in --json.
+            model: or_absent(
+                cost.model_name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .or(cost.model.as_deref()),
+            ),
+            total: or_absent(cost.total_chc.map(|total| format!("{total:.2}"))),
+            locked: yes_no(cost.locked),
+        })
+        .collect();
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
 fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     match (name.filter(|name| !name.is_empty()), id) {
         (Some(name), _) => name.to_string(),
@@ -657,6 +749,66 @@ pub(super) mod tests {
             ],
             "{table}"
         );
+    }
+
+    #[test]
+    fn inference_usage_window_allows_up_to_31_inclusive_days() {
+        for (from, to) in [
+            ("2026-01-01", "2026-01-01"),
+            ("2026-01-01", "2026-01-31"),
+            // Across a leap day and a year boundary.
+            ("2024-02-01", "2024-03-02"),
+            ("2025-12-15", "2026-01-14"),
+        ] {
+            validate_inference_usage_window(from, to)
+                .unwrap_or_else(|error| panic!("{from} .. {to}: {error}"));
+        }
+    }
+
+    #[test]
+    fn inference_usage_window_rejects_reversed_and_overlong_ranges_as_usage_errors() {
+        for (from, to) in [
+            ("2026-01-02", "2026-01-01"),
+            ("2026-01-01", "2026-02-01"),
+            ("2024-02-01", "2024-03-03"),
+            ("2025-01-01", "2026-01-01"),
+        ] {
+            let error = validate_inference_usage_window(from, to).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{from} .. {to}"
+            );
+            // The message names both flags and both values.
+            for part in ["--from-date", "--to-date", from, to] {
+                assert!(error.message.contains(part), "{part}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn inference_usage_table_prefers_the_model_name_and_renders_absent_fields() {
+        let table = inference_usage_table(&[
+            InferenceUsageCostRecord {
+                date: Some("2026-01-01".into()),
+                provider: Some("anthropic".into()),
+                model: Some("model-raw-id".into()),
+                model_name: Some("Model Display".into()),
+                total_chc: Some(1.5),
+                locked: Some(true),
+                metrics: None,
+            },
+            InferenceUsageCostRecord {
+                model: Some("model-only-id".into()),
+                ..InferenceUsageCostRecord::default()
+            },
+        ]);
+        assert!(table.contains("Model Display"), "{table}");
+        assert!(!table.contains("model-raw-id"), "{table}");
+        assert!(table.contains("model-only-id"), "{table}");
+        assert!(table.contains("1.50"), "{table}");
+        let sparse = table.lines().last().unwrap();
+        assert!(sparse.contains(ABSENT), "{table}");
     }
 
     #[test]

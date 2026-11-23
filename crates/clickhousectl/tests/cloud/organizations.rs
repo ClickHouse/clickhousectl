@@ -1915,3 +1915,124 @@ async fn member_notification_settings_list_and_update_send_exact_requests() {
         serde_json::json!({"settings": [setting]})
     );
 }
+
+// AI inference usage and BYOC connector enrollment (#1519).
+
+#[tokio::test]
+async fn org_inference_usage_sends_the_window_and_prints_rows_and_total() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "grandTotalCHC": 4.25,
+        "costs": [{
+            "date": "2026-01-01",
+            "provider": "anthropic",
+            "model": "model-raw-id",
+            "modelName": "Model Display",
+            "totalCHC": 4.25,
+            "locked": true,
+            "metrics": [{
+                "metric": "input",
+                "tokensMillions": 1.5,
+                "pricePerMillionTokensCHC": 2.5,
+                "totalCHC": 3.75
+            }]
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/inferenceUsageCost"))
+        .and(query_param("from_date", "2026-01-01"))
+        .and(query_param("to_date", "2026-01-31"))
+        .respond_with(byoc_envelope(result.clone(), "stub-inference-usage"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let args = [
+        "org",
+        "inference-usage",
+        "--from-date",
+        "2026-01-01",
+        "--to-date",
+        "2026-01-31",
+        "--org-id",
+        "org-1",
+    ];
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        result
+    );
+
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for expected in ["2026-01-01", "anthropic", "Model Display", "4.25"] {
+        assert!(stdout.contains(expected), "{expected}: {stdout}");
+    }
+    // The per-metric breakdown is only in --json.
+    assert!(!stdout.contains("3.75"), "{stdout}");
+}
+
+#[tokio::test]
+async fn byoc_enrollment_token_posts_the_ttl_and_prints_the_token_once() {
+    let mock = MockServer::start().await;
+    let endpoint = "/v1/organizations/org-1/byocInfrastructure/byoc-1/enrollmentToken";
+    let result = serde_json::json!({
+        "token": "enroll-secret",
+        "expiresAt": "2026-11-23T16:00:00Z"
+    });
+    Mock::given(method("POST"))
+        .and(path(endpoint))
+        .and(body_json(serde_json::json!({})))
+        .respond_with(byoc_envelope(result.clone(), "stub-enrollment-default"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint))
+        .and(body_json(serde_json::json!({"ttlSeconds": 7200})))
+        .respond_with(byoc_envelope(result.clone(), "stub-enrollment-ttl"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let json = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "enrollment-token",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        result
+    );
+
+    let human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "enrollment-token",
+            "byoc-1",
+            "--ttl-seconds",
+            "7200",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert_eq!(stdout.matches("enroll-secret").count(), 1, "{stdout}");
+    assert!(stdout.contains("2026-11-23T16:00:00Z"), "{stdout}");
+    assert!(
+        !String::from_utf8_lossy(&human.stderr).contains("enroll-secret"),
+        "the token goes to stdout only"
+    );
+}

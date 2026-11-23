@@ -21,6 +21,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     ),
     Permission::api("org notifications", &[&op::NOTIFICATION_GET_LIST]),
     Permission::api("org usage", &[&op::USAGE_COST_GET]),
+    Permission::api("org inference-usage", &[&op::INFERENCE_USAGE_COST_GET]),
     Permission::api("org quota list", &[&op::ORGANIZATION_QUOTAS_GET_LIST]),
     Permission::api("org quota get", &[&op::ORGANIZATION_QUOTA_GET]),
     Permission::api(
@@ -60,6 +61,11 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api(
         "org byoc delete",
         &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc enrollment-token",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_ENROLLMENT_TOKEN_CREATE],
     )
     .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
     Permission::api(
@@ -127,9 +133,10 @@ pub use cli::{
 use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::shared::{NamedResource, resolve_org_id};
 use byoc::{
-    build_byoc_access_update_request, build_byoc_create_request, build_byoc_update_request,
-    build_byoc_validate_request, byoc_access_get, byoc_access_update, byoc_create, byoc_delete,
-    byoc_get, byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update, byoc_validate,
+    build_byoc_access_update_request, build_byoc_create_request,
+    build_byoc_enrollment_token_request, build_byoc_update_request, build_byoc_validate_request,
+    byoc_access_get, byoc_access_update, byoc_create, byoc_delete, byoc_enrollment_token, byoc_get,
+    byoc_private_endpoint_config, byoc_progress, byoc_tags, byoc_update, byoc_validate,
 };
 use members::{
     build_notification_settings_update_request, invitation_create, invitation_delete,
@@ -137,9 +144,9 @@ use members::{
     notification_settings_list, notification_settings_update,
 };
 use org::{
-    OrgUpdateOptions, org_balance, org_get, org_list, org_notification_types, org_notifications,
-    org_prometheus, org_prometheus_discovery, org_update, org_usage, preview_list, preview_update,
-    quota_get, quota_list,
+    OrgUpdateOptions, org_balance, org_get, org_inference_usage, org_list, org_notification_types,
+    org_notifications, org_prometheus, org_prometheus_discovery, org_update, org_usage,
+    preview_list, preview_update, quota_get, quota_list,
 };
 use roles::{
     build_role_create_request, build_role_update_request, role_create, role_delete, role_get,
@@ -192,6 +199,9 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
             to_date,
             filter,
         } => org_usage(client, &from_date, &to_date, &filter, json).await,
+        OrgCommands::InferenceUsage { from_date, to_date } => {
+            org_inference_usage(client, &from_date, &to_date, json).await
+        }
     }
 }
 
@@ -293,6 +303,19 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             byoc_delete(
                 client,
                 &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
+        ByocCommands::EnrollmentToken {
+            byoc_id,
+            ttl_seconds,
+        } => {
+            let request = build_byoc_enrollment_token_request(ttl_seconds);
+            byoc_enrollment_token(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                request,
                 json,
             )
             .await
