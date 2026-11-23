@@ -353,6 +353,118 @@ fn null_only(schema: &Value) -> bool {
         })
 }
 
+/// How one arm of a request union disagrees with its `oneOf`/`anyOf` branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ArmMismatch {
+    /// No arm carries branch `branch`'s model type.
+    Missing { branch: usize, expected: String },
+    /// An arm pairs with no branch: a duplicate, a second catch-all, a
+    /// non-tuple variant, or a model the spec does not list.
+    Extra {
+        variant: String,
+        actual: Option<String>,
+    },
+    /// The arm named for branch `branch`'s model carries another payload.
+    WrongType {
+        branch: usize,
+        variant: String,
+        expected: String,
+        actual: Option<String>,
+    },
+}
+
+/// The request-position model type each branch names, when every branch is a
+/// component `$ref`; `None` leaves the composition to the other checks.
+fn ref_branch_types(branches: &[(usize, &Value)]) -> Option<Vec<(usize, String)>> {
+    branches
+        .iter()
+        .map(|(index, branch)| {
+            let name = branch
+                .get("$ref")?
+                .as_str()?
+                .strip_prefix("#/components/schemas/")?;
+            Some((
+                *index,
+                pascalize(&name.replace("~1", "/").replace("~0", "~")),
+            ))
+        })
+        .collect()
+}
+
+/// Pair `$ref` branches with union arms one-to-one by payload type. One
+/// `serde_json::Value` arm is the policy's lossless catch-all and pairs with no
+/// branch. An unpaired arm named for an unpaired branch's model is reported as
+/// wrongly typed rather than as one missing and one extra arm.
+pub(crate) fn union_arm_mismatches(
+    rust: &RustInventory,
+    arms: &[(String, Option<TypeNode>)],
+    branches: &[(usize, String)],
+) -> Vec<ArmMismatch> {
+    let normalize = |ty: &TypeNode| {
+        let mut ty = rust.resolve_alias(ty).clone();
+        while let TypeNode::Boxed(inner) = ty {
+            ty = rust.resolve_alias(&inner).clone();
+        }
+        ty
+    };
+    let mut unpaired: Vec<_> = arms.iter().collect();
+    let mut unmatched = Vec::new();
+    for (branch, expected) in branches {
+        let target = normalize(&TypeNode::Path(expected.clone()));
+        let pairs = |(_, payload): &&(String, Option<TypeNode>)| {
+            payload
+                .as_ref()
+                .is_some_and(|payload| normalize(payload) == target)
+        };
+        // Of several arms carrying the model, the one named for it pairs.
+        let named = unpaired
+            .iter()
+            .position(|arm| pairs(arm) && arm.0 == *expected);
+        match named.or_else(|| unpaired.iter().position(pairs)) {
+            Some(position) => {
+                unpaired.remove(position);
+            }
+            None => unmatched.push((*branch, expected)),
+        }
+    }
+    let value = TypeNode::Path("Value".to_owned());
+    if let Some(position) = unpaired.iter().position(|(_, payload)| {
+        payload
+            .as_ref()
+            .is_some_and(|payload| normalize(payload) == value)
+    }) {
+        unpaired.remove(position);
+    }
+    let display = |payload: &Option<TypeNode>| payload.as_ref().map(TypeNode::display);
+    let mut mismatches = Vec::new();
+    for (branch, expected) in unmatched {
+        match unpaired.iter().position(|(variant, _)| variant == expected) {
+            Some(position) => {
+                let (variant, payload) = unpaired.remove(position);
+                mismatches.push(ArmMismatch::WrongType {
+                    branch,
+                    variant: variant.clone(),
+                    expected: expected.clone(),
+                    actual: display(payload),
+                });
+            }
+            None => mismatches.push(ArmMismatch::Missing {
+                branch,
+                expected: expected.clone(),
+            }),
+        }
+    }
+    mismatches.extend(
+        unpaired
+            .into_iter()
+            .map(|(variant, payload)| ArmMismatch::Extra {
+                variant: variant.clone(),
+                actual: display(payload),
+            }),
+    );
+    mismatches
+}
+
 /// The inline object body property that `argument` names, if any.
 fn exploded_property<'a>(schema: &'a Value, argument: &str) -> Option<&'a str> {
     schema
@@ -434,6 +546,75 @@ impl Checker<'_> {
                 .detail(self.context.0, self.context.1)
                 .detail("actual", ty.display()),
         );
+    }
+
+    /// Report every request union arm that does not pair one-to-one with a
+    /// `$ref` branch of the composition at `pointer`.
+    fn check_union_arms(
+        &mut self,
+        ty: &TypeNode,
+        branches: &[(usize, String)],
+        pointer: &str,
+        item: &str,
+    ) {
+        let Some(union) = type_name(ty) else {
+            return;
+        };
+        let Some(info) = self.rust.enums.get(union) else {
+            return;
+        };
+        for mismatch in union_arm_mismatches(self.rust, &info.variant_arms, branches) {
+            let arm = |variant: &str| format!("models.rs::{union}::{variant}");
+            let shown = |actual: &Option<String>| {
+                actual
+                    .clone()
+                    .unwrap_or_else(|| "a non-tuple variant".to_owned())
+            };
+            let finding = match &mismatch {
+                ArmMismatch::Missing { branch, expected } => Finding::new(
+                    FindingKind::RequestUnionArmMismatch,
+                    format!("{union} has no tuple arm carrying {expected}"),
+                )
+                .at_spec(format!("{pointer}/{branch}"))
+                .at_rust(format!("models.rs::{union}"))
+                .detail("problem", "missing_arm")
+                .detail("expected", expected),
+                ArmMismatch::Extra { variant, actual } => Finding::new(
+                    FindingKind::RequestUnionArmMismatch,
+                    format!(
+                        "{union}::{variant} ({}) pairs with no spec branch",
+                        shown(actual)
+                    ),
+                )
+                .at_spec(pointer)
+                .at_rust(arm(variant))
+                .detail("problem", "extra_arm")
+                .detail("actual", shown(actual)),
+                ArmMismatch::WrongType {
+                    branch,
+                    variant,
+                    expected,
+                    actual,
+                } => Finding::new(
+                    FindingKind::RequestUnionArmMismatch,
+                    format!(
+                        "{union}::{variant} should carry {expected}, found {}",
+                        shown(actual)
+                    ),
+                )
+                .at_spec(format!("{pointer}/{branch}"))
+                .at_rust(arm(variant))
+                .detail("problem", "wrong_arm_type")
+                .detail("expected", expected)
+                .detail("actual", shown(actual)),
+            };
+            self.report.findings.push(
+                finding
+                    .detail("union", union)
+                    .detail("used_by", item)
+                    .detail(self.context.0, self.context.1),
+            );
+        }
     }
 
     fn check(&mut self, ty: &TypeNode, schema: &Value, pointer: &str, item: &str, root: bool) {
@@ -619,7 +800,19 @@ impl Checker<'_> {
                         root,
                     );
                 } else if union {
-                    // Existing inline union and enum checks own variant coverage.
+                    // A request union of component models pairs its tuple arms
+                    // with the branches here; inline object branches and
+                    // response unions keep the existing union inventory checks.
+                    if self.direction == Direction::Request
+                        && let Some(expected) = ref_branch_types(&non_null)
+                    {
+                        self.check_union_arms(
+                            ty,
+                            &expected,
+                            &format!("{pointer}/{composition}"),
+                            item,
+                        );
+                    }
                 } else {
                     self.finding(
                         FindingKind::UnsupportedResponseSchema,
@@ -884,6 +1077,103 @@ mod tests {
             models, "",
         ).unwrap();
         crate::compare::compare(&rust, &spec, &spec, &config)
+    }
+
+    #[test]
+    fn union_arms_pair_one_to_one_with_ref_branches() {
+        let rust = RustInventory::parse(
+            "",
+            "pub struct A {} pub struct B {} pub type AliasA = A;",
+            "",
+        )
+        .unwrap();
+        let branches = [(0, "A".to_string()), (2, "B".to_string())];
+        let arm = |name: &str, payload: Option<&str>| {
+            let path = |name: &str| TypeNode::Path(name.to_string());
+            let payload = payload.map(|payload| match payload.strip_prefix("Box<") {
+                Some(inner) => TypeNode::Boxed(Box::new(path(inner.trim_end_matches('>')))),
+                None => path(payload),
+            });
+            (name.to_string(), payload)
+        };
+        // Aliases, boxes, declaration order and one lossless catch-all pair.
+        for arms in [
+            vec![arm("A", Some("A")), arm("B", Some("B"))],
+            vec![arm("Second", Some("Box<B>")), arm("First", Some("AliasA"))],
+            vec![
+                arm("A", Some("A")),
+                arm("B", Some("B")),
+                arm("Unknown", Some("Value")),
+            ],
+        ] {
+            assert_eq!(
+                union_arm_mismatches(&rust, &arms, &branches),
+                [],
+                "{arms:?}"
+            );
+        }
+        let cases = [
+            (
+                vec![arm("A", Some("A"))],
+                vec![ArmMismatch::Missing {
+                    branch: 2,
+                    expected: "B".into(),
+                }],
+            ),
+            (
+                vec![arm("A", Some("A")), arm("B", Some("String"))],
+                vec![ArmMismatch::WrongType {
+                    branch: 2,
+                    variant: "B".into(),
+                    expected: "B".into(),
+                    actual: Some("String".into()),
+                }],
+            ),
+            (
+                vec![
+                    arm("A", Some("A")),
+                    arm("Again", Some("A")),
+                    arm("B", Some("B")),
+                    arm("Empty", None),
+                    arm("Unknown", Some("Value")),
+                    arm("Raw", Some("Value")),
+                ],
+                vec![
+                    ArmMismatch::Extra {
+                        variant: "Again".into(),
+                        actual: Some("A".into()),
+                    },
+                    ArmMismatch::Extra {
+                        variant: "Empty".into(),
+                        actual: None,
+                    },
+                    ArmMismatch::Extra {
+                        variant: "Raw".into(),
+                        actual: Some("Value".into()),
+                    },
+                ],
+            ),
+            (
+                vec![arm("Other", Some("String")), arm("B", Some("B"))],
+                vec![
+                    ArmMismatch::Missing {
+                        branch: 0,
+                        expected: "A".into(),
+                    },
+                    ArmMismatch::Extra {
+                        variant: "Other".into(),
+                        actual: Some("String".into()),
+                    },
+                ],
+            ),
+        ];
+        for (arms, expected) in cases {
+            assert_eq!(
+                union_arm_mismatches(&rust, &arms, &branches),
+                expected,
+                "{arms:?}"
+            );
+        }
     }
 
     #[test]

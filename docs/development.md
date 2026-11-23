@@ -301,8 +301,12 @@ default type arguments), and every operation with a JSON `requestBody` must take
 one argument that no parameter accounts for, typed as the body schema's request model
 (`request_body_mismatch` when the argument is missing, ambiguous or has no request body;
 an untyped `serde_json::Value` body is `unsupported_request_schema`). An inline object
-body may instead be passed as one argument per property. Deliberate request-field
-divergences are listed in `request_shape_exemptions`.
+body may instead be passed as one argument per property. A request property whose schema
+is a `oneOf`/`anyOf` of component `$ref`s must be an untagged union with exactly one
+tuple arm per branch carrying that branch's request model, plus at most the lossless
+`Unknown(serde_json::Value)` catch-all; a missing, extra or wrongly typed arm is
+`request_union_arm_mismatch` (report schema version 13). Deliberate request-field
+divergences, including their union arms, are listed in `request_shape_exemptions`.
 
 Resolved JSON success contracts are also compared between specifications, including
 referenced schemas. Added, removed, and changed contracts have separate snapshot
