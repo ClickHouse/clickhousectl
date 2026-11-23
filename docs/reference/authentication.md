@@ -144,7 +144,7 @@ Use `--type` with a name from `notification-types`, `--severity`, `--resource-id
 
 ## Other organization tasks
 
-Use `cloud org --help` for quotas, credit balance, notifications, notification types, preview features, usage, settings, BYOC infrastructure, and Prometheus discovery. `org preview list` shows each preview feature's ID, whether it is on and whether you can switch it; `org preview update <preview-id> --enabled true|false` switches it, and only a feature offered to the organization can be turned on. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
+Use `cloud org --help` for quotas, credit balance, notifications, notification types, preview features, usage, AI inference usage, settings, BYOC infrastructure, and Prometheus discovery. `org get` includes the organization's read-only AI settings, `aiDataUseForProductImprovementEnabled` and `knowledgeBasedAiSupportEnabled`. `org preview list` shows each preview feature's ID, whether it is on and whether you can switch it; `org preview update <preview-id> --enabled true|false` switches it, and only a feature offered to the organization can be turned on. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
 
 `byoc update` changes only the flags you pass. Its `--tag` flags replace the infrastructure's whole tag set, so read the current set with `byoc tags` first; `byoc private-endpoint-config` shows the private link endpoint service to connect to:
 
@@ -161,6 +161,25 @@ clickhousectl cloud org byoc private-endpoint-config <byoc-id>
 clickhousectl cloud org byoc access get <byoc-id>
 clickhousectl cloud org byoc access update <byoc-id> --mode window \
   --start 2026-11-10T09:00:00Z --duration 14400
+```
+
+`org usage` and `org inference-usage` (Beta) take inclusive UTC `--from-date` and `--to-date` dates and report CHC costs with a grand total. `inference-usage` has one row per day, provider and model. It rejects a range longer than 31 days, or one that starts after it ends, before sending anything. Rows that are not locked may still change. `--json` adds each row's per-metric token counts and prices:
+
+```bash
+clickhousectl cloud org inference-usage --from-date 2026-01-01 --to-date 2026-01-31
+```
+
+BYOC infrastructure with restricted access (Beta) runs in an EKS cluster you own, which ClickHouse reaches through a connector you install. Pass `--access-model restricted` and `--restricted-facts <PATH>` (or `-` for stdin) to `byoc validate` and `byoc create`. The file is a JSON object of cluster facts with at least `backupBucket`, `clusterName`, `dataBucket`, `imageMode` and `storageRoleArn`; a missing or unknown key is a usage error. The facts file is required with `restricted` and rejected otherwise; without `--access-model` the server default applies. `byoc get` shows the access model and the connector's platform state, components and last heartbeat.
+
+Once the infrastructure's roles are admitted, `byoc enrollment-token` issues the one-time token the connector enrolls with; until then it fails with 409. The token is printed once, so capture it. `--ttl-seconds` sets its lifetime in whole minutes from 3600 to 86400; the default is four hours:
+
+```bash
+clickhousectl cloud org byoc validate --region us-east-1 --account-id <aws-account-id> \
+  --access-model restricted --restricted-facts facts.json
+clickhousectl cloud org byoc create --region us-east-1 --account-id <aws-account-id> \
+  --access-model restricted --restricted-facts facts.json
+clickhousectl cloud org byoc enrollment-token <byoc-id> --ttl-seconds 7200
+clickhousectl cloud org byoc get <byoc-id>
 ```
 
 BYO-VPC `--vpc-id` needs `--private-subnet-id` and conflicts with `--vpc-cidr-range`. For private endpoint registration, use the provider's endpoint identity, not an endpoint-service name or ARN; registration affects the organization as well as the service. Removing an organization endpoint requires both provider and region to identify it completely. The CLI's format checks do not prove an endpoint exists or belongs to you.
