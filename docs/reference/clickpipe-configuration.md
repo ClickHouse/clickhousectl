@@ -8,7 +8,7 @@ Use `cloud clickpipe create <source> --help` for flag names, allowed values, def
 
 | Source | Setup and authentication |
 | --- | --- |
-| Kafka | Authentication is required: pass `--auth`, or let it be inferred from a complete username/password, IAM access-key pair, IAM role, certificate/private-key pair, or Event Hubs connection string. Partial pairs fail. Avro uses a schema registry or AWS Glue; Protobuf accepts a schema file. |
+| Kafka | Authentication is required: pass `--auth`, or let it be inferred from a complete username/password, IAM access-key pair, IAM role, certificate/private-key pair, or Event Hubs connection string. Partial pairs fail. Avro uses a schema registry or AWS Glue; Protobuf accepts a schema file. A Confluent registry takes `--schema-registry-username`/`--schema-registry-password`, or OAuth client credentials: `--schema-registry-client-id` with `--schema-registry-client-secret` and `--schema-registry-token-url`, plus optional `--schema-registry-scope` and `--schema-registry-audience`. `clickpipe get` shows the token URL, scope and audience but never the secret. |
 | Kinesis | Use IAM role or a complete access-key pair. Choose stream and region, then initial position/format. |
 | Object storage | Grant read access through IAM, access keys, an Azure connection string, or a GCP service account. Schema discovery needs a running destination service. |
 | Postgres / MySQL | Basic auth requires both username and password; `IAM_ROLE` on supported RDS/Aurora sources requires a role ARN and rejects username/password. |
