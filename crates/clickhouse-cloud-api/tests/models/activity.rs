@@ -121,3 +121,28 @@ fn activity_type_accepts_unlisted_values() {
         serde_json::json!({"type": "some_future_activity"})
     );
 }
+
+#[test]
+fn activity_deletion_protection_bypassed_round_trips_and_tolerates_absence() {
+    let activity: Activity = serde_json::from_value(serde_json::json!({
+        "type": "service_delete",
+        "deletionProtectionBypassed": true
+    }))
+    .unwrap();
+    assert_eq!(activity.deletion_protection_bypassed, Some(true));
+    assert_eq!(
+        serde_json::to_value(&activity).unwrap()["deletionProtectionBypassed"],
+        serde_json::json!(true)
+    );
+
+    let absent: Activity =
+        serde_json::from_str(r#"{"type":"service_delete","deletionProtectionBypassed":null}"#)
+            .unwrap();
+    assert_eq!(absent.deletion_protection_bypassed, None);
+    assert!(
+        serde_json::to_value(&absent)
+            .unwrap()
+            .get("deletionProtectionBypassed")
+            .is_none()
+    );
+}

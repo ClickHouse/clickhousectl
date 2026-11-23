@@ -286,6 +286,62 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        // ── Blocking Queries ────────────────────────────────────────
+        //
+        // Groups exist only while blocking query collection is on and a
+        // query actually waited on a lock, so a fresh service usually has
+        // none. Only the envelope and the page bound are asserted; any listed
+        // group must name its database and carry its sample count.
+
+        log_phase("Blocking Queries");
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "list postgres blocking queries",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let postgres_id = postgres_id.clone();
+                    async move {
+                        let to_date = jiff::Timestamp::now();
+                        let from_date = to_date.checked_sub(jiff::SignedDuration::from_hours(1))?;
+                        let groups = client
+                            .postgres_blocking_queries_get_list(
+                                &org_id,
+                                &postgres_id,
+                                &from_date.to_string(),
+                                &to_date.to_string(),
+                                None,
+                                None,
+                                None,
+                                Some(10),
+                                None,
+                            )
+                            .await?
+                            .result
+                            .ok_or("postgres blocking queries list returned no result")?;
+                        if groups.len() > 10 {
+                            return Err(format!(
+                                "postgres blocking queries list ignored limit=10: {} entries",
+                                groups.len()
+                            )
+                            .into());
+                        }
+                        if groups
+                            .iter()
+                            .any(|group| group.database.is_none() || group.samples.is_none())
+                        {
+                            return Err(
+                                "postgres blocking query group had no database or samples".into()
+                            );
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
         // ── Runtime Config ──────────────────────────────────────────
 
         log_phase("Runtime Config");

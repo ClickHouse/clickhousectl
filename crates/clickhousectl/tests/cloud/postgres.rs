@@ -3175,7 +3175,6 @@ fn private_endpoint_envelope(result: Value) -> ResponseTemplate {
 
 fn approved_endpoint() -> Value {
     serde_json::json!({
-        "id": "ps-1",
         "state": "available",
         "endpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
         "supportedRegions": ["us-west-2"],
@@ -3194,7 +3193,7 @@ async fn postgres_private_endpoint_create_sends_regions() {
             serde_json::json!({"supportedRegions": ["us-west-2"]}),
         ))
         .respond_with(private_endpoint_envelope(
-            serde_json::json!({"id": "ps-1", "state": "creating"}),
+            serde_json::json!({"state": "creating"}),
         ))
         .expect(1)
         .mount(&mock)
@@ -3302,7 +3301,10 @@ async fn postgres_private_endpoint_delete_prints_the_deleted_endpoint() {
     );
     assert_success(&output);
     let endpoint: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(endpoint["id"], "ps-1");
+    assert_eq!(
+        endpoint["endpointServiceName"],
+        "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0"
+    );
     assert_eq!(
         received_request_shape(&mock).await,
         vec![

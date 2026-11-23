@@ -1180,7 +1180,6 @@ fn postgres_private_endpoint_vpc_endpoint_response_converts_back_into_a_request_
 #[test]
 fn postgres_private_endpoint_response_tolerates_missing_and_null_fields() {
     let endpoint: PostgresPrivateEndpoint = serde_json::from_value(serde_json::json!({
-        "id": "ps0123456789abcdefghjkmnpq",
         "state": "creating",
         "endpointServiceName": null,
         "ports": [{"port": 5432}],
@@ -1205,5 +1204,60 @@ fn postgres_private_endpoint_patch_request_omits_unset_lists() {
         })
         .unwrap(),
         serde_json::json!({"supportedRegions": []})
+    );
+}
+
+#[test]
+fn pg_config_carries_postgres_19_worker_and_repack_gucs_through_write_back() {
+    let wire = serde_json::json!({
+        "autovacuum_max_parallel_workers": 2,
+        "io_max_workers": "8",
+        "io_min_workers": 2,
+        "max_repack_replication_slots": 5
+    });
+    let response: PgConfigResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        response.autovacuum_max_parallel_workers,
+        Some(serde_json::json!(2))
+    );
+    assert_eq!(response.io_max_workers, Some(serde_json::json!("8")));
+    assert_eq!(response.io_min_workers, Some(serde_json::json!(2)));
+    assert_eq!(
+        response.max_repack_replication_slots,
+        Some(serde_json::json!(5))
+    );
+    let missing: PgConfigResponse = serde_json::from_str(
+        r#"{"autovacuum_max_parallel_workers":null,"io_max_workers":null,"io_min_workers":null,"max_repack_replication_slots":null}"#,
+    )
+    .unwrap();
+    assert_eq!(missing, PgConfigResponse::default());
+
+    let request = PgConfig::from(response);
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+}
+
+#[test]
+fn postgres_blocking_query_tolerates_missing_and_null_fields() {
+    let group: PostgresBlockingQuery = serde_json::from_value(serde_json::json!({
+        "database": "app",
+        "blockingPrepared": true,
+        "blockingPids": [0],
+        "latestBlockingXactSeconds": null,
+        "longestWaitSeconds": null
+    }))
+    .unwrap();
+    assert_eq!(group.database.as_deref(), Some("app"));
+    assert_eq!(group.blocking_prepared, Some(true));
+    assert_eq!(group.blocking_pids, Some(vec![0]));
+    assert_eq!(group.latest_blocking_xact_seconds, None);
+    assert_eq!(group.longest_wait_seconds, None);
+    assert_eq!(group.last_seen, None);
+    assert_eq!(
+        serde_json::to_value(&group).unwrap(),
+        serde_json::json!({
+            "database": "app",
+            "blockingPrepared": true,
+            "blockingPids": [0]
+        })
     );
 }

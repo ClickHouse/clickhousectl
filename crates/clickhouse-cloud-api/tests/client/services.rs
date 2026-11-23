@@ -925,6 +925,49 @@ async fn service_clickhouse_setting_reads_preserve_numeric_and_string_values() {
     );
 }
 
+#[tokio::test]
+async fn service_clickhouse_setting_delete_returns_reset_warnings() {
+    let (server, client) = setup().await;
+    let setting = "/v1/organizations/org-1/services/svc-1/clickhouseSettings/max_threads";
+    Mock::given(method("DELETE"))
+        .and(path(setting))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "warnings": [{"name": "max_threads", "message": "Takes effect after a rollout restart."}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client
+        .service_clickhouse_setting_delete("org-1", "svc-1", "max_threads")
+        .await
+        .unwrap();
+    let warnings = response.result.unwrap().warnings.unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].name.as_deref(), Some("max_threads"));
+}
+
+#[tokio::test]
+async fn service_clickhouse_setting_delete_accepts_an_envelope_without_result() {
+    let (server, client) = setup().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings/max_threads",
+        ))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client
+        .service_clickhouse_setting_delete("org-1", "svc-1", "max_threads")
+        .await
+        .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert!(response.result.is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Replica aware routing
 // ---------------------------------------------------------------------------

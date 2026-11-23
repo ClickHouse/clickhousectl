@@ -1719,6 +1719,110 @@ pub struct PostgresSlowQueryPatternDetail {
     pub recent_executions: Option<Vec<PostgresQueryExecution>>,
 }
 
+/// `PostgresBlockingQuery` from the ClickHouse Cloud API: one waiting query
+/// grouped with one direct blocker.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes as `None`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresBlockingQuery {
+    /// Non-empty `application_name` values of the waiting sessions (up to 10).
+    #[serde(rename = "blockedApps", skip_serializing_if = "Option::is_none")]
+    pub blocked_apps: Option<Vec<String>>,
+    /// Lock mode requested by the waiting session at the latest sample, such as `ShareLock`.
+    #[serde(rename = "blockedMode", skip_serializing_if = "Option::is_none")]
+    pub blocked_mode: Option<String>,
+    /// Process IDs of the waiting sessions, most recently seen first (up to 10).
+    #[serde(rename = "blockedPids", skip_serializing_if = "Option::is_none")]
+    pub blocked_pids: Option<Vec<i64>>,
+    /// Normalized text of the waiting statement from Query Insights. Empty when no
+    /// text is available.
+    #[serde(rename = "blockedQuery", skip_serializing_if = "Option::is_none")]
+    pub blocked_query: Option<String>,
+    /// Query ID of the waiting statement, as in slow query patterns. Empty when
+    /// Postgres had none yet; the group is then a single waiting session.
+    #[serde(rename = "blockedQueryId", skip_serializing_if = "Option::is_none")]
+    pub blocked_query_id: Option<String>,
+    /// Database users of the waiting sessions (up to 10).
+    #[serde(rename = "blockedUsers", skip_serializing_if = "Option::is_none")]
+    pub blocked_users: Option<Vec<String>>,
+    /// Non-empty `application_name` values of the blocking sessions (up to 10).
+    #[serde(rename = "blockingApps", skip_serializing_if = "Option::is_none")]
+    pub blocking_apps: Option<Vec<String>>,
+    /// Database of the blocking session. Empty for a prepared transaction.
+    #[serde(rename = "blockingDatabase", skip_serializing_if = "Option::is_none")]
+    pub blocking_database: Option<String>,
+    /// True when the blocker is a session the service uses internally, such as for
+    /// monitoring or replication. Its query text is not returned.
+    #[serde(rename = "blockingInternal", skip_serializing_if = "Option::is_none")]
+    pub blocking_internal: Option<bool>,
+    /// Process IDs of the blocking sessions, most recently seen first (up to 10).
+    /// A prepared transaction reports 0.
+    #[serde(rename = "blockingPids", skip_serializing_if = "Option::is_none")]
+    pub blocking_pids: Option<Vec<i64>>,
+    /// True when the blocker is a prepared transaction, which has no session.
+    #[serde(rename = "blockingPrepared", skip_serializing_if = "Option::is_none")]
+    pub blocking_prepared: Option<bool>,
+    /// Normalized text of the blocking statement from Query Insights. Empty when
+    /// no text is available.
+    #[serde(rename = "blockingQuery", skip_serializing_if = "Option::is_none")]
+    pub blocking_query: Option<String>,
+    /// Query ID of the blocking statement. Empty when the blocker had none; the
+    /// group is then a single blocking session.
+    #[serde(rename = "blockingQueryId", skip_serializing_if = "Option::is_none")]
+    pub blocking_query_id: Option<String>,
+    /// True when the blocker was itself waiting on a lock in at least one sample.
+    #[serde(
+        rename = "blockingSeenWaiting",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub blocking_seen_waiting: Option<bool>,
+    /// Database users of the blocking sessions (up to 10).
+    #[serde(rename = "blockingUsers", skip_serializing_if = "Option::is_none")]
+    pub blocking_users: Option<Vec<String>>,
+    /// Database of the waiting sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Time of the latest sample.
+    #[serde(rename = "lastSeen", skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<jiff::Timestamp>,
+    /// Postgres backend type of the blocker at the latest sample, such as
+    /// `client backend` or `autovacuum worker`.
+    #[serde(
+        rename = "latestBlockingBackendType",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub latest_blocking_backend_type: Option<String>,
+    /// State of the blocking session at the latest sample, such as `active` or
+    /// `idle in transaction`.
+    #[serde(
+        rename = "latestBlockingState",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub latest_blocking_state: Option<String>,
+    /// Age of the blocking transaction at the latest sample, in seconds. `None`
+    /// when not reported, as for a prepared transaction.
+    #[serde(
+        rename = "latestBlockingXactSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub latest_blocking_xact_seconds: Option<f64>,
+    /// Postgres lock type waited on at the latest sample, such as `relation`,
+    /// `tuple`, `transactionid` or `advisory`.
+    #[serde(rename = "lockType", skip_serializing_if = "Option::is_none")]
+    pub lock_type: Option<String>,
+    /// Longest observed wait of a waiting session, in seconds. `None` when no
+    /// sample reported how long the session had waited.
+    #[serde(rename = "longestWaitSeconds", skip_serializing_if = "Option::is_none")]
+    pub longest_wait_seconds: Option<f64>,
+    /// Number of samples in which the group was seen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub samples: Option<i64>,
+    /// Number of distinct waiting sessions in the group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<i64>,
+}
+
 /// PgBouncer configuration parameters, with string values as required by the API.
 ///
 /// Keys are open-ended: newly supported PgBouncer parameters are preserved.
@@ -1739,6 +1843,8 @@ pub struct PgConfig {
     pub autovacuum_analyze_threshold: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_freeze_max_age: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_max_parallel_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1784,7 +1890,11 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_max_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_min_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1813,6 +1923,8 @@ pub struct PgConfig {
     pub max_parallel_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_repack_replication_slots: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_replication_slots: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1868,6 +1980,8 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_freeze_max_age: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_max_parallel_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_naptime: Option<serde_json::Value>,
@@ -1912,7 +2026,11 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_max_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_min_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1941,6 +2059,8 @@ pub struct PgConfigResponse {
     pub max_parallel_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_repack_replication_slots: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_replication_slots: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2062,9 +2182,6 @@ pub struct PostgresPrivateEndpoint {
         skip_serializing_if = "Option::is_none"
     )]
     pub endpoint_service_name: Option<String>,
-    /// ID of the private endpoint service.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
     /// IP address type of the endpoint service, such as `dual`.
     #[serde(rename = "ipAddressType", skip_serializing_if = "Option::is_none")]
     pub ip_address_type: Option<String>,

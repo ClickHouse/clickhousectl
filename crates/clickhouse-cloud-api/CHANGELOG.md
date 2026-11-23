@@ -16,6 +16,45 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+The vendored OpenAPI snapshot is refreshed from the live spec.
+
+The beta `postgres_blocking_queries_get_list` method lists which queries waited
+on locks held by other queries on a Postgres service. It takes the organization
+and Postgres IDs, a required `from_date` and `to_date` (RFC 3339, at most 31
+days apart), optional `db_name`, `db_user` and `app` filters on the waiting
+sessions, and optional `limit` (1 to 2000, server default 50) and `offset`.
+It returns `ApiResponse<Vec<PostgresBlockingQuery>>`: each item groups one
+waiting query with one direct blocker, with the blocked and blocking query
+text, users, apps and process IDs, the lock type and mode, the blocker's state
+and transaction age, the number of sessions and samples, and `last_seen`.
+Groups come only from periods when blocking query collection was on for the
+service. The method needs `control-plane:postgres-service:view`.
+
+`PgConfig` and `PgConfigResponse` gain the Postgres 19 settings
+`autovacuum_max_parallel_workers`, `io_max_workers`, `io_min_workers` and
+`max_repack_replication_slots`, typed `Option<serde_json::Value>` like the
+other numeric settings, and the `PgConfigResponse` to `PgConfig` conversion
+carries them. Struct-literal callers need the new fields set to `None`, or
+`..Default::default()`.
+
+`PostgresPrivateEndpoint` loses `id`, which the spec no longer returns. Read the
+endpoint service by `endpoint_service_id` or `endpoint_service_name` instead.
+
+`service_clickhouse_setting_delete` now returns
+`ApiResponse<ServiceClickhouseSettingDeleteResponse>` instead of
+`ApiResponse<serde_json::Value>`. Its `warnings` say how the reset takes
+effect, such as a ClickHouse server rollout restart, and are `None` when the
+setting was not configured. Callers that read the raw `result` as JSON read
+`result.warnings` instead.
+
+`Activity` gains `deletion_protection_bypassed: Option<bool>`, which is
+`Some(true)` on a `service_delete` activity when a deletion protection override
+was recorded for the delete. Struct-literal callers need
+`deletion_protection_bypassed: None` or `..Default::default()`.
+
+`meta::operations` gains descriptors, and `BETA_OPERATIONS` entries, for the
+five new Beta operations in the spec.
+
 ## 0.6.1
 
 No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.

@@ -1657,6 +1657,16 @@ pub struct ServiceClickhouseSetting {
     pub value: Option<ServiceClickhouseSettingValueResponse>,
 }
 
+/// `ServiceClickhouseSettingDeleteResponse` from the ClickHouse Cloud API: the
+/// result of resetting a ClickHouse setting to its default.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingDeleteResponse {
+    /// Warnings about how the reset takes effect, such as a ClickHouse server
+    /// rollout restart. Omitted when the setting was not configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
+}
+
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingSchemaEntry {

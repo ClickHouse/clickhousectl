@@ -749,6 +749,64 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// List Postgres blocking queries (Beta).
+    ///
+    /// Returns which queries waited on locks held by other queries between
+    /// `from_date` and `to_date` (inclusive RFC 3339 date-times, at most 31 days
+    /// apart). Each item groups one waiting query with one direct blocker,
+    /// most-sampled first. Groups come only from periods when blocking query
+    /// collection was on for the service. `db_name`, `db_user` and `app` filter
+    /// on the waiting sessions; an empty `app` matches sessions with no
+    /// application name. The API defaults to 50 results and accepts limits from
+    /// 1 to 2000.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn postgres_blocking_queries_get_list(
+        &self,
+        organization_id: &str,
+        postgres_id: &str,
+        from_date: &str,
+        to_date: &str,
+        db_name: Option<&str>,
+        db_user: Option<&str>,
+        app: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ApiResponse<Vec<PostgresBlockingQuery>>, Error> {
+        let mut req = self.request(
+            &operations::POSTGRES_BLOCKING_QUERIES_GET_LIST,
+            &[organization_id, postgres_id],
+        )?;
+        req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
+        if let Some(v) = db_name {
+            req = req.query(&[("db_name", v)]);
+        }
+        if let Some(v) = db_user {
+            req = req.query(&[("db_user", v)]);
+        }
+        if let Some(v) = app {
+            req = req.query(&[("app", v)]);
+        }
+        if let Some(v) = limit {
+            req = req.query(&[("limit", v)]);
+        }
+        if let Some(v) = offset {
+            req = req.query(&[("offset", v)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// List Postgres service backups (Beta).
     ///
     /// Returns the retained base backups, newest first. Pagination metadata is

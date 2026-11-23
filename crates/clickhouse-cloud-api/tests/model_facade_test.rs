@@ -135,6 +135,14 @@ fn extracted_models_keep_root_and_models_paths() {
         PhantomData::<api::models::PostgresBackup>,
     );
     assert_same_type(
+        PhantomData::<api::PostgresBlockingQuery>,
+        PhantomData::<api::models::PostgresBlockingQuery>,
+    );
+    assert_same_type(
+        PhantomData::<api::ServiceClickhouseSettingDeleteResponse>,
+        PhantomData::<api::models::ServiceClickhouseSettingDeleteResponse>,
+    );
+    assert_same_type(
         PhantomData::<api::PostgresIpAccessListEntry>,
         PhantomData::<api::models::PostgresIpAccessListEntry>,
     );

@@ -607,6 +607,13 @@ pub struct Activity {
     pub actor_type: Option<ActivityActortype>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<jiff::Timestamp>,
+    /// For `service_delete` activities: `true` when a deletion protection
+    /// override was recorded for the delete. Omitted when none was recorded.
+    #[serde(
+        rename = "deletionProtectionBypassed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub deletion_protection_bypassed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(rename = "keyUpdateType", skip_serializing_if = "Option::is_none")]
