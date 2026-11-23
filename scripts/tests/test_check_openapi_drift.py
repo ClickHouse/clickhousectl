@@ -32,7 +32,7 @@ class DriftScriptTests(unittest.TestCase):
                                  "current_permissions": '["after"]',
                                  "added_permissions": '["after"]',
                                  "removed_permissions": '["before"]'}} for kind in kinds]
-        body = drift.build_issue_body({"schema_version": 12, "findings": findings}, {})
+        body = drift.build_issue_body({"schema_version": 13, "findings": findings}, {})
         self.assertIn("| Permission and operation metadata changes | 8 |", body)
         for finding in findings:
             self.assertIn(f"- `/security` — {finding['message']}", body)
@@ -52,7 +52,7 @@ class DriftScriptTests(unittest.TestCase):
                                  "current_contract": '{"required":false}',
                                  "previous_spec_pointer": "/components/parameters/Region"}}
                     for kind in kinds]
-        body = drift.build_issue_body({"schema_version": 12, "findings": findings}, {})
+        body = drift.build_issue_body({"schema_version": 13, "findings": findings}, {})
         for finding in findings:
             self.assertIn(f"- `{finding['spec_pointer']}` — {finding['message']}", body)
         self.assertIn("| Missing operation parameters | 1 |", body)
@@ -77,7 +77,7 @@ class DriftScriptTests(unittest.TestCase):
                 ("partial_required_schema", "Widget"),
             ]
         ]
-        report = {"schema_version": 12, "findings": findings}
+        report = {"schema_version": 13, "findings": findings}
         self.assertEqual(drift.findings_by_kind(report)["stale_exemption"], findings)
         body = drift.build_issue_body(report, {})
         self.assertIn("| Stale exemptions | 2 |", body)
@@ -88,7 +88,7 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 12,
+            "schema_version": 13,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -141,7 +141,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
     def test_renders_additional_properties_mismatches(self):
-        report = {"schema_version": 12, "findings": [{
+        report = {"schema_version": 13, "findings": [{
             "kind": "additional_properties_mismatch",
             "message": "PgBouncerConfig must preserve additionalProperties in a typed string-keyed map",
             "spec_pointer": "/components/schemas/pgBouncerConfig/additionalProperties",
@@ -153,6 +153,29 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("PgBouncerConfig must preserve additionalProperties", body)
         self.assertIn("/components/schemas/pgBouncerConfig/additionalProperties", body)
 
+    def test_renders_request_union_arm_mismatches(self):
+        report = {"schema_version": 13, "findings": [{
+            "kind": "request_union_arm_mismatch",
+            "message": "Credentials::Oauth should carry Oauth, found String",
+            "spec_pointer": "/components/schemas/Widget/properties/credentials/oneOf/1",
+            "rust_item": "models.rs::Credentials::Oauth",
+            "details": {"problem": "wrong_arm_type", "union": "Credentials",
+                        "used_by": "models.rs::Widget::credentials",
+                        "expected": "Oauth", "actual": "String"},
+        }]}
+        body = drift.build_issue_body(report, {})
+        self.assertIn("| Request union arm mismatches | 1 |", body)
+        self.assertIn("## Request Union Arm Mismatches", body)
+        self.assertIn(
+            "- `/components/schemas/Widget/properties/credentials/oneOf/1` — "
+            "Credentials::Oauth should carry Oauth, found String",
+            body,
+        )
+        self.assertIn("Field: `models.rs::Widget::credentials`", body)
+        self.assertIn("Expected arm payload: `Oauth`", body)
+        self.assertIn("Actual arm payload: `String`", body)
+        self.assertIn("Rust arm: `models.rs::Credentials::Oauth`", body)
+
     def test_renders_changed_acknowledged_enum_values_as_actionable(self):
         for previous, current in [
             ('"admin"', '"admin", "reader"'),
@@ -161,7 +184,7 @@ class DriftScriptTests(unittest.TestCase):
         ]:
             with self.subTest(previous=previous, current=current):
                 report = {
-                    "schema_version": 12,
+                    "schema_version": 13,
                     "findings": [{
                         "kind": "acknowledged_enum_constraint_changed",
                         "message": "acknowledged enum values differ from the vendored snapshot",
@@ -499,8 +522,8 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_never_queries_or_mutates_github(self):
         reports = [
-            {"schema_version": 12, "findings": []},
-            {"schema_version": 12, "findings": [{"kind": "missing_struct_field"}]},
+            {"schema_version": 13, "findings": []},
+            {"schema_version": 13, "findings": [{"kind": "missing_struct_field"}]},
         ]
         for report in reports:
             with self.subTest(findings=len(report["findings"])):
@@ -517,7 +540,7 @@ class DriftScriptTests(unittest.TestCase):
                 sync_issue.assert_not_called()
 
     def test_main_exits_nonzero_when_synchronization_fails(self):
-        report = {"schema_version": 12, "findings": []}
+        report = {"schema_version": 13, "findings": []}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT)]),
             mock.patch.object(drift, "fetch_live_spec", return_value={}),
@@ -546,7 +569,7 @@ class DriftScriptTests(unittest.TestCase):
                     mock.patch.dict(drift.os.environ, {"GITHUB_OUTPUT": str(output)}),
                     mock.patch.object(drift, "fetch_live_spec", return_value={}),
                     mock.patch.object(
-                        drift, "run_analyzer", return_value={"schema_version": 12, "findings": []}
+                        drift, "run_analyzer", return_value={"schema_version": 13, "findings": []}
                     ),
                     mock.patch.object(
                         drift, "sync_drift_issue", return_value=(action, issue_url)
@@ -560,7 +583,7 @@ class DriftScriptTests(unittest.TestCase):
                 )
 
     def test_dry_run_and_unreachable_spec_write_no_github_outputs(self):
-        report = {"schema_version": 12, "findings": [{"kind": "missing_struct_field"}]}
+        report = {"schema_version": 13, "findings": [{"kind": "missing_struct_field"}]}
         # An unreachable spec fails the run instead of passing silently.
         cases = (
             ([str(SCRIPT), "--dry-run"], {}, None),
@@ -788,7 +811,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 12, "findings": []}),
+            stdout=json.dumps({"schema_version": 13, "findings": []}),
             stderr="",
         )
 

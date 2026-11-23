@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 12:
+    if report.get("schema_version") != 13:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -515,6 +515,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Operation parameter mismatches | {counts['operation_parameter_mismatch']} |",
         f"| Incompatible response shapes | {counts['response_shape_mismatch']} |",
         f"| Incompatible request shapes and bodies | {total('request_shape_mismatch', 'request_body_mismatch', 'unsupported_request_schema')} |",
+        f"| Request union arm mismatches | {counts['request_union_arm_mismatch']} |",
         f"| Unsupported success response schemas | {counts['unsupported_response_schema']} |",
         f"| Missing model types | {counts['missing_model_type']} |",
         f"| Missing schema definitions | {counts['missing_schema_definition']} |",
@@ -584,6 +585,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         ("response_shape_mismatch", "Incompatible Operation Response Shapes"),
         ("request_body_mismatch", "Request Body Argument Mismatches"),
         ("request_shape_mismatch", "Incompatible Request Shapes"),
+        ("request_union_arm_mismatch", "Request Union Arm Mismatches"),
         ("unsupported_request_schema", "Unsupported Request Schemas"),
         ("snapshot_added_response", "New JSON Success Responses Missing From Snapshot"),
         ("snapshot_removed_response", "Removed JSON Success Responses Still In Snapshot"),
@@ -642,6 +644,17 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
                         lines.append(f"  - {label}: `{details[key]}`")
                 if finding.get("rust_item"):
                     lines.append(f"  - Rust metadata: `{finding['rust_item']}`")
+            if kind == "request_union_arm_mismatch":
+                details = finding.get("details", {})
+                for key, label in [
+                    ("used_by", "Field"),
+                    ("expected", "Expected arm payload"),
+                    ("actual", "Actual arm payload"),
+                ]:
+                    if key in details:
+                        lines.append(f"  - {label}: `{details[key]}`")
+                if finding.get("rust_item"):
+                    lines.append(f"  - Rust arm: `{finding['rust_item']}`")
             if kind == "acknowledged_enum_constraint_changed":
                 details = finding.get("details", {})
                 lines.append(

@@ -50,6 +50,10 @@ produce actionable stale findings when no longer needed — remove them during r
   slice of the enum's non-catch-all wire values. The analyzer requires it to equal the variant wire values as a
   set (`FindingKind::EnumValuesMismatch`); this is opt-in, so enums without a `VALUES` const are unchecked.
   **When adding a value to a `VALUES`-bearing enum, update both the variant and the const or CI fails.**
+- A request property whose schema is a `oneOf`/`anyOf` of component `$ref`s needs an untagged union with exactly
+  one tuple arm per branch carrying that branch's request model; one `serde_json::Value` catch-all arm is allowed.
+  Arms pair by payload type, so a missing, duplicate, non-tuple or wrongly typed arm is
+  `FindingKind::RequestUnionArmMismatch`. Inline object branches keep the inline-union checks.
 - A typed map whose `additionalProperties` value is an inline `oneOf`/`anyOf` needs an untagged union with
   one tuple arm per branch (an inline object branch is a struct with exactly its properties). In response
   position the map value may be `serde_json::Value` instead: an undiscriminated union of all-`Option` arms

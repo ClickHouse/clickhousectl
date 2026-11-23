@@ -499,6 +499,9 @@ pub(crate) struct EnumInfo {
     /// order, so an undiscriminated composition can pair its branches with
     /// the union arms that carry them.
     pub(crate) variant_payloads: Vec<TypeNode>,
+    /// Every variant in declaration order, with its payload when it is a
+    /// single-field tuple, so a request union can be checked arm by arm.
+    pub(crate) variant_arms: Vec<(String, Option<TypeNode>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,6 +692,7 @@ impl RustInventory {
                     let mut integer_values = BTreeSet::new();
                     let mut variant_type_names = BTreeSet::new();
                     let mut variant_payloads = Vec::new();
+                    let mut variant_arms = Vec::new();
                     let mut is_value_enum = !container.untagged;
                     let uses_i64_serde_conversion = container.into.as_deref() == Some("i64")
                         && (container.from.as_deref() == Some("i64")
@@ -697,11 +701,16 @@ impl RustInventory {
                         for field in variant.fields.iter() {
                             collect_type_names(&field.ty, &mut variant_type_names);
                         }
-                        if let Fields::Unnamed(fields) = &variant.fields
-                            && let [field] = fields.unnamed.iter().collect::<Vec<_>>()[..]
-                        {
-                            variant_payloads.push(TypeNode::from_syn(&field.ty));
+                        let payload = match &variant.fields {
+                            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                                Some(TypeNode::from_syn(&fields.unnamed[0].ty))
+                            }
+                            _ => None,
+                        };
+                        if let Some(payload) = &payload {
+                            variant_payloads.push(payload.clone());
                         }
+                        variant_arms.push((variant.ident.unraw().to_string(), payload));
                         let options = serde_options(&variant.attrs)?;
                         if options.untagged || options.other {
                             continue;
@@ -736,6 +745,7 @@ impl RustInventory {
                             values_const: None,
                             variant_type_names,
                             variant_payloads,
+                            variant_arms,
                         },
                     );
                 }
@@ -1521,6 +1531,20 @@ mod tests {
         );
         assert!(inventory.enums["WidgetType"].is_value_enum);
         assert!(!inventory.enums["Union"].is_value_enum);
+        assert_eq!(
+            inventory.enums["Union"].variant_arms,
+            [
+                (
+                    "Text".to_string(),
+                    Some(TypeNode::Path("String".to_string()))
+                ),
+                ("Count".to_string(), Some(TypeNode::Path("i64".to_string()))),
+            ]
+        );
+        assert_eq!(
+            inventory.enums["WidgetType"].variant_arms[0],
+            ("Ready".to_string(), None)
+        );
         assert_eq!(
             inventory.enums["NumericValue"].integer_values,
             BTreeSet::from([-6, 0, 12])

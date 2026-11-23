@@ -2059,7 +2059,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 12,
+                "schema_version": 13,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -2269,7 +2269,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 12);
+        assert_eq!(json["schema_version"], 13);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"
@@ -2587,6 +2587,120 @@ mod tests {
             )],
             "{}",
             report.render_text()
+        );
+    }
+
+    fn request_union(models: &str, config: AnalyzerConfig) -> DriftReport {
+        let mut spec = directional_spec(
+            serde_json::json!({
+                "required": ["credentials"],
+                "properties": {"credentials": {"oneOf": [
+                    {"$ref": "#/components/schemas/Plain"},
+                    {"$ref": "#/components/schemas/Oauth"}
+                ]}}
+            }),
+            true,
+            false,
+        );
+        for name in ["Plain", "Oauth"] {
+            spec["components"]["schemas"][name] = serde_json::json!({"properties": {}});
+        }
+        analyze_directional(
+            &format!(
+                "pub struct Widget {{ pub credentials: Credentials }} \
+                 pub struct Plain {{}} pub struct Oauth {{}} {models}"
+            ),
+            spec,
+            config,
+        )
+    }
+
+    #[test]
+    fn request_union_arms_pair_with_ref_branches() {
+        let matching = "#[serde(untagged)] pub enum Credentials { Plain(Plain), Oauth(Oauth) }";
+        let report = request_union(matching, AnalyzerConfig::default());
+        assert!(!report.has_drift(), "{}", report.render_text());
+
+        let drifted =
+            "#[serde(untagged)] pub enum Credentials { Oauth(String), Extra(Plain), Plain(Plain) }";
+        let report = request_union(drifted, AnalyzerConfig::default());
+        let union = |problem: &str, pointer: &str, item: &str, message: &str| {
+            let mut details = serde_json::json!({
+                "problem": problem,
+                "schema": "Widget",
+                "union": "Credentials",
+                "used_by": "models.rs::Widget::credentials",
+            });
+            if problem != "extra_arm" {
+                details["expected"] = "Oauth".into();
+            }
+            if problem != "missing_arm" {
+                details["actual"] = if problem == "extra_arm" {
+                    "Plain"
+                } else {
+                    "String"
+                }
+                .into();
+            }
+            serde_json::json!({
+                "kind": "request_union_arm_mismatch",
+                "message": message,
+                "spec_pointer": format!("/components/schemas/Widget/properties/credentials/{pointer}"),
+                "rust_item": item,
+                "details": details,
+            })
+        };
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({
+                "schema_version": 13,
+                "findings": [
+                    union(
+                        "extra_arm",
+                        "oneOf",
+                        "models.rs::Credentials::Extra",
+                        "Credentials::Extra (Plain) pairs with no spec branch",
+                    ),
+                    union(
+                        "wrong_arm_type",
+                        "oneOf/1",
+                        "models.rs::Credentials::Oauth",
+                        "Credentials::Oauth should carry Oauth, found String",
+                    ),
+                ],
+                "unsupported_enum_constraints": [],
+            })
+        );
+        assert_eq!(report.render_text(), [
+            "2 actionable OpenAPI drift finding(s):",
+            "- RequestUnionArmMismatch [/components/schemas/Widget/properties/credentials/oneOf | models.rs::Credentials::Extra]: Credentials::Extra (Plain) pairs with no spec branch",
+            "- RequestUnionArmMismatch [/components/schemas/Widget/properties/credentials/oneOf/1 | models.rs::Credentials::Oauth]: Credentials::Oauth should carry Oauth, found String",
+        ].join("\n"));
+
+        let missing = "#[serde(untagged)] pub enum Credentials { Plain(Plain) }";
+        let report = request_union(missing, AnalyzerConfig::default());
+        assert_eq!(
+            serde_json::to_value(&report.findings).unwrap(),
+            serde_json::json!([union(
+                "missing_arm",
+                "oneOf/1",
+                "models.rs::Credentials",
+                "Credentials has no tuple arm carrying Oauth",
+            )])
+        );
+
+        // The field's request shape exemption covers its union arms too.
+        let config = AnalyzerConfig {
+            request_shape_exemptions: [("Widget".to_string(), "credentials".to_string())].into(),
+            ..AnalyzerConfig::default()
+        };
+        assert!(!request_union(missing, config.clone()).has_drift());
+        assert_eq!(
+            kinds(&request_union(matching, config)),
+            [(
+                FindingKind::StaleExemption,
+                Some("analyzer_config::Widget::credentials")
+            )]
         );
     }
 

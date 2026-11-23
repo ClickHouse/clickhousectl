@@ -59,6 +59,8 @@ the workflow; those files are the rules.
    - Request shapes (`request_shape_mismatch`, `request_body_mismatch`, `unsupported_request_schema`): retype the
      request field, or the method's body argument, to the spec schema's request-position model. A change that
      alters what is sent for valid input needs the live API to confirm; until then use `request_shape_exemptions`.
+   - Request union arms (`request_union_arm_mismatch`): give the union one tuple arm per `$ref` branch, each
+     carrying that branch's request model; keep only the `Unknown(serde_json::Value)` catch-all besides them.
    - Enum values: update the variant, its wire name, its `Display`, and any `VALUES` const. Keep data-carrying
      catch-alls.
    - Beta/deprecation: in every API PR that changes Beta operations or deprecated fields, add any split
