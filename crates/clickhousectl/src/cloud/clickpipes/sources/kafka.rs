@@ -59,6 +59,16 @@ pub struct KafkaSchemaDiscoverArgs {
 const KAFKA_GLUE_SCHEMA_REGISTRY_ARGS: [&str; 3] =
     ["glue_region", "glue_registry_name", "glue_role_arn"];
 
+/// What OAuth client credentials for a schema registry conflict with: Glue and
+/// the PLAIN username and password.
+const KAFKA_SCHEMA_REGISTRY_CLIENT_ID_CONFLICTS: [&str; 5] = [
+    "glue_region",
+    "glue_registry_name",
+    "glue_role_arn",
+    "schema_registry_username",
+    "schema_registry_password",
+];
+
 /// Source-connection fields for a Kafka / Kafka-compatible ClickPipe source.
 /// Flattened into both `KafkaCreateArgs` (pipe creation) and the schema-discover
 /// Kafka subcommand so the source field set has a single definition.
@@ -181,6 +191,58 @@ pub struct KafkaSourceFields {
     #[arg(long, conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS)]
     pub schema_registry_password: Option<String>,
 
+    /// Schema registry OAuth client ID; selects CLIENT_CREDENTIALS auth
+    ///
+    /// Requires --schema-registry-client-secret and --schema-registry-token-url;
+    /// use it instead of --schema-registry-username and --schema-registry-password.
+    #[arg(
+        long,
+        value_name = "ID",
+        requires_all = [
+            "schema_registry_url",
+            "schema_registry_client_secret",
+            "schema_registry_token_url"
+        ],
+        conflicts_with_all = KAFKA_SCHEMA_REGISTRY_CLIENT_ID_CONFLICTS
+    )]
+    pub schema_registry_client_id: Option<String>,
+
+    /// Schema registry OAuth client secret (with --schema-registry-client-id)
+    #[arg(
+        long,
+        value_name = "SECRET",
+        requires = "schema_registry_client_id",
+        conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS
+    )]
+    pub schema_registry_client_secret: Option<String>,
+
+    /// OAuth token endpoint URL (with --schema-registry-client-id)
+    #[arg(
+        long,
+        value_name = "URL",
+        requires = "schema_registry_client_id",
+        conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS
+    )]
+    pub schema_registry_token_url: Option<String>,
+
+    /// Space-separated OAuth scopes (with --schema-registry-client-id)
+    #[arg(
+        long,
+        value_name = "SCOPES",
+        requires = "schema_registry_client_id",
+        conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS
+    )]
+    pub schema_registry_scope: Option<String>,
+
+    /// OAuth audience (with --schema-registry-client-id)
+    #[arg(
+        long,
+        value_name = "AUDIENCE",
+        requires = "schema_registry_client_id",
+        conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS
+    )]
+    pub schema_registry_audience: Option<String>,
+
     /// Glue registry AWS region (only with --schema-registry-type glue)
     #[arg(
         long,
@@ -214,6 +276,11 @@ pub struct KafkaSourceFields {
             "schema_registry_url",
             "schema_registry_username",
             "schema_registry_password",
+            "schema_registry_client_id",
+            "schema_registry_client_secret",
+            "schema_registry_token_url",
+            "schema_registry_scope",
+            "schema_registry_audience",
             "schema_registry_ca_certificate",
             "glue_region",
             "glue_registry_name",
@@ -498,6 +565,16 @@ fn has_confluent_registry_flags(args: &KafkaSourceFields) -> bool {
         || args.schema_registry_username.is_some()
         || args.schema_registry_password.is_some()
         || args.schema_registry_ca_certificate.is_some()
+        || args.schema_registry_client_id.is_some()
+        || has_schema_registry_oauth_options(args)
+}
+
+/// The OAuth flags that only mean something with `--schema-registry-client-id`.
+fn has_schema_registry_oauth_options(args: &KafkaSourceFields) -> bool {
+    args.schema_registry_client_secret.is_some()
+        || args.schema_registry_token_url.is_some()
+        || args.schema_registry_scope.is_some()
+        || args.schema_registry_audience.is_some()
 }
 
 fn has_glue_registry_flags(args: &KafkaSourceFields) -> bool {
@@ -512,8 +589,10 @@ fn validate_kafka_schema_registry_args(args: &KafkaSourceFields) -> CloudResult<
             if has_confluent_registry_flags(args) {
                 return Err(CloudError::usage(
                     "--schema-registry-type glue cannot be combined with --schema-registry-url, \
-                     --schema-registry-username, --schema-registry-password or \
-                     --schema-registry-ca-certificate",
+                     --schema-registry-username, --schema-registry-password, \
+                     --schema-registry-client-id, --schema-registry-client-secret, \
+                     --schema-registry-token-url, --schema-registry-scope, \
+                     --schema-registry-audience or --schema-registry-ca-certificate",
                 ));
             }
             if args.glue_region.is_none() || args.glue_registry_name.is_none() {
@@ -540,7 +619,38 @@ fn validate_kafka_schema_registry_args(args: &KafkaSourceFields) -> CloudResult<
                     "--schema-registry-type confluent requires --schema-registry-url",
                 ));
             }
+            validate_kafka_schema_registry_oauth_args(args)?;
         }
+    }
+    Ok(())
+}
+
+/// Check the OAuth client-credentials flags for a Confluent registry.
+fn validate_kafka_schema_registry_oauth_args(args: &KafkaSourceFields) -> CloudResult<()> {
+    if args.schema_registry_client_id.is_none() {
+        if has_schema_registry_oauth_options(args) {
+            return Err(CloudError::usage(
+                "--schema-registry-client-secret, --schema-registry-token-url, \
+                 --schema-registry-scope and --schema-registry-audience require \
+                 --schema-registry-client-id",
+            ));
+        }
+        return Ok(());
+    }
+    if args.schema_registry_username.is_some() || args.schema_registry_password.is_some() {
+        return Err(CloudError::usage(
+            "--schema-registry-client-id cannot be combined with --schema-registry-username \
+             or --schema-registry-password",
+        ));
+    }
+    if args.schema_registry_url.is_none()
+        || args.schema_registry_client_secret.is_none()
+        || args.schema_registry_token_url.is_none()
+    {
+        return Err(CloudError::usage(
+            "--schema-registry-client-id requires --schema-registry-url, \
+             --schema-registry-client-secret and --schema-registry-token-url",
+        ));
     }
     Ok(())
 }
@@ -552,7 +662,8 @@ fn build_kafka_schema_registry(
 ) -> CloudResult<Option<clickhouse_cloud_api::models::ClickPipeMutateKafkaSchemaRegistry>> {
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaGlueSchemaRegistry, ClickPipeKafkaGlueSchemaRegistryType,
-        ClickPipeKafkaSchemaRegistryCredentials, ClickPipeMutateKafkaConfluentSchemaRegistry,
+        ClickPipeKafkaSchemaRegistryClientCredentials, ClickPipeKafkaSchemaRegistryCredentials,
+        ClickPipeMutateKafkaConfluentSchemaRegistry,
         ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication,
         ClickPipeMutateKafkaConfluentSchemaRegistryType,
     };
@@ -579,21 +690,53 @@ fn build_kafka_schema_registry(
     let Some(url) = args.schema_registry_url.as_ref() else {
         return Ok(None);
     };
-    let credentials = match (
-        args.schema_registry_username.as_deref(),
-        args.schema_registry_password.as_deref(),
-    ) {
-        (Some(username), Some(password)) => ClickPipeKafkaSchemaRegistryCredentials {
-            username: username.to_string(),
-            password: password.to_string(),
-        },
-        // The API requires the credentials object; empty strings are what an
-        // unauthenticated registry has always been sent.
-        _ => ClickPipeKafkaSchemaRegistryCredentials {
-            username: String::new(),
-            password: String::new(),
-        },
-    };
+    validate_kafka_schema_registry_oauth_args(args)?;
+    let mut token_url = None;
+    let mut scope = None;
+    let mut audience = None;
+    let (authentication, credentials) =
+        if let Some(client_id) = args.schema_registry_client_id.as_deref() {
+            let (Some(client_secret), Some(token)) = (
+                args.schema_registry_client_secret.as_deref(),
+                args.schema_registry_token_url.as_ref(),
+            ) else {
+                return Err(CloudError::usage(
+                    "--schema-registry-client-id requires --schema-registry-client-secret and \
+                 --schema-registry-token-url",
+                ));
+            };
+            token_url = Some(token.clone());
+            scope = args.schema_registry_scope.clone();
+            audience = args.schema_registry_audience.clone();
+            (
+                ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::ClientCredentials,
+                ClickPipeKafkaSchemaRegistryClientCredentials {
+                    client_id: client_id.to_string(),
+                    client_secret: client_secret.to_string(),
+                }
+                .into(),
+            )
+        } else {
+            let credentials = match (
+                args.schema_registry_username.as_deref(),
+                args.schema_registry_password.as_deref(),
+            ) {
+                (Some(username), Some(password)) => ClickPipeKafkaSchemaRegistryCredentials {
+                    username: username.to_string(),
+                    password: password.to_string(),
+                },
+                // The API requires the credentials object; empty strings are what an
+                // unauthenticated registry has always been sent.
+                _ => ClickPipeKafkaSchemaRegistryCredentials {
+                    username: String::new(),
+                    password: String::new(),
+                },
+            };
+            (
+                ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
+                credentials.into(),
+            )
+        };
     let ca_certificate = args
         .schema_registry_ca_certificate
         .as_deref()
@@ -607,13 +750,12 @@ fn build_kafka_schema_registry(
                 .as_ref()
                 .map(|_| ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent),
             url: url.clone(),
-            // The CLI exposes only PLAIN (username and password) registry auth.
-            authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
-            credentials: credentials.into(),
+            authentication,
+            credentials,
             ca_certificate,
-            token_url: None,
-            scope: None,
-            audience: None,
+            token_url,
+            scope,
+            audience,
         }
         .into(),
     ))
@@ -1715,6 +1857,276 @@ mod tests {
             let mut args = kafka_create_cli_args();
             args.extend(extra.iter().copied());
             assert_eq!(clickpipe_parse_error(&args).kind(), kind, "{extra:?}");
+        }
+    }
+
+    /// A complete OAuth client-credentials registry, as CLI flags.
+    const KAFKA_REGISTRY_OAUTH: [&str; 12] = [
+        "--schema-registry-url",
+        "https://registry.example",
+        "--schema-registry-client-id",
+        "registry-client",
+        "--schema-registry-client-secret",
+        "registry-secret",
+        "--schema-registry-token-url",
+        "https://idp.example/oauth2/token",
+        "--schema-registry-scope",
+        "registry.read registry.write",
+        "--schema-registry-audience",
+        "registry-api",
+    ];
+
+    #[test]
+    fn parses_kafka_schema_registry_oauth_flags_on_both_surfaces() {
+        for base in [kafka_create_cli_args(), kafka_discover_cli_args()] {
+            let mut args = base;
+            args.extend(KAFKA_REGISTRY_OAUTH);
+            let source = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(args),
+                } => args.source,
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kafka(args),
+                } => args.source,
+                _ => panic!("expected a Kafka command"),
+            };
+            assert_eq!(
+                source.schema_registry_client_id.as_deref(),
+                Some("registry-client")
+            );
+            assert_eq!(
+                source.schema_registry_client_secret.as_deref(),
+                Some("registry-secret")
+            );
+            assert_eq!(
+                source.schema_registry_token_url.as_deref(),
+                Some("https://idp.example/oauth2/token")
+            );
+            assert_eq!(
+                source.schema_registry_scope.as_deref(),
+                Some("registry.read registry.write")
+            );
+            assert_eq!(
+                source.schema_registry_audience.as_deref(),
+                Some("registry-api")
+            );
+        }
+    }
+
+    #[test]
+    fn kafka_schema_registry_oauth_flag_constraints_are_clap_errors() {
+        use clap::error::ErrorKind;
+        let url = ["--schema-registry-url", "https://registry.example"];
+        let client_id = ["--schema-registry-client-id", "client"];
+        let secret = ["--schema-registry-client-secret", "secret"];
+        let token_url = ["--schema-registry-token-url", "https://idp.example/token"];
+        let complete = [&url[..], &client_id, &secret, &token_url].concat();
+        let glue = [
+            "--schema-registry-type",
+            "glue",
+            "--glue-region",
+            "us-east-1",
+            "--glue-registry-name",
+            "my-registry",
+            "--glue-role-arn",
+            "arn:role",
+        ];
+        let cases: Vec<(Vec<&str>, ErrorKind, &[&str])> = vec![
+            // The client ID needs its secret, token URL and registry URL.
+            (
+                [&url[..], &client_id].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &[
+                    "--schema-registry-client-secret",
+                    "--schema-registry-token-url",
+                ],
+            ),
+            (
+                [&url[..], &client_id, &secret].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-token-url"],
+            ),
+            (
+                [&client_id[..], &secret, &token_url].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-url"],
+            ),
+            // Every other OAuth flag needs the client ID.
+            (
+                [&url[..], &secret].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-client-id"],
+            ),
+            (
+                [&url[..], &token_url].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-client-id"],
+            ),
+            (
+                [&url[..], &["--schema-registry-scope", "read"]].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-client-id"],
+            ),
+            (
+                [&url[..], &["--schema-registry-audience", "api"]].concat(),
+                ErrorKind::MissingRequiredArgument,
+                &["--schema-registry-client-id"],
+            ),
+            // OAuth replaces the PLAIN username and password.
+            (
+                [&complete[..], &["--schema-registry-username", "user"]].concat(),
+                ErrorKind::ArgumentConflict,
+                &["--schema-registry-client-id", "--schema-registry-username"],
+            ),
+            (
+                [&complete[..], &["--schema-registry-password", "password"]].concat(),
+                ErrorKind::ArgumentConflict,
+                &["--schema-registry-client-id", "--schema-registry-password"],
+            ),
+        ];
+        for (extra, kind, names) in cases {
+            let mut args = kafka_create_cli_args();
+            args.extend(extra.iter().copied());
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), kind, "{extra:?}");
+            assert_eq!(error.exit_code(), 2, "{extra:?}");
+            assert_names(&error.to_string(), names);
+        }
+
+        // Each OAuth flag is Confluent-only, like the username and password.
+        for flag in [
+            ["--schema-registry-client-id", "client"],
+            ["--schema-registry-client-secret", "secret"],
+            ["--schema-registry-token-url", "https://idp.example/token"],
+            ["--schema-registry-scope", "read"],
+            ["--schema-registry-audience", "api"],
+        ] {
+            let mut args = kafka_create_cli_args();
+            args.extend(glue);
+            args.extend(flag);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{flag:?}");
+            assert_names(&error.to_string(), &[flag[0]]);
+        }
+
+        // Protobuf schema files replace any registry.
+        let mut protobuf = kafka_create_cli_args();
+        protobuf.extend(["--protobuf-schema-file", "/tmp/events.proto"]);
+        protobuf.extend(&complete);
+        assert_eq!(
+            clickpipe_parse_error(&protobuf).kind(),
+            ErrorKind::ArgumentConflict
+        );
+    }
+
+    fn confluent_registry_json(args: &KafkaSourceFields) -> serde_json::Value {
+        serde_json::to_value(build_kafka_source(args).unwrap().schema_registry).unwrap()
+    }
+
+    fn kafka_source_with_registry_oauth() -> KafkaSourceFields {
+        let mut args = kafka_source_with_plain_auth();
+        args.format = "AvroConfluent".into();
+        args.schema_registry_url = Some("https://registry.example".into());
+        args.schema_registry_client_id = Some("registry-client".into());
+        args.schema_registry_client_secret = Some("registry-secret".into());
+        args.schema_registry_token_url = Some("https://idp.example/oauth2/token".into());
+        args
+    }
+
+    #[test]
+    fn build_kafka_source_sends_client_credentials_registry_auth() {
+        let mut args = kafka_source_with_registry_oauth();
+        assert_eq!(
+            confluent_registry_json(&args),
+            serde_json::json!({
+                "url": "https://registry.example",
+                "authentication": "CLIENT_CREDENTIALS",
+                "credentials": {
+                    "clientId": "registry-client",
+                    "clientSecret": "registry-secret",
+                },
+                "tokenUrl": "https://idp.example/oauth2/token",
+            })
+        );
+
+        args.schema_registry_type = Some("confluent".into());
+        args.schema_registry_scope = Some("registry.read registry.write".into());
+        args.schema_registry_audience = Some("registry-api".into());
+        assert_eq!(
+            confluent_registry_json(&args),
+            serde_json::json!({
+                "type": "confluent",
+                "url": "https://registry.example",
+                "authentication": "CLIENT_CREDENTIALS",
+                "credentials": {
+                    "clientId": "registry-client",
+                    "clientSecret": "registry-secret",
+                },
+                "tokenUrl": "https://idp.example/oauth2/token",
+                "scope": "registry.read registry.write",
+                "audience": "registry-api",
+            })
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_keeps_plain_registry_auth_without_oauth_flags() {
+        let mut args = kafka_source_with_plain_auth();
+        args.format = "AvroConfluent".into();
+        args.schema_registry_url = Some("https://registry.example".into());
+        args.schema_registry_username = Some("registry-user".into());
+        args.schema_registry_password = Some("registry-password".into());
+        assert_eq!(
+            confluent_registry_json(&args),
+            serde_json::json!({
+                "url": "https://registry.example",
+                "authentication": "PLAIN",
+                "credentials": {
+                    "username": "registry-user",
+                    "password": "registry-password",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn kafka_schema_registry_oauth_misuse_is_a_usage_error() {
+        let mut cases: Vec<(KafkaSourceFields, &[&str])> = Vec::new();
+        let mut no_secret = kafka_source_with_registry_oauth();
+        no_secret.schema_registry_client_secret = None;
+        cases.push((no_secret, &["--schema-registry-client-secret"]));
+        let mut no_token_url = kafka_source_with_registry_oauth();
+        no_token_url.schema_registry_token_url = None;
+        cases.push((no_token_url, &["--schema-registry-token-url"]));
+        let mut no_client_id = kafka_source_with_registry_oauth();
+        no_client_id.schema_registry_client_id = None;
+        cases.push((no_client_id, &["--schema-registry-client-id"]));
+        let mut with_username = kafka_source_with_registry_oauth();
+        with_username.schema_registry_username = Some("registry-user".into());
+        cases.push((
+            with_username,
+            &["--schema-registry-client-id", "--schema-registry-username"],
+        ));
+        let mut glue = kafka_source_with_registry_oauth();
+        glue.schema_registry_url = None;
+        glue.schema_registry_type = Some("glue".into());
+        glue.glue_region = Some("us-east-1".into());
+        glue.glue_registry_name = Some("my-registry".into());
+        glue.glue_role_arn = Some("arn:role".into());
+        cases.push((
+            glue,
+            &["--schema-registry-type glue", "--schema-registry-client-id"],
+        ));
+
+        for (args, names) in cases {
+            let error = build_kafka_source(&args).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{error:?}"
+            );
+            assert_names(&error.message, names);
+            assert!(!error.message.contains("registry-secret"), "{error:?}");
         }
     }
 

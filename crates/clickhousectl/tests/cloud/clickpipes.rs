@@ -623,6 +623,48 @@ async fn create_minimal_invocations_send_exact_request_bodies() {
     }
 }
 
+/// OAuth registry credentials reach the wire as the client-credentials arm,
+/// with the token endpoint, scope and audience beside them.
+#[tokio::test]
+async fn create_kafka_sends_oauth_schema_registry_credentials() {
+    let mut args = kafka_args_minimal();
+    let format = args
+        .iter()
+        .position(|value| *value == "JSONEachRow")
+        .expect("minimal Kafka args contain a format");
+    args[format] = "AvroConfluent";
+    args.extend([
+        "--schema-registry-url",
+        "https://registry.example",
+        "--schema-registry-client-id",
+        "registry-client",
+        "--schema-registry-client-secret",
+        "registry-secret",
+        "--schema-registry-token-url",
+        "https://idp.example/oauth2/token",
+        "--schema-registry-scope",
+        "registry.read",
+        "--schema-registry-audience",
+        "registry-api",
+    ]);
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "url": "https://registry.example",
+            "authentication": "CLIENT_CREDENTIALS",
+            "credentials": {
+                "clientId": "registry-client",
+                "clientSecret": "registry-secret",
+            },
+            "tokenUrl": "https://idp.example/oauth2/token",
+            "scope": "registry.read",
+            "audience": "registry-api",
+        })
+    );
+}
+
 fn kinesis_auth_args<'a>(operation: &'a str, flags: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
         "clickpipe",
@@ -1191,42 +1233,66 @@ async fn mount_clickpipe_get(mock: &MockServer, source: Value) {
 }
 
 #[tokio::test]
-async fn clickpipe_get_renders_a_glue_schema_registry_and_keeps_json_verbatim() {
-    let source = serde_json::json!({
-        "kafka": {
-            "type": "msk",
-            "format": "Avro",
-            "brokers": "broker:9098",
-            "topics": "events",
-            "authentication": "IAM_ROLE",
-            "iamRole": "arn:aws:iam::123456789012:role/Source",
-            "schemaRegistry": {
+async fn clickpipe_get_renders_schema_registries_and_keeps_json_verbatim() {
+    let cases = [
+        (
+            serde_json::json!({
                 "type": "glue",
                 "glueRegion": "us-east-1",
                 "glueRegistryName": "my-registry",
                 "glueRoleArn": "arn:aws:iam::123456789012:role/Glue"
+            }),
+            &[
+                "type: glue",
+                "glueRegion: us-east-1",
+                "glueRegistryName: my-registry",
+                "glueRoleArn: arn:aws:iam::123456789012:role/Glue",
+            ][..],
+        ),
+        (
+            serde_json::json!({
+                "type": "confluent",
+                "url": "https://registry.example",
+                "authentication": "CLIENT_CREDENTIALS",
+                "tokenUrl": "https://idp.example/oauth2/token",
+                "scope": "registry.read registry.write",
+                "audience": "registry-api"
+            }),
+            &[
+                "authentication: CLIENT_CREDENTIALS",
+                "tokenUrl: https://idp.example/oauth2/token",
+                "scope: registry.read registry.write",
+                "audience: registry-api",
+            ][..],
+        ),
+    ];
+    for (registry, lines) in cases {
+        let source = serde_json::json!({
+            "kafka": {
+                "type": "msk",
+                "format": "Avro",
+                "brokers": "broker:9098",
+                "topics": "events",
+                "authentication": "IAM_ROLE",
+                "iamRole": "arn:aws:iam::123456789012:role/Source",
+                "schemaRegistry": registry
             }
+        });
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        let args = ["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"];
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["source"], source);
+
+        let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in lines {
+            assert!(stdout.contains(line), "{line}\n{stdout}");
         }
-    });
-    let mock = MockServer::start().await;
-    mount_clickpipe_get(&mock, source.clone()).await;
-    let args = ["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"];
-
-    let output = invoke_cli_with_cloud_credentials(&mock, &args);
-    assert_success(&output);
-    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["source"], source);
-
-    let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
-    assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in [
-        "type: glue",
-        "glueRegion: us-east-1",
-        "glueRegistryName: my-registry",
-        "glueRoleArn: arn:aws:iam::123456789012:role/Glue",
-    ] {
-        assert!(stdout.contains(line), "{line}\n{stdout}");
     }
 }
 
