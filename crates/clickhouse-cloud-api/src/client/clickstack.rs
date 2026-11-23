@@ -176,6 +176,67 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// ClickStack: Silence Alert
+    ///
+    /// Silences an alert until `body.muted_until`, which must be in the future.
+    /// Notifications are suppressed while the alert is silenced. Returns the
+    /// updated alert, whose `silenced` field records the silence.
+    pub async fn click_stack_silence_alert(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_alert_id: &str,
+        body: &ClickStackSilenceAlertRequest,
+    ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
+        let mut req = self.request(
+            &operations::CLICK_STACK_SILENCE_ALERT,
+            &[organization_id, service_id, click_stack_alert_id],
+        )?;
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Unsilence Alert
+    ///
+    /// Clears the silence on an alert so notifications resume. The spec gives
+    /// the success response no `result`.
+    pub async fn click_stack_unsilence_alert(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_alert_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let req = self.request(
+            &operations::CLICK_STACK_UNSILENCE_ALERT,
+            &[organization_id, service_id, click_stack_alert_id],
+        )?;
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// ClickStack: List Saved Searches
     ///
     /// The API defaults to 1,000 records from offset zero. Request successive

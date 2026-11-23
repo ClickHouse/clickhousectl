@@ -1781,3 +1781,14 @@ pub struct ClickStackUpdateAlertRequest {
 pub type ClickStackAlertChannels = Vec<ClickStackAlertChannel>;
 /// Tolerant notification channels returned by the API.
 pub type ClickStackAlertChannelsResponse = Vec<ClickStackAlertChannelResponse>;
+
+/// `ClickStackSilenceAlertRequest` from the ClickHouse Cloud API.
+///
+/// The body of [`crate::Client::click_stack_silence_alert`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClickStackSilenceAlertRequest {
+    /// Time, in the future, until which the alert is silenced. Serialized as
+    /// an RFC 3339 (ISO 8601) timestamp.
+    #[serde(rename = "mutedUntil")]
+    pub muted_until: jiff::Timestamp,
+}

@@ -603,6 +603,9 @@ fn clickstack_source_unknown_kind_round_trips() {
 #[test]
 fn clickstack_source_serializes_as_inner_log_struct() {
     let log = ClickStackLogSource {
+        map_key_index_max_parts: None,
+        map_key_index_part_selection: None,
+        row_key_expression: None,
         highlighted_row_attribute_expressions: None,
         highlighted_trace_attribute_expressions: None,
         use_text_index_for_implicit_column: None,
@@ -3430,6 +3433,9 @@ fn clickstack_source_expression_fields_missing_or_null_are_none() {
 #[test]
 fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
     let log = ClickStackLogSource {
+        map_key_index_max_parts: None,
+        map_key_index_part_selection: None,
+        row_key_expression: None,
         highlighted_row_attribute_expressions: None,
         highlighted_trace_attribute_expressions: None,
         use_text_index_for_implicit_column: None,
@@ -3491,6 +3497,9 @@ fn clickstack_source_expression_fields_serialize_with_their_wire_names() {
     assert_eq!(v["resourceAttributesExpression"], "ResourceAttributes");
 
     let trace = ClickStackTraceSource {
+        map_key_index_max_parts: None,
+        map_key_index_part_selection: None,
+        row_key_expression: None,
         highlighted_row_attribute_expressions: None,
         highlighted_trace_attribute_expressions: None,
         use_text_index_for_implicit_column: None,
@@ -3926,7 +3935,7 @@ fn clickstack_nested_writeback_preserves_number_format_and_source_expressions() 
 
 /// One spec-shaped payload per `ClickStackFilter` branch, each built from every
 /// property of its `*FilterInput` schema plus the `id` the full schema adds.
-fn clickstack_filter_kind_payloads() -> [(&'static str, serde_json::Value); 4] {
+fn clickstack_filter_kind_payloads() -> [(&'static str, serde_json::Value); 8] {
     [
         (
             "QUERY_EXPRESSION",
@@ -3967,6 +3976,46 @@ fn clickstack_filter_kind_payloads() -> [(&'static str, serde_json::Value); 4] {
                 "appliesToSourceIds": ["src-3"], "isBroadcastEnabled": true,
                 "isVariableEnabled": true, "variableName": "cluster",
                 "minSelections": 0, "isGlobalRequirement": true, "maxSelections": 1
+            }),
+        ),
+        (
+            "DATA_SOURCE",
+            serde_json::json!({
+                "type": "DATA_SOURCE", "id": "f-5", "name": "Logs source",
+                "variableName": "logs", "isGlobalRequirement": true,
+                "minSelections": 1, "maxSelections": 1, "isBroadcastEnabled": false,
+                "isVariableEnabled": true, "allowedSourceKinds": ["log"],
+                "connectionId": "$conn"
+            }),
+        ),
+        (
+            "CONNECTION",
+            serde_json::json!({
+                "type": "CONNECTION", "id": "f-6", "name": "Connection",
+                "variableName": "conn", "isGlobalRequirement": false,
+                "minSelections": 1, "maxSelections": 1, "isBroadcastEnabled": false,
+                "isVariableEnabled": true
+            }),
+        ),
+        (
+            "SQL_QUERY",
+            serde_json::json!({
+                "type": "SQL_QUERY", "id": "f-7", "name": "Environment",
+                "connectionId": "conn-1", "sourceId": "src-1",
+                "sqlTemplate": "SELECT DISTINCT env FROM default.envs ORDER BY env",
+                "isBroadcastEnabled": false, "isVariableEnabled": true,
+                "variableName": "env", "minSelections": 0,
+                "isGlobalRequirement": true, "maxSelections": 1
+            }),
+        ),
+        (
+            "ADHOC",
+            serde_json::json!({
+                "type": "ADHOC", "id": "f-8", "name": "Conditions",
+                "sourceType": "sql", "sources": ["src-1"], "where": "ServiceName:api",
+                "whereLanguage": "lucene", "appliesToSourceIds": ["src-1"],
+                "isBroadcastEnabled": true, "isVariableEnabled": true,
+                "variableName": "conditions"
             }),
         ),
     ]
@@ -4016,6 +4065,40 @@ fn clickstack_filter_unions_route_each_kind_to_its_variant() {
                 assert_eq!(f.is_global_requirement, Some(true));
                 true
             }
+            ("DATA_SOURCE", ClickStackFilter::ClickStackDataSourceFilter(f)) => {
+                assert_eq!(f.id, "f-5");
+                assert_eq!(f.allowed_source_kinds, ["log"]);
+                assert_eq!(f.connection_id.as_deref(), Some("$conn"));
+                assert_eq!(
+                    f.min_selections,
+                    Some(ClickStackVariableFilterMinSelections::One)
+                );
+                assert_eq!(f.max_selections, Some(ClickStackFilterMaxSelections::One));
+                true
+            }
+            ("CONNECTION", ClickStackFilter::ClickStackConnectionFilter(f)) => {
+                assert_eq!(f.id, "f-6");
+                assert_eq!(f.variable_name.as_deref(), Some("conn"));
+                assert_eq!(f.is_global_requirement, Some(false));
+                true
+            }
+            ("SQL_QUERY", ClickStackFilter::ClickStackSqlQueryFilter(f)) => {
+                assert_eq!(f.id, "f-7");
+                assert_eq!(f.connection_id, "conn-1");
+                assert_eq!(
+                    f.sql_template,
+                    "SELECT DISTINCT env FROM default.envs ORDER BY env"
+                );
+                assert_eq!(f.min_selections, Some(ClickStackFilterMinSelections::Zero));
+                true
+            }
+            ("ADHOC", ClickStackFilter::ClickStackAdhocFilter(f)) => {
+                assert_eq!(f.id, "f-8");
+                assert_eq!(f.source_type, "sql");
+                assert_eq!(f.sources, ["src-1"]);
+                assert_eq!(f.where_language.as_deref(), Some("lucene"));
+                true
+            }
             _ => false,
         };
         assert!(matched, "{kind} routed to {filter:?}");
@@ -4038,6 +4121,18 @@ fn clickstack_filter_unions_route_each_kind_to_its_variant() {
             ) | (
                 "SOURCE_FILTER",
                 ClickStackFilterInput::ClickStackSourceFilterInput(_)
+            ) | (
+                "DATA_SOURCE",
+                ClickStackFilterInput::ClickStackDataSourceFilterInput(_)
+            ) | (
+                "CONNECTION",
+                ClickStackFilterInput::ClickStackConnectionFilterInput(_)
+            ) | (
+                "SQL_QUERY",
+                ClickStackFilterInput::ClickStackSqlQueryFilterInput(_)
+            ) | (
+                "ADHOC",
+                ClickStackFilterInput::ClickStackAdhocFilterInput(_)
             )
         );
         assert!(matched, "{kind} input routed to {input:?}");
@@ -4056,6 +4151,18 @@ fn clickstack_filter_unions_route_each_kind_to_its_variant() {
             }
             ("SOURCE_FILTER", ClickStackFilterResponse::ClickStackSourceFilter(f)) => {
                 f.variable_name.as_deref() == Some("cluster")
+            }
+            ("DATA_SOURCE", ClickStackFilterResponse::ClickStackDataSourceFilter(f)) => {
+                f.allowed_source_kinds.as_deref() == Some(&["log".to_string()][..])
+            }
+            ("CONNECTION", ClickStackFilterResponse::ClickStackConnectionFilter(f)) => {
+                f.variable_name.as_deref() == Some("conn")
+            }
+            ("SQL_QUERY", ClickStackFilterResponse::ClickStackSqlQueryFilter(f)) => {
+                f.connection_id.as_deref() == Some("conn-1")
+            }
+            ("ADHOC", ClickStackFilterResponse::ClickStackAdhocFilter(f)) => {
+                f.source_type.as_deref() == Some("sql")
             }
             _ => false,
         };
@@ -4115,7 +4222,9 @@ fn clickstack_filter_response_treats_dropped_and_null_fields_as_absent() {
                 "sourceMetricType": null, "where": null, "whereLanguage": null,
                 "appliesToSourceIds": null, "isBroadcastEnabled": null,
                 "isVariableEnabled": null, "variableName": null, "minSelections": null,
-                "isGlobalRequirement": null, "maxSelections": null
+                "isGlobalRequirement": null, "maxSelections": null,
+                "allowedSourceKinds": null, "connectionId": null, "sqlTemplate": null,
+                "sourceType": null, "sources": null
             }),
         ] {
             let response: ClickStackFilterResponse = serde_json::from_value(json).unwrap();
@@ -4136,6 +4245,20 @@ fn clickstack_filter_response_treats_dropped_and_null_fields_as_absent() {
                 }
                 ClickStackFilterResponse::ClickStackSourceFilter(f) => {
                     f.expression.is_none() && f.variable_name.is_none()
+                }
+                ClickStackFilterResponse::ClickStackDataSourceFilter(f) => {
+                    f.allowed_source_kinds.is_none()
+                        && f.connection_id.is_none()
+                        && f.min_selections.is_none()
+                }
+                ClickStackFilterResponse::ClickStackConnectionFilter(f) => {
+                    f.id.is_none() && f.name.is_none() && f.variable_name.is_none()
+                }
+                ClickStackFilterResponse::ClickStackSqlQueryFilter(f) => {
+                    f.connection_id.is_none() && f.sql_template.is_none() && f.source_id.is_none()
+                }
+                ClickStackFilterResponse::ClickStackAdhocFilter(f) => {
+                    f.source_type.is_none() && f.sources.is_none() && f.r#where.is_none()
                 }
                 ClickStackFilterResponse::Unknown(_) => false,
             };
@@ -4181,6 +4304,19 @@ fn clickstack_filter_try_from_response_names_every_missing_required_field() {
             r#"{"type":"SOURCE_FILTER","id":"f","name":"n","sourceId":"s"}"#,
             &["expression", "variableName"][..],
         ),
+        (
+            r#"{"type":"DATA_SOURCE","id":"f"}"#,
+            &["allowedSourceKinds", "name"][..],
+        ),
+        (r#"{"type":"CONNECTION"}"#, &["id", "name"][..]),
+        (
+            r#"{"type":"SQL_QUERY","name":"n"}"#,
+            &["connectionId", "id", "sqlTemplate"][..],
+        ),
+        (
+            r#"{"type":"ADHOC","id":"f","name":"n"}"#,
+            &["sourceType", "sources"][..],
+        ),
     ] {
         let response: ClickStackFilterResponse = serde_json::from_str(json).unwrap();
         let error = ClickStackFilter::try_from(response).unwrap_err();
@@ -4216,7 +4352,20 @@ fn clickstack_filter_request_variants_stay_strict() {
         ClickStackStaticListFilterInput,
         ClickStackPrometheusLabelFilterInput,
         ClickStackSourceFilterInput,
+        ClickStackDataSourceFilterInput,
+        ClickStackConnectionFilterInput,
+        ClickStackSqlQueryFilterInput,
+        ClickStackAdhocFilterInput,
+        ClickStackAdhocFilterCondition,
+        ClickStackAdhocSavedFilterValue,
     );
+    // Each newer update-request variant also needs its `id` on top of the input.
+    for (kind, payload) in clickstack_filter_kind_payloads().into_iter().skip(4) {
+        let mut payload = payload;
+        payload.as_object_mut().unwrap().remove("id");
+        let filter: ClickStackFilter = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(filter, ClickStackFilter::Unknown(payload), "{kind}");
+    }
     // The update-request variant adds a required `id` on top of the input.
     let mut payload = clickstack_filter_kind_payloads()[0].1.clone();
     payload.as_object_mut().unwrap().remove("id");
@@ -4271,6 +4420,10 @@ fn clickstack_dashboard_response_carries_every_filter_kind() {
             ClickStackFilterResponse::ClickStackStaticListFilter(_),
             ClickStackFilterResponse::ClickStackPrometheusLabelFilter(_),
             ClickStackFilterResponse::ClickStackSourceFilter(_),
+            ClickStackFilterResponse::ClickStackDataSourceFilter(_),
+            ClickStackFilterResponse::ClickStackConnectionFilter(_),
+            ClickStackFilterResponse::ClickStackSqlQueryFilter(_),
+            ClickStackFilterResponse::ClickStackAdhocFilter(_),
         ])
     ));
 }
@@ -5800,4 +5953,365 @@ fn clickstack_list_alerts_filter_enums_use_wire_values() {
             value
         );
     }
+}
+
+#[test]
+fn clickstack_variable_filter_min_selections_is_an_integer_enum() {
+    let one: ClickStackVariableFilterMinSelections = serde_json::from_str("1").unwrap();
+    assert_eq!(one, ClickStackVariableFilterMinSelections::One);
+    assert_eq!(serde_json::to_string(&one).unwrap(), "1");
+    // `0` is valid for the other filter kinds but not listed for these
+    // variables, so it is kept rather than rejected or coerced.
+    let zero: ClickStackVariableFilterMinSelections = serde_json::from_str("0").unwrap();
+    assert_eq!(zero, ClickStackVariableFilterMinSelections::Unknown(0));
+    assert_eq!(serde_json::to_string(&zero).unwrap(), "0");
+    assert_eq!(zero.to_string(), "0");
+}
+
+#[test]
+fn clickstack_new_filter_type_enums_use_wire_values_and_keep_unknowns() {
+    assert_eq!(ClickStackAdhocFilterInputType::ADHOC.to_string(), "ADHOC");
+    assert_eq!(
+        ClickStackConnectionFilterInputType::CONNECTION.to_string(),
+        "CONNECTION"
+    );
+    assert_eq!(
+        ClickStackDataSourceFilterInputType::DATA_SOURCE.to_string(),
+        "DATA_SOURCE"
+    );
+    assert_eq!(
+        ClickStackSqlQueryFilterInputType::SQL_QUERY.to_string(),
+        "SQL_QUERY"
+    );
+    assert_eq!(
+        ClickStackAdhocSavedFilterValueType::Adhoc.to_string(),
+        "adhoc"
+    );
+    let unknown: ClickStackAdhocSavedFilterValueType = serde_json::from_str(r#""future""#).unwrap();
+    assert_eq!(
+        unknown,
+        ClickStackAdhocSavedFilterValueType::Unknown("future".into())
+    );
+}
+
+fn clickstack_adhoc_saved_filter_value_payload() -> serde_json::Value {
+    serde_json::json!({
+        "type": "adhoc", "name": "conditions",
+        "conditions": [
+            {"key": "ServiceName", "operator": "=", "value": "api"},
+            {"key": "SeverityText", "operator": "IN", "value": "error"}
+        ]
+    })
+}
+
+#[test]
+fn clickstack_adhoc_saved_filter_value_routes_and_round_trips() {
+    let payload = clickstack_adhoc_saved_filter_value_payload();
+    let saved: ClickStackSavedFilterValue = serde_json::from_value(payload.clone()).unwrap();
+    let ClickStackSavedFilterValue::ClickStackAdhocSavedFilterValue(value) = &saved else {
+        panic!("expected the adhoc variant, got {saved:?}");
+    };
+    assert_eq!(value.r#type, ClickStackAdhocSavedFilterValueType::Adhoc);
+    assert_eq!(value.name, "conditions");
+    assert_eq!(value.conditions[1].operator, "IN");
+    assert_eq!(serde_json::to_value(&saved).unwrap(), payload);
+
+    let response: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(payload.clone()).unwrap();
+    let ClickStackSavedFilterValueResponse::ClickStackAdhocSavedFilterValue(value) = &response
+    else {
+        panic!("expected the adhoc response variant, got {response:?}");
+    };
+    assert_eq!(
+        value.conditions.as_ref().unwrap()[0].key.as_deref(),
+        Some("ServiceName")
+    );
+    assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+
+    // A dashboard response carries it alongside the other saved values.
+    let dashboard: ClickStackDashboardResponse = serde_json::from_value(serde_json::json!({
+        "id": "d-1", "savedFilterValues": [
+            {"type": "sql", "condition": "x = 1"},
+            {"type": "variable", "name": "env", "values": ["prod"]},
+            payload
+        ]
+    }))
+    .unwrap();
+    assert!(matches!(
+        dashboard.saved_filter_values.as_deref(),
+        Some([
+            ClickStackSavedFilterValueResponse::ClickStackSqlSavedFilterValue(_),
+            ClickStackSavedFilterValueResponse::ClickStackVariableSavedFilterValue(_),
+            ClickStackSavedFilterValueResponse::ClickStackAdhocSavedFilterValue(_),
+        ])
+    ));
+}
+
+#[test]
+fn clickstack_adhoc_saved_filter_value_without_a_type_stays_unknown() {
+    // Only the `sql` variant may omit `type`. Ad hoc conditions that lost
+    // theirs must not be absorbed by the tolerant `sql` response arm.
+    let json = r#"{"name":"conditions","conditions":[{"key":"k","operator":"=","value":"v"}]}"#;
+    assert_unknown_variant_round_trips(json, |v: &ClickStackSavedFilterValue| {
+        matches!(v, ClickStackSavedFilterValue::Unknown(_))
+    });
+    assert_unknown_variant_round_trips(json, |v: &ClickStackSavedFilterValueResponse| {
+        matches!(v, ClickStackSavedFilterValueResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_adhoc_saved_filter_value_response_tolerates_missing_and_null_fields() {
+    for json in [
+        r#"{"type":"adhoc"}"#,
+        r#"{"type":"adhoc","name":null,"conditions":null}"#,
+    ] {
+        let response: ClickStackAdhocSavedFilterValueResponse = serde_json::from_str(json).unwrap();
+        assert!(response.name.is_none() && response.conditions.is_none());
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({"type": "adhoc"})
+        );
+    }
+    let condition: ClickStackAdhocFilterConditionResponse =
+        serde_json::from_str(r#"{"key":null}"#).unwrap();
+    assert_eq!(condition, ClickStackAdhocFilterConditionResponse::default());
+}
+
+#[test]
+fn clickstack_adhoc_saved_filter_value_write_back() {
+    let payload = clickstack_adhoc_saved_filter_value_payload();
+    let response: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(payload.clone()).unwrap();
+    let request = ClickStackSavedFilterValue::try_from(response).unwrap();
+    assert!(matches!(
+        request,
+        ClickStackSavedFilterValue::ClickStackAdhocSavedFilterValue(_)
+    ));
+    assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+
+    let response: ClickStackAdhocSavedFilterValueResponse =
+        serde_json::from_str(r#"{"type":"adhoc"}"#).unwrap();
+    let error = ClickStackAdhocSavedFilterValue::try_from(response).unwrap_err();
+    assert_eq!(error.fields(), ["conditions", "name"]);
+
+    // A missing field of a nested condition is named at the condition level.
+    let response: ClickStackAdhocSavedFilterValueResponse = serde_json::from_str(
+        r#"{"type":"adhoc","name":"n","conditions":[{"key":"k","value":"v"}]}"#,
+    )
+    .unwrap();
+    let error = ClickStackAdhocSavedFilterValue::try_from(response).unwrap_err();
+    assert_eq!(error.fields(), ["operator"]);
+}
+
+#[test]
+fn clickstack_silence_alert_request_is_strict_and_uses_the_wire_name() {
+    assert!(serde_json::from_str::<ClickStackSilenceAlertRequest>("{}").is_err());
+    let request = ClickStackSilenceAlertRequest {
+        muted_until: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"mutedUntil": "2026-01-01T00:00:00Z"})
+    );
+    // The spec example's fractional, `Z`-suffixed form parses.
+    let parsed: ClickStackSilenceAlertRequest =
+        serde_json::from_str(r#"{"mutedUntil":"2026-01-01T00:00:00.000Z"}"#).unwrap();
+    assert_eq!(parsed, request);
+}
+
+/// The text-index and row-key fields `ClickStackLogSource` and
+/// `ClickStackTraceSource` share.
+fn clickstack_source_index_fields() -> serde_json::Value {
+    serde_json::json!({
+        "mapKeyIndexMaxParts": 40,
+        "mapKeyIndexPartSelection": "smallest",
+        "rowKeyExpression": "toDate(Timestamp), ServiceName, Timestamp, _block_number, _block_offset"
+    })
+}
+
+fn with_fields(mut base: serde_json::Value, extra: &serde_json::Value) -> serde_json::Value {
+    for (key, value) in extra.as_object().unwrap() {
+        base[key] = value.clone();
+    }
+    base
+}
+
+fn clickstack_log_source_with_index_fields() -> serde_json::Value {
+    with_fields(
+        serde_json::json!({
+            "kind": "log", "name": "logs", "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "from": {"databaseName": "default", "tableName": "logs"},
+            "timestampValueExpression": "Timestamp"
+        }),
+        &clickstack_source_index_fields(),
+    )
+}
+
+fn clickstack_trace_source_with_index_fields() -> serde_json::Value {
+    with_fields(
+        serde_json::json!({
+            "kind": "trace", "name": "traces", "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "from": {"databaseName": "default", "tableName": "traces"},
+            "timestampValueExpression": "Timestamp", "durationExpression": "Duration",
+            "durationPrecision": 9, "traceIdExpression": "TraceId",
+            "spanIdExpression": "SpanId", "parentSpanIdExpression": "ParentSpanId",
+            "spanNameExpression": "SpanName", "spanKindExpression": "SpanKind"
+        }),
+        &clickstack_source_index_fields(),
+    )
+}
+
+#[test]
+fn clickstack_log_and_trace_sources_carry_the_index_fields() {
+    let log: ClickStackLogSource =
+        serde_json::from_value(clickstack_log_source_with_index_fields()).unwrap();
+    assert_eq!(log.map_key_index_max_parts, Some(40));
+    assert_eq!(
+        log.map_key_index_part_selection.as_deref(),
+        Some("smallest")
+    );
+    assert!(
+        log.row_key_expression
+            .as_deref()
+            .unwrap()
+            .contains("_block_offset")
+    );
+    assert_eq!(
+        serde_json::to_value(&log).unwrap(),
+        clickstack_log_source_with_index_fields()
+    );
+
+    let trace: ClickStackTraceSource =
+        serde_json::from_value(clickstack_trace_source_with_index_fields()).unwrap();
+    assert_eq!(trace.map_key_index_max_parts, Some(40));
+    assert_eq!(
+        trace.map_key_index_part_selection.as_deref(),
+        Some("smallest")
+    );
+    assert_eq!(
+        serde_json::to_value(&trace).unwrap(),
+        clickstack_trace_source_with_index_fields()
+    );
+
+    // The source unions dispatch on `kind` and keep the fields both ways.
+    for payload in [
+        clickstack_log_source_with_index_fields(),
+        clickstack_trace_source_with_index_fields(),
+    ] {
+        let source: ClickStackSource = serde_json::from_value(payload.clone()).unwrap();
+        assert!(!matches!(source, ClickStackSource::Unknown(_)));
+        assert_eq!(serde_json::to_value(&source).unwrap(), payload);
+        let response: ClickStackSourceResponse = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), payload);
+    }
+
+    // Unset, the fields are omitted from a request.
+    let mut minimal = clickstack_log_source_with_index_fields();
+    for key in clickstack_source_index_fields().as_object().unwrap().keys() {
+        minimal.as_object_mut().unwrap().remove(key);
+    }
+    let log: ClickStackLogSource = serde_json::from_value(minimal.clone()).unwrap();
+    assert!(log.map_key_index_max_parts.is_none());
+    assert_eq!(serde_json::to_value(&log).unwrap(), minimal);
+}
+
+#[test]
+fn clickstack_source_index_fields_are_nullable_in_responses() {
+    let nulls = serde_json::json!({
+        "mapKeyIndexMaxParts": null, "mapKeyIndexPartSelection": null,
+        "rowKeyExpression": null
+    });
+    let log: ClickStackLogSourceResponse =
+        serde_json::from_value(with_fields(serde_json::json!({"kind": "log"}), &nulls)).unwrap();
+    assert!(
+        log.map_key_index_max_parts.is_none()
+            && log.map_key_index_part_selection.is_none()
+            && log.row_key_expression.is_none()
+    );
+    let trace: ClickStackTraceSourceResponse =
+        serde_json::from_value(with_fields(serde_json::json!({"kind": "trace"}), &nulls)).unwrap();
+    assert!(
+        trace.map_key_index_max_parts.is_none()
+            && trace.map_key_index_part_selection.is_none()
+            && trace.row_key_expression.is_none()
+    );
+    // The spec marks them nullable on the request side too.
+    let log: ClickStackLogSource = serde_json::from_value(with_fields(
+        clickstack_log_source_with_index_fields(),
+        &nulls,
+    ))
+    .unwrap();
+    assert!(log.row_key_expression.is_none());
+}
+
+#[test]
+fn clickstack_source_index_fields_survive_write_back() {
+    for payload in [
+        clickstack_log_source_with_index_fields(),
+        clickstack_trace_source_with_index_fields(),
+    ] {
+        let response: ClickStackSourceResponse = serde_json::from_value(payload.clone()).unwrap();
+        let request = ClickStackSource::try_from(response).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+    }
+    let log: ClickStackLogSourceResponse =
+        serde_json::from_value(clickstack_log_source_with_index_fields()).unwrap();
+    let log = ClickStackLogSource::try_from(log).unwrap();
+    assert_eq!(log.map_key_index_max_parts, Some(40));
+    let trace: ClickStackTraceSourceResponse =
+        serde_json::from_value(clickstack_trace_source_with_index_fields()).unwrap();
+    let trace = ClickStackTraceSource::try_from(trace).unwrap();
+    assert!(trace.row_key_expression.is_some());
+}
+
+fn clickstack_promql_source_with_backend(backend: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "promql", "name": "prom", "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "ts", "promqlBackend": backend
+    })
+}
+
+#[test]
+fn clickstack_promql_source_backend_round_trips_every_value() {
+    for (wire, expected) in [
+        ("auto", ClickStackPromqlSourcePromqlbackend::Auto),
+        (
+            "clickhouse-http",
+            ClickStackPromqlSourcePromqlbackend::ClickhouseHttp,
+        ),
+        (
+            "table-function",
+            ClickStackPromqlSourcePromqlbackend::TableFunction,
+        ),
+        (
+            "future-backend",
+            ClickStackPromqlSourcePromqlbackend::Unknown("future-backend".into()),
+        ),
+    ] {
+        let payload = clickstack_promql_source_with_backend(wire);
+        let source: ClickStackPromqlSource = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(source.promql_backend.as_ref(), Some(&expected));
+        assert_eq!(expected.to_string(), wire);
+        assert_eq!(serde_json::to_value(&source).unwrap(), payload);
+
+        let response: ClickStackPromqlSourceResponse =
+            serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(response.promql_backend.as_ref(), Some(&expected));
+        let written_back = ClickStackPromqlSource::try_from(response).unwrap();
+        assert_eq!(serde_json::to_value(&written_back).unwrap(), payload);
+    }
+
+    // Omitted, it stays omitted on the request and absent on the response.
+    let mut payload = clickstack_promql_source_with_backend("auto");
+    payload.as_object_mut().unwrap().remove("promqlBackend");
+    let source: ClickStackPromqlSource = serde_json::from_value(payload.clone()).unwrap();
+    assert!(source.promql_backend.is_none());
+    assert_eq!(serde_json::to_value(&source).unwrap(), payload);
+    let response: ClickStackPromqlSourceResponse =
+        serde_json::from_str(r#"{"kind":"promql","promqlBackend":null}"#).unwrap();
+    assert!(response.promql_backend.is_none());
 }

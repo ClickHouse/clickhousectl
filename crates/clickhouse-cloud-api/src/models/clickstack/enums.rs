@@ -998,12 +998,14 @@ impl std::fmt::Display for ClickStackEventPatternsChartConfigWherelanguage {
     }
 }
 
-/// Minimum selection count shared by every ClickStack dashboard filter kind.
+/// Minimum selection count shared by the ClickStack dashboard filter kinds.
 ///
 /// Used by the `minSelections` field of `ClickStackQueryExpressionFilterInput`,
-/// `ClickStackStaticListFilterInput`, `ClickStackPrometheusLabelFilterInput` and
-/// `ClickStackSourceFilterInput`, which the spec gives the same integer values:
-/// `0` (optional, the default) or `1` (required).
+/// `ClickStackStaticListFilterInput`, `ClickStackPrometheusLabelFilterInput`,
+/// `ClickStackSourceFilterInput` and `ClickStackSqlQueryFilterInput`, which the
+/// spec gives the same integer values: `0` (optional, the default) or `1`
+/// (required). The `DATA_SOURCE` and `CONNECTION` variables accept only `1` and
+/// use [`ClickStackVariableFilterMinSelections`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(from = "i64", into = "i64")]
 #[repr(i64)]
@@ -1045,9 +1047,11 @@ impl std::fmt::Display for ClickStackFilterMinSelections {
 /// Maximum selection count shared by every ClickStack dashboard filter kind.
 ///
 /// Used by the `maxSelections` field of `ClickStackQueryExpressionFilterInput`,
-/// `ClickStackStaticListFilterInput`, `ClickStackPrometheusLabelFilterInput` and
-/// `ClickStackSourceFilterInput`, which the spec gives the single integer value
-/// `1` (single-select); omit the field for multi-select.
+/// `ClickStackStaticListFilterInput`, `ClickStackPrometheusLabelFilterInput`,
+/// `ClickStackSourceFilterInput`, `ClickStackDataSourceFilterInput`,
+/// `ClickStackConnectionFilterInput` and `ClickStackSqlQueryFilterInput`, which
+/// the spec gives the single integer value `1` (single-select); omit the field
+/// for multi-select where the filter kind allows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(from = "i64", into = "i64")]
 #[repr(i64)]
@@ -3854,5 +3858,185 @@ impl std::fmt::Display for ClickStackVariableSavedFilterValueType {
             Self::Variable => write!(f, "variable"),
             Self::Unknown(value) => write!(f, "{value}"),
         }
+    }
+}
+
+/// Inline enum for `ClickStackPromqlSource.promqlBackend`.
+///
+/// How PromQL is evaluated on a ClickHouse connection: `auto` (the API's
+/// default when the field is omitted) checks the server and prefers the HTTP
+/// API, `clickhouse-http` uses ClickHouse's Prometheus HTTP API, and
+/// `table-function` uses the `prometheusQuery` table functions.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlSourcePromqlbackend {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "clickhouse-http")]
+    ClickhouseHttp,
+    #[serde(rename = "table-function")]
+    TableFunction,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlSourcePromqlbackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::ClickhouseHttp => write!(f, "clickhouse-http"),
+            Self::TableFunction => write!(f, "table-function"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackAdhocFilterInput.type`.
+///
+/// Also the `type` of `ClickStackAdhocFilter`, which extends that schema.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackAdhocFilterInputType {
+    #[serde(rename = "ADHOC")]
+    #[default]
+    ADHOC,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAdhocFilterInputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ADHOC => write!(f, "ADHOC"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackConnectionFilterInput.type`.
+///
+/// Also the `type` of `ClickStackConnectionFilter`, which extends that schema.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackConnectionFilterInputType {
+    #[serde(rename = "CONNECTION")]
+    #[default]
+    CONNECTION,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackConnectionFilterInputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CONNECTION => write!(f, "CONNECTION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackDataSourceFilterInput.type`.
+///
+/// Also the `type` of `ClickStackDataSourceFilter`, which extends that schema.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackDataSourceFilterInputType {
+    #[serde(rename = "DATA_SOURCE")]
+    #[default]
+    DATA_SOURCE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackDataSourceFilterInputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DATA_SOURCE => write!(f, "DATA_SOURCE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSqlQueryFilterInput.type`.
+///
+/// Also the `type` of `ClickStackSqlQueryFilter`, which extends that schema.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSqlQueryFilterInputType {
+    #[serde(rename = "SQL_QUERY")]
+    #[default]
+    SQL_QUERY,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSqlQueryFilterInputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SQL_QUERY => write!(f, "SQL_QUERY"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackAdhocSavedFilterValue.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackAdhocSavedFilterValueType {
+    #[serde(rename = "adhoc")]
+    #[default]
+    Adhoc,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAdhocSavedFilterValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Adhoc => write!(f, "adhoc"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Minimum selection count of the ClickStack dashboard variable filters.
+///
+/// Used by the `minSelections` field of `ClickStackDataSourceFilterInput` and
+/// `ClickStackConnectionFilterInput`, which the spec gives the single integer
+/// value `1`: these variables always require a selection. The other filter
+/// kinds also accept `0` and use [`ClickStackFilterMinSelections`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum ClickStackVariableFilterMinSelections {
+    #[default]
+    One = 1,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for ClickStackVariableFilterMinSelections {
+    fn from(value: i64) -> Self {
+        match value {
+            1 => Self::One,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<ClickStackVariableFilterMinSelections> for i64 {
+    fn from(value: ClickStackVariableFilterMinSelections) -> Self {
+        match value {
+            ClickStackVariableFilterMinSelections::One => 1,
+            ClickStackVariableFilterMinSelections::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for ClickStackVariableFilterMinSelections {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
     }
 }
