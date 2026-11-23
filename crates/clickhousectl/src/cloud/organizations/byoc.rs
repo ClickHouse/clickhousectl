@@ -135,6 +135,7 @@ pub(super) fn build_byoc_create_request(
     let region_id = parse_byoc_region(&args.region)?;
     let fields = parse_byoc_infrastructure_fields(args)?;
     Ok(ByocInfrastructurePostRequest {
+        access_model: None,
         account_id: fields.account_id,
         availability_zone_suffixes: fields.availability_zone_suffixes,
         display_name: display_name.map(str::to_string),
@@ -144,6 +145,7 @@ pub(super) fn build_byoc_create_request(
         private_subnet_ids: fields.private_subnet_ids,
         public_subnet_ids: fields.public_subnet_ids,
         region_id,
+        restricted_facts: None,
         service_principal_client_id: fields.service_principal_client_id,
         tags: fields.tags,
         tenant_id: fields.tenant_id,
@@ -158,6 +160,7 @@ pub(super) fn build_byoc_validate_request(
     let region_id = parse_byoc_validate_region(&args.region)?;
     let fields = parse_byoc_infrastructure_fields(args)?;
     Ok(ByocInfrastructureValidatePostRequest {
+        access_model: None,
         account_id: fields.account_id,
         availability_zone_suffixes: fields.availability_zone_suffixes,
         external_id: fields.external_id,
@@ -166,6 +169,7 @@ pub(super) fn build_byoc_validate_request(
         private_subnet_ids: fields.private_subnet_ids,
         public_subnet_ids: fields.public_subnet_ids,
         region_id,
+        restricted_facts: None,
         service_principal_client_id: fields.service_principal_client_id,
         tags: fields.tags,
         tenant_id: fields.tenant_id,
@@ -544,6 +548,9 @@ pub(super) mod tests {
             Some("client-1")
         );
         assert_eq!(maximal.tags, Some(expected_tags()));
+        // No flag sets the access model yet, so the server default applies.
+        assert_eq!(maximal.access_model, None);
+        assert_eq!(maximal.restricted_facts, None);
     }
 
     #[test]
@@ -596,6 +603,9 @@ pub(super) mod tests {
             Some("client-1")
         );
         assert_eq!(maximal.tags, Some(expected_tags()));
+        // No flag sets the access model yet, so the server default applies.
+        assert_eq!(maximal.access_model, None);
+        assert_eq!(maximal.restricted_facts, None);
 
         // Create and validate share one parse, so their bodies match apart
         // from create's display name.

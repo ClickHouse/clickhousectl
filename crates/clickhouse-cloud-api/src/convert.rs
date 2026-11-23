@@ -19,6 +19,7 @@
 
 use std::fmt;
 
+mod byoc;
 mod clickpipes;
 mod clickstack;
 mod postgres;

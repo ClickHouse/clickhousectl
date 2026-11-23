@@ -77,6 +77,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/udfs.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/whoami.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/convert.rs": ALL_SUITES,
+    "crates/clickhouse-cloud-api/src/convert/byoc.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/convert/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/convert/clickpipes.rs": frozenset(
         {"clickpipes"}

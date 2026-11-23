@@ -2254,6 +2254,67 @@ pub struct UsageCostRecord {
     pub total_chc: Option<f64>,
 }
 
+/// `InferenceUsageCost` from the ClickHouse Cloud API (Beta).
+///
+/// AI inference usage costs of an organization at list price, one record per
+/// day, provider and model.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct InferenceUsageCost {
+    /// Empty when the organization has no usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs: Option<Vec<InferenceUsageCostRecord>>,
+    /// Grand total cost in ClickHouse Credits (CHCs).
+    #[serde(rename = "grandTotalCHC", skip_serializing_if = "Option::is_none")]
+    pub grand_total_chc: Option<f64>,
+}
+
+/// `InferenceUsageCostMetric` from the ClickHouse Cloud API (Beta).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct InferenceUsageCostMetric {
+    /// Name of the metric, such as `input`, `output`, `cache_read` or
+    /// `cache_write_5m`. New values can appear, so it stays a string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
+    /// Average price per million tokens in CHCs: `total_chc` divided by
+    /// `tokens_millions`. Zero when no tokens were used.
+    #[serde(
+        rename = "pricePerMillionTokensCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_per_million_tokens_chc: Option<f64>,
+    /// Number of tokens used, in millions.
+    #[serde(rename = "tokensMillions", skip_serializing_if = "Option::is_none")]
+    pub tokens_millions: Option<f64>,
+    /// Cost of the tokens used in CHCs.
+    #[serde(rename = "totalCHC", skip_serializing_if = "Option::is_none")]
+    pub total_chc: Option<f64>,
+}
+
+/// `InferenceUsageCostRecord` from the ClickHouse Cloud API (Beta).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct InferenceUsageCostRecord {
+    /// Date of the usage (ISO-8601 date, UTC).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// When `true` the record is immutable; unlocked records may still change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    /// Usage and cost for each metric that has usage; the costs add up to
+    /// `total_chc`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Vec<InferenceUsageCostMetric>>,
+    /// Raw model ID; `model_name` has the display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(rename = "modelName", skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Total cost in CHCs for this model on this date.
+    #[serde(rename = "totalCHC", skip_serializing_if = "Option::is_none")]
+    pub total_chc: Option<f64>,
+}
+
 /// `ServiceProfile` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceProfile {

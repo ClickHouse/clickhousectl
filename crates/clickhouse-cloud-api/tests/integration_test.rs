@@ -893,6 +893,25 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        failures
+            .run(&ctx, StepKind::NonBlocking, "org inference usage", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let usage = client
+                        .inference_usage_cost_get(&org_id, "2026-10-01", "2026-10-31")
+                        .await?
+                        .result
+                        .ok_or("org inference usage returned no result")?;
+                    // An org without AI inference usage gets an empty list.
+                    if usage.costs.is_none() {
+                        return Err("org inference usage returned no costs list".into());
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── 1. Provision ─────────────────────────────────────────────
 
         log_phase("Provision Service");

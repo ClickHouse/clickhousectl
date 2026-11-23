@@ -269,4 +269,36 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
+
+    /// Create BYOC infrastructure enrollment token (Beta)
+    ///
+    /// Restricted access only. Mints a one-time token the connector enrolls a
+    /// `restricted` infrastructure with; every call mints a new one and earlier
+    /// tokens stay valid until they expire. The API answers 409 until it has
+    /// admitted the roles the infrastructure registered.
+    pub async fn organization_byoc_infrastructure_enrollment_token_create(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+        body: &ByocInfrastructureEnrollmentTokenPostRequest,
+    ) -> Result<ApiResponse<ByocInfrastructureEnrollmentToken>, Error> {
+        let mut req = self.request(
+            &operations::ORGANIZATION_BYOC_INFRASTRUCTURE_ENROLLMENT_TOKEN_CREATE,
+            &[organization_id, byoc_infrastructure_id],
+        )?;
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
 }

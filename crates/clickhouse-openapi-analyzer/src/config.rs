@@ -138,6 +138,12 @@ const OPTIONAL_REQUEST_SCHEMAS: &[&str] = &[
     // organization, so an organization without the feature must be able to
     // omit it; the description fallback would mark it required.
     "PostgresPrivateEndpointPostRequest",
+    // The BYOC enrollment token create body has one property, `ttlSeconds`,
+    // whose description gives the server default when it is omitted (four
+    // hours), and the operation does not require a body at all. The
+    // description fallback would mark it required and force every caller to
+    // pick a lifetime.
+    "ByocInfrastructureEnrollmentTokenPostRequest",
 ];
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[

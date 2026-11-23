@@ -138,6 +138,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/client/activity.rs",
                 "crates/clickhouse-cloud-api/src/models/activity.rs",
                 "crates/clickhouse-cloud-api/src/client/byoc.rs",
+                "crates/clickhouse-cloud-api/src/convert/byoc.rs",
                 "crates/clickhouse-cloud-api/src/client/invitations.rs",
                 "crates/clickhouse-cloud-api/src/client/members.rs",
                 "crates/clickhouse-cloud-api/src/client/rbac.rs",

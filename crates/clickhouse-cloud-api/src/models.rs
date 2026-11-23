@@ -170,16 +170,18 @@ pub use backups::{
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
-    ByocConfigState, ByocCustomerAuthorizedAccess, ByocCustomerAuthorizedAccessPatchRequest,
-    ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
-    ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
-    ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid, ByocInfrastructurePrivateEndpointConfig,
-    ByocInfrastructureProgress, ByocInfrastructureProgressStage,
-    ByocInfrastructureProgressStageStatus, ByocInfrastructureProgressStatus,
-    ByocInfrastructureTags, ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
-    ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
-    ByocInfrastructureValidationCheck, ByocInfrastructureValidationCloudprovider,
+    ByocConfigState, ByocConnector, ByocConnectorComponent, ByocCustomerAuthorizedAccess,
+    ByocCustomerAuthorizedAccessPatchRequest, ByocInfrastructureDetails,
+    ByocInfrastructureDetailsCloudprovider, ByocInfrastructureDetailsRegionid,
+    ByocInfrastructureDetailsState, ByocInfrastructureEnrollmentToken,
+    ByocInfrastructureEnrollmentTokenPostRequest, ByocInfrastructurePatchRequest,
+    ByocInfrastructurePostRequest, ByocInfrastructurePostRequestRegionid,
+    ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress,
+    ByocInfrastructureProgressStage, ByocInfrastructureProgressStageStatus,
+    ByocInfrastructureProgressStatus, ByocInfrastructureTags, ByocInfrastructureTagsResponse,
+    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
+    ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
+    ByocInfrastructureValidationCloudprovider, ByocRestrictedFacts, ByocRestrictedFactsResponse,
 };
 pub use clickpipes::*;
 pub use clickstack::*;
@@ -253,11 +255,12 @@ pub use scim::{
 };
 pub use services::{
     AutoscalingMode, BackupEncryptionConfig, CurrentScaling,
-    CurrentScalingEffectiveautoscalingmode, InstancePrivateEndpoint,
-    InstancePrivateEndpointCloudprovider, InstancePrivateEndpointRegion,
-    InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch,
-    PrivateEndpointConfig, QueryEndpointRole, ReplicaAwareRouting, ReplicaAwareRoutingPatchRequest,
-    ScalingSchedule, ScalingScheduleBaseConfig, ScalingScheduleEntry, ScalingScheduleEntryRequest,
+    CurrentScalingEffectiveautoscalingmode, InferenceUsageCost, InferenceUsageCostMetric,
+    InferenceUsageCostRecord, InstancePrivateEndpoint, InstancePrivateEndpointCloudprovider,
+    InstancePrivateEndpointRegion, InstancePrivateEndpointsPatch,
+    InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, PrivateEndpointConfig,
+    QueryEndpointRole, ReplicaAwareRouting, ReplicaAwareRoutingPatchRequest, ScalingSchedule,
+    ScalingScheduleBaseConfig, ScalingScheduleEntry, ScalingScheduleEntryRequest,
     ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest, Service,
     ServiceClickhouseSetting, ServiceClickhouseSettingDeleteResponse,
     ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingValue,

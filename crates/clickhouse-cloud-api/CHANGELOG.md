@@ -55,6 +55,49 @@ was recorded for the delete. Struct-literal callers need
 `meta::operations` gains descriptors, and `BETA_OPERATIONS` entries, for the
 five new Beta operations in the spec.
 
+The beta `inference_usage_cost_get` method reports an organization's AI
+inference usage costs at list price. It takes the organization ID and a
+required `from_date` and `to_date` (`YYYY-MM-DD`, UTC, inclusive, at most 31
+days), and returns `ApiResponse<InferenceUsageCost>`: a `grand_total_chc` and
+one `InferenceUsageCostRecord` per day, provider and model, with the model ID
+and display name, `total_chc`, `locked`, and an `InferenceUsageCostMetric` per
+metric (such as `input`, `output` or `cache_read`) with the tokens used in
+millions, the average price per million tokens and the cost. The method needs
+`control-plane:organization:view-billing`.
+
+The beta `organization_byoc_infrastructure_enrollment_token_create` method
+mints a one-time token the connector of a `restricted` BYOC infrastructure
+enrolls with. It takes the organization and infrastructure IDs and a
+`ByocInfrastructureEnrollmentTokenPostRequest` whose optional `ttl_seconds`
+(3600 to 86400, whole minutes) defaults to four hours on the server, and
+returns `ApiResponse<ByocInfrastructureEnrollmentToken>` with the `token` and
+`expires_at`. The API answers 409 until it has admitted the roles the
+infrastructure registered. The method needs `control-plane:organization:manage`.
+
+BYOC infrastructure gains the `restricted` access model, in which ClickHouse
+reaches a cluster you own through a connector you install:
+
+- `ByocInfrastructurePostRequest` and `ByocInfrastructureValidatePostRequest`
+  gain `access_model: Option<String>` (`standard`, the server default, or
+  `restricted`) and `restricted_facts: Option<ByocRestrictedFacts>`, which
+  `restricted` requires. `ByocRestrictedFacts` requires `cluster_name`,
+  `image_mode` (`direct` or `bundle`), `data_bucket`, `backup_bucket` and
+  `storage_role_arn`. Struct-literal callers need both new fields set to
+  `None`; the request sent is unchanged.
+- `ByocConfig` and `ByocInfrastructureDetails` gain `access_model`, and
+  `ByocInfrastructureDetails` gains `restricted_facts:
+  Option<ByocRestrictedFactsResponse>` and `connector: Option<ByocConnector>`,
+  the connector's heartbeat, platform state and `ByocConnectorComponent`s.
+  `TryFrom<ByocRestrictedFactsResponse>` for `ByocRestrictedFacts` turns
+  fetched facts back into a request, and reports any of the five required
+  facts that are missing. Struct-literal callers need the new fields set to
+  `None`, or `..Default::default()`.
+
+`Organization` gains the read-only settings
+`ai_data_use_for_product_improvement_enabled` and
+`knowledge_based_ai_support_enabled`, both `Option<bool>`. Struct-literal
+callers need them set to `None`, or `..Default::default()`.
+
 ## 0.6.1
 
 No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.

@@ -1222,3 +1222,45 @@ fn service_clickhouse_setting_delete_response_tolerates_missing_warnings() {
     assert_eq!(empty, ServiceClickhouseSettingDeleteResponse::default());
     assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!({}));
 }
+
+#[test]
+fn deserialize_inference_usage_cost() {
+    let cost: InferenceUsageCost = serde_json::from_value(serde_json::json!({
+        "grandTotalCHC": 3.0,
+        "costs": [{
+            "date": "2026-10-01",
+            "provider": "anthropic",
+            "model": "claude-opus-4-8",
+            "modelName": "Claude Opus 4.8",
+            "totalCHC": 3.0,
+            "locked": false,
+            "metrics": [
+                {"metric": "input", "tokensMillions": 0.2, "pricePerMillionTokensCHC": 5.0, "totalCHC": 1.0},
+                {"metric": "cache_write_5m", "tokensMillions": 0.1, "pricePerMillionTokensCHC": 20.0, "totalCHC": 2.0}
+            ]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(cost.grand_total_chc, Some(3.0));
+    let record = &cost.costs.as_ref().unwrap()[0];
+    assert_eq!(record.date.as_deref(), Some("2026-10-01"));
+    assert_eq!(record.provider.as_deref(), Some("anthropic"));
+    assert_eq!(record.model.as_deref(), Some("claude-opus-4-8"));
+    assert_eq!(record.model_name.as_deref(), Some("Claude Opus 4.8"));
+    assert_eq!(record.total_chc, Some(3.0));
+    assert_eq!(record.locked, Some(false));
+    let metrics = record.metrics.as_ref().unwrap();
+    // Metric names are an open set, so a new name still decodes.
+    assert_eq!(metrics[1].metric.as_deref(), Some("cache_write_5m"));
+    assert_eq!(metrics[1].price_per_million_tokens_chc, Some(20.0));
+    assert_eq!(metrics[0].tokens_millions, Some(0.2));
+    assert_eq!(metrics[0].total_chc, Some(1.0));
+
+    let empty: InferenceUsageCost =
+        serde_json::from_value(serde_json::json!({"costs": []})).unwrap();
+    assert_eq!(empty.costs, Some(vec![]));
+    assert_eq!(
+        serde_json::to_value(&empty).unwrap(),
+        serde_json::json!({"costs": []})
+    );
+}
