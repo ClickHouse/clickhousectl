@@ -289,6 +289,23 @@ pub struct ClickStackLogSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub known_columns_list_expression: Option<String>,
+    /// How many data parts are read from text indexes to discover attribute
+    /// keys and filter values, chosen by `mapKeyIndexPartSelection`. The API
+    /// defaults to 20.
+    #[serde(
+        rename = "mapKeyIndexMaxParts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_max_parts: Option<i64>,
+    /// Which data parts, by row count, are read from text indexes to discover
+    /// attribute keys and filter values: `median` (the default), `smallest` or
+    /// `largest`. The spec documents these values without an `enum`, so the
+    /// field stays a string.
+    #[serde(
+        rename = "mapKeyIndexPartSelection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_part_selection: Option<String>,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
     #[serde(
@@ -308,6 +325,10 @@ pub struct ClickStackLogSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    /// Comma-separated expressions that together identify one row. `None`
+    /// detects the keys from table metadata.
+    #[serde(rename = "rowKeyExpression", skip_serializing_if = "Option::is_none")]
+    pub row_key_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -409,6 +430,23 @@ pub struct ClickStackLogSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub known_columns_list_expression: Option<String>,
+    /// How many data parts are read from text indexes to discover attribute
+    /// keys and filter values, chosen by `mapKeyIndexPartSelection`. The API
+    /// defaults to 20.
+    #[serde(
+        rename = "mapKeyIndexMaxParts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_max_parts: Option<i64>,
+    /// Which data parts, by row count, are read from text indexes to discover
+    /// attribute keys and filter values: `median` (the default), `smallest` or
+    /// `largest`. The spec documents these values without an `enum`, so the
+    /// field stays a string.
+    #[serde(
+        rename = "mapKeyIndexPartSelection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_part_selection: Option<String>,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedViewResponse>>,
     #[serde(
@@ -429,6 +467,10 @@ pub struct ClickStackLogSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    /// Comma-separated expressions that together identify one row. `None`
+    /// detects the keys from table metadata.
+    #[serde(rename = "rowKeyExpression", skip_serializing_if = "Option::is_none")]
+    pub row_key_expression: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
@@ -678,6 +720,11 @@ pub struct ClickStackPromqlSource {
     #[serde(rename = "minAutoGranularity", skip_serializing_if = "Option::is_none")]
     pub min_auto_granularity: Option<String>,
     pub name: String,
+    /// How PromQL is evaluated on a ClickHouse connection. The API uses `auto`
+    /// when omitted; ignored when the connection is a Prometheus-compatible
+    /// endpoint.
+    #[serde(rename = "promqlBackend", skip_serializing_if = "Option::is_none")]
+    pub promql_backend: Option<ClickStackPromqlSourcePromqlbackend>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -711,6 +758,11 @@ pub struct ClickStackPromqlSourceResponse {
     pub min_auto_granularity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// How PromQL is evaluated on a ClickHouse connection. The API uses `auto`
+    /// when omitted; ignored when the connection is a Prometheus-compatible
+    /// endpoint.
+    #[serde(rename = "promqlBackend", skip_serializing_if = "Option::is_none")]
+    pub promql_backend: Option<ClickStackPromqlSourcePromqlbackend>,
     #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -912,6 +964,23 @@ pub struct ClickStackTraceSource {
     pub known_columns_list_expression: Option<String>,
     #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
+    /// How many data parts are read from text indexes to discover attribute
+    /// keys and filter values, chosen by `mapKeyIndexPartSelection`. The API
+    /// defaults to 20.
+    #[serde(
+        rename = "mapKeyIndexMaxParts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_max_parts: Option<i64>,
+    /// Which data parts, by row count, are read from text indexes to discover
+    /// attribute keys and filter values: `median` (the default), `smallest` or
+    /// `largest`. The spec documents these values without an `enum`, so the
+    /// field stays a string.
+    #[serde(
+        rename = "mapKeyIndexPartSelection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_part_selection: Option<String>,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
     #[serde(
@@ -933,6 +1002,10 @@ pub struct ClickStackTraceSource {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    /// Comma-separated expressions that together identify one row. `None`
+    /// detects the keys from table metadata.
+    #[serde(rename = "rowKeyExpression", skip_serializing_if = "Option::is_none")]
+    pub row_key_expression: Option<String>,
     #[serde(
         rename = "sampleRateExpression",
         skip_serializing_if = "Option::is_none"
@@ -1052,6 +1125,23 @@ pub struct ClickStackTraceSourceResponse {
     pub known_columns_list_expression: Option<String>,
     #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
+    /// How many data parts are read from text indexes to discover attribute
+    /// keys and filter values, chosen by `mapKeyIndexPartSelection`. The API
+    /// defaults to 20.
+    #[serde(
+        rename = "mapKeyIndexMaxParts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_max_parts: Option<i64>,
+    /// Which data parts, by row count, are read from text indexes to discover
+    /// attribute keys and filter values: `median` (the default), `smallest` or
+    /// `largest`. The spec documents these values without an `enum`, so the
+    /// field stays a string.
+    #[serde(
+        rename = "mapKeyIndexPartSelection",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub map_key_index_part_selection: Option<String>,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedViewResponse>>,
     #[serde(
@@ -1077,6 +1167,10 @@ pub struct ClickStackTraceSourceResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
+    /// Comma-separated expressions that together identify one row. `None`
+    /// detects the keys from table metadata.
+    #[serde(rename = "rowKeyExpression", skip_serializing_if = "Option::is_none")]
+    pub row_key_expression: Option<String>,
     #[serde(
         rename = "sampleRateExpression",
         skip_serializing_if = "Option::is_none"

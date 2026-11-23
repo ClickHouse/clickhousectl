@@ -326,6 +326,93 @@ async fn delete_alert() {
     assert_eq!(resp.status, Some(200));
 }
 
+#[tokio::test]
+async fn silence_alert_posts_muted_until_and_returns_the_silenced_alert() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1/silenced",
+        ))
+        .and(body_json(
+            serde_json::json!({"mutedUntil": "2026-01-01T00:00:00Z"}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "alert-1",
+            "silenced": {
+                "at": "2025-12-01T00:00:00Z",
+                "by": "user-1",
+                "until": "2026-01-01T00:00:00Z"
+            }
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSilenceAlertRequest {
+        muted_until: "2026-01-01T00:00:00Z".parse().unwrap(),
+    };
+    let resp = c
+        .click_stack_silence_alert("org-1", "svc-1", "alert-1", &body)
+        .await
+        .unwrap();
+    let alert = resp.result.unwrap();
+    assert_eq!(alert.id.as_deref(), Some("alert-1"));
+    let silenced = alert.silenced.unwrap();
+    assert_eq!(silenced.by.as_deref(), Some("user-1"));
+    assert_eq!(silenced.until, Some(body.muted_until));
+}
+
+#[tokio::test]
+async fn silence_alert_surfaces_a_bad_request() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1/silenced",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "mutedUntil must be in the future"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSilenceAlertRequest {
+        muted_until: "2020-01-01T00:00:00Z".parse().unwrap(),
+    };
+    let err = c
+        .click_stack_silence_alert("org-1", "svc-1", "alert-1", &body)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, clickhouse_cloud_api::Error::Api { status: 400, ref message } if message.contains("mutedUntil")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn unsilence_alert_sends_delete_without_a_body() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1/silenced",
+        ))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_unsilence_alert("org-1", "svc-1", "alert-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200));
+    let requests = s.received_requests().await.unwrap();
+    assert!(requests[0].body.is_empty());
+}
+
 // ===========================================================================
 // ClickStack: Saved Searches
 // ===========================================================================
@@ -658,6 +745,7 @@ async fn create_source() {
         .await;
 
     let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        promql_backend: None,
         name: "Prometheus Metrics".to_string(),
         kind: ClickStackPromqlSourceKind::Promql,
         connection: "conn-1".to_string(),
@@ -733,6 +821,7 @@ async fn update_source() {
         .await;
 
     let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        promql_backend: None,
         name: "Updated Source".to_string(),
         kind: ClickStackPromqlSourceKind::Promql,
         connection: "conn-1".to_string(),

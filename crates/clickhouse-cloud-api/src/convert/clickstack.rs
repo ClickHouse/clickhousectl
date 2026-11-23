@@ -172,6 +172,8 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                 implicit_column_expression: value.implicit_column_expression,
                 kind,
                 known_columns_list_expression: value.known_columns_list_expression,
+                map_key_index_max_parts: value.map_key_index_max_parts,
+                map_key_index_part_selection: value.map_key_index_part_selection,
                 materialized_views: value
                     .materialized_views
                     .map(|items| {
@@ -198,6 +200,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                     })
                     .transpose()?,
                 resource_attributes_expression: value.resource_attributes_expression,
+                row_key_expression: value.row_key_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
                 service_version_expression: value.service_version_expression,
@@ -444,6 +447,7 @@ impl TryFrom<ClickStackPromqlSourceResponse> for ClickStackPromqlSource {
                 kind,
                 min_auto_granularity: value.min_auto_granularity,
                 name,
+                promql_backend: value.promql_backend,
                 query_settings: value
                     .query_settings
                     .map(|items| {
@@ -757,6 +761,8 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 implicit_column_expression: value.implicit_column_expression,
                 kind,
                 known_columns_list_expression: value.known_columns_list_expression,
+                map_key_index_max_parts: value.map_key_index_max_parts,
+                map_key_index_part_selection: value.map_key_index_part_selection,
                 log_source_id: value.log_source_id,
                 materialized_views: value
                     .materialized_views
@@ -785,6 +791,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                     })
                     .transpose()?,
                 resource_attributes_expression: value.resource_attributes_expression,
+                row_key_expression: value.row_key_expression,
                 sample_rate_expression: value.sample_rate_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
@@ -943,6 +950,9 @@ impl TryFrom<ClickStackSavedFilterValueResponse> for ClickStackSavedFilterValue 
             }
             ClickStackSavedFilterValueResponse::ClickStackVariableSavedFilterValue(value) => {
                 Self::ClickStackVariableSavedFilterValue(value.try_into()?)
+            }
+            ClickStackSavedFilterValueResponse::ClickStackAdhocSavedFilterValue(value) => {
+                Self::ClickStackAdhocSavedFilterValue(value.try_into()?)
             }
             ClickStackSavedFilterValueResponse::Unknown(value) => Self::Unknown(value),
         })
@@ -1132,6 +1142,218 @@ impl TryFrom<ClickStackSourceFilterResponse> for ClickStackSourceFilter {
     }
 }
 
+impl TryFrom<ClickStackDataSourceFilterResponse> for ClickStackDataSourceFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackDataSourceFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.allowed_source_kinds.is_none() {
+            missing.push("allowedSourceKinds");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.allowed_source_kinds,
+            value.id,
+            value.name,
+            value.r#type,
+        ) {
+            (Some(allowed_source_kinds), Some(id), Some(name), Some(r#type)) => Ok(Self {
+                allowed_source_kinds,
+                id,
+                name,
+                r#type,
+                connection_id: value.connection_id,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackConnectionFilterResponse> for ClickStackConnectionFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackConnectionFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (value.id, value.name, value.r#type) {
+            (Some(id), Some(name), Some(r#type)) => Ok(Self {
+                id,
+                name,
+                r#type,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_global_requirement: value.is_global_requirement,
+                is_variable_enabled: value.is_variable_enabled,
+                max_selections: value.max_selections,
+                min_selections: value.min_selections,
+                variable_name: value.variable_name,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackSqlQueryFilterResponse> for ClickStackSqlQueryFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackSqlQueryFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.connection_id.is_none() {
+            missing.push("connectionId");
+        }
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.sql_template.is_none() {
+            missing.push("sqlTemplate");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.connection_id,
+            value.id,
+            value.name,
+            value.sql_template,
+            value.r#type,
+        ) {
+            (Some(connection_id), Some(id), Some(name), Some(sql_template), Some(r#type)) => {
+                Ok(Self {
+                    connection_id,
+                    id,
+                    name,
+                    sql_template,
+                    r#type,
+                    is_broadcast_enabled: value.is_broadcast_enabled,
+                    is_global_requirement: value.is_global_requirement,
+                    is_variable_enabled: value.is_variable_enabled,
+                    max_selections: value.max_selections,
+                    min_selections: value.min_selections,
+                    source_id: value.source_id,
+                    variable_name: value.variable_name,
+                })
+            }
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackAdhocFilterResponse> for ClickStackAdhocFilter {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackAdhocFilterResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.id.is_none() {
+            missing.push("id");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.source_type.is_none() {
+            missing.push("sourceType");
+        }
+        if value.sources.is_none() {
+            missing.push("sources");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (
+            value.id,
+            value.name,
+            value.source_type,
+            value.sources,
+            value.r#type,
+        ) {
+            (Some(id), Some(name), Some(source_type), Some(sources), Some(r#type)) => Ok(Self {
+                id,
+                name,
+                source_type,
+                sources,
+                r#type,
+                applies_to_source_ids: value.applies_to_source_ids,
+                is_broadcast_enabled: value.is_broadcast_enabled,
+                is_variable_enabled: value.is_variable_enabled,
+                variable_name: value.variable_name,
+                r#where: value.r#where,
+                where_language: value.where_language,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackAdhocFilterConditionResponse> for ClickStackAdhocFilterCondition {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackAdhocFilterConditionResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.key.is_none() {
+            missing.push("key");
+        }
+        if value.operator.is_none() {
+            missing.push("operator");
+        }
+        if value.value.is_none() {
+            missing.push("value");
+        }
+        match (value.key, value.operator, value.value) {
+            (Some(key), Some(operator), Some(value)) => Ok(Self {
+                key,
+                operator,
+                value,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackAdhocSavedFilterValueResponse> for ClickStackAdhocSavedFilterValue {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackAdhocSavedFilterValueResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.conditions.is_none() {
+            missing.push("conditions");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        match (value.conditions, value.name, value.r#type) {
+            (Some(conditions), Some(name), Some(r#type)) => Ok(Self {
+                conditions: conditions
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, _>>()?,
+                name,
+                r#type,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
 impl TryFrom<ClickStackFilterResponse> for ClickStackFilter {
     type Error = MissingRequiredFields;
 
@@ -1155,6 +1377,18 @@ impl TryFrom<ClickStackFilterResponse> for ClickStackFilter {
             }
             ClickStackFilterResponse::ClickStackSourceFilter(filter) => {
                 Self::ClickStackSourceFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackDataSourceFilter(filter) => {
+                Self::ClickStackDataSourceFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackConnectionFilter(filter) => {
+                Self::ClickStackConnectionFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackSqlQueryFilter(filter) => {
+                Self::ClickStackSqlQueryFilter(filter.try_into()?)
+            }
+            ClickStackFilterResponse::ClickStackAdhocFilter(filter) => {
+                Self::ClickStackAdhocFilter(filter.try_into()?)
             }
             ClickStackFilterResponse::Unknown(raw) => Self::Unknown(raw),
         })

@@ -98,6 +98,50 @@ reaches a cluster you own through a connector you install:
 `knowledge_based_ai_support_enabled`, both `Option<bool>`. Struct-literal
 callers need them set to `None`, or `..Default::default()`.
 
+The beta `click_stack_silence_alert` method silences a ClickStack alert until a
+time. It takes the organization, service and alert IDs and a
+`ClickStackSilenceAlertRequest` whose required `muted_until: jiff::Timestamp`
+must be in the future, and returns `ApiResponse<ClickStackAlertResponse>`, the
+alert with its `silenced` record. The beta `click_stack_unsilence_alert` method
+clears the silence so notifications resume. It takes the same IDs and returns
+`ApiResponse<serde_json::Value>`, with no `result`. Both need
+`control-plane:service:manage-clickstack-api`.
+
+ClickStack dashboards gain four filter kinds, each dispatched on its `type`:
+
+- `DATA_SOURCE` (`ClickStackDataSourceFilterInput`, `ClickStackDataSourceFilter`
+  and `ClickStackDataSourceFilterResponse`), a variable that selects a source.
+- `CONNECTION` (`ClickStackConnectionFilterInput`, `ClickStackConnectionFilter`
+  and `ClickStackConnectionFilterResponse`), a variable that selects a
+  connection.
+- `SQL_QUERY` (`ClickStackSqlQueryFilterInput`, `ClickStackSqlQueryFilter` and
+  `ClickStackSqlQueryFilterResponse`), a dropdown filled by a SQL query.
+- `ADHOC` (`ClickStackAdhocFilterInput`, `ClickStackAdhocFilter` and
+  `ClickStackAdhocFilterResponse`), free-form conditions over the keys of its
+  sources.
+
+`ClickStackFilterInput`, `ClickStackFilter` and `ClickStackFilterResponse` gain
+a variant for each kind, and the response-to-request `TryFrom` conversions
+cover them. The data-source and connection variables take `minSelections` as
+the new `ClickStackVariableFilterMinSelections`, whose only listed value is
+`1`. `ClickStackSavedFilterValue` and `ClickStackSavedFilterValueResponse` gain
+`ClickStackAdhocSavedFilterValue`, the saved `ClickStackAdhocFilterCondition`s
+(`key`, `operator` and `value`) of an ad hoc filter, with its own `TryFrom`
+conversion. A filter or saved value of one of these kinds used to deserialize
+to `Unknown`; it now lands in its typed variant, and it serializes the same
+either way. Exhaustive `match`es on these unions need arms for the new
+variants.
+
+`ClickStackLogSource`, `ClickStackTraceSource` and their `*Response` types gain
+`map_key_index_max_parts: Option<i64>`, `map_key_index_part_selection:
+Option<String>` and `row_key_expression: Option<String>`, which tune how filter
+keys and values are discovered from text indexes and how a row is identified.
+`ClickStackPromqlSource` and `ClickStackPromqlSourceResponse` gain
+`promql_backend: Option<ClickStackPromqlSourcePromqlbackend>` (`auto`,
+`clickhouse-http` or `table-function`). The source conversions carry the new
+fields. Struct-literal callers need them set to `None`, or
+`..Default::default()` on the response types.
+
 ## 0.6.1
 
 No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.
