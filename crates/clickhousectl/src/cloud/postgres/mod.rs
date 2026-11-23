@@ -93,6 +93,14 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         CONFIRM_POSTGRES_SERVICE,
     ]),
     Permission::api(
+        "postgres blocking-queries list",
+        &[&op::POSTGRES_BLOCKING_QUERIES_GET_LIST],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        CONFIRM_POSTGRES_SERVICE,
+    ]),
+    Permission::api(
         "postgres prometheus service",
         &[&op::POSTGRES_INSTANCE_PROMETHEUS_GET],
     )
@@ -176,7 +184,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 ];
 
 pub use cli::{
-    CertsCommands, ConfigCommands, PostgresBackupCommands, PostgresCommands,
+    BlockingQueryCommands, CertsCommands, ConfigCommands, PostgresBackupCommands, PostgresCommands,
     PrivateEndpointCommands, PrometheusCommands, ReadReplicaCommands, SlowQueryCommands,
 };
 
@@ -190,9 +198,10 @@ use lifecycle::{
     postgres_update,
 };
 use observability::{
-    SlowQueryDetailInput, SlowQueryListInput, build_postgres_logs_query, postgres_backup_list,
-    postgres_logs, postgres_metrics, postgres_prometheus_org, postgres_prometheus_service,
-    postgres_slow_queries_list, postgres_slow_query_get,
+    BlockingQueryListInput, SlowQueryDetailInput, SlowQueryListInput, build_postgres_logs_query,
+    postgres_backup_list, postgres_blocking_queries_list, postgres_logs, postgres_metrics,
+    postgres_prometheus_org, postgres_prometheus_service, postgres_slow_queries_list,
+    postgres_slow_query_get,
 };
 use private_endpoint::{
     PrivateEndpointUpdate, private_endpoint_create, private_endpoint_delete, private_endpoint_get,
@@ -464,6 +473,28 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             let (selector, query_id) = target.parts();
             let postgres_id = selector.resolve(client, NamedResource::Postgres).await?;
             postgres_slow_query_get(client, &postgres_id, query_id, input, json).await
+        }
+        PostgresCommands::BlockingQueries(BlockingQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            app,
+            limit,
+            offset,
+        }) => {
+            let input = BlockingQueryListInput {
+                from_date: &from_date,
+                to_date: &to_date,
+                db_name: db_name.as_deref(),
+                db_user: db_user.as_deref(),
+                app: app.as_deref(),
+                limit,
+                offset,
+            };
+            let postgres_id = postgres_id.resolve(client, NamedResource::Postgres).await?;
+            postgres_blocking_queries_list(client, &postgres_id, input, json).await
         }
         PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
             postgres_prometheus_service(

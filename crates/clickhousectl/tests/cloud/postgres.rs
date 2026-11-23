@@ -569,6 +569,188 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
     assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
 }
 
+// ── Postgres blocking queries (issue #1516) ───────────────────────────────
+
+#[tokio::test]
+async fn postgres_blocking_query_list_sends_exact_query_supports_oauth_and_preserves_json() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{
+        "blockedQueryId": "query-1",
+        "blockedQuery": "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
+        "blockedMode": "ShareLock",
+        "blockedPids": [4242, 4243],
+        "blockedUsers": ["writer"],
+        "blockedApps": ["billing"],
+        "database": "app db",
+        "blockingQueryId": "query-2",
+        "blockingQuery": "UPDATE accounts SET balance = $1 WHERE id = $2",
+        "blockingPids": [4100],
+        "blockingUsers": ["writer"],
+        "blockingApps": [],
+        "blockingDatabase": "app db",
+        "blockingInternal": false,
+        "blockingPrepared": false,
+        "blockingSeenWaiting": false,
+        "latestBlockingState": "idle in transaction",
+        "latestBlockingBackendType": "client backend",
+        "latestBlockingXactSeconds": 31.25,
+        "lockType": "transactionid",
+        "longestWaitSeconds": 12.5,
+        "samples": 7,
+        "sessions": 2,
+        "lastSeen": "2026-04-16T11:45:00Z"
+    }]);
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/blockingQueries",
+        ))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-blocking-query-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .isolated_env()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "postgres",
+            "blocking-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--app",
+            "",
+            "--limit",
+            "2000",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let query: Vec<_> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        [
+            (
+                "from_date".to_string(),
+                "2026-04-16T11:00:00.000Z".to_string()
+            ),
+            (
+                "to_date".to_string(),
+                "2026-04-16T12:00:00.000Z".to_string()
+            ),
+            ("db_name".to_string(), "app db".to_string()),
+            ("db_user".to_string(), "reader+worker".to_string()),
+            // An empty `--app` is sent, matching sessions with no app name.
+            ("app".to_string(), String::new()),
+            ("limit".to_string(), "2000".to_string()),
+            ("offset".to_string(), "0".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn postgres_blocking_query_list_resolves_name_omits_filters_and_renders_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"result": [{"id": POSTGRES_ID, "name": "analytics"}]}),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{POSTGRES_ID}/blockingQueries"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "blockedQuery": "ALTER TABLE events ADD COLUMN x int",
+                    "blockingQuery": "SELECT * FROM events",
+                    "lockType": "relation",
+                    "blockedMode": "AccessExclusiveLock",
+                    "sessions": 1,
+                    "samples": 4
+                },
+                { "blockingPrepared": true }
+            ],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "blocking-queries",
+            "list",
+            "--name",
+            "analytics",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    // Column layout and absent cells: `render_blocking_queries` unit test.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for value in [
+        "ALTER TABLE events ADD COLUMN x int",
+        "SELECT * FROM events",
+        "relation (AccessExclusiveLock)",
+    ] {
+        assert!(stdout.contains(value), "missing {value:?} from:\n{stdout}");
+    }
+    assert!(!stdout.contains("samples"), "{stdout}");
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let query: Vec<_> = requests[1].url.query_pairs().collect();
+    assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
+}
+
 #[tokio::test]
 async fn postgres_slow_query_get_has_distinct_query_and_preserves_recent_executions() {
     let mock = MockServer::start().await;

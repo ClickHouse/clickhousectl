@@ -302,6 +302,10 @@ CONTEXT FOR AGENTS:
     #[command(name = "slow-queries", subcommand)]
     SlowQueries(SlowQueryCommands),
 
+    /// Inspect Postgres queries that waited on locks (Beta)
+    #[command(name = "blocking-queries", subcommand)]
+    BlockingQueries(BlockingQueryCommands),
+
     /// Get raw Postgres Prometheus metrics
     #[command(
         subcommand,
@@ -688,6 +692,46 @@ pub enum SlowQueryCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum BlockingQueryCommands {
+    /// List queries blocked by other queries (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Each row is one waiting query and one direct blocker, most-sampled first.
+  --to-date must be after --from-date and at most 31 days later.
+  Empty unless blocking query collection is on for the service (Cloud console).")]
+    List {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// Inclusive start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        from_date: String,
+        /// Inclusive end time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        to_date: String,
+        /// Filter by the waiting sessions' database name
+        #[arg(long)]
+        db_name: Option<String>,
+        /// Filter by the waiting sessions' database user
+        #[arg(long)]
+        db_user: Option<String>,
+        /// Filter by the waiting sessions' application name ("" for none)
+        #[arg(long)]
+        app: Option<String>,
+        /// Maximum number of groups to return
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=2000))]
+        limit: Option<i64>,
+        /// Number of groups to skip
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
+        offset: Option<i64>,
+    },
+}
+
 /// The Postgres service selector plus the required query pattern ID, with the
 /// same grammar as `ServiceSettingTarget`: `<POSTGRES_ID> <QUERY_ID>` or
 /// `--name <NAME> <QUERY_ID>`. Clap's allow_missing_positional would shift the
@@ -752,6 +796,14 @@ impl SlowQueryCommands {
     }
 }
 
+impl BlockingQueryCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } => false,
+        }
+    }
+}
+
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
@@ -761,6 +813,7 @@ impl PostgresCommands {
             | PostgresCommands::Metrics { .. }
             | PostgresCommands::Logs { .. } => false,
             PostgresCommands::SlowQueries(command) => command.is_write(),
+            PostgresCommands::BlockingQueries(command) => command.is_write(),
             PostgresCommands::Prometheus(command) => command.is_write(),
             PostgresCommands::Backup(PostgresBackupCommands::List { .. }) => false,
             PostgresCommands::PrivateEndpoint(command) => command.is_write(),
@@ -2258,6 +2311,161 @@ mod tests {
                 assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
                 assert_eq!(error.exit_code(), 2);
             }
+        }
+    }
+
+    const BLOCKING_LIST: [&str; 5] = [
+        "clickhousectl",
+        "cloud",
+        "postgres",
+        "blocking-queries",
+        "list",
+    ];
+    const WINDOW: [&str; 4] = [
+        "--from-date",
+        "2026-04-16T12:00:00Z",
+        "--to-date",
+        "2026-04-16T13:00:00Z",
+    ];
+
+    fn parse_blocking_list(args: &[&str]) -> (NameSelector, [Option<String>; 3], [Option<i64>; 2]) {
+        let args = [&BLOCKING_LIST[..], args].concat();
+        let cmd = parse_postgres(&args);
+        assert!(!cmd.is_write());
+        let PostgresCommands::BlockingQueries(BlockingQueryCommands::List {
+            postgres_id,
+            db_name,
+            db_user,
+            app,
+            limit,
+            offset,
+            ..
+        }) = cmd
+        else {
+            panic!("expected blocking-query list");
+        };
+        (postgres_id, [db_name, db_user, app], [limit, offset])
+    }
+
+    #[test]
+    fn parses_blocking_query_list_with_all_inputs_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "blocking-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--app",
+            "reporting/api",
+            "--limit",
+            "2000",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::BlockingQueries(BlockingQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            app,
+            limit,
+            offset,
+        }) = cmd
+        else {
+            panic!("expected blocking-query list");
+        };
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert!(postgres_id.name.is_none());
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
+        assert_eq!(db_name.as_deref(), Some("app db"));
+        assert_eq!(db_user.as_deref(), Some("reader+worker"));
+        assert_eq!(app.as_deref(), Some("reporting/api"));
+        assert_eq!(limit, Some(2000));
+        assert_eq!(offset, Some(0));
+
+        let (_, filters, page) = parse_blocking_list(&[&["pg-1"][..], &WINDOW].concat());
+        assert_eq!(filters, [None, None, None]);
+        assert_eq!(page, [None, None]);
+    }
+
+    #[test]
+    fn blocking_query_list_accepts_an_empty_app_filter() {
+        for app_args in [&["--app", ""][..], &["--app="][..]] {
+            let (_, [_, _, app], _) =
+                parse_blocking_list(&[&["pg-1"][..], &WINDOW, app_args].concat());
+            assert_eq!(app.as_deref(), Some(""), "{app_args:?}");
+        }
+    }
+
+    #[test]
+    fn blocking_query_list_selects_the_service_by_id_or_name_but_not_both() {
+        let (by_id, _, _) = parse_blocking_list(&[&["pg-1"][..], &WINDOW].concat());
+        assert_eq!(by_id.id.as_deref(), Some("pg-1"));
+        assert!(by_id.name.is_none());
+        let (by_name, _, _) =
+            parse_blocking_list(&[&["--name", "analytics"][..], &WINDOW].concat());
+        assert_eq!(by_name.name.as_deref(), Some("analytics"));
+        assert!(by_name.id.is_none());
+        for selector in [&[][..], &["pg-1", "--name", "analytics"][..]] {
+            let args = [&BLOCKING_LIST[..], selector, &WINDOW].concat();
+            assert!(Cli::try_parse_from(args).is_err(), "{selector:?}");
+        }
+    }
+
+    #[test]
+    fn blocking_query_list_requires_dates_and_validates_schema_bounds() {
+        for missing in [&WINDOW[..2], &WINDOW[2..]] {
+            let args = [&BLOCKING_LIST[..], &["pg-1"], missing].concat();
+            let error = Cli::try_parse_from(args).err().expect("missing date");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+
+        for (flag, value) in [
+            ("--from-date", "yesterday"),
+            ("--to-date", "2026-04-16T13:00:00"),
+            ("--from-date", "2026-04-16T12:00:00.1234Z"),
+            ("--limit", "0"),
+            ("--limit", "2001"),
+            ("--limit", "-1"),
+            ("--offset", "-1"),
+        ] {
+            let mut args = [&BLOCKING_LIST[..], &["pg-1"], &WINDOW].concat();
+            match args.iter().position(|arg| *arg == flag) {
+                Some(position) => args[position + 1] = value,
+                None => args.extend([flag, value]),
+            }
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("expected parse error");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{flag} {value}"
+            );
+            assert_eq!(error.exit_code(), 2);
+        }
+
+        for (limit, expected) in [("1", 1), ("2000", 2000)] {
+            let (_, _, [parsed, _]) =
+                parse_blocking_list(&[&["pg-1"][..], &WINDOW, &["--limit", limit]].concat());
+            assert_eq!(parsed, Some(expected));
         }
     }
 

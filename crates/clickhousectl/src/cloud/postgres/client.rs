@@ -1,10 +1,12 @@
 use super::observability::{
-    PostgresBackupPage, PostgresLogsQuery, SlowQueryDetailQuery, SlowQueryListQuery,
+    BlockingQueryListQuery, PostgresBackupPage, PostgresLogsQuery, SlowQueryDetailQuery,
+    SlowQueryListQuery,
 };
 use crate::cloud::client::{
     CloudClient, ResourceKind, ResourceLookup, Result as CloudResult, is_not_found,
 };
 use clickhouse_cloud_api::RunPostgresQueryRequest;
+use clickhouse_cloud_api::models::PostgresBlockingQuery;
 use clickhouse_cloud_api::models::{
     PostgresInstanceConfig, PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse,
     PostgresLogEntry, PostgresMetrics, PostgresPrivateEndpoint,
@@ -158,6 +160,35 @@ impl CloudClient {
                         query.app,
                         query.sort_by.as_ref(),
                         query.sort_order.as_ref(),
+                        query.limit,
+                        query.offset,
+                    )
+                    .await,
+                org_id,
+                postgres_id,
+            )
+            .await?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch queries that waited on locks held by other queries.
+    pub async fn list_postgres_blocking_queries(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query: &BlockingQueryListQuery<'_>,
+    ) -> CloudResult<Vec<PostgresBlockingQuery>> {
+        let response = self
+            .convert_postgres_by_id_result(
+                self.api()
+                    .postgres_blocking_queries_get_list(
+                        org_id,
+                        postgres_id,
+                        query.from_date,
+                        query.to_date,
+                        query.db_name,
+                        query.db_user,
+                        query.app,
                         query.limit,
                         query.offset,
                     )

@@ -2,9 +2,9 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{format_rfc3339, parse_rfc3339, parse_serde_enum, resolve_org_id};
 use clickhouse_cloud_api::models::{
-    PostgresBackup, PostgresLogEntry, PostgresLogsGetListSeverity, PostgresLogsGetListSortorder,
-    PostgresMetrics, PostgresSlowQueryPattern, SlowQueryPatternsGetListSortby,
-    SlowQueryPatternsGetListSortorder,
+    PostgresBackup, PostgresBlockingQuery, PostgresLogEntry, PostgresLogsGetListSeverity,
+    PostgresLogsGetListSortorder, PostgresMetrics, PostgresSlowQueryPattern,
+    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -509,6 +509,171 @@ pub(super) async fn postgres_slow_query_get(
     Ok(())
 }
 
+/// The longest window `blocking-queries list` accepts, per the API.
+const BLOCKING_QUERY_MAX_WINDOW_DAYS: i64 = 31;
+/// Query text is truncated to this many characters in the human table.
+const QUERY_PREVIEW_CHARS: usize = 40;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BlockingQueryListInput<'a> {
+    pub(super) from_date: &'a str,
+    pub(super) to_date: &'a str,
+    pub(super) db_name: Option<&'a str>,
+    pub(super) db_user: Option<&'a str>,
+    pub(super) app: Option<&'a str>,
+    pub(super) limit: Option<i64>,
+    pub(super) offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockingQueryListQuery<'a> {
+    pub(super) from_date: &'a str,
+    pub(super) to_date: &'a str,
+    pub(super) db_name: Option<&'a str>,
+    pub(super) db_user: Option<&'a str>,
+    pub(super) app: Option<&'a str>,
+    pub(super) limit: Option<i64>,
+    pub(super) offset: Option<i64>,
+}
+
+fn build_blocking_query_list_query(
+    input: BlockingQueryListInput<'_>,
+) -> CloudResult<BlockingQueryListQuery<'_>> {
+    let from = parse_rfc3339(input.from_date)
+        .map_err(|_| CloudError::usage("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
+    let to = parse_rfc3339(input.to_date)
+        .map_err(|_| CloudError::usage("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
+    if to <= from {
+        return Err(CloudError::usage(
+            "invalid date range: --to-date must be after --from-date",
+        ));
+    }
+    if to.duration_since(from)
+        > jiff::SignedDuration::from_hours(BLOCKING_QUERY_MAX_WINDOW_DAYS * 24)
+    {
+        return Err(CloudError::usage(format!(
+            "invalid date range: --from-date and --to-date must be at most \
+             {BLOCKING_QUERY_MAX_WINDOW_DAYS} days apart"
+        )));
+    }
+    if input
+        .limit
+        .is_some_and(|limit| !(1..=2000).contains(&limit))
+    {
+        return Err(CloudError::usage(
+            "invalid --limit: expected a value from 1 to 2000",
+        ));
+    }
+    if input.offset.is_some_and(|offset| offset < 0) {
+        return Err(CloudError::usage(
+            "invalid --offset: expected a non-negative value",
+        ));
+    }
+
+    Ok(BlockingQueryListQuery {
+        from_date: input.from_date,
+        to_date: input.to_date,
+        db_name: input.db_name,
+        db_user: input.db_user,
+        app: input.app,
+        limit: input.limit,
+        offset: input.offset,
+    })
+}
+
+pub(super) async fn postgres_blocking_queries_list(
+    client: &CloudClient,
+    postgres_id: &str,
+    input: BlockingQueryListInput<'_>,
+    json: bool,
+) -> CloudResult<()> {
+    let query = build_blocking_query_list_query(input)?;
+    let org_id = resolve_org_id(client).await?;
+    let groups = client
+        .list_postgres_blocking_queries(&org_id, postgres_id, &query)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&groups)?);
+        return Ok(());
+    }
+
+    if groups.is_empty() {
+        println!("No Postgres blocking queries found");
+        return Ok(());
+    }
+
+    println!("{}", render_blocking_queries(groups));
+    Ok(())
+}
+
+/// One row per waiting query and direct blocker, with the columns that show
+/// where lock contention comes from. `--json` carries every field.
+fn render_blocking_queries(groups: Vec<PostgresBlockingQuery>) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Blocked query")]
+        blocked_query: String,
+        #[tabled(rename = "Blocking query")]
+        blocking_query: String,
+        #[tabled(rename = "Lock")]
+        lock: String,
+        #[tabled(rename = "Sessions")]
+        sessions: String,
+        #[tabled(rename = "Longest wait (s)")]
+        longest_wait_seconds: String,
+        #[tabled(rename = "Blocking state")]
+        blocking_state: String,
+        #[tabled(rename = "Last seen")]
+        last_seen: String,
+    }
+
+    let rows = groups.into_iter().map(|group| Row {
+        blocked_query: query_preview(group.blocked_query.as_deref()),
+        blocking_query: blocking_query_preview(&group),
+        lock: match (group.lock_type, group.blocked_mode) {
+            (Some(lock_type), Some(mode)) => format!("{lock_type} ({mode})"),
+            (lock_type, mode) => or_absent(lock_type.or(mode)),
+        },
+        sessions: or_absent(group.sessions),
+        longest_wait_seconds: or_absent(group.longest_wait_seconds),
+        blocking_state: or_absent(group.latest_blocking_state.filter(|s| !s.is_empty())),
+        last_seen: or_absent(group.last_seen),
+    });
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+/// The blocker's query text, or what the blocker is when the API returns none.
+fn blocking_query_preview(group: &PostgresBlockingQuery) -> String {
+    if group.blocking_prepared == Some(true) {
+        return "(prepared transaction)".to_string();
+    }
+    if group.blocking_internal == Some(true) {
+        return match group.latest_blocking_backend_type.as_deref() {
+            Some(backend) if !backend.is_empty() => format!("(internal: {backend})"),
+            _ => "(internal)".to_string(),
+        };
+    }
+    query_preview(group.blocking_query.as_deref())
+}
+
+/// Query text on one line, truncated for the table. Empty text is absent.
+fn query_preview(text: Option<&str>) -> String {
+    let collapsed = text
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return ABSENT.to_string();
+    }
+    if collapsed.chars().count() <= QUERY_PREVIEW_CHARS {
+        return collapsed;
+    }
+    let mut preview: String = collapsed.chars().take(QUERY_PREVIEW_CHARS - 1).collect();
+    preview.push('…');
+    preview
+}
+
 fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(metrics)?);
@@ -704,6 +869,170 @@ mod tests {
                 "0.125",
             ]
         );
+    }
+
+    #[test]
+    fn blocking_query_human_table_shows_contention_columns() {
+        let long_query = format!(
+            "UPDATE accounts\n   SET balance = balance - $1 WHERE id = $2 {}",
+            "AND x = 1 ".repeat(10)
+        );
+        let rendered = render_blocking_queries(vec![
+            PostgresBlockingQuery {
+                blocked_query: Some(long_query),
+                blocking_query: Some("UPDATE accounts SET balance = $1".into()),
+                lock_type: Some("transactionid".into()),
+                blocked_mode: Some("ShareLock".into()),
+                sessions: Some(3),
+                longest_wait_seconds: Some(12.5),
+                latest_blocking_state: Some("idle in transaction".into()),
+                last_seen: Some("2026-04-16T12:30:00Z".parse().unwrap()),
+                ..Default::default()
+            },
+            PostgresBlockingQuery {
+                blocked_query: Some("ALTER TABLE events ADD COLUMN x int".into()),
+                blocking_query: Some(String::new()),
+                blocking_internal: Some(true),
+                latest_blocking_backend_type: Some("autovacuum worker".into()),
+                lock_type: Some("relation".into()),
+                ..Default::default()
+            },
+            PostgresBlockingQuery {
+                blocked_query: Some(String::new()),
+                blocking_prepared: Some(true),
+                ..Default::default()
+            },
+        ]);
+        let cells = |needle: &str| -> Vec<String> {
+            rendered
+                .lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle} row:\n{rendered}"))
+                .split('|')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let row = cells("ShareLock");
+        // Whitespace collapses onto one line and long text is truncated.
+        assert_eq!(row[0].chars().count(), QUERY_PREVIEW_CHARS);
+        assert!(row[0].starts_with("UPDATE accounts SET balance"), "{row:?}");
+        assert!(row[0].ends_with('…'), "{row:?}");
+        assert_eq!(
+            row[1..],
+            [
+                "UPDATE accounts SET balance = $1",
+                "transactionid (ShareLock)",
+                "3",
+                "12.5",
+                "idle in transaction",
+                "2026-04-16T12:30:00Z",
+            ]
+        );
+        assert_eq!(
+            cells("ALTER TABLE"),
+            [
+                "ALTER TABLE events ADD COLUMN x int",
+                "(internal: autovacuum worker)",
+                "relation",
+                ABSENT,
+                ABSENT,
+                ABSENT,
+                ABSENT,
+            ]
+        );
+        assert_eq!(
+            cells("prepared"),
+            [
+                ABSENT,
+                "(prepared transaction)",
+                ABSENT,
+                ABSENT,
+                ABSENT,
+                ABSENT,
+                ABSENT,
+            ]
+        );
+    }
+
+    fn blocking_input<'a>(from_date: &'a str, to_date: &'a str) -> BlockingQueryListInput<'a> {
+        BlockingQueryListInput {
+            from_date,
+            to_date,
+            db_name: None,
+            db_user: None,
+            app: None,
+            limit: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn blocking_query_builder_preserves_minimal_and_maximal_queries() {
+        let minimal = build_blocking_query_list_query(blocking_input(
+            "2026-04-16T12:00:00Z",
+            "2026-04-16T13:00:00Z",
+        ))
+        .unwrap();
+        assert_eq!(
+            minimal,
+            BlockingQueryListQuery {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                db_name: None,
+                db_user: None,
+                app: None,
+                limit: None,
+                offset: None,
+            }
+        );
+
+        let maximal = build_blocking_query_list_query(BlockingQueryListInput {
+            db_name: Some("app db"),
+            db_user: Some("writer"),
+            app: Some(""),
+            limit: Some(2000),
+            offset: Some(50),
+            // Exactly 31 days is the widest window the API accepts.
+            ..blocking_input("2026-04-01T00:00:00Z", "2026-05-02T00:00:00Z")
+        })
+        .unwrap();
+        assert_eq!(maximal.db_name, Some("app db"));
+        assert_eq!(maximal.db_user, Some("writer"));
+        assert_eq!(maximal.app, Some(""));
+        assert_eq!(maximal.limit, Some(2000));
+        assert_eq!(maximal.offset, Some(50));
+    }
+
+    #[test]
+    fn blocking_query_builder_rejects_invalid_windows_and_bounds() {
+        for (from, to) in [
+            ("2026-04-16T13:00:00Z", "2026-04-16T12:00:00Z"),
+            ("2026-04-16T12:00:00Z", "2026-04-16T12:00:00Z"),
+            ("2026-04-01T00:00:00Z", "2026-05-02T00:00:00.001Z"),
+        ] {
+            let error = build_blocking_query_list_query(blocking_input(from, to)).unwrap_err();
+            assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+            assert_range_error(&error);
+        }
+        let window = blocking_input("2026-04-16T12:00:00Z", "2026-04-16T13:00:00Z");
+        for input in [
+            BlockingQueryListInput {
+                limit: Some(0),
+                ..window
+            },
+            BlockingQueryListInput {
+                limit: Some(2001),
+                ..window
+            },
+            BlockingQueryListInput {
+                offset: Some(-1),
+                ..window
+            },
+        ] {
+            assert!(build_blocking_query_list_query(input).is_err(), "{input:?}");
+        }
     }
 
     #[test]
