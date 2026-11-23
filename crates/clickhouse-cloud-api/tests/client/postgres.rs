@@ -1,5 +1,7 @@
 use clickhouse_cloud_api::models::*;
-use wiremock::matchers::{basic_auth, body_partial_json, method, path, query_param};
+use wiremock::matchers::{
+    basic_auth, body_partial_json, method, path, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, ResponseTemplate};
 
 use crate::{ok_empty, ok_json, setup};
@@ -91,6 +93,134 @@ async fn list_slow_query_patterns_with_typed_sorting() {
         .result
         .unwrap();
     assert!(patterns.is_empty());
+}
+
+fn blocking_query_json() -> serde_json::Value {
+    serde_json::json!({
+        "database": "app",
+        "blockedQueryId": "-123456789",
+        "blockedQuery": "UPDATE accounts SET balance = $1 WHERE id = $2",
+        "blockedUsers": ["writer"],
+        "blockedApps": ["billing"],
+        "blockedPids": [4242, 4243],
+        "lockType": "transactionid",
+        "blockedMode": "ShareLock",
+        "blockingDatabase": "app",
+        "blockingQueryId": "987654321",
+        "blockingQuery": "UPDATE accounts SET balance = $1 WHERE id = $2",
+        "blockingUsers": ["batch"],
+        "blockingApps": [],
+        "blockingPids": [17],
+        "blockingPrepared": false,
+        "blockingInternal": false,
+        "latestBlockingState": "idle in transaction",
+        "latestBlockingXactSeconds": 12.5,
+        "latestBlockingBackendType": "client backend",
+        "blockingSeenWaiting": false,
+        "sessions": 2,
+        "samples": 7,
+        "longestWaitSeconds": 3.25,
+        "lastSeen": "2026-04-22T14:06:00Z"
+    })
+}
+
+#[tokio::test]
+async fn list_postgres_blocking_queries_with_filters() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/blockingQueries",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(query_param("from_date", "2026-04-22T00:00:00Z"))
+        .and(query_param("to_date", "2026-04-23T00:00:00Z"))
+        .and(query_param("db_name", "app"))
+        .and(query_param("db_user", "writer"))
+        .and(query_param("app", "billing"))
+        .and(query_param("limit", "100"))
+        .and(query_param("offset", "20"))
+        .respond_with(ok_json(serde_json::json!([blocking_query_json()])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let groups = c
+        .postgres_blocking_queries_get_list(
+            "org-1",
+            "pg-1",
+            "2026-04-22T00:00:00Z",
+            "2026-04-23T00:00:00Z",
+            Some("app"),
+            Some("writer"),
+            Some("billing"),
+            Some(100),
+            Some(20),
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    let group = &groups[0];
+    assert_eq!(group.database.as_deref(), Some("app"));
+    assert_eq!(group.blocked_pids, Some(vec![4242, 4243]));
+    assert_eq!(group.blocking_pids, Some(vec![17]));
+    assert_eq!(group.blocking_apps, Some(vec![]));
+    assert_eq!(group.lock_type.as_deref(), Some("transactionid"));
+    assert_eq!(group.blocking_prepared, Some(false));
+    assert_eq!(group.latest_blocking_xact_seconds, Some(12.5));
+    assert_eq!(group.longest_wait_seconds, Some(3.25));
+    assert_eq!(group.sessions, Some(2));
+    assert_eq!(group.samples, Some(7));
+    assert_eq!(
+        group.last_seen,
+        Some("2026-04-22T14:06:00Z".parse().unwrap())
+    );
+    assert_eq!(
+        serde_json::to_value(group).unwrap(),
+        blocking_query_json(),
+        "every spec field round-trips"
+    );
+}
+
+#[tokio::test]
+async fn list_postgres_blocking_queries_sends_only_the_time_window_by_default() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/blockingQueries",
+        ))
+        .and(query_param("from_date", "2026-04-22T00:00:00Z"))
+        .and(query_param("to_date", "2026-04-23T00:00:00Z"))
+        .and(query_param_is_missing("db_name"))
+        .and(query_param_is_missing("db_user"))
+        .and(query_param_is_missing("app"))
+        .and(query_param_is_missing("limit"))
+        .and(query_param_is_missing("offset"))
+        .respond_with(ok_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let groups = c
+        .postgres_blocking_queries_get_list(
+            "org-1",
+            "pg-1",
+            "2026-04-22T00:00:00Z",
+            "2026-04-23T00:00:00Z",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert!(groups.is_empty());
 }
 
 #[tokio::test]
@@ -756,7 +886,6 @@ async fn postgres_service_backup_get_list_propagates_api_errors() {
 
 fn private_endpoint_json() -> serde_json::Value {
     serde_json::json!({
-        "id": "ps0123456789abcdefghjkmnpq",
         "state": "available",
         "endpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
         "endpointServiceId": "vpce-svc-0123456789abcdef0",
@@ -845,8 +974,7 @@ async fn create_postgres_private_endpoint() {
             "supportedRegions": ["us-west-2"]
         })))
         .respond_with(ok_json(serde_json::json!({
-            "id": "ps0123456789abcdefghjkmnpq",
-            "state": "creating",
+                "state": "creating",
             "ipAddressType": "dual",
             "ports": [],
             "supportedRegions": ["us-west-2"],

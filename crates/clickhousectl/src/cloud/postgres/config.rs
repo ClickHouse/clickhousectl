@@ -28,10 +28,11 @@ pub(super) fn load_json_file<T: DeserializeOwned>(flag: &str, path: &Path) -> Cl
 /// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
 /// schema. The library stays tolerant when reading responses, so write inputs
 /// are checked here before serde can discard a misspelled field.
-const PG_CONFIG_KEYS: [&str; 60] = [
+const PG_CONFIG_KEYS: [&str; 64] = [
     "autovacuum_analyze_scale_factor",
     "autovacuum_analyze_threshold",
     "autovacuum_freeze_max_age",
+    "autovacuum_max_parallel_workers",
     "autovacuum_max_workers",
     "autovacuum_naptime",
     "autovacuum_vacuum_cost_delay",
@@ -54,7 +55,9 @@ const PG_CONFIG_KEYS: [&str; 60] = [
     "hash_mem_multiplier",
     "idle_in_transaction_session_timeout",
     "idle_session_timeout",
+    "io_max_workers",
     "io_method",
+    "io_min_workers",
     "io_workers",
     "lock_timeout",
     "log_lock_waits",
@@ -69,6 +72,7 @@ const PG_CONFIG_KEYS: [&str; 60] = [
     "max_parallel_maintenance_workers",
     "max_parallel_workers",
     "max_parallel_workers_per_gather",
+    "max_repack_replication_slots",
     "max_replication_slots",
     "max_slot_wal_keep_size",
     "max_sync_workers_per_subscription",
@@ -571,6 +575,7 @@ mod tests {
             autovacuum_analyze_scale_factor: Some(Default::default()),
             autovacuum_analyze_threshold: Some(Default::default()),
             autovacuum_freeze_max_age: Some(Default::default()),
+            autovacuum_max_parallel_workers: Some(Default::default()),
             autovacuum_max_workers: Some(Default::default()),
             autovacuum_naptime: Some(Default::default()),
             autovacuum_vacuum_cost_delay: Some(Default::default()),
@@ -593,7 +598,9 @@ mod tests {
             hash_mem_multiplier: Some(Default::default()),
             idle_in_transaction_session_timeout: Some(Default::default()),
             idle_session_timeout: Some(Default::default()),
+            io_max_workers: Some(Default::default()),
             io_method: Some(Default::default()),
+            io_min_workers: Some(Default::default()),
             io_workers: Some(Default::default()),
             lock_timeout: Some(Default::default()),
             log_lock_waits: Some(Default::default()),
@@ -608,6 +615,7 @@ mod tests {
             max_parallel_maintenance_workers: Some(Default::default()),
             max_parallel_workers: Some(Default::default()),
             max_parallel_workers_per_gather: Some(Default::default()),
+            max_repack_replication_slots: Some(Default::default()),
             max_replication_slots: Some(Default::default()),
             max_slot_wal_keep_size: Some(Default::default()),
             max_sync_workers_per_subscription: Some(Default::default()),

@@ -1203,3 +1203,22 @@ fn service_requests_send_deletion_protection_only_when_set() {
         );
     }
 }
+
+#[test]
+fn service_clickhouse_setting_delete_response_tolerates_missing_warnings() {
+    let response: ServiceClickhouseSettingDeleteResponse = serde_json::from_value(
+        serde_json::json!({"warnings": [{"name": "max_threads", "message": "Takes effect after a rollout restart."}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        response.warnings,
+        Some(vec![ServiceClickhouseSettingWarning {
+            name: Some("max_threads".into()),
+            message: Some("Takes effect after a rollout restart.".into()),
+        }])
+    );
+    let empty: ServiceClickhouseSettingDeleteResponse =
+        serde_json::from_str(r#"{"warnings":null}"#).unwrap();
+    assert_eq!(empty, ServiceClickhouseSettingDeleteResponse::default());
+    assert_eq!(serde_json::to_value(&empty).unwrap(), serde_json::json!({}));
+}

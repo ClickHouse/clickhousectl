@@ -471,6 +471,24 @@ pub const CLICK_STACK_LIST_WEBHOOKS: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:service:manage-clickstack-api"],
 };
 
+/// `POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}/silenced` (`clickStackSilenceAlert`).
+pub const CLICK_STACK_SILENCE_ALERT: OperationMetadata = OperationMetadata {
+    operation_id: "clickStackSilenceAlert",
+    rust_method: "click_stack_silence_alert",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}/silenced",
+    required_permissions: &["control-plane:service:manage-clickstack-api"],
+};
+
+/// `DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}/silenced` (`clickStackUnsilenceAlert`).
+pub const CLICK_STACK_UNSILENCE_ALERT: OperationMetadata = OperationMetadata {
+    operation_id: "clickStackUnsilenceAlert",
+    rust_method: "click_stack_unsilence_alert",
+    method: "DELETE",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}/silenced",
+    required_permissions: &["control-plane:service:manage-clickstack-api"],
+};
+
 /// `PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}` (`clickStackUpdateAlert`).
 pub const CLICK_STACK_UPDATE_ALERT: OperationMetadata = OperationMetadata {
     operation_id: "clickStackUpdateAlert",
@@ -549,6 +567,15 @@ pub const CREDIT_BALANCES_GET: OperationMetadata = OperationMetadata {
     rust_method: "credit_balances_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/creditBalances",
+    required_permissions: &["control-plane:organization:view-billing"],
+};
+
+/// `GET /v1/organizations/{organizationId}/inferenceUsageCost` (`inferenceUsageCostGet`).
+pub const INFERENCE_USAGE_COST_GET: OperationMetadata = OperationMetadata {
+    operation_id: "inferenceUsageCostGet",
+    rust_method: "inference_usage_cost_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/inferenceUsageCost",
     required_permissions: &["control-plane:organization:view-billing"],
 };
 
@@ -926,6 +953,16 @@ pub const ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE: OperationMetadata = Operation
     required_permissions: &["control-plane:organization:manage"],
 };
 
+/// `POST /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/enrollmentToken` (`organizationByocInfrastructureEnrollmentTokenCreate`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_ENROLLMENT_TOKEN_CREATE: OperationMetadata =
+    OperationMetadata {
+        operation_id: "organizationByocInfrastructureEnrollmentTokenCreate",
+        rust_method: "organization_byoc_infrastructure_enrollment_token_create",
+        method: "POST",
+        path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/enrollmentToken",
+        required_permissions: &["control-plane:organization:manage"],
+    };
+
 /// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}` (`organizationByocInfrastructureGet`).
 pub const ORGANIZATION_BYOC_INFRASTRUCTURE_GET: OperationMetadata = OperationMetadata {
     operation_id: "organizationByocInfrastructureGet",
@@ -1114,6 +1151,15 @@ pub const ORGANIZATION_UPDATE: OperationMetadata = OperationMetadata {
     method: "PATCH",
     path: "/v1/organizations/{organizationId}",
     required_permissions: &["control-plane:organization:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/blockingQueries` (`postgresBlockingQueriesGetList`).
+pub const POSTGRES_BLOCKING_QUERIES_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "postgresBlockingQueriesGetList",
+    rust_method: "postgres_blocking_queries_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/blockingQueries",
+    required_permissions: &["control-plane:postgres-service:view"],
 };
 
 /// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/config` (`postgresInstanceConfigGet`).
@@ -1770,6 +1816,8 @@ pub const ALL: &[OperationMetadata] = &[
     CLICK_STACK_LIST_SAVED_SEARCHES,
     CLICK_STACK_LIST_SOURCES,
     CLICK_STACK_LIST_WEBHOOKS,
+    CLICK_STACK_SILENCE_ALERT,
+    CLICK_STACK_UNSILENCE_ALERT,
     CLICK_STACK_UPDATE_ALERT,
     CLICK_STACK_UPDATE_DASHBOARD,
     CLICK_STACK_UPDATE_ROLE,
@@ -1779,6 +1827,7 @@ pub const ALL: &[OperationMetadata] = &[
     CLICK_STACK_VALIDATE_DASHBOARD,
     CLICK_STACK_VALIDATE_WEBHOOK,
     CREDIT_BALANCES_GET,
+    INFERENCE_USAGE_COST_GET,
     INSTANCE_CREATE,
     INSTANCE_DELETE,
     INSTANCE_GET,
@@ -1820,6 +1869,7 @@ pub const ALL: &[OperationMetadata] = &[
     ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_CUSTOMER_AUTHORIZED_ACCESS_UPDATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_ENROLLMENT_TOKEN_CREATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET,
@@ -1841,6 +1891,7 @@ pub const ALL: &[OperationMetadata] = &[
     ORGANIZATION_ROLE_POST,
     ORGANIZATION_ROLES_GET_LIST,
     ORGANIZATION_UPDATE,
+    POSTGRES_BLOCKING_QUERIES_GET_LIST,
     POSTGRES_INSTANCE_CONFIG_GET,
     POSTGRES_INSTANCE_CONFIG_PATCH,
     POSTGRES_INSTANCE_CONFIG_POST,

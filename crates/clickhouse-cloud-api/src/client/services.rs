@@ -733,13 +733,16 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
-    /// Delete ClickHouse setting
+    /// Reset a ClickHouse setting to its default.
+    ///
+    /// `result.warnings` says how the reset takes effect, such as a ClickHouse
+    /// server rollout restart, and is omitted when the setting was not configured.
     pub async fn service_clickhouse_setting_delete(
         &self,
         organization_id: &str,
         service_id: &str,
         setting_name: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+    ) -> Result<ApiResponse<ServiceClickhouseSettingDeleteResponse>, Error> {
         let req = self.request(
             &operations::SERVICE_CLICKHOUSE_SETTING_DELETE,
             &[organization_id, service_id, setting_name],
