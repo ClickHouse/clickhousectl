@@ -45,6 +45,18 @@ class VerifyTest(unittest.TestCase):
         self.run_response([check()])
         self.run_response([check("rejected")], "mismatched-attempt")
 
+    def test_pending_reply_without_external_id_can_complete(self):
+        completed = check()
+        pending = {key: completed[key] for key in ("app", "name", "head_sha")}
+        pending.update(status="in_progress", external_id=None)
+        with (
+            patch.dict(os.environ, ENV),
+            patch.object(diagnostic.urllib.request.OpenerDirector, "open",
+                         side_effect=[Response([pending]), Response([completed])]),
+            patch.object(diagnostic.time, "sleep"),
+        ):
+            diagnostic.verify(BASE, "valid")
+
     def test_duplicate_pinned_app_is_ambiguous(self):
         with self.assertRaises(diagnostic.DiagnosticError):
             self.run_response([check(), check()])

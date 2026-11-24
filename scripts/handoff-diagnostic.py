@@ -117,9 +117,11 @@ def verify(base, scenario):
             raise DiagnosticError("Ambiguous diagnostic response")
         if matches:
             run = matches[0]
-            if run.get("head_sha") != base["source_sha"] or run.get("external_id") != str(artifact_id):
+            if run.get("head_sha") != base["source_sha"]:
                 raise DiagnosticError("Diagnostic response context mismatch")
             if run.get("status") == "completed":
+                if run.get("external_id") != str(artifact_id):
+                    raise DiagnosticError("Diagnostic response context mismatch")
                 verdict = "accepted" if scenario == "valid" else "rejected"
                 expected = {**base, "artifact_id": artifact_id, "artifact_sha256": digest, "verdict": verdict}
                 conclusion = "success" if verdict == "accepted" else "failure"
