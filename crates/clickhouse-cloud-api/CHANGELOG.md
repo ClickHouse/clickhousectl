@@ -16,6 +16,8 @@ minor version; read the entries before raising it.
 
 ## Unreleased
 
+## 0.6.1
+
 The vendored OpenAPI snapshot is refreshed from the live spec.
 
 The beta `postgres_blocking_queries_get_list` method lists which queries waited
@@ -171,10 +173,6 @@ Struct-literal callers need the new registry fields set to `None`, or
 serialize as `4` rather than `4.0`. Callers pass whole numbers, for example
 `Some(4)` instead of `Some(4.0)`; a fractional value from a response now fails
 to deserialize.
-
-## 0.6.1
-
-No changes to this crate. Released in lockstep with `clickhousectl` 0.6.1.
 
 ## 0.6.0
 
