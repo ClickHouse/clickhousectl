@@ -9,6 +9,8 @@ on:
         value: ${{ jobs.build-x86.outputs.artifact-id }}
       receipt-artifact-id:
         value: ${{ jobs.attest.outputs.receipt-artifact-id }}
+      receipt-run-attempt:
+        value: ${{ jobs.attest.outputs.receipt-run-attempt }}
       builder-sha:
         value: ${{ jobs.authorize.outputs.builder-sha }}
       source-sha:
@@ -174,6 +176,7 @@ jobs:
       attestations: write
     outputs:
       receipt-artifact-id: ${{ steps.upload-receipt.outputs.artifact-id }}
+      receipt-run-attempt: ${{ steps.receipt.outputs.run-attempt }}
     steps:
       - name: Checkout trusted helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -190,6 +193,7 @@ jobs:
           merge-multiple: true
           digest-mismatch: error
       - name: Create build receipt
+        id: receipt
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.authorize.outputs.source-sha }}
@@ -205,6 +209,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --builder-sha "$BUILDER_SHA" \
             --aarch64-artifact-id "$AARCH64_ID" --aarch64-artifact-digest "$AARCH64_DIGEST" \
             --x86-artifact-id "$X86_ID" --x86-artifact-digest "$X86_DIGEST"
+          printf 'run-attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - name: Attest binaries and receipt
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

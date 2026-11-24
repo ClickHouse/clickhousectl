@@ -46,9 +46,13 @@ The handoff is a flat directory containing exactly two raw Mach-O binaries
 and one receipt. Download the exact workflow output IDs (`aarch64-artifact-id`,
 `x86-artifact-id`, `receipt-artifact-id`), not name patterns, to preserve
 failed-job reruns. Use the pinned download action or a REST stream;
-`gh run download` 2.105.0 assumes ZIP. The verifier requires
-`gh >= 2.102.0` and rejects unapproved builders, mismatched provenance,
-expired artifacts, extra files, symlinks and changed bytes.
+`gh run download` 2.105.0 assumes ZIP. The two binaries can come from different
+attempts, but the receipt must match the builder's `receipt-run-attempt`
+output. Do not use the latest run attempt when the receipt job did not rerun.
+The verifier requires `gh >= 2.102.0` and one signed statement naming exactly
+the receipt and both binaries. It checks the pinned builder, the `release.yml`
+caller at the tag ref, the exact receipt ID and attempt, and each artifact's
+metadata and bytes.
 
 `check-release-source.py` runs in the producer. It requires the `clickhousectl`
 tag-push context and rejects a separate signing job's context. Before requesting
@@ -60,6 +64,7 @@ and the expected values from that evidence:
 python3 builder/scripts/release_artifacts.py verify \
   --directory "$UNSIGNED_DIRECTORY" --source-sha "$SOURCE_SHA" \
   --ref "$RELEASE_REF" --run-id "$RUN_ID" \
+  --run-attempt "$RECEIPT_RUN_ATTEMPT" --receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
   --approved-builder-sha "$APPROVED_BUILDER_SHA"
 ```
 

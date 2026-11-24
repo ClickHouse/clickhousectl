@@ -9,15 +9,6 @@ on:
       - scripts/release_artifacts.py
       - scripts/tests/test_check_release_source.py
       - scripts/tests/test_release_artifacts.py
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/macos-build.yml
-      - .github/workflows/test-release-provenance.yml
-      - scripts/check-release-source.py
-      - scripts/release_artifacts.py
-      - scripts/tests/test_check_release_source.py
-      - scripts/tests/test_release_artifacts.py
 
 permissions:
   contents: read
@@ -27,12 +18,12 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   review-evidence-access:
     name: Read-only review evidence access
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.id == github.event.repository.id && github.event.sender.type == 'User'
+    if: github.event.pull_request.head.repo.id == github.event.repository.id && github.event.sender.type == 'User'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

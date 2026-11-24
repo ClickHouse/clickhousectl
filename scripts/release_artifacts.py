@@ -16,6 +16,7 @@ REPO = "ClickHouse/clickhousectl"
 REPO_ID = 1150809931
 OWNER_ID = 54801242
 WORKFLOW = REPO + "/.github/workflows/macos-build.yml"
+CALLER_WORKFLOW = REPO + "/.github/workflows/release.yml"
 PREDICATE = "https://slsa.dev/provenance/v1"
 TARGETS = {"aarch64-apple-darwin": 0x0100000C, "x86_64-apple-darwin": 0x01000007}
 MAX_BINARY = 128 * 1024 * 1024
@@ -151,7 +152,7 @@ def inventory(directory):
         ) from exc
 
 
-def artifact(id_, source, run, target, digest):
+def artifact(id_, source, run, digest):
     if not positive(id_) or not isinstance(digest, str) or not HEX64.fullmatch(digest):
         fail("invalid artifact ID or digest", code="artifact_mismatch")
     obj = github_api(f"repos/{REPO}/actions/artifacts/{id_}")
@@ -176,9 +177,7 @@ def artifact(id_, source, run, target, digest):
             code="artifact_identity_mismatch",
         )
     name = obj.get("name")
-    if not isinstance(name, str) or not re.fullmatch(
-        re.escape(f"clickhousectl-{target}-{run}-") + r"[1-9][0-9]*", name
-    ):
+    if not isinstance(name, str):
         fail("artifact name mismatch", code="artifact_name_mismatch")
     # GitHub has returned repository identity both at the top level and in workflow_run.
     for container in (obj, wr):
@@ -203,6 +202,15 @@ def artifact(id_, source, run, target, digest):
     return name
 
 
+def binary_artifact(id_, source, run, target, digest):
+    name = artifact(id_, source, run, digest)
+    if not re.fullmatch(
+        re.escape(f"clickhousectl-{target}-{run}-") + r"[1-9][0-9]*", name
+    ):
+        fail("artifact name mismatch", code="artifact_name_mismatch")
+    return name
+
+
 def receipt(directory, source, ref, run, attempt, builder, inputs):
     check_context(source, ref, run, builder)
     if not positive(attempt) or set(inputs) != set(TARGETS):
@@ -218,7 +226,7 @@ def receipt(directory, source, ref, run, attempt, builder, inputs):
     records = {}
     for target in TARGETS:
         id_, digest = inputs[target]
-        name = artifact(id_, source, run, target, digest)
+        name = binary_artifact(id_, source, run, target, digest)
         if name not in files:
             fail("artifact file missing", code="inventory_mismatch")
         info = binary_info(files[name], target)
@@ -255,8 +263,10 @@ def gh_version():
         fail("gh 2.102.0 or newer required", code="old_verifier")
 
 
-def verify_attestation(path, sha, source, ref, run, digest):
+def verify_attestation(path, sha, source, ref, run, attempt, subjects):
     identity = "https://github.com/" + WORKFLOW + "@" + sha
+    caller = f"https://github.com/{CALLER_WORKFLOW}@{ref}"
+    invocation = f"https://github.com/{REPO}/actions/runs/{run}/attempts/{attempt}"
     args = [
         "gh",
         "attestation",
@@ -295,7 +305,7 @@ def verify_attestation(path, sha, source, ref, run, digest):
             result = entry["verificationResult"]
             cert = result["signature"]["certificate"]
             statement = result["statement"]
-            invocation = cert["runInvocationURI"]
+            signed_subjects = statement["subject"]
             if (
                 cert["subjectAlternativeName"] == identity
                 and cert["buildSignerURI"] == identity
@@ -307,49 +317,41 @@ def verify_attestation(path, sha, source, ref, run, digest):
                 and cert["sourceRepositoryRef"] == ref
                 and cert["buildTrigger"] == "push"
                 and cert["runnerEnvironment"] == "github-hosted"
-                and isinstance(invocation, str)
-                and re.fullmatch(
-                    re.escape(
-                        "https://github.com/" + REPO + f"/actions/runs/{run}/attempts/"
-                    )
-                    + r"[1-9][0-9]*",
-                    invocation,
-                )
+                and cert["buildConfigURI"] == caller
+                and cert["runInvocationURI"] == invocation
                 and isinstance(result["verifiedTimestamps"], list)
                 and result["verifiedTimestamps"]
                 and statement["predicateType"] == PREDICATE
-                and isinstance(statement["subject"], list)
-                and any(
-                    isinstance(s, dict)
-                    and s.get("name") == path.name
-                    and s.get("digest", {}).get("sha256") == digest
-                    for s in statement["subject"]
-                )
+                and isinstance(signed_subjects, list)
+                and len(signed_subjects) == len(subjects)
+                and {
+                    subject["name"]: subject["digest"]["sha256"]
+                    for subject in signed_subjects
+                } == subjects
             ):
                 return result
         except (KeyError, TypeError, AttributeError):
             continue
-    fail("no attestation matches trusted identity and run", code="attestation_mismatch")
+    fail(
+        "no attestation matches trusted caller, builder, attempt and subjects",
+        code="attestation_mismatch",
+    )
 
 
-def verify(directory, source, ref, run, approved):
+def verify(directory, source, ref, run, attempt, receipt_id, approved):
     if not approved or any(
         not isinstance(s, str) or not HEX40.fullmatch(s) for s in approved
     ):
         fail("invalid approved builder list", code="unapproved_builder")
     check_context(source, ref, run, approved[0])
+    if not positive(attempt) or not positive(receipt_id):
+        fail("invalid expected receipt attempt or ID", code="receipt_mismatch")
     gh_version()
     files = inventory(directory)
-    matches = [
-        name
-        for name in files
-        if re.fullmatch(
-            re.escape(f"macos-build-receipt-{run}-") + r"[1-9][0-9]*\.json", name
-        )
-    ]
-    if len(files) != 3 or len(matches) != 1:
+    name = f"macos-build-receipt-{run}-{attempt}.json"
+    if len(files) != 3 or name not in files:
         fail("expected two artifacts and one receipt", code="inventory_mismatch")
-    path = files[matches[0]]
+    path = files[name]
     raw = read_bounded(path, MAX_RECEIPT)
     try:
         data = json.loads(raw)
@@ -358,7 +360,6 @@ def verify(directory, source, ref, run, approved):
         raise ProvenanceError("invalid receipt", code="receipt_mismatch") from exc
     if not isinstance(builder, str) or builder not in approved:
         fail("unapproved builder", code="unapproved_builder")
-    verify_attestation(path, builder, source, ref, run, hashlib.sha256(raw).hexdigest())
     expected = {
         "schema": 1,
         "repository": REPO,
@@ -369,23 +370,20 @@ def verify(directory, source, ref, run, approved):
         "builder_workflow": WORKFLOW,
         "builder_sha": builder,
         "run_id": run,
+        "run_attempt": attempt,
     }
     if any(
         type(data.get(k)) is not type(v) or data.get(k) != v
         for k, v in expected.items()
     ):
         fail("receipt context mismatch", code="receipt_mismatch")
-    attempt = data.get("run_attempt")
-    if (
-        not positive(attempt)
-        or path.name != f"macos-build-receipt-{run}-{attempt}.json"
-    ):
-        fail("receipt attempt mismatch", code="receipt_mismatch")
     records = data.get("targets")
     if not isinstance(records, dict) or set(records) != set(TARGETS):
         fail("invalid target inventory", code="receipt_mismatch")
-    ids, names = set(), {path.name}
-    for target, record in records.items():
+    receipt_digest = hashlib.sha256(raw).hexdigest()
+    subjects = {path.name: receipt_digest}
+    ids = {receipt_id}
+    for record in records.values():
         if not isinstance(record, dict) or set(record) != {
             "artifact_id",
             "name",
@@ -399,21 +397,27 @@ def verify(directory, source, ref, run, approved):
             not positive(id_)
             or id_ in ids
             or not isinstance(name, str)
-            or name in names
+            or name in subjects
         ):
             fail("duplicate or invalid artifact", code="artifact_duplicate")
         ids.add(id_)
-        names.add(name)
-        if artifact(id_, source, run, target, digest) != name or name not in files:
+        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
+            fail("invalid artifact digest", code="artifact_mismatch")
+        subjects[name] = digest
+    if subjects.keys() != files.keys():
+        fail("unexpected file", code="inventory_mismatch")
+    verify_attestation(path, builder, source, ref, run, attempt, subjects)
+    if artifact(receipt_id, source, run, receipt_digest) != path.name:
+        fail("receipt artifact name mismatch", code="artifact_name_mismatch")
+    for target, record in records.items():
+        id_, digest, name = record["artifact_id"], record["sha256"], record["name"]
+        if binary_artifact(id_, source, run, target, digest) != name:
             fail("artifact metadata mismatch", code="artifact_mismatch")
         info = binary_info(files[name], target)
         if any(
             type(record[k]) is not type(v) or record[k] != v for k, v in info.items()
         ):
             fail("artifact content mismatch", code="artifact_content_mismatch")
-        verify_attestation(files[name], builder, source, ref, run, digest)
-    if names != set(files):
-        fail("unexpected file", code="inventory_mismatch")
     return data
 
 
@@ -426,13 +430,14 @@ def main():
         p.add_argument("--source-sha", required=True)
         p.add_argument("--ref", required=True)
         p.add_argument("--run-id", type=int, required=True)
+        p.add_argument("--run-attempt", type=int, required=True)
         if mode == "receipt":
-            p.add_argument("--run-attempt", type=int, required=True)
             p.add_argument("--builder-sha", required=True)
             for prefix in ("aarch64", "x86"):
                 p.add_argument(f"--{prefix}-artifact-id", type=int, required=True)
                 p.add_argument(f"--{prefix}-artifact-digest", required=True)
         else:
+            p.add_argument("--receipt-artifact-id", type=int, required=True)
             p.add_argument("--approved-builder-sha", action="append", required=True)
     args = parser.parse_args()
     try:
@@ -461,6 +466,8 @@ def main():
                 args.source_sha,
                 args.ref,
                 args.run_id,
+                args.run_attempt,
+                args.receipt_artifact_id,
                 args.approved_builder_sha,
             )
         print(json.dumps(result, sort_keys=True))

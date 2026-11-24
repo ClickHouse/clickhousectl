@@ -18,6 +18,9 @@ SOURCE = "a" * 40
 BUILDER = "b" * 40
 REF = "refs/tags/v1.2.3"
 RUN = 42
+ATTEMPT = 3
+RECEIPT_ID = 7
+RECEIPT_NAME = "macos-build-receipt-42-3.json"
 
 
 class ErrorTests(unittest.TestCase):
@@ -76,12 +79,27 @@ class ReceiptTests(unittest.TestCase):
         return copy.deepcopy(paths[path])
 
     def create(self):
-        result = p.receipt(self.directory, SOURCE, REF, RUN, 3, BUILDER, self.inputs)
+        result = p.receipt(
+            self.directory, SOURCE, REF, RUN, ATTEMPT, BUILDER, self.inputs
+        )
         self.signed = {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in self.directory.iterdir()
+            if path.name != RECEIPT_NAME
         }
+        self.record_receipt(self.directory / RECEIPT_NAME)
         return result
+
+    def record_receipt(self, path):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.signed[path.name] = digest
+        self.objects[RECEIPT_ID] = {
+            "id": RECEIPT_ID,
+            "name": path.name,
+            "digest": "sha256:" + digest,
+            "expired": False,
+            "workflow_run": {"id": RUN, "head_sha": SOURCE},
+        }
 
     def command(self, args):
         if args[1] == "--version":
@@ -89,16 +107,18 @@ class ReceiptTests(unittest.TestCase):
         path = Path(args[3])
         if path.name not in self.signed:
             raise p.ProvenanceError("unsigned artifact", code="command_failed")
-        evidence = attestation(path, self.signed[path.name])
+        evidence = attestation(self.signed)
         if hasattr(self, "certificate_override"):
             evidence["verificationResult"]["signature"]["certificate"].update(
                 self.certificate_override
             )
         return json.dumps([evidence])
 
-    def verify(self):
+    def verify(self, *, attempt=ATTEMPT, receipt_id=RECEIPT_ID):
         with patch.object(p, "command", side_effect=self.command):
-            return p.verify(self.directory, SOURCE, REF, RUN, [BUILDER])
+            return p.verify(
+                self.directory, SOURCE, REF, RUN, attempt, receipt_id, [BUILDER]
+            )
 
     def test_valid_cross_attempt_receipt_and_verify(self):
         receipt = self.create()
@@ -110,6 +130,38 @@ class ReceiptTests(unittest.TestCase):
             receipt["targets"]["x86_64-apple-darwin"]["name"].endswith("-2")
         )
         self.assertEqual(self.verify(), receipt)
+
+    def test_verify_rejects_wrong_expected_receipt_attempt(self):
+        self.create()
+        with self.assertRaises(p.ProvenanceError) as error:
+            self.verify(attempt=4)
+        self.assertEqual(error.exception.code, "inventory_mismatch")
+
+    def test_verify_binds_selected_receipt_metadata_even_when_bytes_match(self):
+        self.create()
+        self.objects[8] = {
+            **self.objects[RECEIPT_ID],
+            "id": 8,
+            "name": "macos-build-receipt-42-4.json",
+        }
+        with self.assertRaises(p.ProvenanceError) as error:
+            self.verify(receipt_id=8)
+        self.assertEqual(error.exception.code, "artifact_name_mismatch")
+
+    def test_verify_requires_the_complete_signed_subject_set(self):
+        self.create()
+        name = self.objects[1]["name"]
+        original = self.signed.copy()
+        for subjects in (
+            {key: value for key, value in original.items() if key != name},
+            {**original, name: "e" * 64},
+            {**original, "extra": "e" * 64},
+        ):
+            with self.subTest(subjects=subjects):
+                self.signed = subjects
+                with self.assertRaises(p.ProvenanceError) as error:
+                    self.verify()
+                self.assertEqual(error.exception.code, "attestation_mismatch")
 
     def test_tamper_and_digest_swap(self):
         self.create()
@@ -188,9 +240,9 @@ class ReceiptTests(unittest.TestCase):
 
     def test_changed_receipt_rejected_before_metadata(self):
         self.create()
-        file = self.directory / f"macos-build-receipt-{RUN}-3.json"
+        file = self.directory / RECEIPT_NAME
         obj = json.loads(file.read_text())
-        obj["targets"] = "hostile"
+        obj["comment"] = "changed after attestation"
         file.write_text(json.dumps(obj))
         with self.assertRaises(p.ProvenanceError) as error:
             self.verify()
@@ -198,14 +250,14 @@ class ReceiptTests(unittest.TestCase):
 
     def test_unsigned_receipt_rejected_before_metadata(self):
         self.create()
-        self.signed.pop(f"macos-build-receipt-{RUN}-3.json")
+        self.signed.pop(RECEIPT_NAME)
         with self.assertRaises(p.ProvenanceError) as error:
             self.verify()
         self.assertEqual(error.exception.code, "command_failed")
 
     def test_unapproved_builder(self):
         self.create()
-        file = self.directory / f"macos-build-receipt-{RUN}-3.json"
+        file = self.directory / RECEIPT_NAME
         obj = json.loads(file.read_text())
         obj["builder_sha"] = "c" * 40
         file.write_text(json.dumps(obj))
@@ -286,11 +338,11 @@ class ReceiptTests(unittest.TestCase):
 
     def test_verify_duplicate_id_in_authenticated_receipt(self):
         self.create()
-        file = self.directory / f"macos-build-receipt-{RUN}-3.json"
+        file = self.directory / RECEIPT_NAME
         obj = json.loads(file.read_text())
         obj["targets"]["x86_64-apple-darwin"]["artifact_id"] = 1
         file.write_text(json.dumps(obj))
-        self.signed[file.name] = hashlib.sha256(file.read_bytes()).hexdigest()
+        self.record_receipt(file)
         with self.assertRaises(p.ProvenanceError) as error:
             self.verify()
         self.assertEqual(error.exception.code, "artifact_duplicate")
@@ -304,13 +356,14 @@ class ReceiptTests(unittest.TestCase):
 
     def test_verify_rejects_swapped_authenticated_digest(self):
         self.create()
-        file = self.directory / f"macos-build-receipt-{RUN}-3.json"
+        file = self.directory / RECEIPT_NAME
         obj = json.loads(file.read_text())
         swapped = self.inputs["x86_64-apple-darwin"][1]
         obj["targets"]["aarch64-apple-darwin"]["sha256"] = swapped
         self.objects[1]["digest"] = "sha256:" + swapped
         file.write_text(json.dumps(obj))
-        self.signed[file.name] = hashlib.sha256(file.read_bytes()).hexdigest()
+        self.record_receipt(file)
+        self.signed[self.objects[1]["name"]] = swapped
         with self.assertRaises(p.ProvenanceError) as error:
             self.verify()
         self.assertEqual(error.exception.code, "artifact_content_mismatch")
@@ -322,12 +375,14 @@ class ReceiptTests(unittest.TestCase):
             patch.object(p, "verify_attestation") as check,
         ):
             with self.assertRaises(p.ProvenanceError) as error:
-                p.verify(self.directory, SOURCE, REF, RUN, [BUILDER])
+                p.verify(
+                    self.directory, SOURCE, REF, RUN, ATTEMPT, RECEIPT_ID, [BUILDER]
+                )
             self.assertEqual(error.exception.code, "old_verifier")
             check.assert_not_called()
 
 
-def attestation(path, digest):
+def attestation(subjects):
     identity = "https://github.com/" + p.WORKFLOW + "@" + BUILDER
     cert = {
         "subjectAlternativeName": identity,
@@ -340,7 +395,10 @@ def attestation(path, digest):
         "sourceRepositoryRef": REF,
         "buildTrigger": "push",
         "runnerEnvironment": "github-hosted",
-        "runInvocationURI": f"https://github.com/{p.REPO}/actions/runs/{RUN}/attempts/2",
+        "buildConfigURI": (
+            f"https://github.com/ClickHouse/clickhousectl/.github/workflows/release.yml@{REF}"
+        ),
+        "runInvocationURI": f"https://github.com/{p.REPO}/actions/runs/{RUN}/attempts/{ATTEMPT}",
     }
     return {
         "verificationResult": {
@@ -348,7 +406,10 @@ def attestation(path, digest):
             "verifiedTimestamps": [{"type": "Tlog"}],
             "statement": {
                 "predicateType": p.PREDICATE,
-                "subject": [{"name": path.name, "digest": {"sha256": digest}}],
+                "subject": [
+                    {"name": name, "digest": {"sha256": digest}}
+                    for name, digest in subjects.items()
+                ],
             },
         }
     }
@@ -358,12 +419,13 @@ class AttestationTests(unittest.TestCase):
     def setUp(self):
         self.path = Path("artifact")
         self.digest = "d" * 64
-        self.result = attestation(self.path, self.digest)
+        self.subjects = {self.path.name: self.digest}
+        self.result = attestation(self.subjects)
 
     def check(self, results):
         with patch.object(p, "command", return_value=json.dumps(results)):
             return p.verify_attestation(
-                self.path, BUILDER, SOURCE, REF, RUN, self.digest
+                self.path, BUILDER, SOURCE, REF, RUN, ATTEMPT, self.subjects
             )
 
     def test_valid_and_other_run_also_present(self):
@@ -387,12 +449,16 @@ class AttestationTests(unittest.TestCase):
             ("sourceRepositoryIdentifier", "1"),
             ("sourceRepositoryOwnerIdentifier", "1"),
             ("sourceRepositoryRef", REF.upper()),
+            (
+                "buildConfigURI",
+                f"https://github.com/{p.REPO}/.github/workflows/other.yml@{REF}",
+            ),
             ("buildTrigger", "pull_request"),
             ("runnerEnvironment", "self-hosted"),
             ("runInvocationURI", "foreign"),
             (
                 "runInvocationURI",
-                f"https://github.com/{p.REPO}/actions/runs/{RUN}/attempts/0",
+                f"https://github.com/{p.REPO}/actions/runs/{RUN}/attempts/2",
             ),
         ):
             with self.subTest(key=key):
