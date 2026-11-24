@@ -19,10 +19,9 @@ The API/analyzer crates share [crate-level instructions](../crates/clickhouse-cl
 
 ## macOS build provenance
 
-Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or
-secrets. `release.yml` does not call the builder yet; signing remains disabled.
-Build jobs have no OIDC or AWS credentials. A separate job attests the raw
-binaries and their receipt.
+`release.yml` calls `macos-build.yml` by its full merged commit SHA, with no
+inputs or secrets. Build jobs have no OIDC or AWS credentials. A separate job
+attests the raw binaries and their receipt.
 
 Source must be a pushed `vX.Y.Z` tag naming an exact reviewed PR merge into
 `main` or a single-level `release/*` branch. The released tree must equal the
@@ -70,6 +69,41 @@ python3 builder/scripts/release_artifacts.py verify \
 
 Before enabling signing, complete an authorized-tag build and receipt verification.
 Do not bypass a failed check or publish unsigned as a fallback.
+
+## First signed release
+
+For an approved tag push, use the `macos-build` job's receipt artifact ID and
+the release run ID to start the manual workflow in `ClickHouse/macos-signing`.
+Leave the public run waiting at `signed-release-publish`. A source PR merge or
+an uploaded unsigned artifact does not authorize publication.
+
+After the private workflow accepts the Apple submission and both native
+checks pass, a maintainer moves the exact `macos-release.zip` artifact to an
+approved private S3 staging location. Set `MACOS_RELEASE_BUNDLE_URL` as a
+temporary, GET-only presigned URL in the `signed-release-publish` environment.
+This is access to one object, not a token for the private repository.
+
+Set `MACOS_RELEASE_SIGNER_SHA` and `MACOS_RELEASE_LEAF_SHA256` from the
+reviewed signer and certificate pins, not the bundle. Product Security
+verifies the independent signing audit, matches it to the private
+run, records that decision, and sets `MACOS_RELEASE_AUDITED_BUNDLE_SHA256`
+from the private job before approving the protected environment. Require a
+reviewer distinct from the trigger actor and disable admin bypass. Remove the
+short-lived URL and audited bundle digest after use.
+
+The gate checks the bundle, tag, source SHA, release run, actual receipt
+attempt, signer, certificate, accepted notarization, and both native receipts.
+Every publisher depends on the gate. The existing `SHA256SUMS` names and
+formats stay unchanged; S3 retries accept existing bytes only if identical.
+On a failed-job rerun, reuse the approved artifact IDs and hashes. A full
+rerun creates new build evidence and needs a fresh approval; it must not
+overwrite a different existing S3 release.
+
+This cutover retains Linux PyPI wheels. The macOS wheels contain a different
+`channel-pip` binary and cannot use the verified release binaries. The publish
+gate stays closed unless maintainers approve Linux-only PyPI scope and set
+`MACOS_RELEASE_PYPI_SCOPE=linux-only` in the protected environment.
+Do not push a proof tag through the legacy release workflow.
 
 ## Local tests
 
