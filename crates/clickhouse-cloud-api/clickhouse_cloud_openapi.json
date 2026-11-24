@@ -27915,6 +27915,108 @@
           }
         }
       }
+    },
+    "/v1/claimable": {
+      "post": {
+        "summary": "Create claimable organisation",
+        "description": "Creates a new, unclaimed organisation. Returns a one-time API key pair that must be claimed before expiresAt.",
+        "operationId": "claimableOrganizationCreate",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "region": {
+                    "type": "string",
+                    "description": "Cloud region identifier (e.g. us-east-1). Optional."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ClaimableOrganization"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is temporarily unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 503
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -49337,6 +49439,50 @@
           "type"
         ],
         "additionalProperties": false
+      },
+      "ClaimableOrganization": {
+        "type": "object",
+        "properties": {
+          "organizationId": {
+            "type": "string",
+            "description": "ID of the newly created organisation."
+          },
+          "apiKey": {
+            "$ref": "#/components/schemas/ClaimableOrganizationApiKey"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 timestamp at which the unclaimed organisation will be deleted."
+          },
+          "limits": {
+            "type": "object",
+            "description": "Informative resource limits for the new organisation.",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "organizationId",
+          "apiKey",
+          "expiresAt"
+        ]
+      },
+      "ClaimableOrganizationApiKey": {
+        "type": "object",
+        "properties": {
+          "keyId": {
+            "type": "string",
+            "description": "API key ID."
+          },
+          "keySecret": {
+            "type": "string",
+            "description": "API key secret. Returned once; must be persisted immediately."
+          }
+        },
+        "required": [
+          "keyId",
+          "keySecret"
+        ]
       }
     },
     "securitySchemes": {

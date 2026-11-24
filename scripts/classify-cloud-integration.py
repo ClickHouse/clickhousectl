@@ -54,6 +54,8 @@ SOURCE_PATH_SUITES = {
     ),
     "crates/clickhouse-cloud-api/src/client/backups.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/byoc.rs": frozenset({"organization"}),
+    # `POST /v1/claimable` (experimental `cloud init`) has no live suite.
+    "crates/clickhouse-cloud-api/src/client/claimable.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client/clickpipes.rs": frozenset(
         {"clickpipes"}
     ),
@@ -147,6 +149,7 @@ SOURCE_PATH_SUITES = {
     ),
     "crates/clickhouse-cloud-api/src/models/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack/alerts.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/claimable.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack/dashboards.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack/enums.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/clickstack/mod.rs": NO_SUITES,

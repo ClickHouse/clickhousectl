@@ -102,6 +102,15 @@ pub const BACKUP_GET_LIST: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:service:view-backups"],
 };
 
+/// `POST /v1/claimable` (`claimableOrganizationCreate`).
+pub const CLAIMABLE_ORGANIZATION_CREATE: OperationMetadata = OperationMetadata {
+    operation_id: "claimableOrganizationCreate",
+    rust_method: "claimable_organization_create",
+    method: "POST",
+    path: "/v1/claimable",
+    required_permissions: &[],
+};
+
 /// `GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipesCdcScaling` (`clickPipeCdcScalingGet`).
 pub const CLICK_PIPE_CDC_SCALING_GET: OperationMetadata = OperationMetadata {
     operation_id: "clickPipeCdcScalingGet",
@@ -1775,6 +1784,7 @@ pub const ALL: &[OperationMetadata] = &[
     BACKUP_CONFIGURATION_UPDATE,
     BACKUP_GET,
     BACKUP_GET_LIST,
+    CLAIMABLE_ORGANIZATION_CREATE,
     CLICK_PIPE_CDC_SCALING_GET,
     CLICK_PIPE_CDC_SCALING_UPDATE,
     CLICK_PIPE_CREATE,
