@@ -65,6 +65,15 @@ Each classifier fails closed for one set of paths, and a new or renamed file nee
 
 Documentation paths alone do not select live suites.
 
+## Handoff diagnostic
+
+Run the **Handoff diagnostic** workflow on `main` with `valid` to check the
+diagnostic round trip. Run it again with `mismatched-attempt` to check that a
+malformed request is rejected. Both scenarios succeed only after an authenticated
+response for that run and attempt; a timeout or verification error fails the job.
+The repository variable `HANDOFF_REPLY_APP_ID` identifies the trusted reply App.
+This diagnostic is neither a required status check nor a signing result.
+
 ## Live Cloud integration
 
 Use a dedicated test workspace: these tests create and change real Cloud resources. Maintainer labels, exact-SHA overrides, stacked-PR policy, and required checks are documented in [the CI guide](../.github/CLOUD_INTEGRATION.md). Affected suites run with `run-cloud-integration`; the decision check passes without the label when no suites are selected.
