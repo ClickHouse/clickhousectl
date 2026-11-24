@@ -519,26 +519,28 @@ mod tests {
         assert_eq!(visible_subcommands(&root), top);
 
         let cloud = root.find_subcommand("cloud").unwrap();
-        assert_eq!(
-            visible_subcommands(cloud),
-            [
-                "auth",
-                "use",
-                "org",
-                "clickhouse",
-                "postgres",
-                "query-api-endpoint",
-                "saved-query",
-                "backup",
-                "clickpipe",
-                "clickstack",
-                "udf",
-                "key",
-                "member",
-                "invitation",
-                "activity",
-            ]
-        );
+        let mut cloud_commands = Vec::new();
+        if cfg!(feature = "experimental-claimable") {
+            cloud_commands.push("init");
+        }
+        cloud_commands.extend([
+            "auth",
+            "use",
+            "org",
+            "clickhouse",
+            "postgres",
+            "query-api-endpoint",
+            "saved-query",
+            "backup",
+            "clickpipe",
+            "clickstack",
+            "udf",
+            "key",
+            "member",
+            "invitation",
+            "activity",
+        ]);
+        assert_eq!(visible_subcommands(cloud), cloud_commands);
 
         let local = root.find_subcommand("local").unwrap();
         assert_eq!(
@@ -718,7 +720,10 @@ mod tests {
             if path.split_whitespace().any(|part| part == "help") {
                 return;
             }
-            let required: &[&str] = if path.starts_with("clickhousectl cloud") {
+            let required: &[&str] = if path == "clickhousectl cloud init" {
+                // Unauthenticated and org-less: only the connection-free globals.
+                &["url", "json", "debug"]
+            } else if path.starts_with("clickhousectl cloud") {
                 &[
                     "org-id",
                     "org-name",

@@ -10,6 +10,8 @@ pub mod client;
 pub(crate) mod config;
 pub mod context;
 pub mod credentials;
+#[cfg(feature = "experimental-claimable")]
+pub mod init;
 pub mod organizations;
 pub mod output;
 pub(crate) mod permissions;
@@ -59,6 +61,15 @@ fn ignored_env_credentials_notice(
 }
 
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
+    // `init` creates an org without credentials: skip resolution, refresh and
+    // the OAuth write gate entirely.
+    #[cfg(feature = "experimental-claimable")]
+    if let CloudCommands::Init(init_args) = args.command {
+        return init::run(init_args, args.url.as_deref(), args.debug, json)
+            .await
+            .map_err(cloud_error_to_top_level);
+    }
+
     // Local auth subcommands don't need a client; `whoami` takes the normal path.
     let mut command = match args.command {
         CloudCommands::Auth { command } if !command.needs_client() => {
@@ -193,6 +204,8 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
 
 async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> client::Result<()> {
     match command {
+        #[cfg(feature = "experimental-claimable")]
+        CloudCommands::Init(_) => unreachable!("`cloud init` returns before client construction"),
         CloudCommands::Auth { command } => auth::run_with_client(client, command, json).await,
         CloudCommands::Use(args) => context::run(client, args, json).await,
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,

@@ -25,6 +25,15 @@ pub struct Credentials {
     /// [`take_legacy_service_query_key`] has told the user about it.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub service_query_keys: HashMap<String, serde_json::Value>,
+    /// The claimable organisation `cloud init` created with this key pair.
+    /// It belongs to the key pair: saving another pair drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    /// When the claimable organisation expires, as the API last reported it.
+    /// A cached value, not the source of truth; it belongs to the key pair
+    /// like `organization_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<jiff::Timestamp>,
 }
 
 impl Credentials {
@@ -33,6 +42,17 @@ impl Credentials {
         let key = self.api_key.as_deref()?;
         let secret = self.api_secret.as_deref()?;
         (!key.is_empty() && !secret.is_empty()).then_some((key, secret))
+    }
+
+    /// Replace the management key pair and the API it belongs to. The
+    /// claimable organisation fields describe the old pair, so they go too;
+    /// `service_query_keys` records are kept.
+    fn replace_api_key(&mut self, api_key: String, api_secret: String, api_url: &str) {
+        self.api_key = Some(api_key);
+        self.api_secret = Some(api_secret);
+        self.api_url = stored_api_url(api_url);
+        self.organization_id = None;
+        self.expires_at = None;
     }
 
     /// The normalized API base URL the saved key pair belongs to.
@@ -76,7 +96,7 @@ pub(crate) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
+pub(crate) fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
     lock_credentials_mutation_in(&init::local_dir()?)
 }
 
@@ -141,6 +161,29 @@ fn save_credentials_in(dir: &Path, creds: &Credentials) -> CloudResult<()> {
     Ok(())
 }
 
+/// Save the credentials returned by `POST /v1/claimable`.
+///
+/// The lock must be acquired before calling this function (see the TOCTOU-safe
+/// pattern in `cloud/init.rs`). The key secret is written to `api_secret` and
+/// must not be logged or printed elsewhere.
+#[cfg(feature = "experimental-claimable")]
+pub(crate) fn save_claimable_credentials(
+    organization_id: String,
+    key_id: String,
+    key_secret: String,
+    expires_at: jiff::Timestamp,
+    api_url: &str,
+) -> CloudResult<()> {
+    // Load the existing credentials so that any `service_query_keys` records
+    // are preserved — those survive until `take_legacy_service_query_key`
+    // removes them, and a fresh `Default` would silently drop them.
+    let mut creds = try_load_credentials()?.unwrap_or_default();
+    creds.replace_api_key(key_id, key_secret, api_url);
+    creds.organization_id = Some(organization_id);
+    creds.expires_at = Some(expires_at);
+    save_credentials(&creds)
+}
+
 /// Save a management key pair along with the API it belongs to: `api_url` is
 /// the resolved base URL the key was minted or verified against, not whether
 /// `--url` was passed.
@@ -151,9 +194,7 @@ pub(crate) fn set_api_credentials(
 ) -> CloudResult<()> {
     let _lock = lock_credentials_mutation()?;
     let mut creds = try_load_credentials()?.unwrap_or_default();
-    creds.api_key = Some(api_key);
-    creds.api_secret = Some(api_secret);
-    creds.api_url = stored_api_url(api_url);
+    creds.replace_api_key(api_key, api_secret, api_url);
     save_credentials(&creds)
 }
 
@@ -275,6 +316,24 @@ mod tests {
     }
 
     #[test]
+    fn replacing_the_key_pair_drops_the_claimable_organisation() {
+        let raw = r#"{"api_key":"claim-key","api_secret":"claim-secret",
+            "organization_id":"org-claimable","expires_at":"2026-12-31T23:59:59Z",
+            "service_query_keys":{"svc-1":{"api_key_id":"key-1"}}}"#;
+        let mut creds: Credentials = serde_json::from_str(raw).unwrap();
+        creds.replace_api_key(
+            "k2".into(),
+            "s2".into(),
+            crate::cloud::client::DEFAULT_BASE_URL,
+        );
+
+        assert_eq!(creds.api_credentials(), Some(("k2", "s2")));
+        assert_eq!(creds.organization_id, None);
+        assert_eq!(creds.expires_at, None);
+        assert!(creds.service_query_keys.contains_key("svc-1"));
+    }
+
+    #[test]
     fn taking_a_legacy_query_key_creates_nothing_unless_a_record_exists() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join(".clickhouse");
@@ -311,5 +370,31 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn expires_at_round_trips_through_serde() {
+        let ts: jiff::Timestamp = "2026-12-31T23:59:59Z".parse().unwrap();
+        let creds = Credentials {
+            api_key: Some("k".into()),
+            api_secret: Some("s".into()),
+            expires_at: Some(ts),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&creds).unwrap();
+        assert!(json.contains("expires_at"), "expires_at absent: {json}");
+        let back: Credentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.expires_at, Some(ts));
+    }
+
+    #[test]
+    fn absent_expires_at_is_omitted_from_serialized_output() {
+        let creds = Credentials {
+            api_key: Some("k".into()),
+            api_secret: Some("s".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&creds).unwrap();
+        assert!(!json.contains("expires_at"), "expires_at present: {json}");
     }
 }

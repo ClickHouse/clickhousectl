@@ -232,6 +232,17 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
             "--org-id cannot be used with --org-name",
         ));
     }
+    #[cfg(feature = "experimental-claimable")]
+    if let Some((name, flag)) = args.no_connection_flag_conflict() {
+        let command = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut(name))
+            .expect("no-connection cloud command must exist");
+        return Err(command.error(
+            ErrorKind::ArgumentConflict,
+            format!("{flag} cannot be used with `cloud {name}`"),
+        ));
+    }
     if args.has_use_clear_selector_conflict() {
         let use_command = cmd
             .find_subcommand_mut("cloud")
@@ -793,6 +804,52 @@ mod tests {
                 message.contains("clickhousectl cloud clickhouse query"),
                 "{message}"
             );
+        }
+    }
+
+    #[cfg(feature = "experimental-claimable")]
+    #[test]
+    fn cloud_init_rejects_credential_and_org_flags_at_either_depth() {
+        for (flag, value) in [
+            ("--org-id", "org-1"),
+            ("--org-name", "Acme"),
+            ("--api-key", "key"),
+            ("--api-secret", "secret"),
+        ] {
+            for args in [
+                ["clickhousectl", "cloud", flag, value, "init"],
+                ["clickhousectl", "cloud", "init", flag, value],
+            ] {
+                let error = parse_and_validate(&args)
+                    .err()
+                    .unwrap_or_else(|| panic!("{args:?} should be rejected"));
+                assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+                assert_eq!(error.exit_code(), 2);
+                let message = error.to_string();
+                assert!(message.contains(flag), "{message}");
+                assert!(message.contains("clickhousectl cloud init"), "{message}");
+            }
+        }
+        for args in [
+            &["clickhousectl", "cloud", "init"][..],
+            &[
+                "clickhousectl",
+                "cloud",
+                "--url",
+                "http://x",
+                "init",
+                "--json",
+            ][..],
+            &[
+                "clickhousectl",
+                "cloud",
+                "init",
+                "--region",
+                "eu-west-1",
+                "--debug",
+            ][..],
+        ] {
+            assert!(parse_and_validate(args).is_ok(), "{args:?}");
         }
     }
 

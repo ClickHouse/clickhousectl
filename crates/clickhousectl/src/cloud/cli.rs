@@ -12,6 +12,35 @@ pub(crate) use crate::cloud::services::ServiceCommands;
 use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
 
+/// Blocks the cloud-wide credential and org flags on a command that uses
+/// neither. clap propagates a global arg only to subcommands that do not
+/// already define its id, so these hidden twins keep the globals out of the
+/// command's help. Their values still reach `CloudArgs` from either position;
+/// `CloudArgs::no_connection_flag_conflict` rejects them after parsing.
+#[cfg(feature = "experimental-claimable")]
+#[derive(Args, Debug, Default)]
+pub struct NoCloudConnectionArgs {
+    // Help matches the `CloudArgs` declarations (one wording per shared flag).
+    /// Cloud API key (requires --api-secret for auth login)
+    #[arg(long = "api-key", id = "api_key", hide = true, display_order = crate::cli::help_order::API_KEY)]
+    api_key: Option<String>,
+    /// Cloud API secret (requires --api-key for auth login)
+    #[arg(long = "api-secret", id = "api_secret", hide = true, display_order = crate::cli::help_order::API_SECRET)]
+    api_secret: Option<String>,
+    /// Organization ID (else the `cloud use` pin, or your only org)
+    #[arg(long = "org-id", id = "org_id", hide = true, display_order = crate::cli::help_order::ORG_ID)]
+    org_id: Option<String>,
+    /// Exact organization name
+    #[arg(long = "org-name", id = "org_name", hide = true, display_order = crate::cli::help_order::ORG_NAME)]
+    org_name: Option<String>,
+}
+
+#[cfg(feature = "experimental-claimable")]
+impl NoCloudConnectionArgs {
+    /// The flags these args block, in help order.
+    pub const FLAGS: [&'static str; 4] = ["--org-id", "--org-name", "--api-key", "--api-secret"];
+}
+
 #[derive(Args)]
 pub struct CloudArgs {
     /// Cloud API key (requires --api-secret for auth login)
@@ -59,6 +88,27 @@ impl CloudArgs {
     pub fn has_use_clear_selector_conflict(&self) -> bool {
         matches!(&self.command, CloudCommands::Use(args) if args.clear)
             && (self.org_id.is_some() || self.org_name.is_some())
+    }
+
+    /// The first credential or org flag passed to a command that uses neither,
+    /// with that command's name. The value reaches `CloudArgs` whether it was
+    /// typed before or after the subcommand.
+    #[cfg(feature = "experimental-claimable")]
+    pub fn no_connection_flag_conflict(&self) -> Option<(&'static str, &'static str)> {
+        let command = match &self.command {
+            CloudCommands::Init(_) => "init",
+            _ => return None,
+        };
+        let passed = [
+            self.org_id.is_some(),
+            self.org_name.is_some(),
+            self.api_key.is_some(),
+            self.api_secret.is_some(),
+        ];
+        NoCloudConnectionArgs::FLAGS
+            .into_iter()
+            .zip(passed)
+            .find_map(|(flag, passed)| passed.then_some((command, flag)))
     }
 
     pub fn has_explicit_json_format_conflict(&self) -> bool {
@@ -115,6 +165,16 @@ impl CloudArgs {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum CloudCommands {
+    /// Create a new unclaimed organization (experimental)
+    #[cfg(feature = "experimental-claimable")]
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Initializes a new organization to provision services in, with no registered user or sign-in.
+  The org can be claimed later in the Cloud console; unclaimed, it is deleted at the printed expiry.
+  Saves the org's API key for this project (once per project); later cloud commands use it.
+  Typical flow: `init` -> `cloud clickhouse create --name X`.")]
+    Init(crate::cloud::init::InitArgs),
+
     /// Manage authentication (OAuth login, API keys)
     Auth {
         #[command(subcommand)]
@@ -306,6 +366,9 @@ impl CloudCommands {
     /// classify it as read or write.
     pub fn is_write_command(&self) -> bool {
         match self {
+            // Creates an organization and its API key.
+            #[cfg(feature = "experimental-claimable")]
+            CloudCommands::Init(_) => true,
             CloudCommands::Auth { command } => command.is_write(),
             // Writes only the project's own pin file, never Cloud state.
             CloudCommands::Use(_) => false,
@@ -406,7 +469,8 @@ pub(crate) mod tests {
             assert_eq!(selector.get_long(), Some("org-id"));
             for child in command
                 .get_subcommands()
-                .filter(|child| child.get_name() != "help")
+                // `init` blocks the selector; its own test covers it.
+                .filter(|child| !matches!(child.get_name(), "help" | "init"))
             {
                 walk(child);
             }
@@ -575,6 +639,35 @@ pub(crate) mod tests {
                 };
                 assert_eq!(cloud.org_id.as_deref(), Some("org-shared"), "{args:?}");
             }
+        }
+    }
+
+    #[cfg(feature = "experimental-claimable")]
+    #[test]
+    fn init_parses_region_and_keeps_only_connection_free_globals_visible() {
+        let cli = Cli::try_parse_from(["chctl", "cloud", "init", "--region", "us-east-1"]).unwrap();
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("cloud")
+        };
+        assert!(cloud.command.is_write_command());
+        let super::CloudCommands::Init(init) = cloud.command else {
+            panic!("init")
+        };
+        assert_eq!(init.region.as_deref(), Some("us-east-1"));
+
+        let mut command = Cli::command();
+        command.build();
+        let init = command
+            .find_subcommand("cloud")
+            .and_then(|cloud| cloud.find_subcommand("init"))
+            .unwrap();
+        for id in ["api_key", "api_secret", "org_id", "org_name"] {
+            let arg = init.get_arguments().find(|arg| arg.get_id() == id).unwrap();
+            assert!(arg.is_hide_set() && !arg.is_global_set(), "{id}");
+        }
+        for id in ["url", "json", "debug"] {
+            let arg = init.get_arguments().find(|arg| arg.get_id() == id).unwrap();
+            assert!(arg.is_global_set(), "{id}");
         }
     }
 

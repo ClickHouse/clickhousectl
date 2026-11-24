@@ -57,8 +57,9 @@ pub(super) struct Declaration {
     pub authorization: Option<&'static str>,
     /// Organization resolution is lazy and adds a list call without --org-id.
     pub organization: bool,
-    /// The handler rejects API keys before any call, so API-key permission
-    /// lines would never apply. Unlike `non_api`, operations stay declared.
+    /// The handler sends no API key (it rejects them, or calls without
+    /// credentials), so API-key permission lines would never apply. Unlike
+    /// `non_api`, operations stay declared.
     pub oauth_only: bool,
 }
 
@@ -93,6 +94,13 @@ impl Declaration {
         self.authorization = Some(authorization);
         self.oauth_only = true;
         self
+    }
+
+    /// For a command that calls the API without credentials: its calls stay
+    /// declared and validated, but help renders only the authorization line.
+    #[cfg_attr(not(feature = "experimental-claimable"), allow(dead_code))]
+    pub const fn unauthenticated(self, authorization: &'static str) -> Self {
+        self.unscoped().oauth_only(authorization)
     }
 
     pub const fn when(mut self, conditional: &'static [Conditional]) -> Self {
@@ -131,6 +139,8 @@ fn declarations() -> impl Iterator<Item = &'static Declaration> {
         super::clickpipes::PERMISSIONS,
         super::clickstack::PERMISSIONS,
         super::context::PERMISSIONS,
+        #[cfg(feature = "experimental-claimable")]
+        super::init::PERMISSIONS,
         super::organizations::PERMISSIONS,
         super::postgres::PERMISSIONS,
         super::query_api_endpoints::PERMISSIONS,

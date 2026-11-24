@@ -296,6 +296,11 @@ fn remove(path: &Path) -> CloudResult<()> {
 }
 
 /// Pin `org` for `api_url` in `dir`, keeping any other keys in the file.
+#[cfg(feature = "experimental-claimable")]
+pub(crate) fn save_org_in(dir: &Path, api_url: &str, org: PinnedOrg) -> CloudResult<()> {
+    save_org(dir, api_url, org)
+}
+
 fn save_org(dir: &Path, api_url: &str, org: PinnedOrg) -> CloudResult<()> {
     let mut context = match load(dir)? {
         Stored::Missing => Context::default(),
@@ -653,5 +658,33 @@ pub(crate) mod tests {
             lookup(Some(Context::default()), "https://api.clickhouse.cloud"),
             PinLookup::Unset
         );
+    }
+
+    #[cfg(feature = "experimental-claimable")]
+    #[test]
+    fn pin_org_after_init_writes_id_without_name_and_overwrites_stale_pin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dot = tmp.path().join(".clickhouse");
+
+        // Pre-existing stale pin for the same API URL.
+        pin(&dot, "https://api.clickhouse.cloud", "old-org");
+
+        // Call save_org directly (same logic as pin_org_after_init, but
+        // without going through local_dir() which reads env/filesystem).
+        save_org(
+            &dot,
+            "https://api.clickhouse.cloud/v1",
+            PinnedOrg {
+                id: "new-org".to_string(),
+                name: None,
+            },
+        )
+        .unwrap();
+
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(context_path(&dot)).unwrap()).unwrap();
+        assert_eq!(stored["org"]["id"], "new-org");
+        assert!(stored["org"].get("name").is_none());
+        assert_eq!(stored["api_url"], "https://api.clickhouse.cloud/v1");
     }
 }

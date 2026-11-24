@@ -122,6 +122,15 @@ pub enum CloudErrorCode {
     /// The selected local build's client predates `--login`, which
     /// `cloud clickhouse client` needs; `command` installs a newer one (#1443).
     UnsupportedClientVersion,
+    /// `cloud init` found existing credentials. Use a fresh project directory or
+    /// delete `.clickhouse/credentials.json` to reinitialise.
+    #[cfg(feature = "experimental-claimable")]
+    #[serde(rename = "already_initialized")]
+    AlreadyInitialized,
+    /// `POST /v1/claimable` returned 503: the feature is off on the server.
+    #[cfg(feature = "experimental-claimable")]
+    #[serde(rename = "claimable_unavailable")]
+    ClaimableUnavailable,
 }
 
 impl CloudErrorCode {
@@ -187,6 +196,10 @@ impl CloudErrorCode {
         Self::VersionSelectionRequired,
         Self::BinaryNotLaunchable,
         Self::UnsupportedClientVersion,
+        #[cfg(feature = "experimental-claimable")]
+        Self::AlreadyInitialized,
+        #[cfg(feature = "experimental-claimable")]
+        Self::ClaimableUnavailable,
     ];
 }
 
@@ -945,6 +958,10 @@ mod tests {
                 "version_selection_required",
                 "binary_not_launchable",
                 "unsupported_client_version",
+                #[cfg(feature = "experimental-claimable")]
+                "already_initialized",
+                #[cfg(feature = "experimental-claimable")]
+                "claimable_unavailable",
             ]
         );
     }
