@@ -17,6 +17,60 @@
 
 The API/analyzer crates share [crate-level instructions](../crates/clickhouse-cloud-api/AGENTS.md). For command work, follow [add-cli-command](../.agents/skills/add-cli-command/SKILL.md) and its local/Cloud references. [AGENTS.md](../AGENTS.md) owns the invariants; avoid duplicating them in each procedure.
 
+## macOS build provenance
+
+Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or
+secrets. `release.yml` does not call the builder yet; signing remains disabled.
+Build jobs have no OIDC or AWS credentials. A separate job attests the raw
+binaries and their receipt.
+
+Source must be a pushed `vX.Y.Z` tag naming an exact reviewed PR merge into
+`main` or a single-level `release/*` branch. The released tree must equal the
+approved PR head. Source branches need active organization rules blocking
+deletion/force-push and requiring fresh, last-push-separated approval.
+Approval must come from a human writer other than the PR author or linked
+commit contributors; missing linked identities are rejected.
+Patch history must be linear, with every commit reviewed back to `main`
+(maximum 200 commits). Use squash merges or single-commit rebases.
+
+`main` history is a trusted baseline, not retrospectively checked. Review
+permissions are current; linked Git identities do not prove actual authorship.
+Audit organization-rule bypass access separately before enabling signing.
+
+Caller permissions: `contents: read`, `pull-requests: read`, `actions: read`,
+`id-token: write`, `attestations: write`. Verification needs source-repository
+PR/reviewer, artifact and attestation read access; cross-repository
+`GITHUB_TOKEN` access must be checked, not assumed.
+
+The handoff is a flat directory containing exactly two raw Mach-O binaries
+and one receipt. Download the exact workflow output IDs (`aarch64-artifact-id`,
+`x86-artifact-id`, `receipt-artifact-id`), not name patterns, to preserve
+failed-job reruns. Use the pinned download action or a REST stream;
+`gh run download` 2.105.0 assumes ZIP. The two binaries can come from different
+attempts, but the receipt must match the builder's `receipt-run-attempt`
+output. Do not use the latest run attempt when the receipt job did not rerun.
+The verifier requires `gh >= 2.102.0` and one signed statement naming exactly
+the receipt and both binaries. It checks the pinned builder, the `release.yml`
+caller at the tag ref, the exact receipt ID and attempt, and each artifact's
+metadata and bytes.
+
+`check-release-source.py` runs in the producer. It requires the `clickhousectl`
+tag-push context and rejects a separate signing job's context. Before requesting
+signing credentials, independently verify the originating release and workflow
+run through GitHub, then verify the artifacts with the approved builder's helper
+and the expected values from that evidence:
+
+```bash
+python3 builder/scripts/release_artifacts.py verify \
+  --directory "$UNSIGNED_DIRECTORY" --source-sha "$SOURCE_SHA" \
+  --ref "$RELEASE_REF" --run-id "$RUN_ID" \
+  --run-attempt "$RECEIPT_RUN_ATTEMPT" --receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
+  --approved-builder-sha "$APPROVED_BUILDER_SHA"
+```
+
+Before enabling signing, complete an authorized-tag build and receipt verification.
+Do not bypass a failed check or publish unsigned as a fallback.
+
 ## Local tests
 
 Run the standard CLI gates from [Contributing](../CONTRIBUTING.md#build-and-test). Pick focused checks during development:

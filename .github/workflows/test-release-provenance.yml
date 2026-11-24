@@ -1,0 +1,53 @@
+name: Review evidence access
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/macos-build.yml
+      - .github/workflows/test-release-provenance.yml
+      - scripts/check-release-source.py
+      - scripts/release_artifacts.py
+      - scripts/tests/test_check_release_source.py
+      - scripts/tests/test_release_artifacts.py
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review-evidence-access:
+    name: Read-only review evidence access
+    if: github.event.pull_request.head.repo.id == github.event.repository.id && github.event.sender.type == 'User'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise the source checker's read-only permission lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          from urllib.parse import quote
+
+          sys.path.insert(0, 'scripts')
+          from release_artifacts import REPO, github_api
+
+          actor = quote(os.environ['GITHUB_ACTOR'], safe='')
+          evidence = github_api(f'repos/{REPO}/collaborators/{actor}/permission')
+          if evidence.get('permission') not in {'write', 'admin'}:
+              raise SystemExit('The CI token could not establish writer review evidence')
+          print('Read-only reviewer permission evidence is available')
+          PY

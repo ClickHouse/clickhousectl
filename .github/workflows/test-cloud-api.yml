@@ -7,9 +7,11 @@ on:
       - "crates/clickhouse-cloud-api/**"
       - "crates/clickhouse-openapi-analyzer/**"
       - "scripts/check-openapi-drift.py"
+      - "scripts/check-release-source.py"
       - "scripts/check-release-versions.py"
       - "scripts/classify-cloud-integration.py"
       - "scripts/cloud-integration-decision.py"
+      - "scripts/release_artifacts.py"
       - "scripts/tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -38,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test drift report rendering
+      - name: Test development and release scripts
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       # The release preflight runs the same check against the tag.
