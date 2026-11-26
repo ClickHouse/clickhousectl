@@ -52,7 +52,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tabled::{Table, Tabled, settings::Style};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -467,59 +466,64 @@ async fn roles(
     Ok(())
 }
 
-fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
+// A role's policies can each carry long permission and resource lists, and a
+// menu can hold many roles. A table forces every row into the same column
+// widths, so one long policy line stretched the whole grid past any
+// reasonable terminal width and broke the layout for every other row (#AX-34).
+// Rendering one block per role, with one bullet per policy, keeps each line's
+// width independent: a long permissions list wraps on its own instead of
+// distorting a shared column.
+fn render_assignable_roles(org_id: &str, roles: &[AssignableRole]) -> String {
     use crate::cloud::output::or_absent;
-    #[derive(Tabled)]
-    struct RoleRow {
-        id: String,
-        name: String,
-        r#type: String,
-        policies: String,
+    use std::fmt::Write as _;
+
+    let mut out = format!("Organization: {org_id}\n");
+    if roles.is_empty() {
+        out.push_str("No assignable roles for your user in this organization.\n");
+        return out;
     }
-    let rows = roles
-        .iter()
-        .map(|role| {
-            let role_type = match &role.r#type {
-                Some(RBACRoleType::Unknown(value)) => format!("Unknown ({value})"),
-                other => or_absent(other.as_ref()).to_string(),
-            };
-            let mut summaries = Vec::new();
-            if let Some(policies) = &role.policies {
-                if policies.is_empty() {
-                    summaries.push("No policies".into());
-                }
-                for policy in policies {
-                    let effect = match &policy.allow_deny {
-                        Some(RBACPolicyAllowdeny::Unknown(value)) => {
-                            format!("Unknown effect ({value})")
-                        }
-                        other => or_absent(other.as_ref()).to_string(),
-                    };
-                    if let (Some(permissions), Some(resources)) =
-                        (&policy.permissions, &policy.resources)
-                    {
-                        summaries.push(format!(
-                            "{effect}: permissions [{}]; resources [{}]",
-                            permissions.join(", "),
-                            resources.join(", ")
-                        ));
+    for role in roles {
+        let role_type = match &role.r#type {
+            Some(RBACRoleType::Unknown(value)) => format!("Unknown ({value})"),
+            other => or_absent(other.as_ref()).to_string(),
+        };
+        writeln!(
+            out,
+            "\n{} ({}) [{role_type}]",
+            or_absent(role.name.as_ref()),
+            or_absent(role.id.as_ref())
+        )
+        .unwrap();
+        if let Some(policies) = &role.policies {
+            if policies.is_empty() {
+                out.push_str("  - No policies\n");
+            }
+            for policy in policies {
+                let effect = match &policy.allow_deny {
+                    Some(RBACPolicyAllowdeny::Unknown(value)) => {
+                        format!("Unknown effect ({value})")
                     }
+                    other => or_absent(other.as_ref()).to_string(),
+                };
+                if let (Some(permissions), Some(resources)) =
+                    (&policy.permissions, &policy.resources)
+                {
+                    writeln!(
+                        out,
+                        "  - {effect}: permissions [{}]; resources [{}]",
+                        permissions.join(", "),
+                        resources.join(", ")
+                    )
+                    .unwrap();
                 }
             }
-            RoleRow {
-                id: or_absent(role.id.as_ref()).to_string(),
-                name: or_absent(role.name.as_ref()).to_string(),
-                r#type: role_type,
-                policies: summaries.join("\n"),
-            }
-        })
-        .collect::<Vec<_>>();
-    println!("Organization: {org_id}");
-    if rows.is_empty() {
-        println!("No assignable roles for your user in this organization.");
-    } else {
-        println!("{}", Table::new(rows).with(Style::markdown()));
+        }
     }
+    out
+}
+
+fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
+    print!("{}", render_assignable_roles(org_id, roles));
 }
 
 /// The client for filing and the code exchange: like
@@ -1285,6 +1289,53 @@ mod tests {
             let token = serde_json::json!({"keyId":"key-id", "key":"key", "secret":"secret", "grantedRoleIds":value});
             assert!(serde_json::from_value::<TokenResponse>(token).is_err());
         }
+    }
+
+    #[test]
+    fn render_assignable_roles_keeps_long_lists_intact_and_roles_separated() {
+        let many_permissions: Vec<String> = (0..40).map(|i| format!("permission-{i}")).collect();
+        let roles: Vec<AssignableRole> = serde_json::from_value(serde_json::json!([
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "role-with-many-permissions",
+                "type": "system",
+                "policies": [{
+                    "allowDeny": "ALLOW",
+                    "permissions": many_permissions.clone(),
+                    "resources": ["*"],
+                }],
+            },
+            {
+                "id": "00000000-0000-0000-0000-000000000002",
+                "name": "second-role",
+                "type": "custom",
+                "policies": [],
+            },
+        ]))
+        .unwrap();
+        let rendered = render_assignable_roles("org-1", &roles);
+
+        // Nothing elided: a long permissions list must not be summarized or
+        // truncated away.
+        for permission in &many_permissions {
+            assert!(rendered.contains(permission), "{rendered}");
+        }
+
+        // One role's long policy line must not fold the next role's header
+        // onto the same line, the way a shared table column used to.
+        let first_line = rendered
+            .lines()
+            .find(|line| line.contains("role-with-many-permissions"))
+            .unwrap();
+        assert!(!first_line.contains("second-role"), "{rendered}");
+        let second_line = rendered
+            .lines()
+            .find(|line| line.contains("second-role"))
+            .unwrap();
+        assert!(
+            !second_line.contains("role-with-many-permissions"),
+            "{rendered}"
+        );
     }
 
     #[test]
