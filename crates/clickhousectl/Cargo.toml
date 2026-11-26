@@ -76,7 +76,7 @@ shlex = "2.0.1"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 unicode-normalization = { version = "0.1.26", optional = true }
 strsim = "0.11.1"
-clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
+clap_complete = { version = "=4.6.12", features = ["unstable-dynamic"] }
 jiff = { version = "1.0.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
