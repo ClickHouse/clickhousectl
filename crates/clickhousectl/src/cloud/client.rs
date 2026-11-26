@@ -1083,6 +1083,15 @@ impl CloudClient {
         }
     }
 
+    /// [`Self::for_tests`], as if the key came from the saved credentials file.
+    #[cfg(test)]
+    pub(crate) fn for_tests_saved_key(base_url: &str) -> Self {
+        Self {
+            auth_source: AuthSource::CredentialsFile,
+            ..Self::for_tests(base_url, None)
+        }
+    }
+
     /// An OAuth (Bearer) client against `base_url`, for unit tests.
     #[cfg(all(test, feature = "experimental-access-negotiation"))]
     pub(crate) fn for_tests_bearer(base_url: &str) -> Self {

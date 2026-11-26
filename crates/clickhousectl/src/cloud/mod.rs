@@ -19,6 +19,7 @@ pub mod output;
 pub(crate) mod permissions;
 pub mod postgres;
 pub mod query_api_endpoints;
+pub(crate) mod saved_key;
 pub mod saved_queries;
 pub mod services;
 mod shared;
@@ -151,6 +152,14 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         print_client_diagnostics(&client);
     }
 
+    // A saved key whose `cloud access request` grant has expired would only
+    // earn a bare 401, and it outranks the OAuth login: stop before the call
+    // and say how to replace or clear it.
+    #[cfg(feature = "experimental-access-negotiation")]
+    grant::refuse_expired_saved_key(client.auth_source())
+        .await
+        .map_err(cloud_error_to_top_level)?;
+
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && command.is_write_command() {
@@ -194,6 +203,9 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             // the running command declares and what the saved grant lacks.
             #[cfg(feature = "experimental-access-negotiation")]
             let error = grant::explain_forbidden(&client, error);
+            // A bare 401 under the saved key hides that it outranks the OAuth
+            // login: name the file and how to replace or clear it.
+            let error = saved_key::explain_unauthorized(&client, error).await;
             Err(cloud_error_to_top_level(error))
         }
     }
@@ -219,10 +231,9 @@ fn oauth_write_refused(path: Option<&str>, searched: Option<&str>) -> String {
         ));
     }
     message.push_str(
-        "\n  Get a key (user approves in browser):\n    \
-         clickhousectl cloud access roles\n    \
-         clickhousectl cloud access request --perms role:<UUID> --purpose \"<what, why; max 200 chars>\"",
+        "\n  Get a key (user approves in browser):\n    clickhousectl cloud access roles\n    ",
     );
+    message.push_str(grant::ACCESS_REQUEST);
     message
 }
 

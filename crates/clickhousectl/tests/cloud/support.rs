@@ -495,6 +495,62 @@ pub(crate) fn write_oauth_tokens(ch_dir: &std::path::Path, control_uri: &str) {
     .unwrap();
 }
 
+/// Write an OAuth login into `ch_dir` whose access token has expired but whose
+/// refresh token `refresh` works at `issuer` (see [`mount_refresh`]); returns
+/// the token file's path.
+pub(crate) fn write_expired_oauth_tokens(
+    ch_dir: &std::path::Path,
+    control_uri: &str,
+    issuer: &MockServer,
+) -> PathBuf {
+    std::fs::create_dir_all(ch_dir).unwrap();
+    let token_path = ch_dir.join("tokens.json");
+    std::fs::write(
+        &token_path,
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "expired-access",
+            "refresh_token": "refresh",
+            "expires_at": 1,
+            "api_url": format!("{control_uri}/v1"),
+            "auth_config": {"auth_url": issuer.uri(), "client_id": "test-client"},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    token_path
+}
+
+/// The issuer's refresh endpoint for [`write_expired_oauth_tokens`]: a new
+/// `refreshed-access` token when `succeeds`, else `invalid_grant`.
+pub(crate) async fn mount_refresh(issuer: &MockServer, succeeds: bool, expected: u64) {
+    let response = if succeeds {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "refreshed-access", "refresh_token": "rotated",
+            "expires_in": 3600, "token_type": "Bearer"
+        }))
+    } else {
+        ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": "invalid_grant"}))
+    };
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .and(wiremock::matchers::body_string_contains(
+            "refresh_token=refresh",
+        ))
+        .respond_with(response)
+        .expect(expected)
+        .mount(issuer)
+        .await;
+}
+
+/// The access token saved in `token_path`.
+pub(crate) fn saved_access_token(token_path: &Path) -> String {
+    let saved: Value = serde_json::from_slice(&std::fs::read(token_path).unwrap()).unwrap();
+    saved["access_token"].as_str().unwrap().to_owned()
+}
+
 pub(crate) const CDC_SCALING_PATH: &str =
     "/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling";
 

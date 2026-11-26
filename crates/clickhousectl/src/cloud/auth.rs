@@ -1,4 +1,4 @@
-use super::permissions::Declaration as Permission;
+use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -8,7 +8,14 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "auth logout",
         "Clears local credentials; no Cloud API call.",
     ),
-    Permission::api("auth status", &[&op::WHOAMI_GET]).unscoped(),
+    // The role of an API key in use without a saved grant is best effort:
+    // many roles cannot read API keys, and status then says `role unknown`.
+    Permission::api("auth status", &[&op::WHOAMI_GET])
+        .when(&[Conditional::tolerated(
+            "Showing the role of the API key in use",
+            &[&op::OPENAPI_KEY_GET],
+        )])
+        .unscoped(),
     Permission::non_api("auth signup", "Opens account signup; no Cloud API call."),
     Permission::api("auth whoami", &[&op::WHOAMI_GET]).unscoped(),
 ];
@@ -22,7 +29,7 @@ use crate::cloud::{
 use crate::error::Error;
 use crate::failure::{ApiFailure, FailureKind};
 use clap::Subcommand;
-use clickhouse_cloud_api::models::Whoami;
+use clickhouse_cloud_api::models::{ApiKey, Whoami};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -314,102 +321,27 @@ pub async fn run(
             LogoutReport::new(clear_oauth, clear_api_keys).write(&mut crate::stdout::stdout(), json)
         }
         AuthCommands::Status => {
-            use tabled::{Table, Tabled, settings::Style};
+            use tabled::{Table, settings::Style};
 
-            #[derive(Serialize, Tabled)]
-            struct AuthRow {
-                #[tabled(rename = "Type")]
-                #[serde(rename = "type")]
-                auth_type: String,
-                #[tabled(rename = "Status")]
-                status: String,
-                #[tabled(rename = "Scope")]
-                scope: String,
-                #[tabled(rename = "Active")]
-                active: String,
-                /// The API a saved source is sent to (#1202); flags and env
-                /// vars carry no URL of their own.
-                #[tabled(rename = "API URL", display = "display_api_url")]
-                #[serde(skip_serializing_if = "Option::is_none")]
-                api_url: Option<String>,
-            }
-
-            fn display_api_url(api_url: &Option<String>) -> String {
-                api_url.clone().unwrap_or_else(|| "-".into())
-            }
-
+            // Report the OAuth login as a command would find it: refresh a
+            // lapsed access token first, quietly, whatever the active source
+            // (nothing refreshes it while an API key wins). A failed refresh
+            // keeps the saved login, and a storage error leaves the report to
+            // the saved file.
+            let _ = ensure_fresh_tokens(true).await;
             let active = resolve_active_auth_source(api_key, api_secret);
-            let mark = |source: AuthSource| -> String {
-                if active == Some(source) {
-                    "yes".into()
-                } else {
-                    "-".into()
-                }
-            };
-
-            let configured_status = |source: AuthSource| -> String {
-                if active == Some(source) {
-                    "Active".into()
-                } else {
-                    "Configured (inactive)".into()
-                }
-            };
-
-            let mut rows = Vec::new();
-            let (status, scope) = match (api_key.is_some(), api_secret.is_some()) {
-                (true, true) => (configured_status(AuthSource::CliFlags), "read/write"),
-                (true, false) => ("Incomplete (missing --api-secret)".into(), "-"),
-                (false, true) => ("Incomplete (missing --api-key)".into(), "-"),
-                (false, false) => ("Not configured".into(), "-"),
-            };
-            rows.push(AuthRow {
-                auth_type: "CLI flags".into(),
-                status,
-                scope: scope.into(),
-                active: mark(AuthSource::CliFlags),
-                api_url: None,
-            });
+            let now = jiff::Timestamp::now();
 
             let mut oauth_warning = None;
-            match load_tokens() {
-                Ok(Some(tokens)) if is_token_valid(&tokens) => {
-                    rows.push(AuthRow {
-                        auth_type: "OAuth".into(),
-                        status: configured_status(AuthSource::OAuthTokens),
-                        scope: "read-only".into(),
-                        active: mark(AuthSource::OAuthTokens),
-                        api_url: Some(tokens.api_url),
-                    });
-                }
-                Ok(Some(tokens)) => {
-                    rows.push(AuthRow {
-                        auth_type: "OAuth".into(),
-                        status: "Expired".into(),
-                        scope: "read-only".into(),
-                        active: "-".into(),
-                        api_url: Some(tokens.api_url),
-                    });
-                }
+            let oauth = match load_tokens() {
+                Ok(Some(tokens)) if is_token_valid(&tokens) => OAuthState::Valid(tokens.api_url),
+                Ok(Some(tokens)) => OAuthState::Expired(tokens.api_url),
                 Err(UnusableTokens) => {
                     oauth_warning = Some(OAUTH_LOGIN_REQUIRED);
-                    rows.push(AuthRow {
-                        auth_type: "OAuth".into(),
-                        status: "Login required".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                        api_url: None,
-                    });
+                    OAuthState::LoginRequired
                 }
-                Ok(None) => {
-                    rows.push(AuthRow {
-                        auth_type: "OAuth".into(),
-                        status: "Not configured".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                        api_url: None,
-                    });
-                }
-            }
+                Ok(None) => OAuthState::NotConfigured,
+            };
 
             // An unreadable or corrupt file is reported, not shown as absent:
             // Cloud commands fail on it rather than falling through (#1327).
@@ -421,91 +353,33 @@ pub async fn run(
                     None
                 }
             };
-            let (status, scope) = match saved.as_ref() {
-                _ if credentials_warning.is_some() => ("Unreadable".into(), "-"),
+            // The saved key's grant from `cloud access request`: its roles and expiry.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let saved_grant = saved.as_ref().and_then(crate::cloud::grant::grant_of);
+            let saved_key = match saved.as_ref() {
+                _ if credentials_warning.is_some() => SavedKeyState::Unreadable,
                 Some(creds) if creds.api_credentials().is_some() => {
-                    (configured_status(AuthSource::CredentialsFile), "read/write")
+                    let grant_scope = None;
+                    let expired = None;
+                    #[cfg(feature = "experimental-access-negotiation")]
+                    let (grant_scope, expired) = match saved_grant {
+                        Some(grant) => (
+                            Some(crate::cloud::grant::status_scope(grant, now)),
+                            crate::cloud::grant::status_expired(grant, now),
+                        ),
+                        None => (grant_scope, expired),
+                    };
+                    SavedKeyState::Complete {
+                        api_url: creds.api_base_url(),
+                        grant_scope,
+                        expired,
+                    }
                 }
                 Some(creds) if creds.api_key.is_some() || creds.api_secret.is_some() => {
-                    ("Incomplete (missing or empty API key/secret)".into(), "-")
+                    SavedKeyState::Incomplete
                 }
-                _ => ("Not configured".into(), "-"),
+                _ => SavedKeyState::NotConfigured,
             };
-            // The active saved key from `cloud access request`: its roles and expiry.
-            #[cfg(feature = "experimental-access-negotiation")]
-            let active_grant = saved
-                .as_ref()
-                .filter(|_| active == Some(AuthSource::CredentialsFile))
-                .and_then(crate::cloud::grant::grant_of);
-            let scope: String = scope.into();
-            #[cfg(feature = "experimental-access-negotiation")]
-            let scope = match active_grant {
-                Some(grant) => crate::cloud::grant::status_scope(grant, jiff::Timestamp::now()),
-                None => scope,
-            };
-            rows.push(AuthRow {
-                auth_type: "API key".into(),
-                status,
-                scope,
-                active: mark(AuthSource::CredentialsFile),
-                api_url: saved
-                    .as_ref()
-                    .filter(|creds| creds.api_credentials().is_some())
-                    .map(credentials::Credentials::api_base_url),
-            });
-
-            let env_creds = env_cred_presence();
-            match (env_creds.key, env_creds.secret) {
-                (true, true) => {
-                    let provenance = dotenv_env_provenance()
-                        .map(|path| format!(" (from {})", path.display()))
-                        .unwrap_or_default();
-                    let status = match active {
-                        Some(AuthSource::EnvVars) => format!("Active{provenance}"),
-                        Some(AuthSource::CliFlags) => {
-                            format!("Configured{provenance} (inactive, outranked by CLI flags)")
-                        }
-                        Some(AuthSource::CredentialsFile) => format!(
-                            "Configured{provenance} (inactive, outranked by credentials file)"
-                        ),
-                        _ => format!("Configured{provenance} (inactive)"),
-                    };
-                    rows.push(AuthRow {
-                        auth_type: "Env vars".into(),
-                        status,
-                        scope: "read/write".into(),
-                        active: mark(AuthSource::EnvVars),
-                        api_url: None,
-                    });
-                }
-                (true, false) => {
-                    rows.push(AuthRow {
-                        auth_type: "Env vars".into(),
-                        status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                        api_url: None,
-                    });
-                }
-                (false, true) => {
-                    rows.push(AuthRow {
-                        auth_type: "Env vars".into(),
-                        status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                        api_url: None,
-                    });
-                }
-                (false, false) => {
-                    rows.push(AuthRow {
-                        auth_type: "Env vars".into(),
-                        status: "Not configured".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                        api_url: None,
-                    });
-                }
-            }
 
             if debug {
                 match active {
@@ -532,32 +406,64 @@ pub async fn run(
                 }
             }
 
+            // A saved key with a grant takes its Scope from the grant.
+            #[cfg(feature = "experimental-access-negotiation")]
+            let saved_has_grant = saved_grant.is_some();
+            #[cfg(not(feature = "experimental-access-negotiation"))]
+            let saved_has_grant = false;
+
+            let mut key_roles = KeyRoles::Unknown;
             let identity = match active {
-                Some(_) => IdentityCheck::from(
-                    verify_identity(CloudClient::new_with_timeout(
+                Some(source) => IdentityCheck::from(
+                    match CloudClient::new_with_timeout(
                         api_key,
                         api_secret,
                         api_url,
                         VERIFY_TIMEOUT,
-                    ))
-                    .await,
+                    ) {
+                        Ok(client) => {
+                            let verification = classify_whoami(client.get_whoami().await);
+                            // Any other API key in use: read its roles, once verified.
+                            let ungranted_key = source != AuthSource::OAuthTokens
+                                && !(source == AuthSource::CredentialsFile && saved_has_grant);
+                            if ungranted_key && let Verification::Verified(whoami) = &verification {
+                                key_roles = lookup_key_roles(&client, whoami).await;
+                            }
+                            verification
+                        }
+                        Err(error) => classify_whoami(Err(error)),
+                    },
                 ),
                 None => IdentityCheck::skipped(),
             };
 
-            // Only an active OAuth login lacks write access it could obtain.
-            let write_access: Option<String> = if active == Some(AuthSource::OAuthTokens) {
-                OAUTH_WRITE_ACCESS.map(str::to_string)
-            } else {
-                None
+            let env_creds = env_cred_presence();
+            let facts = StatusFacts {
+                active,
+                verification: identity.verification,
+                flags: (api_key.is_some(), api_secret.is_some()),
+                saved_key,
+                env: (env_creds.key, env_creds.secret),
+                env_provenance: dotenv_env_provenance(),
+                oauth,
+                in_use_key_scope: key_roles.scope(now),
+            };
+            let rows = facts.rows();
+            let summary = facts.summary();
+
+            // Only an active OAuth login lacks write access it could obtain;
+            // JSON names the roles of an API key in use.
+            let write_access: Option<String> = match active {
+                Some(AuthSource::OAuthTokens) => OAUTH_WRITE_ACCESS.map(str::to_string),
+                Some(_) if json => Some(key_roles.write_access()),
+                _ => None,
             };
             // JSON names what the saved `cloud access request` key may write.
             #[cfg(feature = "experimental-access-negotiation")]
-            let write_access = match active_grant {
-                Some(grant) if json => Some(crate::cloud::grant::status_write_access(
-                    grant,
-                    jiff::Timestamp::now(),
-                )),
+            let write_access = match saved_grant
+                .filter(|_| active == Some(AuthSource::CredentialsFile))
+            {
+                Some(grant) if json => Some(crate::cloud::grant::status_write_access(grant, now)),
                 _ => write_access,
             };
 
@@ -565,6 +471,7 @@ pub async fn run(
                 #[derive(Serialize)]
                 struct StatusOutput<'a> {
                     sources: Vec<AuthRow>,
+                    summary: &'a str,
                     #[serde(skip_serializing_if = "Option::is_none")]
                     write_access: Option<&'a str>,
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -576,6 +483,7 @@ pub async fn run(
                 }
                 let output = StatusOutput {
                     sources: rows,
+                    summary: &summary,
                     write_access: write_access.as_deref(),
                     oauth_warning,
                     credentials_warning: credentials_warning.as_deref(),
@@ -584,6 +492,8 @@ pub async fn run(
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
+                println!();
+                println!("{summary}");
                 if let Some(write_access) = &write_access {
                     println!();
                     println!("Write access: {write_access}");
@@ -614,6 +524,405 @@ pub async fn run(
     }
 }
 
+/// One credential source in the `auth status` table, in precedence order.
+#[derive(Debug, Serialize, tabled::Tabled)]
+struct AuthRow {
+    #[tabled(rename = "Type")]
+    #[serde(rename = "type")]
+    auth_type: String,
+    /// Whether the credential exists and works.
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Scope")]
+    scope: String,
+    /// `yes` for the one credential Cloud commands use, else `-`. The JSON
+    /// field keeps its `active` name so parsers do not break.
+    #[tabled(rename = "In use")]
+    active: String,
+    /// The API a saved source is sent to (#1202); flags and env
+    /// vars carry no URL of their own.
+    #[tabled(rename = "API URL", display = "display_api_url")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_url: Option<String>,
+}
+
+fn display_api_url(api_url: &Option<String>) -> String {
+    api_url.clone().unwrap_or_else(|| "-".into())
+}
+
+impl AuthRow {
+    fn new(
+        auth_type: &str,
+        status: impl Into<String>,
+        scope: impl Into<String>,
+        in_use: bool,
+        api_url: Option<String>,
+    ) -> Self {
+        Self {
+            auth_type: auth_type.into(),
+            status: status.into(),
+            scope: scope.into(),
+            active: if in_use { "yes" } else { "-" }.into(),
+            api_url,
+        }
+    }
+}
+
+/// The saved OAuth login, as `auth status` sees it locally.
+#[derive(Debug)]
+enum OAuthState {
+    /// Unexpired; carries its API URL.
+    Valid(String),
+    Expired(String),
+    LoginRequired,
+    NotConfigured,
+}
+
+/// The saved API key (`.clickhouse/credentials.json`), as `auth status` sees it.
+#[derive(Debug)]
+enum SavedKeyState {
+    Unreadable,
+    Incomplete,
+    NotConfigured,
+    Complete {
+        api_url: String,
+        /// The Scope from its `cloud access request` grant; `None` without
+        /// one, when the Scope is the key's looked-up role.
+        grant_scope: Option<String>,
+        /// The grant's expiry, `%Y-%m-%dT%H:%MZ`, once it is past.
+        expired: Option<String>,
+    },
+}
+
+/// Everything `auth status` reports, gathered before rendering.
+#[derive(Debug)]
+struct StatusFacts {
+    active: Option<AuthSource>,
+    /// `IdentityCheck::verification` of the credential in use.
+    verification: &'static str,
+    /// Whether `--api-key` / `--api-secret` were passed.
+    flags: (bool, bool),
+    saved_key: SavedKeyState,
+    /// Whether the env-tier key / secret are set.
+    env: (bool, bool),
+    env_provenance: Option<PathBuf>,
+    oauth: OAuthState,
+    /// The Scope of the API key in use when it has no saved grant
+    /// ([`KeyRoles::scope`]); a key not in use is never looked up.
+    in_use_key_scope: String,
+}
+
+/// The Scope of an API key whose roles `auth status` could not read.
+const ROLE_UNKNOWN: &str = "role unknown";
+
+/// The roles of the API key in use, read from its management record (the
+/// `cloud key get` call) when it did not come from `cloud access request`.
+#[derive(Debug, Clone, PartialEq)]
+enum KeyRoles {
+    /// Not looked up, or the lookup was refused or failed.
+    Unknown,
+    Known {
+        /// Role names, else ids, in the API's order; may be empty.
+        roles: Vec<String>,
+        expires: Option<jiff::Timestamp>,
+    },
+}
+
+impl KeyRoles {
+    fn of(key: &ApiKey) -> Self {
+        let Some(assigned) = &key.assigned_roles else {
+            return Self::Unknown;
+        };
+        let roles = assigned
+            .iter()
+            .filter_map(|role| {
+                role.role_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| role.role_id.map(|id| id.to_string()))
+            })
+            .collect();
+        Self::Known {
+            roles,
+            expires: key.expire_at,
+        }
+    }
+
+    /// The Scope cell: `<roles>[, expires <time>]`, `no roles`, or `role unknown`.
+    fn scope(&self, now: jiff::Timestamp) -> String {
+        match self {
+            Self::Unknown => ROLE_UNKNOWN.into(),
+            Self::Known { roles, .. } if roles.is_empty() => "no roles".into(),
+            Self::Known { roles, expires } => {
+                let mut scope = roles.join(", ");
+                if let Some(expires) = expires {
+                    scope.push_str(&format!(", {}", expiry_phrase(*expires, now)));
+                }
+                scope
+            }
+        }
+    }
+
+    /// JSON `write_access`: `API key: <roles>[; expires <RFC 3339>]`.
+    fn write_access(&self) -> String {
+        match self {
+            Self::Unknown => format!("API key: {ROLE_UNKNOWN}"),
+            Self::Known { roles, .. } if roles.is_empty() => "API key: no roles".into(),
+            Self::Known { roles, expires } => {
+                let mut text = format!("API key: {}", roles.join(", "));
+                if let Some(expires) = expires {
+                    text.push_str(&format!("; expires {expires:.0}"));
+                }
+                text
+            }
+        }
+    }
+}
+
+/// The roles of the verified API key `whoami` names, or `Unknown` when the
+/// lookup is refused or fails. Never an error: many roles cannot read keys.
+async fn lookup_key_roles(client: &CloudClient, whoami: &Whoami) -> KeyRoles {
+    let Whoami::WhoamiApiKey(key) = whoami else {
+        return KeyRoles::Unknown;
+    };
+    let (Some(org_id), Some(key_id)) = (key.organization_id, key.key_id.as_deref()) else {
+        return KeyRoles::Unknown;
+    };
+    match client.get_api_key(&org_id.to_string(), key_id).await {
+        Ok(record) => KeyRoles::of(&record),
+        Err(_) => KeyRoles::Unknown,
+    }
+}
+
+/// `expires 09:56Z`, with the date (`2026-11-20T09:56Z`) when it is not today
+/// in UTC, and `expired` once past.
+pub fn expiry_phrase(expires: jiff::Timestamp, now: jiff::Timestamp) -> String {
+    use jiff::tz::TimeZone;
+    let verb = if expires <= now { "expired" } else { "expires" };
+    let expires = expires.to_zoned_datetime(TimeZone::UTC);
+    let time = if expires.date() == now.to_zoned_datetime(TimeZone::UTC).date() {
+        expires.strftime("%H:%MZ").to_string()
+    } else {
+        expires.strftime("%Y-%m-%dT%H:%MZ").to_string()
+    };
+    format!("{verb} {time}")
+}
+
+#[cfg(feature = "experimental-access-negotiation")]
+const OAUTH_IN_USE_SUMMARY: &str =
+    "Commands here use the read-only OAuth login. For writes: `cloud access request`.";
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const OAUTH_IN_USE_SUMMARY: &str = "Commands here use the read-only OAuth login.";
+
+/// The second summary line when the saved key fails but OAuth is valid.
+#[cfg(feature = "experimental-access-negotiation")]
+const OAUTH_REPLACES_KEY: Option<&str> =
+    Some("The OAuth login is valid: `cloud access request` works and replaces the key.");
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const OAUTH_REPLACES_KEY: Option<&str> = None;
+
+const NO_VALID_OAUTH: &str = "No valid OAuth login: `cloud auth login` (needs the user).";
+
+impl StatusFacts {
+    fn in_use(&self, source: AuthSource) -> bool {
+        self.active == Some(source)
+    }
+
+    /// The Status of the credential in use, from the whoami check.
+    fn in_use_status(&self) -> &'static str {
+        match self.verification {
+            "verified" => "Valid",
+            "rejected" => "Rejected by the API",
+            _ => "Configured (not verified)",
+        }
+    }
+
+    /// The higher-priority source that keeps a configured `source` out of
+    /// use: complete or incomplete flags, or a saved key file that is usable
+    /// or unreadable (both block fallback).
+    fn outranked_by(&self, source: AuthSource) -> Option<&'static str> {
+        let flags = self.flags.0 || self.flags.1;
+        if source != AuthSource::CliFlags && flags {
+            return Some("CLI flags");
+        }
+        let saved = matches!(
+            self.saved_key,
+            SavedKeyState::Unreadable | SavedKeyState::Complete { .. }
+        );
+        (source == AuthSource::EnvVars && saved).then_some("saved API key")
+    }
+
+    /// The Scope of a configured API key source without a saved grant: the
+    /// looked-up role of the key in use, else unknown.
+    fn key_scope(&self, source: AuthSource) -> String {
+        if self.in_use(source) {
+            self.in_use_key_scope.clone()
+        } else {
+            ROLE_UNKNOWN.into()
+        }
+    }
+
+    /// The Status of a configured API key source.
+    fn key_status(&self, source: AuthSource, provenance: &str) -> String {
+        if self.in_use(source) {
+            return format!("{}{provenance}", self.in_use_status());
+        }
+        match self.outranked_by(source) {
+            Some(by) => format!("Configured{provenance}, not in use (outranked by {by})"),
+            None => format!("Configured{provenance}, not in use"),
+        }
+    }
+
+    /// One row per source, in precedence order.
+    fn rows(&self) -> Vec<AuthRow> {
+        use AuthSource::*;
+        let flags = match self.flags {
+            (true, true) => AuthRow::new(
+                "CLI flags",
+                self.key_status(CliFlags, ""),
+                self.key_scope(CliFlags),
+                self.in_use(CliFlags),
+                None,
+            ),
+            (true, false) => AuthRow::new(
+                "CLI flags",
+                "Incomplete (missing --api-secret)",
+                "-",
+                false,
+                None,
+            ),
+            (false, true) => AuthRow::new(
+                "CLI flags",
+                "Incomplete (missing --api-key)",
+                "-",
+                false,
+                None,
+            ),
+            (false, false) => AuthRow::new("CLI flags", "Not configured", "-", false, None),
+        };
+        let saved = match &self.saved_key {
+            SavedKeyState::Unreadable => AuthRow::new("API key", "Unreadable", "-", false, None),
+            SavedKeyState::Incomplete => AuthRow::new(
+                "API key",
+                "Incomplete (missing or empty API key/secret)",
+                "-",
+                false,
+                None,
+            ),
+            SavedKeyState::NotConfigured => {
+                AuthRow::new("API key", "Not configured", "-", false, None)
+            }
+            SavedKeyState::Complete {
+                api_url,
+                grant_scope,
+                expired,
+            } => {
+                let status = match expired {
+                    Some(time) => format!("Expired {time}"),
+                    None => self.key_status(CredentialsFile, ""),
+                };
+                AuthRow::new(
+                    "API key",
+                    status,
+                    grant_scope
+                        .clone()
+                        .unwrap_or_else(|| self.key_scope(CredentialsFile)),
+                    self.in_use(CredentialsFile),
+                    Some(api_url.clone()),
+                )
+            }
+        };
+        let env = match self.env {
+            (true, true) => {
+                let provenance = self
+                    .env_provenance
+                    .as_ref()
+                    .map(|path| format!(" (from {})", path.display()))
+                    .unwrap_or_default();
+                AuthRow::new(
+                    "Env vars",
+                    self.key_status(EnvVars, &provenance),
+                    self.key_scope(EnvVars),
+                    self.in_use(EnvVars),
+                    None,
+                )
+            }
+            (true, false) => AuthRow::new(
+                "Env vars",
+                "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)",
+                "-",
+                false,
+                None,
+            ),
+            (false, true) => AuthRow::new(
+                "Env vars",
+                "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)",
+                "-",
+                false,
+                None,
+            ),
+            (false, false) => AuthRow::new("Env vars", "Not configured", "-", false, None),
+        };
+        let oauth = match &self.oauth {
+            OAuthState::Valid(api_url) => {
+                let in_use = self.in_use(OAuthTokens);
+                let status = if in_use && self.verification == "rejected" {
+                    "Rejected by the API"
+                } else {
+                    "Valid"
+                };
+                AuthRow::new("OAuth", status, "read-only", in_use, Some(api_url.clone()))
+            }
+            OAuthState::Expired(api_url) => AuthRow::new(
+                "OAuth",
+                "Expired",
+                "read-only",
+                false,
+                Some(api_url.clone()),
+            ),
+            OAuthState::LoginRequired => AuthRow::new("OAuth", "Login required", "-", false, None),
+            OAuthState::NotConfigured => AuthRow::new("OAuth", "Not configured", "-", false, None),
+        };
+        vec![flags, saved, env, oauth]
+    }
+
+    /// Which credential commands here use and whether they work; one or two
+    /// lines joined by `\n`.
+    fn summary(&self) -> String {
+        let failure = match (self.active, &self.saved_key) {
+            (None, _) => return "Not logged in: `cloud auth login` (needs the user).".into(),
+            (Some(AuthSource::CliFlags), _) => {
+                return "Commands here use the API key from CLI flags.".into();
+            }
+            (Some(AuthSource::EnvVars), _) => {
+                return "Commands here use the API key from environment variables.".into();
+            }
+            (Some(AuthSource::OAuthTokens), _) => return OAUTH_IN_USE_SUMMARY.into(),
+            (
+                Some(AuthSource::CredentialsFile),
+                SavedKeyState::Complete {
+                    expired: Some(_), ..
+                },
+            ) => "which has expired",
+            (Some(AuthSource::CredentialsFile), _) if self.verification == "rejected" => {
+                "which the API refused"
+            }
+            (Some(AuthSource::CredentialsFile), _) => {
+                return "Commands here use the saved API key.".into();
+            }
+        };
+        let mut lines = vec![format!(
+            "Commands here use the saved API key, {failure}, so they fail."
+        )];
+        match (&self.oauth, OAUTH_REPLACES_KEY) {
+            (OAuthState::Valid(_), Some(line)) => lines.push(line.into()),
+            (OAuthState::Valid(_), None) => {}
+            _ => lines.push(NO_VALID_OAUTH.into()),
+        }
+        lines.join("\n")
+    }
+}
+
 /// How long `auth login`, `auth status` and `feedback` wait for whoami, so
 /// working offline never hangs on the identity check.
 pub(crate) const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -628,10 +937,13 @@ enum Verification {
 }
 
 async fn verify_identity(client: CloudResult<CloudClient>) -> Verification {
-    let result = match client {
-        Ok(client) => client.get_whoami().await,
-        Err(error) => Err(error),
-    };
+    match client {
+        Ok(client) => classify_whoami(client.get_whoami().await),
+        Err(error) => classify_whoami(Err(error)),
+    }
+}
+
+fn classify_whoami(result: CloudResult<Whoami>) -> Verification {
     match result {
         Ok(identity) => Verification::Verified(identity),
         Err(error) if error.kind == super::CloudErrorKind::Auth => Verification::Rejected(error),
@@ -2228,5 +2540,313 @@ mod tests {
             let warning = report.warning.unwrap();
             assert!(warning.contains("whoami failed"), "{warning}");
         }
+    }
+
+    /// `auth status` facts with nothing configured; tests set what they need.
+    fn status_facts() -> StatusFacts {
+        StatusFacts {
+            active: None,
+            verification: "skipped",
+            flags: (false, false),
+            saved_key: SavedKeyState::NotConfigured,
+            env: (false, false),
+            env_provenance: None,
+            oauth: OAuthState::NotConfigured,
+            in_use_key_scope: ROLE_UNKNOWN.into(),
+        }
+    }
+
+    fn saved_key(expired: Option<&str>) -> SavedKeyState {
+        SavedKeyState::Complete {
+            api_url: "https://api.example/v1".into(),
+            grant_scope: Some("Service API Reader".into()),
+            expired: expired.map(String::from),
+        }
+    }
+
+    /// (type, status, scope, in use) per row.
+    fn status_cells(facts: &StatusFacts) -> Vec<(String, String, String, String)> {
+        facts
+            .rows()
+            .into_iter()
+            .map(|row| (row.auth_type, row.status, row.scope, row.active))
+            .collect()
+    }
+
+    fn cell<'a>(
+        cells: &'a [(String, String, String, String)],
+        source: &str,
+    ) -> &'a (String, String, String, String) {
+        cells.iter().find(|row| row.0 == source).unwrap()
+    }
+
+    #[test]
+    fn status_rows_follow_precedence_and_the_table_says_in_use() {
+        let facts = status_facts();
+        let types: Vec<_> = status_cells(&facts).into_iter().map(|row| row.0).collect();
+        assert_eq!(types, ["CLI flags", "API key", "Env vars", "OAuth"]);
+        let table = tabled::Table::new(facts.rows()).to_string();
+        assert!(table.lines().nth(1).unwrap().contains("In use"), "{table}");
+        let json = serde_json::to_value(facts.rows()).unwrap();
+        assert_eq!(json[0]["active"], "-");
+        assert!(json[0].get("in_use").is_none());
+    }
+
+    #[test]
+    fn status_without_credentials_says_not_logged_in() {
+        let facts = status_facts();
+        for row in status_cells(&facts) {
+            assert_eq!(row.1, "Not configured", "{row:?}");
+            assert_eq!(row.3, "-");
+        }
+        assert_eq!(
+            facts.summary(),
+            "Not logged in: `cloud auth login` (needs the user)."
+        );
+    }
+
+    #[test]
+    fn expired_saved_key_is_expired_and_points_at_the_valid_oauth_login() {
+        let facts = StatusFacts {
+            active: Some(AuthSource::CredentialsFile),
+            verification: "rejected",
+            saved_key: saved_key(Some("2026-11-18T17:45Z")),
+            oauth: OAuthState::Valid("https://api.example/v1".into()),
+            ..status_facts()
+        };
+        let cells = status_cells(&facts);
+        let saved = cell(&cells, "API key");
+        assert_eq!(saved.1, "Expired 2026-11-18T17:45Z");
+        assert_eq!(saved.2, "Service API Reader");
+        assert_eq!(saved.3, "yes");
+        let oauth = cell(&cells, "OAuth");
+        assert_eq!((oauth.1.as_str(), oauth.3.as_str()), ("Valid", "-"));
+        let summary = facts.summary();
+        let lines: Vec<_> = summary.lines().collect();
+        assert_eq!(
+            lines[0],
+            "Commands here use the saved API key, which has expired, so they fail."
+        );
+        #[cfg(feature = "experimental-access-negotiation")]
+        assert_eq!(
+            lines[1..],
+            ["The OAuth login is valid: `cloud access request` works and replaces the key."]
+        );
+        #[cfg(not(feature = "experimental-access-negotiation"))]
+        assert_eq!(lines.len(), 1);
+
+        // Expired is shown even when flags outrank the saved key.
+        let outranked = StatusFacts {
+            active: Some(AuthSource::CliFlags),
+            verification: "verified",
+            flags: (true, true),
+            ..facts
+        };
+        let cells = status_cells(&outranked);
+        assert_eq!(cell(&cells, "API key").1, "Expired 2026-11-18T17:45Z");
+        assert_eq!(cell(&cells, "CLI flags").1, "Valid");
+    }
+
+    #[test]
+    fn rejected_saved_key_without_oauth_needs_a_login() {
+        let facts = StatusFacts {
+            active: Some(AuthSource::CredentialsFile),
+            verification: "rejected",
+            saved_key: saved_key(None),
+            oauth: OAuthState::Expired("https://api.example/v1".into()),
+            ..status_facts()
+        };
+        let cells = status_cells(&facts);
+        assert_eq!(cell(&cells, "API key").1, "Rejected by the API");
+        assert_eq!(cell(&cells, "OAuth").1, "Expired");
+        assert_eq!(
+            facts.summary(),
+            "Commands here use the saved API key, which the API refused, so they fail.\n\
+             No valid OAuth login: `cloud auth login` (needs the user)."
+        );
+    }
+
+    #[test]
+    fn valid_saved_key_in_use_outranks_env_vars() {
+        let facts = StatusFacts {
+            active: Some(AuthSource::CredentialsFile),
+            verification: "verified",
+            saved_key: saved_key(None),
+            env: (true, true),
+            env_provenance: Some(PathBuf::from("/x/.env")),
+            oauth: OAuthState::Valid("https://api.example/v1".into()),
+            ..status_facts()
+        };
+        let cells = status_cells(&facts);
+        assert_eq!(cell(&cells, "API key").1, "Valid");
+        assert_eq!(cell(&cells, "API key").3, "yes");
+        assert_eq!(
+            cell(&cells, "Env vars").1,
+            "Configured (from /x/.env), not in use (outranked by saved API key)"
+        );
+        assert_eq!(cell(&cells, "Env vars").3, "-");
+        assert_eq!(cell(&cells, "OAuth").1, "Valid");
+        assert_eq!(facts.summary(), "Commands here use the saved API key.");
+    }
+
+    #[test]
+    fn flags_in_use_outrank_every_api_key_source() {
+        let facts = StatusFacts {
+            active: Some(AuthSource::CliFlags),
+            verification: "unavailable",
+            flags: (true, true),
+            saved_key: saved_key(None),
+            env: (true, true),
+            ..status_facts()
+        };
+        let cells = status_cells(&facts);
+        assert_eq!(cell(&cells, "CLI flags").1, "Configured (not verified)");
+        for source in ["API key", "Env vars"] {
+            assert_eq!(
+                cell(&cells, source).1,
+                "Configured, not in use (outranked by CLI flags)"
+            );
+        }
+        assert_eq!(
+            facts.summary(),
+            "Commands here use the API key from CLI flags."
+        );
+        let env = StatusFacts {
+            active: Some(AuthSource::EnvVars),
+            verification: "verified",
+            env: (true, true),
+            env_provenance: Some(PathBuf::from("/x/.env")),
+            ..status_facts()
+        };
+        assert_eq!(
+            cell(&status_cells(&env), "Env vars").1,
+            "Valid (from /x/.env)"
+        );
+        assert_eq!(
+            env.summary(),
+            "Commands here use the API key from environment variables."
+        );
+    }
+
+    fn key_record(value: serde_json::Value) -> ApiKey {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn key_roles_come_from_the_key_record_or_are_unknown() {
+        let now = "2026-11-19T12:00:00Z".parse().unwrap();
+        let one = KeyRoles::of(&key_record(serde_json::json!({
+            "assignedRoles": [{"roleName": "Service API Reader"}]
+        })));
+        assert_eq!(one.scope(now), "Service API Reader");
+        assert_eq!(one.write_access(), "API key: Service API Reader");
+
+        // A role without a name shows its id; the key's expiry follows the roles.
+        let several = KeyRoles::of(&key_record(serde_json::json!({
+            "assignedRoles": [
+                {"roleName": "Service API Reader"},
+                {"roleId": "11111111-2222-4333-8444-555555555555", "roleName": " "}
+            ],
+            "expireAt": "2026-11-19T17:45:00Z"
+        })));
+        assert_eq!(
+            several.scope(now),
+            "Service API Reader, 11111111-2222-4333-8444-555555555555, expires 17:45Z"
+        );
+        assert_eq!(
+            several.write_access(),
+            "API key: Service API Reader, 11111111-2222-4333-8444-555555555555; \
+             expires 2026-11-19T17:45:00Z"
+        );
+
+        let none = KeyRoles::of(&key_record(serde_json::json!({"assignedRoles": []})));
+        assert_eq!(none.scope(now), "no roles");
+        assert_eq!(none.write_access(), "API key: no roles");
+
+        // A record without assignedRoles says nothing about them.
+        assert_eq!(
+            KeyRoles::of(&key_record(serde_json::json!({}))),
+            KeyRoles::Unknown
+        );
+        assert_eq!(KeyRoles::Unknown.scope(now), "role unknown");
+        assert_eq!(KeyRoles::Unknown.write_access(), "API key: role unknown");
+    }
+
+    #[test]
+    fn only_the_api_key_in_use_shows_its_looked_up_role() {
+        let ungranted = SavedKeyState::Complete {
+            api_url: "https://api.example/v1".into(),
+            grant_scope: None,
+            expired: None,
+        };
+        let flags = StatusFacts {
+            active: Some(AuthSource::CliFlags),
+            verification: "verified",
+            flags: (true, true),
+            saved_key: ungranted,
+            env: (true, true),
+            in_use_key_scope: "Organization Admin".into(),
+            ..status_facts()
+        };
+        let cells = status_cells(&flags);
+        assert_eq!(cell(&cells, "CLI flags").2, "Organization Admin");
+        // Configured keys not in use are never looked up.
+        assert_eq!(cell(&cells, "API key").2, "role unknown");
+        assert_eq!(cell(&cells, "Env vars").2, "role unknown");
+
+        // An outranked saved key with a grant keeps the grant's Scope.
+        let granted = StatusFacts {
+            saved_key: saved_key(None),
+            ..flags
+        };
+        assert_eq!(
+            cell(&status_cells(&granted), "API key").2,
+            "Service API Reader"
+        );
+
+        let saved = StatusFacts {
+            active: Some(AuthSource::CredentialsFile),
+            flags: (false, false),
+            saved_key: SavedKeyState::Complete {
+                api_url: "https://api.example/v1".into(),
+                grant_scope: None,
+                expired: None,
+            },
+            in_use_key_scope: "no roles".into(),
+            ..granted
+        };
+        let cells = status_cells(&saved);
+        assert_eq!(cell(&cells, "API key").2, "no roles");
+        assert_eq!(cell(&cells, "Env vars").2, "role unknown");
+    }
+
+    #[test]
+    fn oauth_only_is_valid_and_read_only() {
+        let facts = StatusFacts {
+            active: Some(AuthSource::OAuthTokens),
+            verification: "verified",
+            oauth: OAuthState::Valid("https://api.example/v1".into()),
+            ..status_facts()
+        };
+        let cells = status_cells(&facts);
+        let oauth = cell(&cells, "OAuth");
+        assert_eq!(
+            (oauth.1.as_str(), oauth.2.as_str(), oauth.3.as_str()),
+            ("Valid", "read-only", "yes")
+        );
+        #[cfg(feature = "experimental-access-negotiation")]
+        let expected =
+            "Commands here use the read-only OAuth login. For writes: `cloud access request`.";
+        #[cfg(not(feature = "experimental-access-negotiation"))]
+        let expected = "Commands here use the read-only OAuth login.";
+        assert_eq!(facts.summary(), expected);
+        let rejected = StatusFacts {
+            verification: "rejected",
+            ..facts
+        };
+        assert_eq!(
+            cell(&status_cells(&rejected), "OAuth").1,
+            "Rejected by the API"
+        );
     }
 }
