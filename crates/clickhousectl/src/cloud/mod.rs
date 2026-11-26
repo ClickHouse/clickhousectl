@@ -1,3 +1,5 @@
+#[cfg(feature = "experimental-access-negotiation")]
+pub mod access;
 pub mod activity;
 pub mod api_keys;
 pub mod auth;
@@ -76,6 +78,21 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         CloudCommands::Use(use_args) if args.org_id.is_none() && args.org_name.is_none() => {
             return context::run_local(&use_args, json).map_err(cloud_error_to_top_level);
         }
+        // Access negotiation refreshes and uses only the OAuth user identity,
+        // bypassing normal API-key precedence and the ordinary OAuth write gate.
+        #[cfg(feature = "experimental-access-negotiation")]
+        CloudCommands::Access { command, org } => {
+            return access::run(
+                command,
+                args.url.as_deref(),
+                org.or(args.org_id),
+                args.org_name,
+                args.debug,
+                json,
+            )
+            .await
+            .map_err(cloud_error_to_top_level);
+        }
         command => command,
     };
 
@@ -129,15 +146,13 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     }
 
     if args.debug {
-        eprintln!("[debug] auth source: {}", client.auth_source().describe());
-        eprintln!("[debug] api url: {}", client.base_url());
+        print_client_diagnostics(&client);
     }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && command.is_write_command() {
-        return Err(Error::AuthRequired(
-            "This command requires API key authentication. \
+        const BASE: &str = "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
              To authenticate with an API key:\n  \
              clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
@@ -145,9 +160,19 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
              export CLICKHOUSE_CLOUD_API_KEY=your-key\n  \
              export CLICKHOUSE_CLOUD_API_SECRET=your-secret\n\n\
              Learn how to create API keys:\n  \
-             https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl"
-                .into(),
-        ));
+             https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl";
+        // The scoped-access flow exists only when compiled with the
+        // `experimental-access-negotiation` feature, so a default binary must
+        // not advertise commands it does not carry.
+        #[cfg(feature = "experimental-access-negotiation")]
+        const ACCESS_HINT: &str = "\n\n\
+             Or request a short-lived, human-approved scoped key, with no \
+             long-lived API key to manage:\n  \
+             clickhousectl cloud access roles   # list the roles you can request\n  \
+             clickhousectl cloud access request --perms role:<UUID>";
+        #[cfg(not(feature = "experimental-access-negotiation"))]
+        const ACCESS_HINT: &str = "";
+        return Err(Error::AuthRequired(format!("{BASE}{ACCESS_HINT}")));
     }
 
     // `clickhouse client` ends in an `exec()` of the local client, and its
@@ -166,6 +191,11 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             client.explain_pinned_org_error(error).await,
         )),
     }
+}
+
+fn print_client_diagnostics(client: &CloudClient) {
+    eprintln!("[debug] auth source: {}", client.auth_source().describe());
+    eprintln!("[debug] api url: {}", client.base_url());
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
@@ -195,6 +225,8 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
     match command {
         CloudCommands::Auth { command } => auth::run_with_client(client, command, json).await,
         CloudCommands::Use(args) => context::run(client, args, json).await,
+        #[cfg(feature = "experimental-access-negotiation")]
+        CloudCommands::Access { .. } => unreachable!("handled above"),
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
         CloudCommands::Service { command } => services::run(client, command, json).await,
         CloudCommands::Member { command } => organizations::run_member(client, command, json).await,
