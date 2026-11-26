@@ -7,6 +7,17 @@ use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::QueryEndpointRole;
 
+#[cfg(not(feature = "experimental-access-negotiation"))]
+const QUERY_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
+  First use binds the API key to the endpoint, a write. A read-only key must be bound by a write key:
+    `cloud clickhouse query-endpoint create <id> --role <role> --open-api-key <key-id>`.";
+#[cfg(feature = "experimental-access-negotiation")]
+const QUERY_AFTER_HELP: &str = "\
+CONTEXT FOR AGENTS:
+  Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
+  With an API key, first use binds the key to the service's Query API endpoint (a write).";
 #[derive(Subcommand)]
 pub enum ServiceCommands {
     /// List services in the organization
@@ -533,11 +544,7 @@ CONTEXT FOR AGENTS:
     /// Run SQL over HTTP via the Query API
     #[command(
         group(ArgGroup::new("service_selector").required(true).args(["name", "id", "service_id"])),
-        after_help = "\
-CONTEXT FOR AGENTS:
-  Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
-  First use binds the API key to the endpoint, a write. A read-only key must be bound by a write key:
-    `cloud clickhouse query-endpoint create <id> --role <role> --open-api-key <key-id>`."
+        after_help = QUERY_AFTER_HELP
     )]
     Query {
         /// Service ID to query
