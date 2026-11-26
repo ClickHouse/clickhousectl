@@ -323,6 +323,12 @@ pub async fn run(
         AuthCommands::Status => {
             use tabled::{Table, settings::Style};
 
+            // Report the OAuth login as a command would find it: refresh a
+            // lapsed access token first, quietly, whatever the active source
+            // (nothing refreshes it while an API key wins). A failed refresh
+            // keeps the saved login, and a storage error leaves the report to
+            // the saved file.
+            let _ = ensure_fresh_tokens(true).await;
             let active = resolve_active_auth_source(api_key, api_secret);
             let now = jiff::Timestamp::now();
 

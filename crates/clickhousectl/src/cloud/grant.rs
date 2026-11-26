@@ -208,18 +208,21 @@ pub fn expired_key_message(
 /// Refuse, before any request, a command authenticated with the saved key
 /// once its `cloud access request` grant has expired: the API would answer a
 /// bare 401. A saved key without a grant or an expiry is not refused here.
-pub fn refuse_expired_saved_key(source: AuthSource) -> Result<(), CloudError> {
+pub async fn refuse_expired_saved_key(source: AuthSource) -> Result<(), CloudError> {
     let Some(grant) = active_grant(source) else {
         return Ok(());
     };
     let Some(expired) = status_expired(&grant, Timestamp::now()) else {
         return Ok(());
     };
+    // Only now, about to refuse: whether the OAuth login is valid after a
+    // refresh, since nothing refreshes it while the saved key outranks it.
+    let oauth_valid = crate::cloud::saved_key::refreshed_oauth_login_valid().await;
     Err(CloudError::auth(expired_key_message(
         &grant,
         &expired,
         &crate::cloud::saved_key::credentials_path_display(),
-        crate::cloud::saved_key::oauth_login_valid(),
+        oauth_valid,
     )))
 }
 

@@ -5,13 +5,25 @@
 
 use crate::cloud::client::{AuthSource, CloudClient, CloudError, CloudErrorKind};
 
-/// Whether the locally saved OAuth login is usable, by the test `auth status`
-/// uses (`load_tokens` + `is_token_valid`).
+/// Whether the locally saved OAuth login is usable as saved, by the test
+/// `auth status` uses (`load_tokens` + `is_token_valid`). It does not refresh:
+/// a lapsed access token reads as not valid; see
+/// [`refreshed_oauth_login_valid`].
 pub(crate) fn oauth_login_valid() -> bool {
     matches!(
         crate::cloud::auth::load_tokens(),
         Ok(Some(tokens)) if crate::cloud::auth::is_token_valid(&tokens)
     )
+}
+
+/// [`oauth_login_valid`] after a quiet refresh attempt. Nothing refreshes the
+/// OAuth login while the saved key outranks it, so a login that only needs a
+/// refresh would otherwise read as not valid. A failed refresh keeps the saved
+/// login and prints nothing; a storage error is ignored, leaving the answer
+/// to the saved file.
+pub(crate) async fn refreshed_oauth_login_valid() -> bool {
+    let _ = crate::cloud::auth::ensure_fresh_tokens(true).await;
+    oauth_login_valid()
 }
 
 /// The saved credentials file path, as shown on the Key line.
@@ -98,14 +110,12 @@ pub(crate) fn unauthorized_message(
 
 /// Rewrite any HTTP 401 to a request authenticated with the saved
 /// credentials file into [`unauthorized_message`], keeping the API's text at
-/// the front. Every other error, including a 401 under CLI flags, env vars or
+/// the front; only then is the OAuth login refreshed, to say whether it is
+/// valid. Every other error, including a 401 under CLI flags, env vars or
 /// OAuth, is returned unchanged; the kind, exit code and classification are
 /// kept.
-pub(crate) fn explain_unauthorized(client: &CloudClient, error: CloudError) -> CloudError {
-    if client.auth_source() != AuthSource::CredentialsFile
-        || error.kind != CloudErrorKind::Auth
-        || error.failure.and_then(|failure| failure.http_status) != Some(401)
-    {
+pub(crate) async fn explain_unauthorized(client: &CloudClient, error: CloudError) -> CloudError {
+    if !is_saved_key_401(client, &error) {
         return error;
     }
     #[cfg(feature = "experimental-access-negotiation")]
@@ -113,11 +123,25 @@ pub(crate) fn explain_unauthorized(client: &CloudClient, error: CloudError) -> C
         crate::cloud::grant::active_grant(client.auth_source()).map(|grant| grant.roles_phrase());
     #[cfg(not(feature = "experimental-access-negotiation"))]
     let granted: Option<String> = None;
+    let oauth_valid = refreshed_oauth_login_valid().await;
+    rewrite_unauthorized(error, granted.as_deref(), oauth_valid)
+}
+
+/// Whether `error` is an HTTP 401 to a request sent with the saved key.
+fn is_saved_key_401(client: &CloudClient, error: &CloudError) -> bool {
+    client.auth_source() == AuthSource::CredentialsFile
+        && error.kind == CloudErrorKind::Auth
+        && error.failure.and_then(|failure| failure.http_status) == Some(401)
+}
+
+/// [`unauthorized_message`] in place of the message of `error`, a 401 under
+/// the saved key, keeping everything else.
+fn rewrite_unauthorized(error: CloudError, granted: Option<&str>, oauth_valid: bool) -> CloudError {
     let message = unauthorized_message(
         &error.message,
         &credentials_path_display(),
-        granted.as_deref(),
-        oauth_login_valid(),
+        granted,
+        oauth_valid,
     );
     let details = error.details.map(|mut details| {
         details.message = message.clone();
@@ -237,8 +261,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn any_401_under_the_saved_key_is_rewritten() {
+    #[tokio::test]
+    async fn any_401_under_the_saved_key_is_rewritten() {
         use crate::failure::{ApiFailure, FailureKind};
         let refused = |status: u16, message: &str| {
             CloudError::auth(message)
@@ -246,14 +270,15 @@ mod tests {
         };
         // A 401 under CLI flags is kept.
         let flags = CloudClient::for_tests("http://localhost:1/v1", None);
-        let kept = explain_unauthorized(&flags, refused(401, "Invalid credentials"));
+        let kept = explain_unauthorized(&flags, refused(401, "Invalid credentials")).await;
         assert_eq!(kept.message, "Invalid credentials");
         let saved = CloudClient::for_tests_saved_key("http://localhost:1/v1");
         // Other statuses are kept.
-        let other = explain_unauthorized(&saved, refused(403, "Invalid credentials"));
+        let other = explain_unauthorized(&saved, refused(403, "Invalid credentials")).await;
         assert_eq!(other.message, "Invalid credentials");
         // Any 401 under the saved key is rewritten, the API's text first,
-        // keeping the kind and classification.
+        // keeping the kind and classification. (Rewritten without the OAuth
+        // refresh, which would reach the login under this process's HOME.)
         for api in [
             "UNAUTHORIZED: Key is not active",
             "UNAUTHORIZED: Key is not found",
@@ -261,7 +286,8 @@ mod tests {
             " Invalid credentials ",
             "Unauthorized",
         ] {
-            let rewritten = explain_unauthorized(&saved, refused(401, api));
+            assert!(is_saved_key_401(&saved, &refused(401, api)));
+            let rewritten = rewrite_unauthorized(refused(401, api), None, false);
             let first = rewritten.message.lines().next().unwrap();
             assert_eq!(first, refusal_line(api), "{api:?}");
             assert!(first.starts_with(api.trim()), "{first}");

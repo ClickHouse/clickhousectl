@@ -1961,3 +1961,50 @@ async fn auth_status_reports_the_identity_and_never_fails_on_it() {
         }
     }
 }
+
+/// `auth status` refreshes a lapsed OAuth login before reporting it, even
+/// while a saved key (here refused by the API) is the active credential: the
+/// OAuth row is `Valid` and the summary does not send the reader to log in.
+#[tokio::test]
+async fn auth_status_refreshes_a_lapsed_oauth_login_beside_a_refused_saved_key() {
+    let server = MockServer::start().await;
+    let issuer = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_rejected())
+        .mount(&server)
+        .await;
+    mount_refresh(&issuer, true, 1).await;
+    let project = tempfile::tempdir().unwrap();
+    let token_path = write_expired_oauth_tokens(
+        &project.path().join("home/.clickhouse"),
+        &server.uri(),
+        &issuer,
+    );
+    write_project_api_credentials(
+        project.path(),
+        "file-key",
+        "file-secret",
+        &format!("{}/v1", server.uri()),
+    );
+    let output = invoke_auth(project.path(), &server.uri(), true, &["status"]);
+    assert_success(&output);
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["verification"], "rejected");
+    let first = "Commands here use the saved API key, which the API refused, so they fail.";
+    #[cfg(feature = "experimental-access-negotiation")]
+    let summary = format!(
+        "{first}\nThe OAuth login is valid: `cloud access request` works and replaces the key."
+    );
+    #[cfg(not(feature = "experimental-access-negotiation"))]
+    let summary = first.to_string();
+    assert_eq!(status["summary"], summary, "{status}");
+    let oauth = status["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["type"] == "OAuth")
+        .unwrap();
+    assert_eq!(oauth["status"], "Valid", "{status}");
+    assert_eq!(saved_access_token(&token_path), "refreshed-access");
+}

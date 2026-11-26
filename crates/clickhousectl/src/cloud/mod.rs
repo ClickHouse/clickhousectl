@@ -156,7 +156,9 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // earn a bare 401, and it outranks the OAuth login: stop before the call
     // and say how to replace or clear it.
     #[cfg(feature = "experimental-access-negotiation")]
-    grant::refuse_expired_saved_key(client.auth_source()).map_err(cloud_error_to_top_level)?;
+    grant::refuse_expired_saved_key(client.auth_source())
+        .await
+        .map_err(cloud_error_to_top_level)?;
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
@@ -203,7 +205,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
             let error = grant::explain_forbidden(&client, error);
             // A bare 401 under the saved key hides that it outranks the OAuth
             // login: name the file and how to replace or clear it.
-            let error = saved_key::explain_unauthorized(&client, error);
+            let error = saved_key::explain_unauthorized(&client, error).await;
             Err(cloud_error_to_top_level(error))
         }
     }
