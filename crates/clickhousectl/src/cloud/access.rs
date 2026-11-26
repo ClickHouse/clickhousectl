@@ -93,8 +93,7 @@ CONTEXT FOR AGENTS:
     the role or roles covering every write in the task, fewest extras.
   --purpose: required, shown to the approver.
   Blocks until approved (120s default; --timeout-seconds). Approver may change the roles: output names what was granted.
-  Key becomes the project's active credential until expiry. Wider role: new request.
-  The command waits for approval; the key is saved as the active credential, never printed. New permissions: new flow.")]
+  Key is saved, never printed, and becomes the project's active credential until expiry. Wider role: new request.")]
     Request(AccessRequestArgs),
 }
 

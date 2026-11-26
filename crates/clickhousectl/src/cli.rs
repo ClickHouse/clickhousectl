@@ -412,11 +412,9 @@ mod tests {
                     ));
                 }
                 let content: Vec<_> = lines.collect();
-                // The access-negotiation `access request` context carries one extra line;
                 // `cloud access` also says how its OAuth-only commands treat saved keys.
                 let max = match path {
                     "clickhousectl cloud access" => 10,
-                    "clickhousectl cloud access request" => 9,
                     _ => 8,
                 };
                 if content.is_empty() || content.len() > max {
