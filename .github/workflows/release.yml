@@ -36,26 +36,25 @@ jobs:
             python3 scripts/check-release-versions.py
           fi
 
+  macos-build:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: preflight
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ClickHouse/clickhousectl/.github/workflows/macos-build.yml@45f968dc7b3630002f25021e8c3dcd6c9239853b
+
   build:
     name: Build ${{ matrix.target }}
     needs: preflight
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            cross: false
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            cross: false
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,19 +67,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross
-        if: matrix.cross
         run: cargo install cross --version 0.2.5 --locked
 
       - name: Build
         run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
-          else
-            cargo build --release --locked --target ${{ matrix.target }}
-          fi
+          cross build --release --locked --target ${{ matrix.target }}
 
       - name: Verify static linking
-        if: contains(matrix.target, 'linux-musl')
         run: |
           binary="target/${{ matrix.target }}/release/clickhousectl"
           echo "--- file output ---"
@@ -167,19 +160,86 @@ jobs:
             ${{ matrix.distro }} \
             sh -c 'clickhousectl --version && clickhousectl --help'
 
+  signed-release:
+    name: Verify and approve publishable release bytes
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [macos-build, build, smoke-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Protect this environment to reviewed release tags, with Product Security
+    # approval and no admin bypass for the first real release.
+    environment: signed-release-publish
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          pattern: clickhousectl-*-unknown-linux-musl-${{ github.ref_name }}
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Validate the manually approved signer handoff
+        env:
+          MACOS_RELEASE_BUNDLE_URL: ${{ secrets.MACOS_RELEASE_BUNDLE_URL }}
+          MACOS_RELEASE_BUNDLE_SHA256: ${{ vars.MACOS_RELEASE_AUDITED_BUNDLE_SHA256 }}
+          MACOS_SIGNER_SHA: ${{ vars.MACOS_RELEASE_SIGNER_SHA }}
+          MACOS_LEAF_SHA256: ${{ vars.MACOS_RELEASE_LEAF_SHA256 }}
+          PYPI_SCOPE: ${{ vars.MACOS_RELEASE_PYPI_SCOPE }}
+          RECEIPT_ATTEMPT: ${{ needs.macos-build.outputs.receipt-run-attempt }}
+        run: |
+          set -euo pipefail
+          if [[ "$PYPI_SCOPE" != linux-only ]]; then
+            echo "::error::The first-release PyPI scope must be explicitly approved"
+            exit 1
+          fi
+          python3 scripts/fetch-signed-release.py notarized
+          manifest_sha256=$(sha256sum notarized/manifest.json | cut -d ' ' -f 1)
+          python3 scripts/check-release-assets.py verify-macos --directory notarized \
+            --manifest-sha256 "$manifest_sha256" --source-sha "$GITHUB_SHA" --ref "$GITHUB_REF" \
+            --run-id "$GITHUB_RUN_ID" --receipt-run-attempt "$RECEIPT_ATTEMPT" \
+            --leaf-sha256 "$MACOS_LEAF_SHA256" --signer-sha "$MACOS_SIGNER_SHA"
+      - name: Package exactly the verified macOS bytes
+        run: |
+          set -euo pipefail
+          for pair in arm64:aarch64 x86_64:x86_64; do
+            binary="notarized/${pair%:*}"
+            if grep -aq CLICKHOUSECTL_DEBUG_LOG "$binary"; then
+              echo "::error::Release binary contains the debug-log feature"
+              exit 1
+            fi
+            dir="clickhousectl-${pair#*:}-apple-darwin-${GITHUB_REF_NAME}"
+            mkdir -p "package/$dir"
+            install -m 0755 "$binary" "package/$dir/clickhousectl"
+            install -m 0644 LICENSE "package/$dir/LICENSE"
+            tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              -C package -czf "assets/$dir.tar.gz" "$dir"
+          done
+          python3 scripts/check-release-assets.py verify-archives --directory assets \
+            --ref "$GITHUB_REF" --manifest notarized/manifest.json
+          (cd assets && sha256sum clickhousectl-*.tar.gz > SHA256SUMS)
+          cp notarized/{manifest.json,notarization.json,arm64-receipt.json,x86_64-receipt.json} assets/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        with:
+          name: authorized-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: assets/
+          if-no-files-found: error
+
   # Uploading the archives before Create Release means the newest release is
   # never visible without its archives. `publish-latest` points
   # `clickhousectl update` and install.sh at it afterwards.
   #
-  # This job also fixes the release's bytes: SHA256SUMS and the provenance
-  # attestation describe the archives builds.clickhouse.com serves, and the
-  # `release-assets` artifact carries exactly those archives and SHA256SUMS to
-  # Create Release and the npm package (#1307).
+  # S3 and the GitHub/npm publishers consume the same gate artifact.
   upload-builds:
     name: Upload to builds.clickhouse.com
-    needs: [build, smoke-test]
+    needs: signed-release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     # `id-token: write` lets the job assume the external-s3-upload role
     # (ClickHouse/clickhouse-private tests/ci/terraform/external_s3_upload.tf)
     # through GitHub OIDC. It may write only under clickhouse-builds/clickhousectl/.
@@ -192,59 +252,20 @@ jobs:
       S3_BUCKET: clickhouse-builds
       S3_PREFIX: clickhousectl
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the exact authorized release assets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          artifact-ids: ${{ needs.signed-release.outputs.artifact-id }}
           path: artifacts
-          pattern: clickhousectl-*
+          digest-mismatch: error
           merge-multiple: true
 
-      - name: Check archives
-        run: |
-          missing=0
-          for target in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl; do
-            f="artifacts/clickhousectl-${target}-${GITHUB_REF_NAME}.tar.gz"
-            [ -f "$f" ] || { echo "::error::missing $f"; missing=1; }
-          done
-          ls -l artifacts/
-          exit "$missing"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::542516086801:role/external-s3-upload
-          aws-region: us-east-1
-
-      # Published archives are immutable and CDN-cached for days, so an archive
-      # already in the bucket is left alone rather than overwritten. A rebuilt
-      # archive differs byte for byte, so the published copy replaces the local
-      # one: SHA256SUMS must describe what builds.clickhouse.com serves.
-      - name: Upload archives
-        run: |
-          for f in artifacts/*.tar.gz; do
-            key="${S3_PREFIX}/$(basename "$f")"
-            if err=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$key" 2>&1 >/dev/null); then
-              echo "Keep: s3://${S3_BUCKET}/${key} already exists; using the published copy"
-              aws s3 cp "s3://${S3_BUCKET}/${key}" "$f"
-              continue
-            fi
-            if ! echo "$err" | grep -q "Not Found"; then
-              echo "::error::head-object failed for ${key}: ${err}"
-              exit 1
-            fi
-            aws s3 cp "$f" "s3://${S3_BUCKET}/${key}" --content-type application/gzip
-          done
-
-      # Clients read SHA256SUMS from the GitHub release, a second origin; the
-      # bucket copy is for mirrors and only detects corruption.
-      - name: Write SHA256SUMS
+      - name: Verify the approved checksums
         working-directory: artifacts
-        run: |
-          sha256sum clickhousectl-*-"${GITHUB_REF_NAME}".tar.gz > SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 4 ] || { echo "::error::expected 4 archives"; exit 1; }
-          cat SHA256SUMS
-          aws s3 cp SHA256SUMS "s3://${S3_BUCKET}/${S3_PREFIX}/clickhousectl-${GITHUB_REF_NAME}-SHA256SUMS" \
-            --content-type text/plain
+        run: sha256sum --check --strict SHA256SUMS
 
       # Verifiable with `gh attestation verify <archive> -R ClickHouse/clickhousectl`.
       - name: Attest build provenance
@@ -252,25 +273,24 @@ jobs:
         with:
           subject-checksums: artifacts/SHA256SUMS
 
-      - name: Upload release assets
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          name: release-assets
-          path: |
-            artifacts/*.tar.gz
-            artifacts/SHA256SUMS
-          if-no-files-found: error
-          # A re-run must replace an earlier attempt's assets.
-          overwrite: true
+          role-to-assume: arn:aws:iam::542516086801:role/external-s3-upload
+          aws-region: us-east-1
+
+      - name: Upload and check the approved S3 bytes
+        working-directory: artifacts
+        run: bash "$GITHUB_WORKSPACE/scripts/upload-release-assets.sh"
 
   # One `gh release create` uploads the archives and SHA256SUMS together, so
   # the release (and the `releases/latest` fallback that names it) is never
   # visible without the sums that `update` and install.sh require.
   release:
     name: Create Release
-    needs: [build, smoke-test, upload-builds]
+    needs: [signed-release, upload-builds]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     permissions:
       contents: write
     steps:
@@ -281,21 +301,19 @@ jobs:
       - name: Download release assets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-assets
+          artifact-ids: ${{ needs.signed-release.outputs.artifact-id }}
+          digest-mismatch: error
           path: release
 
       - name: Check release assets
         working-directory: release
-        run: |
-          ls -l
-          sha256sum -c SHA256SUMS
-          [ "$(ls *.tar.gz | wc -l)" -eq 4 ] || { echo "::error::expected 4 archives"; exit 1; }
+        run: sha256sum --check --strict SHA256SUMS
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --generate-notes release/*
+        run: gh release create "$TAG" --verify-tag --generate-notes release/*
 
   # `clickhousectl update` and install.sh read the latest version from
   # builds.clickhouse.com/clickhousectl/latest.txt rather than the
@@ -306,7 +324,7 @@ jobs:
     name: Publish latest.txt
     needs: [upload-builds, release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     permissions:
       id-token: write
       contents: read
@@ -370,7 +388,7 @@ jobs:
     name: Publish to crates.io
     needs: [preflight, release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     environment: release-publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -404,9 +422,9 @@ jobs:
   publish-npm:
     name: Publish to npm
     # preflight guarantees npm/package.json already carries the tag version.
-    needs: [preflight, release]
+    needs: [preflight, release, signed-release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     # `id-token: write` is required for npm OIDC trusted publishing. Do NOT
     # set NODE_AUTH_TOKEN below — per npm docs, even an empty value forces
     # token-based auth and short-circuits the OIDC flow.
@@ -432,7 +450,8 @@ jobs:
       - name: Download release assets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-assets
+          artifact-ids: ${{ needs.signed-release.outputs.artifact-id }}
+          digest-mismatch: error
           path: release-assets
 
       - name: Embed SHA256SUMS
@@ -450,12 +469,14 @@ jobs:
         run: npm publish --provenance --access public
 
   build-wheels:
+    # macOS wheels currently build a separate channel-pip executable that has
+    # not passed the signing gate. Do not ship it unsigned.
     name: Build wheel (${{ matrix.target }})
     # preflight guarantees crates/clickhousectl/Cargo.toml, which sets the
     # wheel version, already carries the tag version.
     needs: [preflight, release]
     runs-on: ${{ matrix.os }}
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     strategy:
       fail-fast: false
       matrix:
@@ -472,12 +493,6 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             manylinux: musllinux_1_2
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            manylinux: 'off'
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            manylinux: 'off'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -502,7 +517,7 @@ jobs:
     name: Publish to PyPI
     needs: build-wheels
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     # PyPI trusted publishing recommends binding the publish job to an
     # environment so the OIDC subject includes `environment:pypi`, which is
     # pinned on PyPI's trusted-publisher config for the project.
