@@ -173,6 +173,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/cloud/clickstack.rs",
                     "crates/clickhousectl/tests/cloud/context.rs",
                     "crates/clickhousectl/tests/cloud/client.rs",
+                    "crates/clickhousectl/tests/cloud/init.rs",
                     "crates/clickhousectl/tests/cloud/main.rs",
                     "crates/clickhousectl/tests/cloud/organizations.rs",
                     "crates/clickhousectl/tests/cloud/permissions.rs",

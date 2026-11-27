@@ -129,6 +129,7 @@ mod activity;
 mod api_keys;
 mod backups;
 mod byoc;
+mod claimable;
 mod clickpipes;
 mod clickstack;
 mod invitations;
@@ -182,6 +183,9 @@ pub use byoc::{
     ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
     ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
     ByocInfrastructureValidationCloudprovider, ByocRestrictedFacts, ByocRestrictedFactsResponse,
+};
+pub use claimable::{
+    ClaimableOrganization, ClaimableOrganizationApiKey, ClaimableOrganizationLimits,
 };
 pub use clickpipes::*;
 pub use clickstack::*;

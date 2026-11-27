@@ -41,6 +41,9 @@ channel-pip = []
 # invocation (raw argv, cwd, env, outcome) to the file named by
 # `CLICKHOUSECTL_DEBUG_LOG`, for agent-experience experiments. Unredacted.
 debug-log = []
+# Experimental: `cloud init` creates a claimable, unclaimed organisation.
+# Not enabled in released binaries; lift when the feature reaches GA.
+experimental-claimable = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

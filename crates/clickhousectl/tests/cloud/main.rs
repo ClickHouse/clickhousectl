@@ -16,6 +16,8 @@ mod clickpipes;
 mod clickstack;
 mod client;
 mod context;
+#[cfg(feature = "experimental-claimable")]
+mod init;
 mod organizations;
 mod permissions;
 mod postgres;

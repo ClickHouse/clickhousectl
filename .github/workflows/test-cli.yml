@@ -59,6 +59,11 @@ jobs:
       - name: Test
         run: cargo test -p clickhousectl
 
+      # Feature-gated commands (e.g. experimental-claimable) are compiled and
+      # tested separately so their subprocess suites and unit tests always run.
+      - name: Test experimental-claimable
+        run: cargo test -p clickhousectl --features experimental-claimable
+
       # The internal invocation log is off by default; keep it building, linted and tested.
       - name: Clippy with debug-log
         run: cargo clippy -p clickhousectl --all-targets --features debug-log -- -D warnings
