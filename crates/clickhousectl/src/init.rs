@@ -277,7 +277,7 @@ pub fn ensure_runtime_gitignore() -> Result<RuntimeIgnoreResult> {
 
 fn ensure_runtime_gitignore_in(dir: &Path) -> Result<RuntimeIgnoreResult> {
     let directory_created = !dir.exists();
-    std::fs::create_dir_all(dir)?;
+    crate::paths::create_dir_all_managed(dir)?;
 
     let gitignore = dir.join(".gitignore");
     let gitignore_created = match std::fs::OpenOptions::new()

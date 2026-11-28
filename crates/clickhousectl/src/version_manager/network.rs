@@ -45,7 +45,7 @@ pub(crate) fn client(
 ) -> Result<Client, NetworkFailure> {
     configure_builder(crate::http::client_builder(), policy)
         .build()
-        .map_err(|_| NetworkFailure::new(stage, url, NetworkCategory::Transport))
+        .map_err(|error| failure_from_reqwest(stage, url, &error))
 }
 
 pub(crate) async fn send(
@@ -112,6 +112,8 @@ pub(crate) fn failure_from_reqwest(
 ) -> NetworkFailure {
     let category = if error.is_timeout() {
         NetworkCategory::Timeout
+    } else if error_chain_has_tls_cert_problem(error) {
+        NetworkCategory::TlsCertificates
     } else if error.is_connect() {
         NetworkCategory::Connection
     } else if error.is_decode() {
@@ -120,6 +122,22 @@ pub(crate) fn failure_from_reqwest(
         NetworkCategory::Transport
     };
     NetworkFailure::new(stage, url, category)
+}
+
+/// Detect missing or untrusted system CA certificates in the error source chain
+/// (for example `rustls-platform-verifier` returning
+/// `"No CA certificates were loaded from the system"` in a minimal container
+/// without `ca-certificates`).
+fn error_chain_has_tls_cert_problem(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |err| err.source()).any(|err| {
+        let text = err.to_string().to_ascii_lowercase();
+        text.contains("no ca certificates were loaded")
+            || text.contains("no native root ca certificates")
+            || text.contains("failed to load platform native certs")
+            || text.contains("unknownissuer")
+            || text.contains("unknown issuer")
+            || text.contains("certificate verify failed")
+    })
 }
 
 pub(crate) fn failure_from_status(
@@ -267,5 +285,62 @@ mod tests {
         assert!(!message.contains("secret"));
         hold.notify_one();
         proxy.await.unwrap();
+    }
+
+    #[test]
+    fn missing_ca_certificates_errors_are_detected_and_formatted_with_hint() {
+        #[derive(Debug)]
+        struct WrappedError {
+            message: &'static str,
+            source: Option<Box<dyn std::error::Error + 'static>>,
+        }
+        impl std::fmt::Display for WrappedError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.message)
+            }
+        }
+        impl std::error::Error for WrappedError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.source.as_deref()
+            }
+        }
+
+        let no_ca = WrappedError {
+            message: "error building client",
+            source: Some(Box::new(WrappedError {
+                message: "No CA certificates were loaded from the system",
+                source: None,
+            })),
+        };
+        assert!(error_chain_has_tls_cert_problem(&no_ca));
+
+        let unknown_issuer = WrappedError {
+            message: "tls handshake failed",
+            source: Some(Box::new(WrappedError {
+                message: "invalid peer certificate: UnknownIssuer",
+                source: None,
+            })),
+        };
+        assert!(error_chain_has_tls_cert_problem(&unknown_issuer));
+
+        let generic = WrappedError {
+            message: "connection reset by peer",
+            source: None,
+        };
+        assert!(!error_chain_has_tls_cert_problem(&generic));
+
+        let failure = NetworkFailure::new(
+            NetworkStage::Download,
+            "https://user:pass@github.com/org/repo?token=secret",
+            NetworkCategory::TlsCertificates,
+        );
+        let message = failure.to_string();
+        assert!(message.contains("github.com"), "{message}");
+        assert!(message.contains("tls-certificates"), "{message}");
+        assert!(message.contains("ca-certificates"), "{message}");
+        assert!(message.contains("SSL_CERT_FILE"), "{message}");
+        assert!(!message.contains("user"), "{message}");
+        assert!(!message.contains("pass"), "{message}");
+        assert!(!message.contains("secret"), "{message}");
     }
 }

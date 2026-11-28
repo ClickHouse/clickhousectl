@@ -42,9 +42,9 @@ pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags in the form `17|18[.<minor>][-<variant>]`.
+/// Accept Postgres image tags in the form `17|18|19[.<minor>][-<variant>]`.
 /// The variant follows Docker's tag character grammar. Examples that pass:
-/// `17`, `17.0`, `17-alpine`, `18-bookworm`, `18.1-alpine3.20`.
+/// `17`, `17.0`, `17-alpine`, `18-bookworm`, `18.1-alpine3.20`, `19`, `19.0`.
 pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
     let valid = tag.len() <= 128 && tag.is_ascii() && {
         let (version, variant) = match tag.split_once('-') {
@@ -782,7 +782,10 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                 // downloading the manifest or tarball.
                 let run_as = pg_native::user_for_new_instance()?;
                 if let Some(server_user) = &run_as {
-                    pg_native::ensure_searchable(&[&pg_bundle::cache_root()?], server_user)?;
+                    pg_native::ensure_searchable(
+                        &[&pg_bundle::cache_root()?, &crate::init::local_dir()?],
+                        server_user,
+                    )?;
                 }
                 let bundle =
                     pg_bundle::ensure_bundle(&PgVersionRequest::latest(), false, json).await?;
@@ -2022,6 +2025,7 @@ async fn client(
             query,
             queries_file,
             extra_args,
+            false,
         );
     }
 
@@ -2053,6 +2057,7 @@ async fn client(
             query,
             queries_file,
             extra_args,
+            true,
         );
     }
 
@@ -2075,6 +2080,7 @@ async fn client(
             query,
             queries_file,
             extra_args,
+            false,
         );
     }
 
@@ -2191,12 +2197,16 @@ fn exec_psql(
     query: Option<String>,
     queries_file: Option<String>,
     extra_args: Vec<String>,
+    scrub_pg_env: bool,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
     // psql reads a non-terminal stdin as a script unless -c supplies input.
     let script_input =
         queries_file.is_some() || (query.is_none() && !std::io::stdin().is_terminal());
     let mut cmd = Command::new(program);
+    if scrub_pg_env {
+        pg_native::scrub_pg_env(&mut cmd);
+    }
     cmd.arg("-h")
         .arg(host)
         .arg("-p")

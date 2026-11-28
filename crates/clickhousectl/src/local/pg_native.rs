@@ -304,11 +304,36 @@ fn give_to(user: &ServerUser, paths: &[&Path]) -> Result<()> {
 
 /// Create the instance and data directories, owned by `run_as` when set.
 pub(crate) fn create_instance_dirs(instance_dir: &Path, run_as: Option<&ServerUser>) -> Result<()> {
+    if let Some(parent) = instance_dir.parent() {
+        crate::paths::create_dir_all_managed(parent)?;
+    }
     let data = data_dir(instance_dir);
     std::fs::create_dir_all(&data)?;
     match run_as {
         Some(user) => give_to(user, &[instance_dir, &data]),
         None => Ok(()),
+    }
+}
+
+/// Strip inherited `PG*` environment variables (such as `PGSSLMODE`,
+/// `PGOPTIONS`, `PGHOST`, `PGPORT`, `PGUSER`, `PGDATABASE`, `PGDATA`) so the
+/// caller's shell configuration for remote Postgres servers cannot interfere
+/// with managed local instances. Leaves non-`PG*` client settings such as
+/// `PSQLRC`, `PAGER`, `EDITOR` and `TERM` untouched. Callers that need
+/// `PGPASSWORD` set it explicitly after calling this helper.
+pub(crate) fn scrub_pg_env(command: &mut std::process::Command) {
+    scrub_pg_env_from(command, std::env::vars_os().map(|(key, _)| key));
+}
+
+fn scrub_pg_env_from(
+    command: &mut std::process::Command,
+    keys: impl IntoIterator<Item = std::ffi::OsString>,
+) {
+    use std::os::unix::ffi::OsStrExt;
+    for key in keys {
+        if key.as_bytes().starts_with(b"PG") {
+            command.env_remove(key);
+        }
     }
 }
 
@@ -497,6 +522,7 @@ pub(crate) async fn initdb(options: &InitOptions<'_>) -> Result<()> {
     let mut pwfile_arg = std::ffi::OsString::from("--pwfile=");
     pwfile_arg.push(pwfile.path());
     let mut command = tokio::process::Command::new(options.bundle.bin("initdb"));
+    scrub_pg_env(command.as_std_mut());
     if let Some(user) = options.run_as {
         // SAFETY: the closure makes only async-signal-safe calls.
         unsafe { command.pre_exec(drop_privileges(user)) };
@@ -567,6 +593,7 @@ pub(crate) fn spawn_postmaster(
         socket_setting.push(dir);
     }
     let mut command = std::process::Command::new(bundle.bin("postgres"));
+    scrub_pg_env(&mut command);
     command
         .arg("-D")
         .arg(data_dir(instance_dir))
@@ -609,7 +636,9 @@ async fn poll_ready(
         if let Some(status) = child.try_wait()? {
             return Ok(Readiness::Exited(status));
         }
-        let probe = tokio::process::Command::new(bundle.bin("pg_isready"))
+        let mut probe_cmd = tokio::process::Command::new(bundle.bin("pg_isready"));
+        scrub_pg_env(probe_cmd.as_std_mut());
+        let probe = probe_cmd
             .args(["-h", LISTEN_ADDRESS, "-p", &port.to_string(), "-t", "1"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -675,7 +704,9 @@ pub(crate) async fn create_database(
     password: &str,
     database: &str,
 ) -> Result<()> {
-    let output = tokio::process::Command::new(bundle.bin("createdb"))
+    let mut command = tokio::process::Command::new(bundle.bin("createdb"));
+    scrub_pg_env(command.as_std_mut());
+    let output = command
         .args(["-h", LISTEN_ADDRESS, "-p", &port.to_string(), "-U", user])
         .arg("--no-password")
         .arg("--")
@@ -887,5 +918,39 @@ mod tests {
         assert!(!is_running(dir.path()));
         std::fs::write(data.join("postmaster.pid"), "not a pid\n").unwrap();
         assert!(!is_running(dir.path()));
+    }
+
+    #[test]
+    fn scrub_pg_env_removes_pg_vars_while_preserving_other_vars_and_explicit_password() {
+        use std::ffi::{OsStr, OsString};
+        let mut command = std::process::Command::new("psql");
+        scrub_pg_env_from(
+            &mut command,
+            [
+                "PGSSLMODE",
+                "PGOPTIONS",
+                "PGHOST",
+                "PGPASSWORD",
+                "PGDATA",
+                "PSQLRC",
+                "PAGER",
+                "PATH",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        command.env("PGPASSWORD", "managed-secret");
+
+        let envs: std::collections::BTreeMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
+        for removed in ["PGSSLMODE", "PGOPTIONS", "PGHOST", "PGDATA"] {
+            assert_eq!(envs.get(OsStr::new(removed)), Some(&None), "{removed}");
+        }
+        assert_eq!(
+            envs.get(OsStr::new("PGPASSWORD")),
+            Some(&Some(OsStr::new("managed-secret")))
+        );
+        for untouched in ["PSQLRC", "PAGER", "PATH"] {
+            assert!(!envs.contains_key(OsStr::new(untouched)), "{untouched}");
+        }
     }
 }

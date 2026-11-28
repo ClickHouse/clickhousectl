@@ -1,4 +1,4 @@
-use crate::error::{Error, NetworkFailure, NetworkStage, Result};
+use crate::error::{Error, NetworkCategory, NetworkFailure, NetworkStage, Result};
 use crate::version_manager::platform::{DownloadSource, Platform};
 use crate::version_manager::{master::ArtifactInfo, network};
 use futures_util::StreamExt;
@@ -185,9 +185,10 @@ async fn download_once(
     let response = network::send(request, NetworkStage::DownloadHeaders, url)
         .await
         .map_err(|failure| {
+            let retryable = failure.category != NetworkCategory::TlsCertificates;
             DownloadAttemptError::Network(DownloadAttemptFailure {
                 failure,
-                retryable: true,
+                retryable,
                 retry_after: None,
             })
         })?;
@@ -283,7 +284,7 @@ fn parse_retry_after(value: &str, now: Timestamp) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{NetworkCategory, NetworkStage};
+    use crate::error::NetworkStage;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

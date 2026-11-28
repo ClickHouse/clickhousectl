@@ -36,6 +36,10 @@ const PROGRAMS: [(&str, &str); 5] = [
     (
         "initdb",
         r#"#!/bin/sh
+if [ -n "$FAKE_ASSERT_NO_PG_ENV" ] && [ -n "${PGSSLMODE}${PGOPTIONS}${PGHOST}${PGDATA}${PGPASSWORD}" ]; then
+  echo "leaked PG env into initdb" >&2
+  exit 91
+fi
 data=""
 while [ $# -gt 0 ]; do
   [ "$1" = "-D" ] && data="$2"
@@ -49,6 +53,10 @@ mkdir -p "$data" && echo 18 > "$data/PG_VERSION"
     (
         "postgres",
         r#"#!/bin/sh
+if [ -n "$FAKE_ASSERT_NO_PG_ENV" ] && [ -n "${PGSSLMODE}${PGOPTIONS}${PGHOST}${PGDATA}${PGPASSWORD}" ]; then
+  echo "leaked PG env into postgres" >&2
+  exit 92
+fi
 [ -n "$FAKE_POSTGRES_EXIT" ] && { echo "FATAL: fake postmaster failure" >&2; exit "$FAKE_POSTGRES_EXIT"; }
 while [ $# -gt 0 ]; do
   [ "$1" = "-D" ] && data="$2"
@@ -63,15 +71,46 @@ exec sleep 600
     // Ready while the recorded postmaster is alive.
     (
         "pg_isready",
-        "#!/bin/sh\nkill -0 \"$(cat \"$FAKE_RECORD_DIR/postmaster.pid\" 2>/dev/null)\" 2>/dev/null\n",
+        r#"#!/bin/sh
+if [ -n "$FAKE_ASSERT_NO_PG_ENV" ] && [ -n "${PGSSLMODE}${PGOPTIONS}${PGHOST}${PGDATA}${PGPASSWORD}" ]; then
+  echo "leaked PG env into pg_isready" >&2
+  exit 93
+fi
+kill -0 "$(cat "$FAKE_RECORD_DIR/postmaster.pid" 2>/dev/null)" 2>/dev/null
+"#,
     ),
     (
         "createdb",
-        "#!/bin/sh\n[ -n \"$FAKE_CREATEDB_EXIT\" ] && { echo 'fake createdb failure' >&2; exit \"$FAKE_CREATEDB_EXIT\"; }\nexit 0\n",
+        r#"#!/bin/sh
+if [ -n "$FAKE_ASSERT_NO_PG_ENV" ] && [ -n "${PGSSLMODE}${PGOPTIONS}${PGHOST}${PGDATA}" ]; then
+  echo "leaked PG env into createdb" >&2
+  exit 94
+fi
+if [ -n "$FAKE_EXPECT_PGPASSWORD" ] && [ "$PGPASSWORD" != "$FAKE_EXPECT_PGPASSWORD" ]; then
+  echo "unexpected PGPASSWORD in createdb: $PGPASSWORD" >&2
+  exit 95
+fi
+[ -n "$FAKE_CREATEDB_EXIT" ] && { echo 'fake createdb failure' >&2; exit "$FAKE_CREATEDB_EXIT"; }
+exit 0
+"#,
     ),
     (
         "psql",
-        "#!/bin/sh\nprintf 'fake-psql'; printf ' %s' \"$@\"; printf '\\n'\n",
+        r#"#!/bin/sh
+if [ -n "$FAKE_ASSERT_NO_PG_ENV" ] && [ -n "${PGSSLMODE}${PGOPTIONS}${PGHOST}${PGDATA}" ]; then
+  echo "leaked PG env into psql" >&2
+  exit 96
+fi
+if [ -n "$FAKE_EXPECT_PGPASSWORD" ] && [ "$PGPASSWORD" != "$FAKE_EXPECT_PGPASSWORD" ]; then
+  echo "unexpected PGPASSWORD in psql: $PGPASSWORD" >&2
+  exit 97
+fi
+if [ -n "$FAKE_EXPECT_PSQLRC" ] && [ "$PSQLRC" != "$FAKE_EXPECT_PSQLRC" ]; then
+  echo "PSQLRC was lost in psql: $PSQLRC" >&2
+  exit 98
+fi
+printf 'fake-psql'; printf ' %s' "$@"; printf '\n'
+"#,
     ),
 ];
 
@@ -599,4 +638,88 @@ fn latest_txt_multi_major_defaults_to_newest_and_honours_explicit_majors() {
         None,
     );
     assert_eq!(docker_latest.status.code(), Some(2));
+}
+
+#[test]
+fn inherited_pg_env_vars_are_scrubbed_for_managed_native_commands_only() {
+    let fixture = Fixture::new();
+
+    // Inherited PG* client settings must not break start (initdb, postgres,
+    // pg_isready, createdb) or managed native client, while the managed
+    // PGPASSWORD and non-PG client vars (PSQLRC, PAGER) are kept.
+    let start_output = fixture
+        .command(&["start", "--database", "app", "--password", "managed-secret"])
+        .env("FAKE_ASSERT_NO_PG_ENV", "1")
+        .env("FAKE_EXPECT_PGPASSWORD", "managed-secret")
+        .env("PGSSLMODE", "verify-full")
+        .env("PGOPTIONS", "-c statement_timeout=1ms")
+        .env("PGHOST", "unreachable.invalid")
+        .env("PGDATA", "/nonexistent/pgdata")
+        .env("PGPASSWORD", "inherited-wrong-password")
+        .output()
+        .expect("run start with PG* env");
+    assert!(
+        start_output.status.success(),
+        "start failed: {}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+
+    let client_output = fixture
+        .command(&["client", "-q", "SELECT 1"])
+        .env("FAKE_ASSERT_NO_PG_ENV", "1")
+        .env("FAKE_EXPECT_PGPASSWORD", "managed-secret")
+        .env("FAKE_EXPECT_PSQLRC", "/tmp/custom-psqlrc")
+        .env("PGSSLMODE", "verify-full")
+        .env("PGOPTIONS", "-c statement_timeout=1ms")
+        .env("PGHOST", "unreachable.invalid")
+        .env("PGDATA", "/nonexistent/pgdata")
+        .env("PGPASSWORD", "inherited-wrong-password")
+        .env("PSQLRC", "/tmp/custom-psqlrc")
+        .env("PAGER", "cat")
+        .output()
+        .expect("run managed client with PG* env");
+    assert!(
+        client_output.status.success(),
+        "managed client failed: {}",
+        String::from_utf8_lossy(&client_output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&client_output.stdout).starts_with("fake-psql "),
+        "{}",
+        String::from_utf8_lossy(&client_output.stdout)
+    );
+
+    // Direct `--host`/`--port` client connections keep inherited `PG*` vars
+    // (such as `PGSSLMODE=verify-full` for remote/Cloud Postgres).
+    let host_bin = fixture.record.join("host-bin");
+    std::fs::create_dir(&host_bin).expect("create host-bin");
+    let host_psql = host_bin.join("psql");
+    std::fs::write(
+        &host_psql,
+        r#"#!/bin/sh
+[ "$1" = "--version" ] && exit 0
+printf 'PGSSLMODE=%s\n' "$PGSSLMODE"
+"#,
+    )
+    .expect("write host psql");
+    std::fs::set_permissions(&host_psql, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod host psql");
+
+    let direct_output = fixture
+        .command(&["client", "--host", "127.0.0.1", "--port", "5432"])
+        .env("PATH", format!("{}:/usr/bin:/bin", host_bin.display()))
+        .env("PGSSLMODE", "verify-full")
+        .output()
+        .expect("run direct client with PGSSLMODE");
+    assert!(
+        direct_output.status.success(),
+        "direct client failed: {}",
+        String::from_utf8_lossy(&direct_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&direct_output.stdout).trim(),
+        "PGSSLMODE=verify-full"
+    );
+
+    fixture.ok(&["remove"]);
 }

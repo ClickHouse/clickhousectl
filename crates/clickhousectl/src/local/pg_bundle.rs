@@ -578,6 +578,15 @@ impl Drop for Staging {
 
 /// Unpack a verified tarball into `staging` and return its bundle directory.
 fn extract(archive: &Path, staging: &Path, spec: &BundleSpec) -> Result<PathBuf> {
+    extract_with_world_read(archive, staging, spec, paths::running_as_root())
+}
+
+fn extract_with_world_read(
+    archive: &Path,
+    staging: &Path,
+    spec: &BundleSpec,
+    ensure_world_readable: bool,
+) -> Result<PathBuf> {
     let extraction_error = |source| Error::ExtractArchive {
         archive: archive.to_path_buf(),
         destination: staging.to_path_buf(),
@@ -599,7 +608,51 @@ fn extract(archive: &Path, staging: &Path, spec: &BundleSpec) -> Result<PathBuf>
             spec.name()
         )));
     }
+    if ensure_world_readable {
+        make_tree_world_readable(&dir).map_err(extraction_error)?;
+    }
     Ok(dir)
+}
+
+/// Make an extracted bundle tree readable and executable by any local user
+/// (`a+rX`, without widening write bits or following symlinks). Needed when
+/// root unpacks a bundle under a restrictive `umask` such as `0077`: `tar`
+/// creates implicit parent directories using the process `umask`, while the
+/// postmaster runs as an unprivileged user.
+#[cfg(unix)]
+fn make_tree_world_readable(root: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn visit(path: &Path) -> std::io::Result<()> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() {
+            return Ok(());
+        }
+        let mode = meta.permissions().mode() & 0o7777;
+        if meta.is_dir() {
+            let updated = mode | 0o555;
+            if updated != mode {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(updated))?;
+            }
+            for entry in std::fs::read_dir(path)? {
+                visit(&entry?.path())?;
+            }
+        } else if meta.is_file() {
+            let add = if mode & 0o100 != 0 { 0o555 } else { 0o444 };
+            let updated = mode | add;
+            if updated != mode {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(updated))?;
+            }
+        }
+        Ok(())
+    }
+
+    visit(root)
+}
+
+#[cfg(not(unix))]
+fn make_tree_world_readable(_root: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Download, verify and extract `spec` into `root`, returning the cached
@@ -626,10 +679,13 @@ async fn install_into(
     let unpack_dir = staging.0.join("unpack");
     std::fs::create_dir(&unpack_dir)?;
     let extracted = extract(&archive, &unpack_dir, spec)?;
-    std::fs::write(
-        extracted.join(MARKER_FILE),
-        serde_json::to_vec_pretty(spec)?,
-    )?;
+    let marker_path = extracted.join(MARKER_FILE);
+    std::fs::write(&marker_path, serde_json::to_vec_pretty(spec)?)?;
+    #[cfg(unix)]
+    if paths::running_as_root() {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o644))?;
+    }
 
     let dir = root.join(spec.cache_key());
     if force && dir.exists() {
@@ -1039,5 +1095,64 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracted_bundle_world_read_fixes_restrictive_modes_without_following_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_spec = spec("19.0", "aarch64-unknown-linux-musl", SHA_A);
+        let archive_path = dir.path().join(&bundle_spec.file);
+        {
+            let file = std::fs::File::create(&archive_path).unwrap();
+            let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let mut tar = tar::Builder::new(encoder);
+
+            let mut bin_hdr = tar::Header::new_gnu();
+            bin_hdr.set_size(2);
+            bin_hdr.set_mode(0o700);
+            bin_hdr.set_cksum();
+            tar.append_data(
+                &mut bin_hdr,
+                format!("{}/bin/postgres", bundle_spec.name()),
+                b"ok".as_slice(),
+            )
+            .unwrap();
+
+            let mut data_hdr = tar::Header::new_gnu();
+            data_hdr.set_size(4);
+            data_hdr.set_mode(0o600);
+            data_hdr.set_cksum();
+            tar.append_data(
+                &mut data_hdr,
+                format!("{}/share/init.sql", bundle_spec.name()),
+                b"sql\n".as_slice(),
+            )
+            .unwrap();
+
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let staging = dir.path().join("unpack");
+        std::fs::create_dir(&staging).unwrap();
+        let extracted =
+            extract_with_world_read(&archive_path, &staging, &bundle_spec, true).unwrap();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&extracted), 0o755);
+        assert_eq!(mode(&extracted.join("bin")), 0o755);
+        assert_eq!(mode(&extracted.join("bin/postgres")), 0o755);
+        assert_eq!(mode(&extracted.join("share")), 0o755);
+        assert_eq!(mode(&extracted.join("share/init.sql")), 0o644);
+
+        // Symlinks inside the tree must never alter their targets' permissions.
+        let secret = dir.path().join("outside-secret");
+        std::fs::write(&secret, b"secret").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&secret, extracted.join("link-to-secret")).unwrap();
+        make_tree_world_readable(&extracted).unwrap();
+        assert_eq!(mode(&secret), 0o600);
     }
 }

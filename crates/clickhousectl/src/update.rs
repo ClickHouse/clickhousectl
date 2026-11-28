@@ -735,7 +735,7 @@ impl UpdateCheck {
 fn write_update_check(check: &UpdateCheck) -> Result<()> {
     let path = update_check_path()?;
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        let _ = paths::create_dir_all_managed(parent);
     }
     fs::write(&path, check.render())?;
     Ok(())

@@ -31,6 +31,7 @@ impl fmt::Display for NetworkStage {
 pub enum NetworkCategory {
     Timeout,
     Connection,
+    TlsCertificates,
     Transport,
     InvalidResponse,
     Forbidden,
@@ -44,6 +45,7 @@ pub enum NetworkCategory {
 impl NetworkCategory {
     pub(crate) const fn priority(self) -> u8 {
         match self {
+            Self::TlsCertificates => 8,
             Self::RateLimited => 7,
             Self::ServerError => 6,
             Self::Timeout => 5,
@@ -61,6 +63,7 @@ impl fmt::Display for NetworkCategory {
         let category = match self {
             Self::Timeout => "timeout",
             Self::Connection => "connection",
+            Self::TlsCertificates => "tls-certificates",
             Self::Transport => "transport",
             Self::InvalidResponse => "invalid-response",
             Self::Forbidden => "forbidden",
@@ -111,6 +114,12 @@ impl fmt::Display for NetworkFailure {
         )?;
         if let Some(attempts) = self.attempts {
             write!(f, " after {attempts} attempts")?;
+        }
+        if self.category == NetworkCategory::TlsCertificates {
+            write!(
+                f,
+                ": missing or untrusted system CA certificates (install `ca-certificates` or set `SSL_CERT_FILE`)"
+            )?;
         }
         Ok(())
     }

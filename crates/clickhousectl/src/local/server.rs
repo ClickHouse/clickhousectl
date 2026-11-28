@@ -216,7 +216,7 @@ pub(crate) struct MetadataLock {
 impl MetadataLock {
     /// Acquire the lock in `dir`, creating the directory first.
     pub(crate) fn acquire_at(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir).map_err(|source| {
+        crate::paths::create_dir_all_managed(dir).map_err(|source| {
             server_lock_error(
                 "create the server metadata lock directory",
                 dir,
@@ -373,7 +373,7 @@ pub fn pg_data_dir(name: &str, major: &str) -> Result<PathBuf> {
 /// Ensure the project-local server and ignore paths exist. Idempotent.
 fn ensure_servers_dir() -> Result<()> {
     let dir = servers_dir()?;
-    std::fs::create_dir_all(&dir)?;
+    crate::paths::create_dir_all_managed(&dir)?;
     init::ensure_runtime_gitignore()?;
     Ok(())
 }
