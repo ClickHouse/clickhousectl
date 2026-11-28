@@ -31,6 +31,7 @@ impl fmt::Display for NetworkStage {
 pub enum NetworkCategory {
     Timeout,
     Connection,
+    TlsCertificates,
     Transport,
     InvalidResponse,
     Forbidden,
@@ -44,6 +45,7 @@ pub enum NetworkCategory {
 impl NetworkCategory {
     pub(crate) const fn priority(self) -> u8 {
         match self {
+            Self::TlsCertificates => 8,
             Self::RateLimited => 7,
             Self::ServerError => 6,
             Self::Timeout => 5,
@@ -61,6 +63,7 @@ impl fmt::Display for NetworkCategory {
         let category = match self {
             Self::Timeout => "timeout",
             Self::Connection => "connection",
+            Self::TlsCertificates => "tls-certificates",
             Self::Transport => "transport",
             Self::InvalidResponse => "invalid-response",
             Self::Forbidden => "forbidden",
@@ -111,6 +114,12 @@ impl fmt::Display for NetworkFailure {
         )?;
         if let Some(attempts) = self.attempts {
             write!(f, " after {attempts} attempts")?;
+        }
+        if self.category == NetworkCategory::TlsCertificates {
+            write!(
+                f,
+                ": missing or untrusted system CA certificates (install `ca-certificates` or set `SSL_CERT_FILE`)"
+            )?;
         }
         Ok(())
     }
@@ -638,6 +647,33 @@ pub enum Error {
     /// [`Error::Postgres`] so structured output can render it verbatim.
     #[error("Postgres error: {0}")]
     PostgresUsage(String),
+
+    /// No usable Postgres bundle for the native runtime: the manifest is not
+    /// readable by this version, or names nothing for this request and
+    /// platform. Self-composed, including its recovery guidance.
+    #[error("Postgres bundle unavailable: {0}")]
+    PostgresBundleUnavailable(String),
+
+    /// A downloaded Postgres bundle does not match the sha256 its manifest
+    /// names; nothing was extracted or installed.
+    #[error(
+        "Postgres bundle '{file}' failed verification: expected sha256 {expected}, got {actual}; nothing was installed"
+    )]
+    PostgresBundleChecksum {
+        file: String,
+        expected: String,
+        actual: String,
+    },
+
+    /// Run as root, native Postgres runs as an unprivileged user, and that
+    /// user cannot enter `dir`, which lies on the way to the PostgreSQL build
+    /// or to the instance. Nothing was started or created.
+    #[error(
+        "PostgreSQL cannot run as root, so it runs as user '{user}', who cannot enter '{dir}'. \
+         Use a project directory and HOME outside '{dir}', run `chmod o+x {dir}`, or pass `--docker`.",
+        dir = dir.display()
+    )]
+    PostgresServerUserAccess { user: String, dir: PathBuf },
 
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.

@@ -32,7 +32,8 @@ work on a branch, with an associated issue and a PR.
   (`.agents/skills/openapi-drift-remediation/SKILL.md`).
 - Update the API library on its own; add CLI exposure separately. The CLI need not cover 100% of the library's
   endpoints — be intentional.
-- Project-local data lives in `.clickhouse/`; globally installed ClickHouse binaries in `~/.clickhouse/`. OAuth
+- Project-local data lives in `.clickhouse/`; globally installed ClickHouse binaries and PostgreSQL bundles
+  (`postgres/`) in `~/.clickhouse/`. OAuth
   tokens (`~/.clickhouse/tokens.json`) are the exception — global user identity, not project-scoped.
   The project root is found git-style, once per run (`init::project_root`): the nearest ancestor with a `.clickhouse/`
   directory owned by the user, stopping at home, whose `.clickhouse/` is global; `local init` uses the cwd.

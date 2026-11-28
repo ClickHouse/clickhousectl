@@ -7,7 +7,7 @@
 | Path | Responsibility |
 | --- | --- |
 | `crates/clickhousectl/src/main.rs`, `cli.rs` | Entrypoint, common CLI options, output mode |
-| `crates/clickhousectl/src/local/` | Local command definitions, dispatch, servers, Docker/Postgres, output |
+| `crates/clickhousectl/src/local/` | Local command definitions, dispatch, servers, Postgres (`postgres.rs` chooses the runtime; `pg_binaries.rs` and `pg_native.rs` are the native one, `docker.rs` the Docker one), output |
 | `crates/clickhousectl/src/cloud/<domain>.rs` | Cloud domain definitions, handlers, builders, wrappers, tests |
 | `crates/clickhousectl/src/cloud/<domain>/` | A large Cloud domain: `PERMISSIONS` and dispatch in `mod.rs`, command enums and shared arg groups in `cli.rs` (a source-specific arg struct may sit with its builder, as in `clickpipes/sources/<kind>.rs`), `CloudClient` wrappers in `client.rs`, one file per command family, tests beside the code they test |
 | `crates/clickhousectl/src/cloud/client.rs` | Credential resolution and shared Cloud client/error handling |
@@ -78,7 +78,8 @@ Run the standard CLI gates from [Contributing](../CONTRIBUTING.md#build-and-test
 - Clap parsing and request builders have tests beside command definitions.
 - `crates/clickhousectl/tests/cloud/` (one test binary, one module per Cloud domain, shared helpers in `support.rs`) spawns the binary against wiremock for Cloud handler behaviour that the unit tests can't reach: multi-call flows, error paths, auth wiring, and output contracts. [AGENTS.md](../AGENTS.md#tests) holds the rule for what belongs there.
 - Local subprocess tests use separate `local_*` binaries for each concern.
-- `scripts/test-postgres-integration.sh` is an edge-case battery for `local postgres` against a real Docker daemon; `.github/workflows/test-postgres-integration.yml` runs it on PRs that touch `crates/clickhousectl/src/local/**`, and it can be run by hand with a built binary.
+- `local_postgres_native_test` covers the native `local postgres` runtime with neither the network nor a real PostgreSQL: it points `CLICKHOUSECTL_POSTGRES_BUNDLES_URL` at a `file://` directory holding a manifest and a small bundle whose programs are shell scripts.
+- `scripts/test-postgres-integration.sh` is an edge-case battery for the Docker runtime of `local postgres` (`start --docker`) against a real Docker daemon; `.github/workflows/test-postgres-integration.yml` runs it on PRs that touch `crates/clickhousectl/src/local/**`, and it can be run by hand with a built binary.
 - Pure version/auth/output logic uses inline tests.
 - Three local tests are `#[ignore]`d because they need a real server, and no workflow runs them; run one with `cargo test -p clickhousectl --test <file> -- --ignored`: `local_postgres_client_input_test` needs a running Docker daemon, `local_client_output_contract_test` needs `CHCTL_TEST_NATIVE_BINARY` and `CHCTL_TEST_NATIVE_PORT` for a disposable server, and `local_server_managed_config_test` needs `CLICKHOUSECTL_LIVE_CLICKHOUSE_VERSION` set to an installed version.
 
@@ -101,6 +102,8 @@ Subprocess tests must not wait out production timeouts. `crates/clickhousectl/sr
 | `CHCTL_FEEDBACK_WHOAMI_TIMEOUT_MS` | `feedback` Cloud organization lookup (5 s) |
 
 Add a new override to that module rather than parsing an environment variable at the call site. Every subprocess test clears the inherited environment and sets `HOME` to a directory the test owns, so a developer's credentials, proxies and coding-agent variables never change the result. In `tests/cloud/`, use `isolated_env()` from `support.rs` in place of `env_clear()`: it clears the environment and turns the update check off.
+
+The native `local postgres` runtime fetches PostgreSQL builds from one base URL: either `manifest.json` directly (with assets resolved relative to the final redirected URL) or `latest.txt` pointing to an immutable `<tag>/manifest.json` directory (`builds.clickhouse.com` layout), with the tarballs named by file next to the manifest and each `sha256` checked before extraction. `CLICKHOUSECTL_POSTGRES_BUNDLES_URL` replaces that base with another `https://` URL or with a `file:///absolute/directory`, for tests and for trying a build before it is published. Requests to it carry no credentials. The manifest has `"schema": 1` and a `bundles` array of `{postgres_version, postgres_major, extensions, target, file, sha256}`; targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`. A tarball holds one top-level directory, named as the file without `.tar.gz`, with `bin/`, `lib/` and `share/`.
 
 Structural help tests check the full command tree, descriptions, shared flags, and agent context limits. CI runs them with default features only, so run the second command yourself when a change depends on telemetry or feedback being compiled out:
 

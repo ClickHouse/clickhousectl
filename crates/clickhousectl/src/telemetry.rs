@@ -161,7 +161,7 @@ fn load_state_from(path: &Path) -> State {
 
 fn save_state_to(path: &Path, disabled: bool) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        paths::create_dir_all_managed(parent)?;
     }
     let json = serde_json::to_string(&StateFile { disabled })
         .expect("StateFile serialization cannot fail");

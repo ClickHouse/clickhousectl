@@ -12,9 +12,9 @@ fn clickhousectl_binary() -> PathBuf {
 
 fn run_postgres_start(home: &Path, project: &Path, docker_host: &str, json: bool) -> Output {
     let args: &[&str] = if json {
-        &["local", "--json", "postgres", "start"]
+        &["local", "--json", "postgres", "start", "--docker"]
     } else {
-        &["local", "postgres", "start"]
+        &["local", "postgres", "start", "--docker"]
     };
     Command::new(clickhousectl_binary())
         .env_clear()

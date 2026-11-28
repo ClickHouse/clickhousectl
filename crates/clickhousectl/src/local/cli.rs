@@ -136,7 +136,9 @@ const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   The first ClickHouse version installed becomes the default; later installs do not change it.
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
-  `postgres@<tag>` pulls a Docker image instead (needs Docker running) and never sets a default.
+  `postgres@<version>` (latest, 17, 18, 19 or <major>.<minor>) downloads a PostgreSQL build with
+  pg_clickhouse for `local postgres`; with --docker it pulls that image tag instead. Neither sets
+  a default.
   --binary copies the file (e.g. build/programs/clickhouse) and installs it as the version its
   `--version` reports; rebuild and pass --force to replace that version.";
 
@@ -155,7 +157,7 @@ impl FromStr for InstallVersionArg {
             .strip_prefix("postgres@")
             .or_else(|| input.strip_prefix("postgres:"))
         {
-            return crate::local::postgres::parse_pg_tag_arg(tag).map(Self::Postgres);
+            return crate::local::postgres::parse_pg_start_version_arg(tag).map(Self::Postgres);
         }
 
         version_manager::parse_version_spec(input)
@@ -306,12 +308,13 @@ CONTEXT FOR AGENTS:
         command: ServerCommands,
     },
 
-    /// Manage local Postgres instances (Docker-backed)
+    /// Manage local Postgres instances
     #[command(
         visible_alias = "pg",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Requires Docker installed and running.
+  Runs a downloaded PostgreSQL build with pg_clickhouse (`CREATE EXTENSION pg_clickhouse` can
+  query a `local clickhouse` server); `start --docker` runs a Postgres image instead.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
   Omitting NAME selects \"default\", else the only instance name; several without \"default\"
   errors listing them. `remove` never guesses: it takes only \"default\" or an explicit name.
@@ -393,13 +396,13 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// Install a ClickHouse version or Postgres image
+    /// Install a ClickHouse version or a Postgres build
     #[command(
         after_help = INSTALL_AFTER_HELP,
         group(ArgGroup::new("source").args(["version", "binary"]).required(true))
     )]
     Install {
-        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or image selector (postgres@18)
+        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or Postgres selector (postgres@latest, postgres@19)
         version: Option<InstallVersionArg>,
 
         /// Install a local ClickHouse build under the version it reports
@@ -409,6 +412,10 @@ CONTEXT FOR AGENTS:
         /// Re-install even if already installed
         #[arg(long)]
         force: bool,
+
+        /// Pull the Postgres Docker image instead; only with postgres@<tag>
+        #[arg(long, conflicts_with = "binary")]
+        docker: bool,
     },
 
     /// List installed or available ClickHouse versions
@@ -684,13 +691,14 @@ pub enum PostgresCommands {
     /// Start a Postgres instance
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  An existing stopped instance for the same (name, major) is resumed with its stored settings, so
-  --port/--user/--password/--database/-e are ignored on a resume. A resume whose stored port another
-  process holds fails with port_in_use; free that port, then start again.
+  The first start of a version downloads its PostgreSQL build; later starts work offline.
+  An existing stopped instance for the same (name, major) is resumed in its own runtime with its
+  stored settings, so --port/--user/--password/--database/-e are ignored on a resume. A resume
+  whose stored port another process holds fails with port_in_use; free that port, then start again.
   Without --version, an existing instance selects the major; two majors under one name error.
   The generated password is printed once by start — re-read connection details later with
   `postgres dotenv` or `postgres client`.
-  A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
+  A failed fresh start rolls back what it created; pre-existing data is kept.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
@@ -706,10 +714,10 @@ CONTEXT FOR AGENTS:
         )]
         name_flag: Option<String>,
 
-        /// Postgres image tag, major 17 or 18 (e.g. 17-alpine, 18.1). Default: 18
+        /// Postgres version: latest, 17, 18, 19 or <major>.<minor>. Default: newest published major
         ///
-        /// Pulls the image if it is not present locally.
-        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
+        /// With --docker, any 17, 18 or 19 image tag (e.g. 17-alpine, 18-bookworm, 19). Default: 19.
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_start_version_arg)]
         version: Option<String>,
 
         /// Host TCP port; when omitted, 5432 if free else an auto-selected free port
@@ -718,19 +726,19 @@ CONTEXT FOR AGENTS:
         #[arg(long, value_parser = parse_port_arg)]
         port: Option<u16>,
 
-        /// POSTGRES_USER (default: postgres)
+        /// Superuser name (default: postgres)
         #[arg(long)]
         user: Option<String>,
 
-        /// POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+        /// Superuser password (default: random 24-char alphanumeric)
         #[arg(long)]
         password: Option<String>,
 
-        /// POSTGRES_DB (default: postgres)
+        /// Database to create (default: postgres)
         #[arg(long)]
         database: Option<String>,
 
-        /// Extra container env vars; repeatable, each key at most once
+        /// Container env vars, repeatable, one per key; only with --docker
         ///
         /// POSTGRES_USER, POSTGRES_DB and PGDATA are managed and rejected here — use
         /// --user/--database. POSTGRES_PASSWORD is accepted, but not together with --password.
@@ -741,6 +749,12 @@ CONTEXT FOR AGENTS:
             value_parser = crate::local::postgres::parse_pg_env_arg
         )]
         env: Vec<String>,
+
+        /// Run a Postgres Docker image instead (needs Docker running)
+        ///
+        /// Applies to a new instance; an existing one keeps its runtime.
+        #[arg(long)]
+        docker: bool,
 
         /// Seconds to wait for PostgreSQL readiness (maximum: 600)
         #[arg(
@@ -782,11 +796,11 @@ CONTEXT FOR AGENTS:
     /// Stop all Postgres instances in this project
     StopAll,
 
-    /// Remove a stopped Postgres instance and its data
+    /// Remove a Postgres instance and its data
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Irreversible: removes the container and deletes its data directory. Stop the instance first —
-  removing a running one errors.")]
+  Irreversible: deletes the instance's data directory, and its container if it has one. A
+  running native instance is stopped first; stop a Docker one before removing it.")]
     Remove {
         /// Name of the instance to remove (default: "default")
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_pg_server_name_arg, add = complete_postgres_servers())]
@@ -810,8 +824,8 @@ CONTEXT FOR AGENTS:
     /// Connect to a running Postgres instance with psql
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Managed mode (the default; NAME selects one) execs host `psql` when it is on PATH, else runs
-  psql inside the container via `docker exec`.
+  Managed mode (the default; NAME selects one) runs the `psql` that ships with the instance's
+  PostgreSQL build. For a Docker instance it uses host `psql` when on PATH, else the container's.
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
   with no password; it does not read managed credentials.
   Put wrapper options before `--`; all arguments after it go to psql.
@@ -1302,6 +1316,7 @@ pub(crate) mod tests {
             version: None,
             binary: Some(binary),
             force: true,
+            docker: false,
         } = local_command(&[
             "install",
             "--binary",
@@ -1325,6 +1340,16 @@ pub(crate) mod tests {
                 "{version}"
             );
         }
+        // --docker selects how a Postgres selector installs, never a binary.
+        assert_eq!(
+            local_parse_error(&["install", "--binary", "./clickhouse", "--docker"]).kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+        let LocalCommands::Install { docker: true, .. } =
+            local_command(&["install", "postgres@18-bookworm", "--docker"])
+        else {
+            panic!("expected a Docker image install");
+        };
     }
 
     #[test]

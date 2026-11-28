@@ -163,7 +163,7 @@ Each start copies the files into `.clickhouse/servers/<name>/data/config.d/` (as
 
 ## Add Postgres
 
-Docker must be running. Postgres 17 and 18, including image sub-tags, are supported; new instances default to 18. A random password is generated unless supplied.
+`local postgres` runs PostgreSQL natively, without Docker. The first start of a version downloads a prebuilt PostgreSQL that includes the [pg_clickhouse](https://github.com/ClickHouse/pg_clickhouse) extension, verifies its SHA-256 checksum, and keeps it in `~/.clickhouse/postgres/`; later starts reuse it and work offline. Builds exist for macOS and Linux on x86_64 and arm64. Postgres 17, 18 and 19 are supported, as `latest`, a major (`19`, `18`, `17`), or a `<major>.<minor>` version; new native instances default to the newest published major. A random password is generated unless supplied.
 
 ```bash
 clickhousectl local postgres start app --version 18
@@ -178,9 +178,41 @@ Each engine's `list` and `stop-all` cover only that engine. `local status` lists
 
 Create `pg-schema.sql` with your Postgres SQL before running the file example. File and piped stdin input stop at the first failed statement and exit 3; pass `-- -v ON_ERROR_STOP=0` to run the remaining statements.
 
-Starts wait for `pg_isready`, by default for 60 seconds; `--wait-timeout` accepts 1–600 seconds. `local postgres client` uses host `psql` or the container's `psql`. File input and stdin work with either, but paths inside SQL (`\i`, `\copy`) refer to the container filesystem in Docker mode. `--json` does not change psql output. When both are supplied, `--query` runs before `--queries-file`.
+Starts wait for `pg_isready`, by default for 60 seconds; `--wait-timeout` accepts 1–600 seconds. `local postgres client` runs the `psql` that ships with the instance's PostgreSQL build. `--json` does not change psql output. When both are supplied, `--query` runs before `--queries-file`.
 
-An instance is identified by name and major version. The name becomes part of the Docker container name, `clickhousectl-pg-<project hash>-<name>-<major>`, so it may use only letters, digits, `_`, `.`, and `-`. The short project hash lets different projects use the same instance name; containers created before it was added keep their old name. Pass `--version` when more than one major shares a name. Resuming an instance reuses its original port, user, password, database, and environment; new creation flags do not reconfigure it. If another process now holds that port, the resume fails with `port_in_use` instead of starting without it; free the port and start again. Every start also confirms Docker published the port, and stops the container if it did not. To recreate, first back up any needed data, then stop and remove the instance before starting again. Direct `--host`/`--port` client selectors cannot combine with managed name/version selectors.
+An instance listens on `127.0.0.1` only, with password (SCRAM) authentication, UTF-8 encoding and the builtin `C.UTF-8` locale on every platform. Its data, log (`postgres.log`) and connection details live in `.clickhouse/servers/<name>-pg<major>/`. `local install postgres@latest` (or `postgres@19`, `postgres@18`, `postgres@17`) downloads a build ahead of the first start. On Linux the server uses System V shared memory (`dynamic_shared_memory_type=sysv`), so parallel queries are not limited by a container's small `/dev/shm`.
+
+An instance is identified by name and major version; the name may use only letters, digits, `_`, `.`, and `-`. Pass `--version` when more than one major shares a name. Resuming an instance reuses its original port, user, password, and database; new creation flags do not reconfigure it. A resume uses the newest installed build of the instance's major, since a data directory works across minor versions. If another process now holds the stored port, the resume fails with `port_in_use` instead of starting without it; free the port and start again. To recreate, first back up any needed data, then remove the instance before starting again. Direct `--host`/`--port` client selectors cannot combine with managed name/version selectors.
+
+### Run as root
+
+PostgreSQL refuses to run as root, so when clickhousectl runs as root (in a container, or under `sudo`) it starts the server as an unprivileged user: `postgres` if that user exists, otherwise `nobody`. It creates no users. The instance's data directory belongs to that user, while the stored connection details stay readable by root only; `client`, `dotenv`, `stop`, `remove` and `list` work as root as usual.
+
+That user must be able to enter every directory on the way to the project and to `~/.clickhouse/postgres/`. Root's home directory is normally closed to other users, so with `HOME=/root` the start fails with `postgres_directory_not_searchable`, naming the directory, before anything is downloaded or started. Use a project directory and `HOME` outside it (for example `HOME=/srv/home` and a project in `/srv/app`), make the named directory searchable yourself with `chmod o+x`, or use `--docker`. clickhousectl does not change permissions on directories it did not create.
+
+An existing instance always runs as the owner of its data directory. Root can start, stop and remove an instance a regular user created, and it keeps running as, and belonging to, that user. An instance created as root is root's: other users cannot read its project metadata.
+
+### Query local ClickHouse from Postgres
+
+With a local ClickHouse server running (HTTP port 8123 here), pg_clickhouse exposes its tables to Postgres as foreign tables:
+
+```bash
+clickhousectl local clickhouse start dev
+clickhousectl local client dev --query "CREATE TABLE default.events (id UInt64, name String) ENGINE = MergeTree ORDER BY id"
+clickhousectl local postgres client app --query "CREATE EXTENSION pg_clickhouse"
+clickhousectl local postgres client app --query "CREATE SERVER local_ch FOREIGN DATA WRAPPER clickhouse_fdw OPTIONS (driver 'http', host '127.0.0.1', port '8123', dbname 'default')"
+clickhousectl local postgres client app --query "CREATE USER MAPPING FOR CURRENT_USER SERVER local_ch OPTIONS (user 'default')"
+clickhousectl local postgres client app --query "CREATE FOREIGN TABLE events (id bigint, name text) SERVER local_ch OPTIONS (table_name 'events')"
+clickhousectl local postgres client app --query "SELECT count(*) FROM events"
+```
+
+### Run Postgres in Docker instead
+
+`local postgres start --docker` runs a `postgres` image in a container instead, and needs Docker running. It accepts any 17, 18 or 19 image tag (`--version 17-alpine`, `18-bookworm`, `19`) and container environment variables (`--env KEY=VALUE`); both are usage errors (exit 2) without `--docker`. The image does not include pg_clickhouse. `local install postgres@<tag> --docker` pulls an image ahead of time.
+
+An instance keeps the runtime it was created with. Instances created by earlier versions of clickhousectl are Docker instances: they resume in Docker without the flag, and every other command works on them unchanged. `--docker` on an existing native instance is a usage error; remove the instance to recreate it in the other runtime.
+
+For a Docker instance, `local postgres client` uses host `psql` or the container's `psql`. File input and stdin work with either, but paths inside SQL (`\i`, `\copy`) refer to the container filesystem. The instance name becomes part of the container name, `clickhousectl-pg-<project hash>-<name>-<major>`. The short project hash lets different projects use the same instance name; containers created before it was added keep their old name. A resume also reuses the container's environment, and every start confirms Docker published the port, stopping the container if it did not.
 
 The generated `.env.local` includes the password. Keep it out of version control. Both engines' `dotenv` commands write a file and print an informational preview: use your application's dotenv loader, never `eval` their stdout.
 
@@ -195,16 +227,16 @@ clickhousectl local clickhouse stop dev
 clickhousectl local postgres stop app --version 18
 ```
 
-Stop preserves data. Stopping a server or instance that exists but is not running succeeds and reports `already_stopped: true`; an unknown name is an error. **The following removals permanently delete the selected server's data**, including Postgres container volumes:
+Stop preserves data. Stopping a server or instance that exists but is not running succeeds and reports `already_stopped: true`; an unknown name is an error. **The following removals permanently delete the selected server's data**, including a Postgres instance's data directory and, in Docker, its container:
 
 ```bash
 clickhousectl local clickhouse remove dev
 clickhousectl local postgres remove app --version 18
 ```
 
-Both require stopped servers. `local clickhouse stop-all` and `local postgres stop-all` each stop one engine's servers in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
+`clickhouse remove` and `postgres remove` of a Docker instance require a stopped server; `postgres remove` stops a running native instance first. `local clickhouse stop-all` and `local postgres stop-all` each stop one engine's servers in the current project. Global ClickHouse operations (`clickhouse list --global`, `stop --global`, `stop-all --global`) span projects; confirm the project and name before stopping one. `stop --global --project <project-root>` disambiguates matching names.
 
 `local remove <exact-version>` removes a shared ClickHouse binary, not server data. It refuses a default or a version used by running servers in any project, and refuses when the running processes cannot be read, since then other projects' servers are unknown. Its `--force` stops those servers across projects and removes the version even if it is the default; after a failed process scan it stops only this project's servers.
 
 
-If metadata is corrupt, follow the reported recovery guidance. Confirm the running process with `clickhouse list --global`, or the Postgres container with Docker, before moving metadata aside. Do not delete state or force-remove an unverified server. A Docker inspection failure is an error, not evidence that Postgres is stopped.
+If metadata is corrupt, follow the reported recovery guidance. Confirm the running process with `clickhouse list --global`, or the Postgres container with Docker (for a native instance, the `postgres` process running from its `data/` directory), before moving metadata aside. Do not delete state or force-remove an unverified server. A Docker inspection failure is an error, not evidence that Postgres is stopped.

@@ -537,13 +537,21 @@ fn run_start_command(
             "--json",
             "postgres",
             "start",
+            "--docker",
             "--wait-timeout",
             &wait_timeout,
         ]);
     if resumed {
         command.args(["--name", "default"]);
     } else {
-        command.args(["--port", &port, "--password", "fresh-secret"]);
+        command.args([
+            "--version",
+            "18",
+            "--port",
+            &port,
+            "--password",
+            "fresh-secret",
+        ]);
     }
     if telemetry_debug {
         command.env("CHCTL_TELEMETRY_DEBUG", "1");
@@ -754,6 +762,7 @@ fn postgres_start_revalidates_metadata_after_image_inspection() {
             "local",
             "postgres",
             "start",
+            "--docker",
             "--name",
             "default",
             "--version",

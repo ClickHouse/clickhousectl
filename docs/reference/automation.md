@@ -187,11 +187,14 @@ Every command except `update`, `--version` included, checks for a newer release 
 | `version_unavailable` | The requested version could not be resolved or downloaded |
 | `version_is_default` | The version is the current default and `--force` was not passed |
 | `unsupported_client_version` | The installed client does not support the requested operation |
-| `unsupported_platform` | No ClickHouse build exists for this OS and architecture |
+| `unsupported_platform` | No ClickHouse or PostgreSQL build exists for this OS and architecture |
 | `port_in_use` | A requested or stored port is occupied, Docker did not publish it, or no managed port is available |
 | `startup_exit` | A managed server exited before it became ready |
 | `startup_timeout` | A managed server did not become ready before its deadline |
 | `download_failed` | An artifact or image download or extraction failed |
+| `postgres_bundle_unavailable` | No PostgreSQL build can be used for `local postgres`: none is published for the requested version on this platform, none is installed for an instance's major, or the build manifest is not readable by this version |
+| `postgres_directory_not_searchable` | Run as root, `local postgres` runs PostgreSQL as an unprivileged user, who cannot enter the directory the message names; nothing was started |
+| `checksum_mismatch` | A downloaded PostgreSQL build did not match its published SHA-256; nothing was installed |
 | `network_error` | An HTTP request failed |
 | `docker_unavailable` | Docker could not be reached (the message names the cause and the platform fix) |
 | `docker_error` | A Docker operation failed |

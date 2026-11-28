@@ -83,8 +83,88 @@ fn ensure_base_layout_in(base: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Returns true when the process is running with effective UID 0 (root).
+#[cfg(unix)]
+pub(crate) fn running_as_root() -> bool {
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn running_as_root() -> bool {
+    false
+}
+
+/// Create `path` and any missing parent directories. When running as root,
+/// every directory created by this call gets search permission (`o+x` /
+/// `mode | 0o111`) so an unprivileged Postgres server user can traverse
+/// clickhousectl's own directories even under a restrictive `umask` (such as
+/// `0077`). Pre-existing parent directories (such as `/root`) are left
+/// untouched.
+pub(crate) fn create_dir_all_managed(path: &Path) -> std::io::Result<()> {
+    create_dir_all_with_search(path, running_as_root())
+}
+
+#[cfg(unix)]
+fn create_dir_all_with_search(path: &Path, ensure_search: bool) -> std::io::Result<()> {
+    create_dir_all_with_search_using(path, ensure_search, |dir| std::fs::create_dir(dir))
+}
+
+#[cfg(unix)]
+fn create_dir_all_with_search_using(
+    path: &Path,
+    ensure_search: bool,
+    create_one: impl Fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if !ensure_search {
+        return std::fs::create_dir_all(path);
+    }
+    let mut to_create = Vec::new();
+    let mut cursor = Some(path);
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        match std::fs::symlink_metadata(dir) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                to_create.push(dir);
+                cursor = dir.parent();
+            }
+            Err(_) => break,
+        }
+    }
+    if to_create.is_empty() {
+        return std::fs::create_dir_all(path);
+    }
+    for dir in to_create.into_iter().rev() {
+        match create_one(dir) {
+            Ok(()) => add_search_permission(dir)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_dir_all_with_search(path: &Path, _ensure_search: bool) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+#[cfg(unix)]
+fn add_search_permission(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(dir)?.permissions().mode() & 0o7777;
+    let updated = mode | 0o111;
+    if updated != mode {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(updated))?;
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|source| Error::CreateDir {
+    create_dir_all_managed(path).map_err(|source| Error::CreateDir {
         path: path.to_path_buf(),
         source,
     })
@@ -238,6 +318,32 @@ mod tests {
             "{message}"
         );
         assert!(message.ends_with(&source.to_string()), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_dir_creation_adds_search_bits_only_to_newly_created_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let existing_parent = temp.path().join("private-home");
+        std::fs::create_dir(&existing_parent).unwrap();
+        std::fs::set_permissions(&existing_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let target = existing_parent.join(".clickhouse/postgres");
+        create_dir_all_with_search_using(&target, true, |dir| {
+            std::fs::create_dir(dir)?;
+            // Simulate a restrictive `umask 0077` without mutating process umask.
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        })
+        .unwrap();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        // Pre-existing user-owned parent (like `/root`) is never widened.
+        assert_eq!(mode(&existing_parent), 0o700);
+        // Newly created managed directories are searchable (`o+x`).
+        assert_eq!(mode(&existing_parent.join(".clickhouse")), 0o711);
+        assert_eq!(mode(&target), 0o711);
     }
 
     #[test]

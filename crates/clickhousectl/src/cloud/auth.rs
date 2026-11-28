@@ -1097,7 +1097,7 @@ pub fn save_tokens(tokens: &TokenStore) -> CloudResult<()> {
 /// [`lock_tokens`] lock.
 fn save_tokens_to(path: &std::path::Path, tokens: &TokenStore) -> CloudResult<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::paths::create_dir_all_managed(parent)?;
     }
     let json = serde_json::to_string_pretty(tokens)?;
     crate::paths::atomic_write(path, json.as_bytes(), 0o600)?;
@@ -1111,7 +1111,7 @@ fn save_tokens_to(path: &std::path::Path, tokens: &TokenStore) -> CloudResult<()
 /// writes with [`save_tokens_to`], never [`save_tokens`].
 fn lock_tokens(tokens: &std::path::Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = tokens.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::paths::create_dir_all_managed(parent)?;
     }
     credentials::open_lock_file(&tokens.with_extension("lock"))
 }

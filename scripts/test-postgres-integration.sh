@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Edge-case battery for `clickhousectl local postgres`. Runs each test in
+# Edge-case battery for the Docker runtime of `clickhousectl local postgres`
+# (`start --docker`). Runs each test in
 # isolation in a temp directory, prints PASS/FAIL, and continues on
 # failure so we get a full picture in one run.
 #
@@ -73,7 +74,7 @@ die() { echo "    -> $*"; return 1; }
 
 # ── 1. Reuses existing container after stop/delete-metadata via discovery ──
 case_orphan_recovery() {
-    "$CTL" local postgres start --name a --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name a --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     local meta=.clickhouse/servers/a-pg18.json
     local cid_before; cid_before=$(jq -r .container_id "$meta")
     "$CTL" local postgres stop a >/dev/null 2>&1 || { die "stop"; return 1; }
@@ -88,25 +89,25 @@ case_orphan_recovery() {
 
 # ── 2. start with externally-removed container errors with recovery guidance ──
 case_externally_removed_container() {
-    "$CTL" local postgres start --name b --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name b --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     local cid; cid=$(jq -r .container_id .clickhouse/servers/b-pg18.json)
     docker rm -f "$cid" >/dev/null 2>&1 || { die "docker rm failed"; return 1; }
     # Metadata still references the dead id. Should error with explicit
     # recovery guidance, not silently recreate against potentially-corrupt PGDATA.
-    local out; out=$("$CTL" local postgres start --name b --version 18-alpine 2>&1) || true
+    local out; out=$("$CTL" local postgres start --docker --name b --version 18-alpine 2>&1) || true
     echo "$out" | grep -q "container is gone" || { die "no recovery message: $out"; return 1; }
     # `local postgres remove` should clean it up.
     "$CTL" local postgres remove b >/dev/null 2>&1 || { die "remove after orphan failed"; return 1; }
     # Now start fresh should work.
-    "$CTL" local postgres start --name b --version 18-alpine >/dev/null 2>&1 || { die "fresh start after remove failed"; return 1; }
+    "$CTL" local postgres start --docker --name b --version 18-alpine >/dev/null 2>&1 || { die "fresh start after remove failed"; return 1; }
     "$CTL" local postgres stop b >/dev/null 2>&1
     "$CTL" local postgres remove b >/dev/null 2>&1
 }
 
 # ── 3. Two named postgres servers coexist on different ports ──
 case_two_concurrent_servers() {
-    "$CTL" local postgres start --name c1 --version 18-alpine >/dev/null 2>&1 || { die "start c1"; return 1; }
-    "$CTL" local postgres start --name c2 --version 18-alpine >/dev/null 2>&1 || { die "start c2"; return 1; }
+    "$CTL" local postgres start --docker --name c1 --version 18-alpine >/dev/null 2>&1 || { die "start c1"; return 1; }
+    "$CTL" local postgres start --docker --name c2 --version 18-alpine >/dev/null 2>&1 || { die "start c2"; return 1; }
     local p1 p2
     p1=$(jq -r .tcp_port .clickhouse/servers/c1-pg18.json)
     p2=$(jq -r .tcp_port .clickhouse/servers/c2-pg18.json)
@@ -120,9 +121,9 @@ case_two_concurrent_servers() {
 
 # ── 4. Same name, two majors → two isolated instances ──
 case_per_version_isolation() {
-    "$CTL" local postgres start --name d --version 17-alpine >/dev/null 2>&1 || { die "start 17"; return 1; }
+    "$CTL" local postgres start --docker --name d --version 17-alpine >/dev/null 2>&1 || { die "start 17"; return 1; }
     "$CTL" local postgres stop d >/dev/null 2>&1
-    "$CTL" local postgres start --name d --version 18-alpine >/dev/null 2>&1 || { die "start 18"; return 1; }
+    "$CTL" local postgres start --docker --name d --version 18-alpine >/dev/null 2>&1 || { die "start 18"; return 1; }
     [[ -f .clickhouse/servers/d-pg17.json ]] || { die "17 metadata vanished"; return 1; }
     [[ -f .clickhouse/servers/d-pg18.json ]] || { die "18 metadata not created"; return 1; }
     [[ -d .clickhouse/servers/d-pg17/data ]] || { die "17 data dir vanished"; return 1; }
@@ -137,12 +138,12 @@ case_per_version_isolation() {
 
 # ── 5. dotenv reflects the actual container password (post-restart) ──
 case_dotenv_password_consistency() {
-    "$CTL" local postgres start --name e --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name e --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     local pw_meta; pw_meta=$("$CTL" local postgres dotenv --name e 2>/dev/null \
         | grep POSTGRES_PASSWORD= | cut -d= -f2)
     [[ -n "$pw_meta" ]] || { die "no password emitted"; return 1; }
     "$CTL" local postgres stop e >/dev/null 2>&1
-    "$CTL" local postgres start --name e >/dev/null 2>&1 || { die "restart"; return 1; }
+    "$CTL" local postgres start --docker --name e >/dev/null 2>&1 || { die "restart"; return 1; }
     local pw_after; pw_after=$("$CTL" local postgres dotenv --name e 2>/dev/null \
         | grep POSTGRES_PASSWORD= | cut -d= -f2)
     [[ "$pw_meta" == "$pw_after" ]] || { die "password drifted: $pw_meta -> $pw_after"; return 1; }
@@ -152,14 +153,15 @@ case_dotenv_password_consistency() {
 
 # ── 6. Path-traversal server name rejected ──
 case_path_traversal_name() {
-    local out; out=$("$CTL" local postgres start --name "../etc" 2>&1) || true
+    local out; out=$("$CTL" local postgres start --docker --name "../etc" 2>&1) || true
     echo "$out" | grep -qiE "invalid|name" || { die "no rejection: $out"; return 1; }
 }
 
-# ── 7. install postgres@latest rejected ──
+# ── 7. install postgres@latest --docker rejected ──
 case_install_rejects_latest() {
-    local out; out=$("$CTL" local install postgres@latest 2>&1) || true
-    echo "$out" | grep -Fq "invalid or unsupported postgres version 'latest'" || { die "no rejection: $out"; return 1; }
+    local out rc=0; out=$("$CTL" local install postgres@latest --docker 2>&1) || rc=$?
+    [[ "$rc" -eq 2 ]] || { die "expected exit 2, got $rc: $out"; return 1; }
+    echo "$out" | grep -Fq -- "--docker" || { die "no --docker rejection: $out"; return 1; }
 }
 
 # ── 8. Cross-engine name reuse coexists (CH and PG can share a name) ──
@@ -170,7 +172,7 @@ case_cross_engine_coexist() {
 {"name":"shared","pid":99999,"version":"25.12.5.44","http_port":8123,"tcp_port":9000,"started_at":"0","cwd":"$PWD","engine":"clickhouse"}
 EOF
     # Starting Postgres "shared" should succeed — CH and PG live in different files.
-    "$CTL" local postgres start --name shared --version 18-alpine >/dev/null 2>&1 \
+    "$CTL" local postgres start --docker --name shared --version 18-alpine >/dev/null 2>&1 \
         || { die "postgres start with same name failed"; return 1; }
     [[ -f .clickhouse/servers/shared.json ]] || { die "CH metadata clobbered"; return 1; }
     [[ -f .clickhouse/servers/shared-pg18.json ]] || { die "PG metadata not created"; return 1; }
@@ -192,7 +194,7 @@ case_stop_all_engine_scopes() (
     cat > .clickhouse/servers/c.json <<EOF
 {"name":"c","pid":$ch_pid,"version":"25.12.5.44","http_port":8123,"tcp_port":9000,"started_at":"0","cwd":"$PWD","engine":"clickhouse"}
 EOF
-    "$CTL" local postgres start --name p --version 18-alpine >/dev/null 2>&1 || { die "start postgres"; return 1; }
+    "$CTL" local postgres start --docker --name p --version 18-alpine >/dev/null 2>&1 || { die "start postgres"; return 1; }
 
     "$CTL" local postgres stop-all >/dev/null 2>&1 || { die "postgres stop-all"; return 1; }
     local list; list=$("$CTL" local --json status 2>&1) || { die "status after postgres stop-all: $list"; return 1; }
@@ -201,7 +203,7 @@ EOF
     jq -e '.servers | any(.name == "p" and .engine == "postgres" and .running == false)' <<<"$list" >/dev/null \
         || { die "postgres stop-all did not stop Postgres: $list"; return 1; }
 
-    "$CTL" local postgres start --name p --version 18-alpine >/dev/null 2>&1 || { die "restart postgres"; return 1; }
+    "$CTL" local postgres start --docker --name p --version 18-alpine >/dev/null 2>&1 || { die "restart postgres"; return 1; }
     local out; out=$("$CTL" local --json clickhouse stop-all 2>&1) || { die "clickhouse stop-all: $out"; return 1; }
     jq -e '.servers | any(.name == "c" and .engine == "clickhouse" and .stopped == true)' <<<"$out" >/dev/null \
         || { die "clickhouse stop-all did not report ClickHouse: $out"; return 1; }
@@ -223,14 +225,14 @@ EOF
 # ── 11. --port 0 rejected ──
 case_port_zero_rejected() {
     # Assert the usage exit code and the offending flag, not the sentence.
-    local out rc=0; out=$("$CTL" local postgres start --name z --port 0 2>&1) || rc=$?
+    local out rc=0; out=$("$CTL" local postgres start --docker --name z --port 0 2>&1) || rc=$?
     [[ $rc -eq 2 ]] || { die "expected exit 2, got $rc: $out"; return 1; }
     echo "$out" | grep -Fq -- "--port" || { die "rejection does not name --port: $out"; return 1; }
 }
 
 # ── 12. Non-TTY query path returns query result ──
 case_non_tty_query() {
-    "$CTL" local postgres start --name q --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name q --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     # Wait for pg to be query-ready (up to ~5s); the first start already waits
     # for the container, but pg itself takes a moment to accept queries.
     local cid; cid=$(jq -r .container_id .clickhouse/servers/q-pg18.json)
@@ -249,7 +251,7 @@ case_non_tty_query() {
 
 # ── 13. dotenv preserves unmanaged vars and replaces in-place ──
 case_dotenv_preserves_other_vars() {
-    "$CTL" local postgres start --name r --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name r --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     cat > .env <<EOF
 DATABASE_URL=postgres://existing
 CLICKHOUSE_HOST=ch.example.com
@@ -264,19 +266,19 @@ EOF
 
 # ── 14. remove of running postgres is rejected ──
 case_remove_running_rejected() {
-    "$CTL" local postgres start --name s --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+    "$CTL" local postgres start --docker --name s --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     local out; out=$("$CTL" local postgres remove s 2>&1) || true
     echo "$out" | grep -qE "already running|running" || { die "no rejection: $out"; return 1; }
     "$CTL" local postgres stop s >/dev/null 2>&1
     "$CTL" local postgres remove s >/dev/null 2>&1
 }
 
-# ── 15a. Each supported major (17/18) starts and is query-ready ──
+# ── 15a. Each supported major (17/18/19) starts and is query-ready ──
 case_majors_start_and_serve() {
     local tag fail=0
-    for tag in 17 18; do
+    for tag in 17 18 19; do
         local n="m$tag"
-        if ! "$CTL" local postgres start --name "$n" --version "$tag" >/dev/null 2>&1; then
+        if ! "$CTL" local postgres start --docker --name "$n" --version "$tag" >/dev/null 2>&1; then
             die "start postgres:$tag failed"
             fail=1
             continue
@@ -300,15 +302,15 @@ case_majors_start_and_serve() {
     return $fail
 }
 
-# ── 16. validate_pg_tag rejects 14, 16, and 19 ──
+# ── 16. validate_pg_tag rejects 14, 16, and 20 ──
 case_unsupported_majors() {
-    local o14 o16 o19
-    o14=$("$CTL" local postgres start --name t --version 14-alpine 2>&1) || true
-    o16=$("$CTL" local postgres start --name t --version 16-alpine 2>&1) || true
-    o19=$("$CTL" local postgres start --name t --version 19 2>&1) || true
+    local o14 o16 o20
+    o14=$("$CTL" local postgres start --docker --name t --version 14-alpine 2>&1) || true
+    o16=$("$CTL" local postgres start --docker --name t --version 16-alpine 2>&1) || true
+    o20=$("$CTL" local postgres start --docker --name t --version 20 2>&1) || true
     echo "$o14" | grep -q "invalid or unsupported postgres version" || { die "14 not rejected: $o14"; return 1; }
     echo "$o16" | grep -q "invalid or unsupported postgres version" || { die "16 not rejected: $o16"; return 1; }
-    echo "$o19" | grep -q "invalid or unsupported postgres version" || { die "19 not rejected: $o19"; return 1; }
+    echo "$o20" | grep -q "invalid or unsupported postgres version" || { die "20 not rejected: $o20"; return 1; }
 }
 
 # ── Run all ──
