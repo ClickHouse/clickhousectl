@@ -88,16 +88,24 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
 /// `local install postgres@<version>`: fetch the native bundle, or with
 /// `--docker` pull the image.
 async fn install_postgres(tag: &str, force: bool, docker: bool, json: bool) -> Result<()> {
-    postgres::validate_pg_tag(tag)?;
     if docker {
+        if tag == "latest" {
+            return Err(Error::usage(
+                clap::error::ErrorKind::ArgumentConflict,
+                "postgres@latest is only supported by the native runtime; with `--docker`, pass a \
+                 major version tag such as postgres@19",
+            ));
+        }
+        postgres::validate_pg_tag(tag)?;
         return install_postgres_image(tag, force, json).await;
     }
+    postgres::validate_pg_start_version(tag)?;
     let Some(request) = pg_bundle::PgVersionRequest::parse(tag) else {
         return Err(Error::usage(
             clap::error::ErrorKind::ArgumentConflict,
             format!(
-                "postgres@{tag} is a Docker image tag; add `--docker` to pull it, or use 17, 18 \
-                 or <major>.<minor> for a native PostgreSQL build"
+                "postgres@{tag} is a Docker image tag; add `--docker` to pull it, or use latest, \
+                 17, 18, 19 or <major>.<minor> for a native PostgreSQL build"
             ),
         ));
     };
@@ -144,7 +152,7 @@ async fn install(version: InstallVersionArg, force: bool, docker: bool, json: bo
     if docker {
         return Err(Error::usage(
             clap::error::ErrorKind::ArgumentConflict,
-            "--docker applies only to a Postgres selector such as postgres@18",
+            "--docker applies only to a Postgres selector such as postgres@19",
         ));
     }
     let platform = version_manager::platform::Platform::detect()?;

@@ -14,14 +14,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Replaces the bundle source: an `https://` base URL or a `file:///abs/dir`
-/// holding `manifest.json` and the tarballs (see `docs/development.md`).
+/// holding `manifest.json` (or `latest.txt` + `<tag>/manifest.json`) and the
+/// tarballs (see `docs/development.md`).
 pub(crate) const BUNDLES_URL_ENV: &str = "CLICKHOUSECTL_POSTGRES_BUNDLES_URL";
 /// Where `manifest.json` and the tarballs it names are published. No request
 /// to it, or to anything it redirects to, carries credentials.
+///
+/// TODO(before merge): switch to `https://builds.clickhouse.com/postgres-builds`
+/// once `ClickHouse/postgres-builds` is published there.
 const DEFAULT_BUNDLES_URL: &str = "https://github.com/sdairs/pg-bundles/releases/latest/download";
 const MANIFEST_FILE: &str = "manifest.json";
+const LATEST_TAG_FILE: &str = "latest.txt";
 const SUPPORTED_SCHEMA: u64 = 1;
 const ARCHIVE_SUFFIX: &str = ".tar.gz";
 /// Written into an extracted bundle before it is renamed into the cache, so a
@@ -31,7 +37,7 @@ const KEY_SHA_PREFIX_LEN: usize = 12;
 const STAGING_PREFIX: &str = ".staging-";
 
 /// Majors the native runtime and the Docker image tags both accept.
-pub(crate) const SUPPORTED_MAJORS: [&str; 2] = ["17", "18"];
+pub(crate) const SUPPORTED_MAJORS: [&str; 3] = ["17", "18", "19"];
 
 /// One bundle as the manifest describes it. Also the cache marker's content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,25 +102,37 @@ fn version_key(version: &str) -> Vec<u64> {
         .collect()
 }
 
-/// A Postgres version the native runtime can serve: a major, or `major.minor`.
+/// A Postgres version the native runtime can serve: `latest`, a major, or
+/// `major.minor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PgVersionRequest {
-    pub major: String,
-    /// The full `major.minor` when the user pinned one.
-    pub exact: Option<String>,
+pub(crate) enum PgVersionRequest {
+    /// The newest major and minor published in the manifest (or cached offline).
+    Latest,
+    /// A specific supported major (`17`, `18`, `19`) or pinned `major.minor`.
+    Pinned {
+        major: String,
+        exact: Option<String>,
+    },
 }
 
 impl PgVersionRequest {
+    pub(crate) fn latest() -> Self {
+        Self::Latest
+    }
+
     pub(crate) fn major(major: &str) -> Self {
-        Self {
+        Self::Pinned {
             major: major.to_string(),
             exact: None,
         }
     }
 
-    /// `17`, `18` or `<major>.<minor>`. `None` for anything else, such as a
-    /// Docker image tag with a variant (`18-bookworm`).
+    /// `latest`, `17`, `18`, `19` or `<major>.<minor>`. `None` for anything
+    /// else, such as a Docker image tag with a variant (`18-bookworm`).
     pub(crate) fn parse(tag: &str) -> Option<Self> {
+        if tag == "latest" {
+            return Some(Self::Latest);
+        }
         let (major, minor) = match tag.split_once('.') {
             Some((major, minor)) => (major, Some(minor)),
             None => (tag, None),
@@ -125,7 +143,7 @@ impl PgVersionRequest {
         match minor {
             None => Some(Self::major(major)),
             Some(minor) if !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit()) => {
-                Some(Self {
+                Some(Self::Pinned {
                     major: major.to_string(),
                     exact: Some(tag.to_string()),
                 })
@@ -135,15 +153,22 @@ impl PgVersionRequest {
     }
 
     fn matches(&self, spec: &BundleSpec) -> bool {
-        spec.postgres_major == self.major
-            && self
-                .exact
-                .as_deref()
-                .is_none_or(|exact| version_key(exact) == spec.version_key())
+        match self {
+            Self::Latest => SUPPORTED_MAJORS.contains(&spec.postgres_major.as_str()),
+            Self::Pinned { major, exact } => {
+                spec.postgres_major == *major
+                    && exact
+                        .as_deref()
+                        .is_none_or(|exact| version_key(exact) == spec.version_key())
+            }
+        }
     }
 
     fn label(&self) -> &str {
-        self.exact.as_deref().unwrap_or(&self.major)
+        match self {
+            Self::Latest => "latest",
+            Self::Pinned { major, exact } => exact.as_deref().unwrap_or(major),
+        }
     }
 }
 
@@ -178,13 +203,20 @@ pub(crate) fn cache_root() -> Result<PathBuf> {
 
 /// Parse a manifest and return its bundles. An unknown `schema` is rejected
 /// before anything else is read, since its fields may mean something else.
-fn parse_manifest(bytes: &[u8]) -> Result<Vec<BundleSpec>> {
+struct ParsedManifest {
+    release: Option<String>,
+    bundles: Vec<BundleSpec>,
+}
+
+fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest> {
     #[derive(Deserialize)]
     struct Schema {
         schema: u64,
     }
     #[derive(Deserialize)]
     struct Manifest {
+        #[serde(default)]
+        release: Option<String>,
         #[serde(default)]
         bundles: Vec<BundleSpec>,
     }
@@ -198,7 +230,64 @@ fn parse_manifest(bytes: &[u8]) -> Result<Vec<BundleSpec>> {
         )));
     }
     let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| invalid())?;
-    Ok(manifest.bundles)
+    Ok(ParsedManifest {
+        release: manifest.release.and_then(|tag| parse_release_tag(&tag)),
+        bundles: manifest.bundles,
+    })
+}
+
+/// Parse a release tag such as `v0.4.0`, as written to `latest.txt`. Rejects
+/// path separators or traversal segments so joining it onto a base URL or
+/// directory cannot escape the source.
+fn parse_release_tag(text: &str) -> Option<String> {
+    let tag = text.trim();
+    let rest = tag.strip_prefix('v')?;
+    let valid = !rest.is_empty()
+        && !rest.starts_with('.')
+        && !rest.contains("..")
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    valid.then(|| tag.to_string())
+}
+
+/// Compute the base URL for bundle tarballs from the requested base, the final
+/// URL after redirects, and the manifest's `release` tag.
+///
+/// Cross-host redirects (such as GitHub redirecting a release asset to a
+/// per-file pre-signed URL on `release-assets.githubusercontent.com`) cannot
+/// serve sibling files, so those keep the original host. When the base is
+/// GitHub's mutable `.../releases/latest/download/` and the manifest carries a
+/// valid `release` tag, pin assets to `.../releases/download/<release>/` so a
+/// release published mid-download cannot cause a 404 or sha256 mismatch.
+fn asset_base_url(
+    requested_base: &url::Url,
+    final_manifest_url: &url::Url,
+    manifest_release: Option<&str>,
+) -> url::Url {
+    let base = if final_manifest_url.host() == requested_base.host() {
+        let mut dir = final_manifest_url.clone();
+        dir.set_query(None);
+        dir.set_fragment(None);
+        dir.join("./").unwrap_or_else(|_| requested_base.clone())
+    } else {
+        requested_base.clone()
+    };
+    if let Some(tag) = manifest_release
+        && let Some(prefix) = base.path().strip_suffix("/releases/latest/download/")
+    {
+        let mut pinned = base.clone();
+        pinned.set_path(&format!("{prefix}/releases/download/{tag}/"));
+        return pinned;
+    }
+    base
+}
+
+fn cache_bust_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// The newest bundle for `target` that satisfies `request`.
@@ -256,6 +345,13 @@ enum BundleSource {
     Directory(PathBuf),
 }
 
+/// A fetched manifest and the concrete base location (`<tag>/` or the final
+/// redirected release URL) that `spec.file` resolves against.
+struct ResolvedManifest {
+    bytes: Vec<u8>,
+    assets: BundleSource,
+}
+
 impl BundleSource {
     fn from_env() -> Result<Self> {
         Self::parse(std::env::var(BUNDLES_URL_ENV).ok().as_deref())
@@ -289,33 +385,37 @@ impl BundleSource {
         }
     }
 
-    async fn manifest(&self) -> Result<Vec<u8>> {
+    async fn resolve_manifest(&self) -> Result<ResolvedManifest> {
         match self {
-            Self::Directory(dir) => Ok(std::fs::read(dir.join(MANIFEST_FILE))?),
-            Self::Https(base) => {
-                let url = base
-                    .join(MANIFEST_FILE)
-                    .expect("a file name joins onto a base URL")
-                    .to_string();
-                let stage = NetworkStage::Download;
-                let client = network::client(network::METADATA_POLICY, stage, &url)?;
-                let fetch = async {
-                    let response = network::send(client.get(&url), stage, &url).await?;
-                    let response = network::ensure_success(response, stage, &url)?;
-                    response
-                        .bytes()
-                        .await
-                        .map(|bytes| bytes.to_vec())
-                        .map_err(|error| network::failure_from_reqwest(stage, &url, &error))
-                };
-                Ok(network::with_operation_timeout(
-                    network::RESOLUTION_OPERATION_TIMEOUT,
-                    stage,
-                    &url,
-                    fetch,
-                )
-                .await??)
+            Self::Directory(dir) => {
+                let direct = dir.join(MANIFEST_FILE);
+                if direct.is_file() {
+                    return Ok(ResolvedManifest {
+                        bytes: std::fs::read(direct)?,
+                        assets: Self::Directory(dir.clone()),
+                    });
+                }
+                let latest = dir.join(LATEST_TAG_FILE);
+                if latest.is_file() {
+                    let raw = std::fs::read_to_string(&latest)?;
+                    let tag = parse_release_tag(&raw).ok_or_else(|| {
+                        Error::PostgresBundleUnavailable(format!(
+                            "{} did not contain a valid release tag",
+                            latest.display()
+                        ))
+                    })?;
+                    let release_dir = dir.join(tag);
+                    return Ok(ResolvedManifest {
+                        bytes: std::fs::read(release_dir.join(MANIFEST_FILE))?,
+                        assets: Self::Directory(release_dir),
+                    });
+                }
+                Ok(ResolvedManifest {
+                    bytes: std::fs::read(direct)?,
+                    assets: Self::Directory(dir.clone()),
+                })
             }
+            Self::Https(base) => resolve_https_manifest(base).await,
         }
     }
 
@@ -335,6 +435,93 @@ impl BundleSource {
             }
         }
     }
+}
+
+/// Fetch `manifest.json` from an `https://` source.
+///
+/// Supports both layouts:
+/// - Direct `<base>/manifest.json` (GitHub `releases/latest/download` or a
+///   pinned `<base>/<tag>` URL). Assets resolve against the final redirected
+///   URL so a concurrent release cannot cause a checksum mismatch.
+/// - Immutable `<base>/latest.txt` + `<base>/<tag>/manifest.json` (the
+///   `builds.clickhouse.com/postgres-builds` layout), tried when
+///   `<base>/manifest.json` returns 404.
+async fn resolve_https_manifest(base: &url::Url) -> Result<ResolvedManifest> {
+    let manifest_url = base
+        .join(MANIFEST_FILE)
+        .expect("a file name joins onto a base URL");
+    let stage = NetworkStage::Download;
+    let client = network::client(network::METADATA_POLICY, stage, manifest_url.as_str())?;
+
+    let fetch = async {
+        let response = network::send(
+            client.get(manifest_url.as_str()),
+            stage,
+            manifest_url.as_str(),
+        )
+        .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            let mut latest_url = base
+                .join(LATEST_TAG_FILE)
+                .expect("a file name joins onto a base URL");
+            latest_url.set_query(Some(&format!("t={}", cache_bust_secs())));
+            let latest_resp =
+                network::send(client.get(latest_url.as_str()), stage, latest_url.as_str()).await?;
+            let latest_resp = network::ensure_success(latest_resp, stage, latest_url.as_str())?;
+            let body = latest_resp.text().await.map_err(|error| {
+                network::failure_from_reqwest(stage, latest_url.as_str(), &error)
+            })?;
+            let tag = parse_release_tag(&body).ok_or_else(|| {
+                Error::PostgresBundleUnavailable(format!(
+                    "{} did not contain a valid release tag",
+                    latest_url
+                ))
+            })?;
+            let release_base = base
+                .join(&format!("{tag}/"))
+                .expect("validated release tag joins onto a base URL");
+            let versioned_manifest = release_base
+                .join(MANIFEST_FILE)
+                .expect("a file name joins onto a base URL");
+            let resp = network::send(
+                client.get(versioned_manifest.as_str()),
+                stage,
+                versioned_manifest.as_str(),
+            )
+            .await?;
+            let resp = network::ensure_success(resp, stage, versioned_manifest.as_str())?;
+            let final_url = resp.url().clone();
+            let bytes = resp.bytes().await.map(|b| b.to_vec()).map_err(|error| {
+                network::failure_from_reqwest(stage, versioned_manifest.as_str(), &error)
+            })?;
+            let final_base = asset_base_url(&release_base, &final_url, None);
+            return Ok(ResolvedManifest {
+                bytes,
+                assets: BundleSource::Https(final_base),
+            });
+        }
+        let response = network::ensure_success(response, stage, manifest_url.as_str())?;
+        let final_url = response.url().clone();
+        let bytes = response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|error| network::failure_from_reqwest(stage, manifest_url.as_str(), &error))?;
+        let release = parse_manifest(&bytes).ok().and_then(|m| m.release);
+        let final_base = asset_base_url(base, &final_url, release.as_deref());
+        Ok(ResolvedManifest {
+            bytes,
+            assets: BundleSource::Https(final_base),
+        })
+    };
+
+    network::with_operation_timeout(
+        network::RESOLUTION_OPERATION_TIMEOUT,
+        stage,
+        manifest_url.as_str(),
+        fetch,
+    )
+    .await?
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -487,8 +674,8 @@ async fn ensure_bundle_in(
     force: bool,
     json: bool,
 ) -> Result<InstalledBundle> {
-    let manifest = match source.manifest().await {
-        Ok(bytes) => bytes,
+    let resolved = match source.resolve_manifest().await {
+        Ok(resolved) => resolved,
         Err(error) => {
             let cached = (!force)
                 .then(|| newest_installed_in(root, target, request))
@@ -505,7 +692,7 @@ async fn ensure_bundle_in(
             return Ok(cached);
         }
     };
-    let bundles = parse_manifest(&manifest)?;
+    let bundles = parse_manifest(&resolved.bytes)?.bundles;
     let spec = select_newest(&bundles, target, request).ok_or_else(|| {
         Error::PostgresBundleUnavailable(format!(
             "no PostgreSQL {} bundle is published for {target}; use `--docker` to run a \
@@ -522,7 +709,7 @@ async fn ensure_bundle_in(
     {
         return Ok(cached);
     }
-    install_into(root, source, spec, force, json).await
+    install_into(root, &resolved.assets, spec, force, json).await
 }
 
 /// The bundle an existing instance of `major` starts with: the newest cached
@@ -556,9 +743,9 @@ mod tests {
     fn manifest(schema: u64, bundles: &[BundleSpec]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema": schema,
-            "release": "v0.3.0",
-            "built_at": "2026-11-16T00:00:00Z",
-            "source": { "repo": "sdairs/pg-bundles", "commit": "abc" },
+            "release": "v0.4.0",
+            "built_at": "2026-11-28T00:00:00Z",
+            "source": { "repo": "ClickHouse/postgres-builds", "commit": "abc" },
             "bundles": bundles,
         }))
         .unwrap()
@@ -577,27 +764,41 @@ mod tests {
     }
 
     #[test]
-    fn native_versions_are_a_supported_major_with_an_optional_numeric_minor() {
+    fn native_versions_are_latest_or_a_supported_major_with_an_optional_numeric_minor() {
+        assert_eq!(
+            PgVersionRequest::parse("latest"),
+            Some(PgVersionRequest::latest())
+        );
+        assert_eq!(
+            PgVersionRequest::parse("19"),
+            Some(PgVersionRequest::major("19"))
+        );
         assert_eq!(
             PgVersionRequest::parse("18"),
             Some(PgVersionRequest::major("18"))
         );
-        let pinned = PgVersionRequest::parse("17.11").unwrap();
-        assert_eq!(pinned.major, "17");
-        assert_eq!(pinned.exact.as_deref(), Some("17.11"));
-        for tag in ["16", "19", "18-bookworm", "18.1-alpine", "18.", "18.x", ""] {
+        assert_eq!(
+            PgVersionRequest::parse("17.12"),
+            Some(PgVersionRequest::Pinned {
+                major: "17".to_string(),
+                exact: Some("17.12".to_string()),
+            })
+        );
+        for tag in ["16", "20", "18-bookworm", "19.0-alpine", "18.", "18.x", ""] {
             assert_eq!(PgVersionRequest::parse(tag), None, "{tag}");
         }
     }
 
     #[test]
     fn manifest_parsing_reads_extra_fields_and_rejects_an_unknown_schema() {
-        let bundles = [spec("18.7", "aarch64-apple-darwin", SHA_A)];
+        let bundles = [spec("19.0", "aarch64-apple-darwin", SHA_A)];
         let mut value: serde_json::Value = serde_json::from_slice(&manifest(1, &bundles)).unwrap();
         value["bundles"][0]["size"] = 11370169.into();
         value["bundles"][0]["future_field"] = true.into();
         assert_eq!(
-            parse_manifest(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            parse_manifest(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .bundles,
             bundles
         );
 
@@ -610,12 +811,15 @@ mod tests {
     }
 
     #[test]
-    fn selection_takes_the_newest_minor_for_the_target_and_honours_a_pin() {
+    fn selection_takes_the_newest_version_for_latest_or_a_pinned_major() {
         let bundles = [
+            spec("19.0", "aarch64-apple-darwin", SHA_A),
             spec("18.6", "aarch64-apple-darwin", SHA_A),
             spec("18.10", "aarch64-apple-darwin", SHA_A),
-            spec("18.11", "x86_64-apple-darwin", SHA_A),
-            spec("17.11", "aarch64-apple-darwin", SHA_A),
+            spec("19.2", "x86_64-apple-darwin", SHA_A),
+            spec("17.12", "aarch64-apple-darwin", SHA_A),
+            // An unsupported major in a future manifest is never chosen by `latest`.
+            spec("20.0", "aarch64-apple-darwin", SHA_A),
         ];
         let select = |tag: &str| {
             select_newest(
@@ -625,18 +829,56 @@ mod tests {
             )
             .map(|spec| spec.postgres_version.as_str())
         };
+        assert_eq!(select("latest"), Some("19.0"));
+        assert_eq!(select("19"), Some("19.0"));
         // Numeric, not lexical: 18.10 is newer than 18.6.
         assert_eq!(select("18"), Some("18.10"));
         assert_eq!(select("18.6"), Some("18.6"));
-        assert_eq!(select("17"), Some("17.11"));
+        assert_eq!(select("17"), Some("17.12"));
         assert_eq!(select("18.7"), None);
         assert_eq!(
             select_newest(
                 &bundles,
                 "aarch64-unknown-linux-musl",
-                &PgVersionRequest::major("18")
+                &PgVersionRequest::latest()
             ),
             None
+        );
+    }
+
+    #[test]
+    fn release_tag_parsing_and_redirect_base_resolution() {
+        assert_eq!(parse_release_tag("v0.4.0\n"), Some("v0.4.0".to_string()));
+        assert_eq!(
+            parse_release_tag("  v1.2.3-rc1  "),
+            Some("v1.2.3-rc1".to_string())
+        );
+        for bad in ["", "0.4.0", "v", "v../etc", "v0.4.0/foo", "v.hidden"] {
+            assert_eq!(parse_release_tag(bad), None, "{bad}");
+        }
+
+        let requested =
+            url::Url::parse("https://github.com/sdairs/pg-bundles/releases/latest/download/")
+                .unwrap();
+        // Cross-host SAS redirect (GitHub -> release-assets.githubusercontent.com)
+        // stays on github.com and pins to the manifest's immutable release tag.
+        let sas_redirect = url::Url::parse(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sig=1",
+        )
+        .unwrap();
+        assert_eq!(
+            asset_base_url(&requested, &sas_redirect, Some("v0.4.0")).as_str(),
+            "https://github.com/sdairs/pg-bundles/releases/download/v0.4.0/"
+        );
+        // Same-host redirect follows the redirected directory.
+        let same_host = url::Url::parse(
+            "https://builds.clickhouse.com/postgres-builds/v0.4.0/manifest.json?t=1",
+        )
+        .unwrap();
+        let ch_base = url::Url::parse("https://builds.clickhouse.com/postgres-builds/").unwrap();
+        assert_eq!(
+            asset_base_url(&ch_base, &same_host, Some("v0.4.0")).as_str(),
+            "https://builds.clickhouse.com/postgres-builds/v0.4.0/"
         );
     }
 
@@ -733,12 +975,30 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn directory_source_follows_latest_txt_when_no_root_manifest_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LATEST_TAG_FILE), "v0.4.0\n").unwrap();
+        let release_dir = dir.path().join("v0.4.0");
+        std::fs::create_dir(&release_dir).unwrap();
+        let bundles = [spec("19.0", "aarch64-apple-darwin", SHA_A)];
+        std::fs::write(release_dir.join(MANIFEST_FILE), manifest(1, &bundles)).unwrap();
+
+        let resolved = BundleSource::Directory(dir.path().to_path_buf())
+            .resolve_manifest()
+            .await
+            .unwrap();
+        assert_eq!(parse_manifest(&resolved.bytes).unwrap().bundles, bundles);
+        assert_eq!(resolved.assets, BundleSource::Directory(release_dir));
+    }
+
     #[test]
     fn only_complete_cache_entries_count_as_installed() {
         let root = tempfile::tempdir().unwrap();
         let old = spec("18.6", "aarch64-apple-darwin", SHA_A);
         let new = spec("18.7", "aarch64-apple-darwin", SHA_A);
-        for spec in [&old, &new] {
+        let pg19 = spec("19.0", "aarch64-apple-darwin", SHA_A);
+        for spec in [&old, &new, &pg19] {
             let dir = root.path().join(spec.cache_key());
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(MARKER_FILE), serde_json::to_vec(spec).unwrap()).unwrap();
@@ -754,14 +1014,23 @@ mod tests {
         )
         .unwrap();
 
-        let newest = newest_installed_in(
+        let newest_18 = newest_installed_in(
             root.path(),
             "aarch64-apple-darwin",
             &PgVersionRequest::major("18"),
         )
         .unwrap();
-        assert_eq!(newest.spec, new);
-        assert_eq!(newest.dir, root.path().join(new.cache_key()));
+        assert_eq!(newest_18.spec, new);
+        assert_eq!(newest_18.dir, root.path().join(new.cache_key()));
+
+        let newest_any = newest_installed_in(
+            root.path(),
+            "aarch64-apple-darwin",
+            &PgVersionRequest::latest(),
+        )
+        .unwrap();
+        assert_eq!(newest_any.spec, pg19);
+
         assert_eq!(
             newest_installed_in(
                 root.path(),

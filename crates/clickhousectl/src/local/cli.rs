@@ -136,8 +136,9 @@ const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   The first ClickHouse version installed becomes the default; later installs do not change it.
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
-  `postgres@<version>` (17, 18 or <major>.<minor>) downloads a PostgreSQL build with pg_clickhouse
-  for `local postgres`; with --docker it pulls that image tag instead. Neither sets a default.
+  `postgres@<version>` (latest, 17, 18, 19 or <major>.<minor>) downloads a PostgreSQL build with
+  pg_clickhouse for `local postgres`; with --docker it pulls that image tag instead. Neither sets
+  a default.
   --binary copies the file (e.g. build/programs/clickhouse) and installs it as the version its
   `--version` reports; rebuild and pass --force to replace that version.";
 
@@ -156,7 +157,7 @@ impl FromStr for InstallVersionArg {
             .strip_prefix("postgres@")
             .or_else(|| input.strip_prefix("postgres:"))
         {
-            return crate::local::postgres::parse_pg_tag_arg(tag).map(Self::Postgres);
+            return crate::local::postgres::parse_pg_start_version_arg(tag).map(Self::Postgres);
         }
 
         version_manager::parse_version_spec(input)
@@ -401,7 +402,7 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("source").args(["version", "binary"]).required(true))
     )]
     Install {
-        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or Postgres selector (postgres@18)
+        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or Postgres selector (postgres@latest, postgres@19)
         version: Option<InstallVersionArg>,
 
         /// Install a local ClickHouse build under the version it reports
@@ -713,10 +714,10 @@ CONTEXT FOR AGENTS:
         )]
         name_flag: Option<String>,
 
-        /// Postgres version: 17, 18 or <major>.<minor>. Default: 18
+        /// Postgres version: latest, 17, 18, 19 or <major>.<minor>. Default: newest published major
         ///
-        /// With --docker, any 17 or 18 image tag (e.g. 17-alpine, 18-bookworm).
-        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
+        /// With --docker, any 17, 18 or 19 image tag (e.g. 17-alpine, 18-bookworm, 19). Default: 19.
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_start_version_arg)]
         version: Option<String>,
 
         /// Host TCP port; when omitted, 5432 if free else an auto-selected free port

@@ -459,3 +459,144 @@ fn docker_flag_on_a_native_instance_is_a_usage_error_that_changes_nothing() {
     assert_eq!(fixture.ok(&["list"])["servers"][0]["pid"], pid);
     fixture.ok(&["remove"]);
 }
+
+fn bundle_tarball_for(version: &str) -> (String, Vec<u8>, String) {
+    let major = version.split('.').next().unwrap();
+    let name = format!("pg-{version}-pgch-0.11.1-{}", target());
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut archive = tar::Builder::new(encoder);
+    for (program, script) in PROGRAMS {
+        let script = if program == "initdb" {
+            script.replace("echo 18 >", &format!("echo {major} >"))
+        } else {
+            script.to_string()
+        };
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(
+                &mut header,
+                format!("{name}/bin/{program}"),
+                script.as_bytes(),
+            )
+            .expect("append fake program");
+    }
+    let bytes = archive
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip");
+    let digest = sha256(&bytes);
+    (format!("{name}.tar.gz"), bytes, digest)
+}
+
+#[test]
+fn latest_txt_multi_major_defaults_to_newest_and_honours_explicit_majors() {
+    let root = tempfile::tempdir().expect("create fixture root");
+    let base = root.path().canonicalize().expect("canonical fixture root");
+    let [home, project, source, record] =
+        ["home", "project", "source", "record"].map(|dir| base.join(dir));
+    for dir in [&home, &project, &source, &record] {
+        std::fs::create_dir(dir).expect("create fixture dir");
+    }
+    std::fs::create_dir(project.join(".clickhouse")).expect("mark project");
+
+    // Immutable `<tag>/` layout pointed to by `latest.txt` (builds.clickhouse.com).
+    let release_dir = source.join("v0.4.0");
+    std::fs::create_dir(&release_dir).expect("create release dir");
+    std::fs::write(source.join("latest.txt"), "v0.4.0\n").expect("write latest.txt");
+
+    let mut bundles = Vec::new();
+    for version in ["19.0", "18.7", "17.12"] {
+        let major = version.split('.').next().unwrap();
+        let (file, tarball, digest) = bundle_tarball_for(version);
+        std::fs::write(release_dir.join(&file), &tarball).expect("write bundle");
+        bundles.push(json!({
+            "postgres_version": version,
+            "postgres_major": major,
+            "extensions": { "pg_clickhouse": "0.11.1" },
+            "target": target(),
+            "file": file,
+            "sha256": digest,
+            "size": tarball.len(),
+        }));
+    }
+    let manifest = json!({
+        "schema": 1,
+        "release": "v0.4.0",
+        "built_at": "2026-11-28T00:00:00Z",
+        "source": { "repo": "ClickHouse/postgres-builds", "commit": "0000000" },
+        "bundles": bundles,
+    });
+    std::fs::write(
+        release_dir.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .expect("write manifest");
+
+    let run = |args: &[&str], bundles_url: Option<&str>| -> Output {
+        let mut cmd = Command::new(clickhousectl_binary());
+        cmd.env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("CHCTL_UPDATE_CHECK_TIMEOUT_MS", "0")
+            .env("HOME", &home)
+            .env("PATH", "/usr/bin:/bin")
+            .env("DOCKER_HOST", "unix:///nonexistent/docker.sock")
+            .env(
+                "CLICKHOUSECTL_POSTGRES_BUNDLES_URL",
+                bundles_url
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("file://{}", source.display())),
+            )
+            .env("FAKE_RECORD_DIR", &record)
+            .current_dir(&project)
+            .args(["local", "--json"])
+            .args(args);
+        cmd.output().expect("run clickhousectl")
+    };
+    let ok = |args: &[&str], bundles_url: Option<&str>| -> Value {
+        let output = run(args, bundles_url);
+        assert!(
+            output.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("parse JSON stdout")
+    };
+
+    // `local install postgres@latest` picks 19.0; `postgres@17` picks 17.12.
+    let installed_latest = ok(&["install", "postgres@latest"], None);
+    assert_eq!(installed_latest["version"], "postgres@19.0");
+    let installed_17 = ok(&["install", "postgres@17"], None);
+    assert_eq!(installed_17["version"], "postgres@17.12");
+
+    // Omitting --version on a fresh native start picks the newest major (19.0).
+    let started_default = ok(&["postgres", "start"], None);
+    assert_eq!(started_default["image"], "postgres:19.0");
+    assert!(project.join(".clickhouse/servers/default-pg19").is_dir());
+    ok(&["postgres", "remove"], None);
+
+    // Explicit --version 18 starts 18.7, and a later start without --version
+    // resumes that existing PG 18 instance offline rather than creating PG 19.
+    let started_18 = ok(&["postgres", "start", "app18", "--version", "18"], None);
+    assert_eq!(started_18["image"], "postgres:18.7");
+    assert!(project.join(".clickhouse/servers/app18-pg18").is_dir());
+    ok(&["postgres", "stop", "app18"], None);
+
+    let resumed_18 = ok(
+        &["postgres", "start", "app18"],
+        Some("file:///nonexistent/bundles"),
+    );
+    assert_eq!(resumed_18["image"], "postgres:18.7");
+    assert!(!project.join(".clickhouse/servers/app18-pg19").exists());
+    ok(&["postgres", "remove", "app18"], None);
+
+    // --docker rejects --version latest with a usage error (exit 2).
+    let docker_latest = run(
+        &["postgres", "start", "--docker", "--version", "latest"],
+        None,
+    );
+    assert_eq!(docker_latest.status.code(), Some(2));
+}

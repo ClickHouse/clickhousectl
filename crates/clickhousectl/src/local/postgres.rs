@@ -26,9 +26,10 @@ use std::time::Duration;
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
 const DEFAULT_DATABASE: &str = "postgres";
-/// Default version when `--version` is not given: a major both runtimes
-/// serve. Docker also takes any 17/18 image tag (`17.0`, `18-bookworm`, etc).
-pub const DEFAULT_PG_TAG: &str = "18";
+/// Default image tag for Docker when `--version` is not given. Native starts
+/// without `--version` pick the newest supported major in the bundle manifest
+/// (and fall back to the newest cached build offline).
+pub const DEFAULT_PG_TAG: &str = "19";
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const READINESS_LOG_LINES: usize = 50;
 const READINESS_LOG_BYTES: usize = 16 * 1024;
@@ -63,21 +64,37 @@ pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
         };
         let minor_valid = minor
             .is_none_or(|minor| !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit()));
-        matches!(major, "17" | "18") && minor_valid && variant_valid
+        matches!(major, "17" | "18" | "19") && minor_valid && variant_valid
     };
 
     if !valid {
         return Err(Error::PostgresUsage(format!(
-            "invalid or unsupported postgres version '{}'. Use 17 or 18, optionally followed \
-             by .<minor> and -<variant> (for example: 17, 17-alpine, 18.1, 18-bookworm).",
+            "invalid or unsupported postgres version '{}'. Use 17, 18 or 19, optionally followed \
+             by .<minor> and -<variant> (for example: 17, 18-bookworm, 19.0, 19-alpine).",
             tag
         )));
     }
     Ok(())
 }
 
+/// Validate a version selector accepted by `local postgres start --version`
+/// and `local install postgres@<version>`: `latest` (native runtime) or any
+/// supported Postgres tag (`17`, `18`, `19`, with optional `.minor`/`-variant`).
+pub(crate) fn validate_pg_start_version(tag: &str) -> Result<()> {
+    if tag == "latest" {
+        return Ok(());
+    }
+    validate_pg_tag(tag)
+}
+
 pub(crate) fn parse_pg_tag_arg(tag: &str) -> std::result::Result<String, String> {
     validate_pg_tag(tag)
+        .map(|()| tag.to_string())
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn parse_pg_start_version_arg(tag: &str) -> std::result::Result<String, String> {
+    validate_pg_start_version(tag)
         .map(|()| tag.to_string())
         .map_err(|error| error.to_string())
 }
@@ -154,7 +171,7 @@ fn validate_start_options(
         server::validate_server_name(name)?;
     }
     if let Some(version) = version {
-        validate_pg_tag(version)?;
+        validate_pg_start_version(version)?;
     }
 
     validate_pg_start_env_args(password, &extra_env).map_err(Error::PostgresUsage)?;
@@ -274,8 +291,8 @@ struct StartArgs {
 enum DockerOnlyFeature {
     /// `--env`: container environment variables.
     Env,
-    /// A `--version` that is an image tag rather than `17`, `18` or
-    /// `<major>.<minor>`.
+    /// A `--version` that is an image tag rather than `latest`, `17`, `18`,
+    /// `19` or `<major>.<minor>`.
     ImageTag(String),
 }
 
@@ -293,9 +310,85 @@ impl DockerOnlyFeature {
         match self {
             Self::Env => "`--env` sets container environment variables".to_string(),
             Self::ImageTag(tag) => format!(
-                "`--version {tag}` is a Docker image tag (the native runtime takes 17, 18 or \
-                 <major>.<minor>)"
+                "`--version {tag}` is a Docker image tag (the native runtime takes latest, 17, \
+                 18, 19 or <major>.<minor>)"
             ),
+        }
+    }
+}
+
+/// Target major and prior metadata resolved under the project lock for `start`.
+enum StartTarget {
+    /// An explicit major/tag, or a single existing instance to resume.
+    Resolved {
+        tag: String,
+        major: String,
+        prior: Option<Box<ServerInfo>>,
+    },
+    /// A native start asking for the newest published major (`--version` omitted
+    /// on a new instance, or `--version latest`).
+    Latest,
+}
+
+fn resolve_start_target_locked(
+    user_name: &str,
+    version: Option<&str>,
+    docker: bool,
+    metadata_lock: &server::MetadataLock,
+) -> Result<StartTarget> {
+    if let Some(version) = version {
+        if version == "latest" {
+            if docker {
+                return Err(Error::usage(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "`--version latest` is only supported by the native runtime; with `--docker`, \
+                     pass a major version tag such as 19, 18 or 17",
+                ));
+            }
+            return Ok(StartTarget::Latest);
+        }
+        let major = pg_major_from_tag(version);
+        let key = server::pg_instance_key(user_name, &major);
+        let prior = server::load_info_locked(&key, metadata_lock)?.map(Box::new);
+        return Ok(StartTarget::Resolved {
+            tag: version.to_string(),
+            major,
+            prior,
+        });
+    }
+
+    let existing = server::find_pg_instances_locked(user_name, metadata_lock)?;
+    match existing.as_slice() {
+        [] => {
+            if docker {
+                Ok(StartTarget::Resolved {
+                    tag: DEFAULT_PG_TAG.to_string(),
+                    major: pg_major_from_tag(DEFAULT_PG_TAG),
+                    prior: None,
+                })
+            } else {
+                Ok(StartTarget::Latest)
+            }
+        }
+        [info] => {
+            let stored_tag = info
+                .version
+                .strip_prefix("postgres:")
+                .unwrap_or(&info.version);
+            let major = pg_major_from_tag(stored_tag);
+            Ok(StartTarget::Resolved {
+                tag: stored_tag.to_string(),
+                major,
+                prior: Some(Box::new(info.clone())),
+            })
+        }
+        _ => {
+            let versions: Vec<&str> = existing.iter().map(|info| info.version.as_str()).collect();
+            Err(Error::PostgresUsage(format!(
+                "multiple postgres instances named '{}' ({}); pass --version to select one",
+                user_name,
+                versions.join(", ")
+            )))
         }
     }
 }
@@ -380,27 +473,40 @@ async fn start(args: StartArgs, json: bool) -> Result<()> {
 
     // Look at what exists under the project lock, then release it: both
     // runtimes resolve their target again before changing anything.
-    let (user_name, major, prior) = {
+    let (user_name, target) = {
         let metadata_lock = server::lock_metadata()?;
         server::recover_current_project_servers_locked(&metadata_lock)?;
         let user_name = match name {
             Some(name) => name,
             None => default_pg_name_locked(&metadata_lock)?,
         };
-        let (_, major) =
-            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
-        let key = server::pg_instance_key(&user_name, &major);
-        let prior = server::load_info_locked(&key, &metadata_lock)?;
-        (user_name, major, prior)
+        let target =
+            resolve_start_target_locked(&user_name, version.as_deref(), docker, &metadata_lock)?;
+        (user_name, target)
     };
-    let prior_runtime = prior.as_ref().and_then(ServerInfo::pg_runtime);
-    let runtime = select_start_runtime(
-        prior_runtime,
-        docker,
-        docker_only.as_ref(),
-        &user_name,
-        &major,
-    )?;
+    let (runtime, resume_major) = match target {
+        StartTarget::Latest => {
+            let runtime = select_start_runtime(
+                None,
+                docker,
+                docker_only.as_ref(),
+                &user_name,
+                DEFAULT_PG_TAG,
+            )?;
+            (runtime, None)
+        }
+        StartTarget::Resolved { major, prior, .. } => {
+            let prior_runtime = prior.as_deref().and_then(ServerInfo::pg_runtime);
+            let runtime = select_start_runtime(
+                prior_runtime,
+                docker,
+                docker_only.as_ref(),
+                &user_name,
+                &major,
+            )?;
+            (runtime, Some(major))
+        }
+    };
 
     let request = StartRequest {
         name: user_name,
@@ -416,6 +522,7 @@ async fn start(args: StartArgs, json: bool) -> Result<()> {
     match runtime {
         PgRuntime::Docker => {
             if !docker && !json {
+                let major = resume_major.as_deref().unwrap_or(DEFAULT_PG_TAG);
                 eprintln!(
                     "Note: postgres '{}' (major {major}) is a Docker instance; resuming it in \
                      Docker.",
@@ -665,55 +772,107 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
         // Resolve an optimistic target, then release the project-wide lock
         // before a possible bundle download.
         let metadata_lock = server::lock_metadata()?;
-        let (tag, major) =
-            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
-        let key = server::pg_instance_key(&user_name, &major);
-        let prior = server::load_info_locked(&key, &metadata_lock)?;
+        let target =
+            resolve_start_target_locked(&user_name, version.as_deref(), false, &metadata_lock)?;
         drop(metadata_lock);
-        if prior
-            .as_ref()
-            .is_some_and(|prior| prior.pg_runtime() != Some(PgRuntime::Native))
-        {
-            return Err(runtime_changed(&user_name));
-        }
 
-        // As root, PostgreSQL runs as an unprivileged account. Find out
-        // which, and that it can reach its files, before anything is
-        // downloaded or created.
-        let instance_dir = server::servers_dir_join(&key)?;
-        let run_as = match &prior {
-            Some(_) => pg_native::user_for_existing_instance(&instance_dir, &user_name)?,
-            None => pg_native::user_for_new_instance()?,
-        };
-        if let Some(server_user) = &run_as {
-            pg_native::ensure_searchable(&[&pg_bundle::cache_root()?, &instance_dir], server_user)?;
-        }
-
-        let bundle = match &prior {
-            // Data directories work across minors of a major, so an existing
-            // instance takes the newest installed bundle and needs no network.
-            Some(_) => pg_bundle::bundle_for_existing(&major, json).await?,
-            None => {
-                let request = PgVersionRequest::parse(&tag).ok_or_else(|| {
-                    Error::PostgresUsage(format!(
-                        "'{tag}' is not a version the native runtime serves; use 17, 18 or \
-                         <major>.<minor>, or add `--docker`"
-                    ))
-                })?;
-                pg_bundle::ensure_bundle(&request, false, json).await?
+        let (expected_latest, tag, major, prior, bundle, run_as) = match target {
+            StartTarget::Latest => {
+                // As root, verify the server account and bundle cache before
+                // downloading the manifest or tarball.
+                let run_as = pg_native::user_for_new_instance()?;
+                if let Some(server_user) = &run_as {
+                    pg_native::ensure_searchable(&[&pg_bundle::cache_root()?], server_user)?;
+                }
+                let bundle =
+                    pg_bundle::ensure_bundle(&PgVersionRequest::latest(), false, json).await?;
+                let major = bundle.spec.postgres_major.clone();
+                let key = server::pg_instance_key(&user_name, &major);
+                let instance_dir = server::servers_dir_join(&key)?;
+                let metadata_lock = server::lock_metadata()?;
+                let prior = server::load_info_locked(&key, &metadata_lock)?;
+                drop(metadata_lock);
+                if let Some(prior) = &prior
+                    && prior.pg_runtime() != Some(PgRuntime::Native)
+                {
+                    return Err(Error::PostgresUsage(format!(
+                        "Postgres instance '{user_name}' (major {major}) runs in Docker; pass \
+                         `--docker --version {major}` to resume it, or remove it first to \
+                         recreate it natively"
+                    )));
+                }
+                let run_as = match &prior {
+                    Some(_) => pg_native::user_for_existing_instance(&instance_dir, &user_name)?,
+                    None => run_as,
+                };
+                if let Some(server_user) = &run_as {
+                    pg_native::ensure_searchable(&[&bundle.dir, &instance_dir], server_user)?;
+                }
+                let tag = bundle.spec.postgres_version.clone();
+                (true, tag, major, prior, bundle, run_as)
+            }
+            StartTarget::Resolved { tag, major, prior } => {
+                let prior = prior.map(|info| *info);
+                if prior
+                    .as_ref()
+                    .is_some_and(|prior| prior.pg_runtime() != Some(PgRuntime::Native))
+                {
+                    return Err(runtime_changed(&user_name));
+                }
+                let key = server::pg_instance_key(&user_name, &major);
+                let instance_dir = server::servers_dir_join(&key)?;
+                let run_as = match &prior {
+                    Some(_) => pg_native::user_for_existing_instance(&instance_dir, &user_name)?,
+                    None => pg_native::user_for_new_instance()?,
+                };
+                if let Some(server_user) = &run_as {
+                    pg_native::ensure_searchable(
+                        &[&pg_bundle::cache_root()?, &instance_dir],
+                        server_user,
+                    )?;
+                }
+                let bundle = match &prior {
+                    // Data directories work across minors of a major, so an
+                    // existing instance takes the newest installed bundle and
+                    // needs no network.
+                    Some(_) => pg_bundle::bundle_for_existing(&major, json).await?,
+                    None => {
+                        let request = PgVersionRequest::parse(&tag).ok_or_else(|| {
+                            Error::PostgresUsage(format!(
+                                "'{tag}' is not a version the native runtime serves; use latest, \
+                                 17, 18, 19 or <major>.<minor>, or add `--docker`"
+                            ))
+                        })?;
+                        pg_bundle::ensure_bundle(&request, false, json).await?
+                    }
+                };
+                if let Some(server_user) = &run_as {
+                    pg_native::ensure_searchable(&[&bundle.dir], server_user)?;
+                }
+                (false, tag, major, prior, bundle, run_as)
             }
         };
 
-        if let Some(server_user) = &run_as {
-            pg_native::ensure_searchable(&[&bundle.dir], server_user)?;
-        }
-
+        let key = server::pg_instance_key(&user_name, &major);
         let metadata_lock = server::lock_metadata()?;
-        let (current_tag, current_major) =
-            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
-        let current_key = server::pg_instance_key(&user_name, &current_major);
-        let current = server::load_info_locked(&current_key, &metadata_lock)?;
-        if current_tag != tag || current_key != key || current != prior {
+        let current_target =
+            resolve_start_target_locked(&user_name, version.as_deref(), false, &metadata_lock)?;
+        let current = server::load_info_locked(&key, &metadata_lock)?;
+        let target_still_matches = match current_target {
+            StartTarget::Latest => expected_latest && current == prior,
+            StartTarget::Resolved {
+                tag: current_tag,
+                major: current_major,
+                prior: current_prior,
+            } => {
+                !expected_latest
+                    && current_tag == tag
+                    && current_major == major
+                    && current_prior.map(|info| *info) == prior
+                    && current == prior
+            }
+        };
+        if !target_still_matches {
             drop(metadata_lock);
             continue;
         }
@@ -2583,12 +2742,15 @@ mod tests {
         for tag in [
             "17",
             "18",
+            "19",
             "17-alpine",
             "17.0",
             "18-bookworm",
             "18-alpine3.20",
             "18.1-alpine3.20",
             "18.01-Custom_variant-1.0",
+            "19.0",
+            "19-alpine",
         ] {
             assert!(
                 validate_pg_tag(tag).is_ok(),
@@ -2605,7 +2767,7 @@ mod tests {
             "15",
             "16",
             "16-alpine",
-            "19",
+            "20",
             "14-alpine",
             "alpine",
             "",

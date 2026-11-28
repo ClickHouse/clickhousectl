@@ -544,7 +544,14 @@ fn run_start_command(
     if resumed {
         command.args(["--name", "default"]);
     } else {
-        command.args(["--port", &port, "--password", "fresh-secret"]);
+        command.args([
+            "--version",
+            "18",
+            "--port",
+            &port,
+            "--password",
+            "fresh-secret",
+        ]);
     }
     if telemetry_debug {
         command.env("CHCTL_TELEMETRY_DEBUG", "1");

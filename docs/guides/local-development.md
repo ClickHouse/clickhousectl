@@ -163,7 +163,7 @@ Each start copies the files into `.clickhouse/servers/<name>/data/config.d/` (as
 
 ## Add Postgres
 
-`local postgres` runs PostgreSQL natively, without Docker. The first start of a version downloads a prebuilt PostgreSQL that includes the [pg_clickhouse](https://github.com/ClickHouse/pg_clickhouse) extension, verifies its SHA-256 checksum, and keeps it in `~/.clickhouse/postgres/`; later starts reuse it and work offline. Builds exist for macOS and Linux on x86_64 and arm64. Postgres 17 and 18 are supported, as a major (`18`) or a `<major>.<minor>` version; new instances default to 18. A random password is generated unless supplied.
+`local postgres` runs PostgreSQL natively, without Docker. The first start of a version downloads a prebuilt PostgreSQL that includes the [pg_clickhouse](https://github.com/ClickHouse/pg_clickhouse) extension, verifies its SHA-256 checksum, and keeps it in `~/.clickhouse/postgres/`; later starts reuse it and work offline. Builds exist for macOS and Linux on x86_64 and arm64. Postgres 17, 18 and 19 are supported, as `latest`, a major (`19`, `18`, `17`), or a `<major>.<minor>` version; new native instances default to the newest published major. A random password is generated unless supplied.
 
 ```bash
 clickhousectl local postgres start app --version 18
@@ -180,7 +180,7 @@ Create `pg-schema.sql` with your Postgres SQL before running the file example. F
 
 Starts wait for `pg_isready`, by default for 60 seconds; `--wait-timeout` accepts 1–600 seconds. `local postgres client` runs the `psql` that ships with the instance's PostgreSQL build. `--json` does not change psql output. When both are supplied, `--query` runs before `--queries-file`.
 
-An instance listens on `127.0.0.1` only, with password (SCRAM) authentication, UTF-8 encoding and the builtin `C.UTF-8` locale on every platform. Its data, log (`postgres.log`) and connection details live in `.clickhouse/servers/<name>-pg<major>/`. `local install postgres@18` downloads a build ahead of the first start. On Linux the server uses System V shared memory (`dynamic_shared_memory_type=sysv`), so parallel queries are not limited by a container's small `/dev/shm`.
+An instance listens on `127.0.0.1` only, with password (SCRAM) authentication, UTF-8 encoding and the builtin `C.UTF-8` locale on every platform. Its data, log (`postgres.log`) and connection details live in `.clickhouse/servers/<name>-pg<major>/`. `local install postgres@latest` (or `postgres@19`, `postgres@18`, `postgres@17`) downloads a build ahead of the first start. On Linux the server uses System V shared memory (`dynamic_shared_memory_type=sysv`), so parallel queries are not limited by a container's small `/dev/shm`.
 
 An instance is identified by name and major version; the name may use only letters, digits, `_`, `.`, and `-`. Pass `--version` when more than one major shares a name. Resuming an instance reuses its original port, user, password, and database; new creation flags do not reconfigure it. A resume uses the newest installed build of the instance's major, since a data directory works across minor versions. If another process now holds the stored port, the resume fails with `port_in_use` instead of starting without it; free the port and start again. To recreate, first back up any needed data, then remove the instance before starting again. Direct `--host`/`--port` client selectors cannot combine with managed name/version selectors.
 
@@ -208,7 +208,7 @@ clickhousectl local postgres client app --query "SELECT count(*) FROM events"
 
 ### Run Postgres in Docker instead
 
-`local postgres start --docker` runs a `postgres` image in a container instead, and needs Docker running. It accepts any 17 or 18 image tag (`--version 17-alpine`, `18-bookworm`) and container environment variables (`--env KEY=VALUE`); both are usage errors (exit 2) without `--docker`. The image does not include pg_clickhouse. `local install postgres@<tag> --docker` pulls an image ahead of time.
+`local postgres start --docker` runs a `postgres` image in a container instead, and needs Docker running. It accepts any 17, 18 or 19 image tag (`--version 17-alpine`, `18-bookworm`, `19`) and container environment variables (`--env KEY=VALUE`); both are usage errors (exit 2) without `--docker`. The image does not include pg_clickhouse. `local install postgres@<tag> --docker` pulls an image ahead of time.
 
 An instance keeps the runtime it was created with. Instances created by earlier versions of clickhousectl are Docker instances: they resume in Docker without the flag, and every other command works on them unchanged. `--docker` on an existing native instance is a usage error; remove the instance to recreate it in the other runtime.
 

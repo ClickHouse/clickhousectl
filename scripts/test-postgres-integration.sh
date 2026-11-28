@@ -157,10 +157,11 @@ case_path_traversal_name() {
     echo "$out" | grep -qiE "invalid|name" || { die "no rejection: $out"; return 1; }
 }
 
-# ── 7. install postgres@latest rejected ──
+# ── 7. install postgres@latest --docker rejected ──
 case_install_rejects_latest() {
-    local out; out=$("$CTL" local install postgres@latest 2>&1) || true
-    echo "$out" | grep -Fq "invalid or unsupported postgres version 'latest'" || { die "no rejection: $out"; return 1; }
+    local out rc=0; out=$("$CTL" local install postgres@latest --docker 2>&1) || rc=$?
+    [[ "$rc" -eq 2 ]] || { die "expected exit 2, got $rc: $out"; return 1; }
+    echo "$out" | grep -Fq -- "--docker" || { die "no --docker rejection: $out"; return 1; }
 }
 
 # ── 8. Cross-engine name reuse coexists (CH and PG can share a name) ──
@@ -272,10 +273,10 @@ case_remove_running_rejected() {
     "$CTL" local postgres remove s >/dev/null 2>&1
 }
 
-# ── 15a. Each supported major (17/18) starts and is query-ready ──
+# ── 15a. Each supported major (17/18/19) starts and is query-ready ──
 case_majors_start_and_serve() {
     local tag fail=0
-    for tag in 17 18; do
+    for tag in 17 18 19; do
         local n="m$tag"
         if ! "$CTL" local postgres start --docker --name "$n" --version "$tag" >/dev/null 2>&1; then
             die "start postgres:$tag failed"
@@ -301,15 +302,15 @@ case_majors_start_and_serve() {
     return $fail
 }
 
-# ── 16. validate_pg_tag rejects 14, 16, and 19 ──
+# ── 16. validate_pg_tag rejects 14, 16, and 20 ──
 case_unsupported_majors() {
-    local o14 o16 o19
+    local o14 o16 o20
     o14=$("$CTL" local postgres start --docker --name t --version 14-alpine 2>&1) || true
     o16=$("$CTL" local postgres start --docker --name t --version 16-alpine 2>&1) || true
-    o19=$("$CTL" local postgres start --docker --name t --version 19 2>&1) || true
+    o20=$("$CTL" local postgres start --docker --name t --version 20 2>&1) || true
     echo "$o14" | grep -q "invalid or unsupported postgres version" || { die "14 not rejected: $o14"; return 1; }
     echo "$o16" | grep -q "invalid or unsupported postgres version" || { die "16 not rejected: $o16"; return 1; }
-    echo "$o19" | grep -q "invalid or unsupported postgres version" || { die "19 not rejected: $o19"; return 1; }
+    echo "$o20" | grep -q "invalid or unsupported postgres version" || { die "20 not rejected: $o20"; return 1; }
 }
 
 # ── Run all ──
