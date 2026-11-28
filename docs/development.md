@@ -17,6 +17,59 @@
 
 The API/analyzer crates share [crate-level instructions](../crates/clickhouse-cloud-api/AGENTS.md). For command work, follow [add-cli-command](../.agents/skills/add-cli-command/SKILL.md) and its local/Cloud references. [AGENTS.md](../AGENTS.md) owns the invariants; avoid duplicating them in each procedure.
 
+## Experimental builds
+
+Features that depend on unreleased ClickHouse Cloud capabilities can be merged behind Cargo feature flags and tested internally or with private-preview users without shipping in standard releases.
+
+### Gating a feature
+
+1. Define a feature in `crates/clickhousectl/Cargo.toml` (and in `crates/clickhouse-cloud-api/Cargo.toml` if the library crate also gates it) and add it to the `experimental` umbrella feature:
+   ```toml
+   experimental = ["my-feature"]
+   my-feature = ["clickhouse-cloud-api/my-feature"]
+   ```
+   Never enable `experimental` in `default`, and never use `--all-features` to build experimental binaries (which would also enable `debug-log`, `channel-pip`, and `deprecated-fields`).
+2. Keep gated code building, linted, and tested with `cargo clippy -p clickhousectl --all-targets --features experimental -- -D warnings` and `cargo test -p clickhousectl --features experimental`.
+3. When the feature is ready for general availability, remove its `#[cfg(feature = "...")]` gates and remove it from `experimental`.
+
+### Triggering an experimental build
+
+Maintainers with write access can trigger `.github/workflows/experimental-release.yml` from `main` or any repository branch (never forks):
+
+```sh
+gh workflow run experimental-release.yml -R ClickHouse/clickhousectl
+# Or from a specific branch with an optional note:
+gh workflow run experimental-release.yml -R ClickHouse/clickhousectl --ref my-branch -f note="Testing access requests"
+```
+
+The workflow builds all four release targets via `.github/workflows/_build-binaries.yml` with `--features experimental`, publishes a GitHub **Pre-release** tagged `experimental-YYYYMMDD-HHMMSS-<shortsha>` with `SHA256SUMS`, and prunes older experimental pre-releases to keep the 5 newest.
+
+### Installing an experimental build
+
+Install the latest experimental pre-release (replaces `~/.local/bin/clickhousectl` and `chctl`, verified against the release's `SHA256SUMS`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh
+```
+
+To pin a specific build from the GitHub Releases page:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh -s -- --tag experimental-YYYYMMDD-HHMMSS-<shortsha>
+```
+
+To return to the latest stable release:
+
+```sh
+curl -fsSL https://clickhouse.com/cli | sh
+```
+
+### Isolation and runtime behaviour
+
+- **Never served to normal users:** `experimental-release.yml` holds no OIDC (`id-token: write`), AWS, crates.io, npm, or PyPI credentials, never touches `builds.clickhouse.com` or `latest.txt`, uses non-`v*` tags (so `release.yml` never triggers and `clickhousectl update` / `install.sh` reject them), and publishes with `--prerelease --latest=false` (excluded from GitHub's `/releases/latest`).
+- **Always identified as experimental:** Local (`cargo build --features experimental`) and CI experimental builds report `<version>-experimental...` in `--version`, `User-Agent`, telemetry, feedback, and debug logs.
+- **Inert updater:** In experimental builds, `clickhousectl update`, `clickhousectl update --check`, and background update checks make no network calls and report the running experimental build as up to date so testers are never silently downgraded to stable.
+
 ## macOS build provenance
 
 Call `macos-build.yml` by its full merged commit SHA. It takes no inputs or

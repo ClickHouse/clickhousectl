@@ -1,0 +1,202 @@
+name: Experimental Release
+
+# Manual-only workflow for internal and private-preview builds with the
+# `experimental` umbrella Cargo feature enabled.
+#
+# Isolation invariants (normal users can never receive an experimental build):
+# - Triggered solely by `workflow_dispatch` (write-access maintainers on the
+#   origin repository only; never runs from forks or tags).
+# - Holds NO `id-token: write`, NO AWS/S3 OIDC role, NO crates.io/npm/PyPI
+#   environments or secrets — structurally incapable of publishing to
+#   builds.clickhouse.com, latest.txt, crates.io, npm, or PyPI.
+# - Tags always match `experimental-YYYYMMDD-HHMMSS-<shortsha>` (never `v*`),
+#   so `release.yml` never fires and `clickhousectl update` / `install.sh`
+#   reject the tag even if GitHub's latest-release redirect ever changed.
+# - Created with `--prerelease --latest=false` so GitHub excludes it from
+#   `/releases/latest`.
+# - Prunes older experimental pre-releases to retain only the 5 newest.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note included in the GitHub pre-release description"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  prepare:
+    name: Prepare experimental build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ClickHouse/clickhousectl'
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      experimental_version: ${{ steps.meta.outputs.experimental_version }}
+      pkg_version: ${{ steps.meta.outputs.pkg_version }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check workspace manifests agree
+        run: python3 scripts/check-release-versions.py
+
+      - name: Compute experimental tag and version
+        id: meta
+        run: |
+          pkg_version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/clickhousectl/Cargo.toml", "rb"))["package"]["version"])')
+          date_utc=$(date -u +%Y%m%d)
+          time_utc=$(date -u +%H%M%S)
+          short_sha=$(git rev-parse --short=7 HEAD)
+          tag="experimental-${date_utc}-${time_utc}-${short_sha}"
+          exp_version="${pkg_version}-experimental.${date_utc}.${short_sha}"
+
+          if ! printf '%s\n' "$tag" | grep -Eq '^experimental-[0-9]{8}-[0-9]{6}-[0-9a-f]{7,}$'; then
+            echo "::error::unexpected experimental tag format: ${tag}" >&2
+            exit 1
+          fi
+
+          echo "pkg_version=${pkg_version}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "experimental_version=${exp_version}" >> "$GITHUB_OUTPUT"
+          echo "Tag: ${tag}"
+          echo "Experimental version: ${exp_version}"
+
+  build:
+    name: Build and smoke test (experimental)
+    needs: prepare
+    uses: ./.github/workflows/_build-binaries.yml
+    with:
+      archive_tag: ${{ needs.prepare.outputs.tag }}
+      experimental: true
+      experimental_version: ${{ needs.prepare.outputs.experimental_version }}
+
+  publish-experimental:
+    name: Publish experimental pre-release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ClickHouse/clickhousectl'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      EXPERIMENTAL_VERSION: ${{ needs.prepare.outputs.experimental_version }}
+      SOURCE_REF: ${{ github.ref_name }}
+      SOURCE_SHA: ${{ github.sha }}
+      INPUT_NOTE: ${{ inputs.note }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release
+          pattern: clickhousectl-*
+          merge-multiple: true
+
+      - name: Verify archives and write SHA256SUMS
+        working-directory: release
+        run: |
+          if ! printf '%s\n' "$TAG" | grep -Eq '^experimental-[0-9]{8}-[0-9]{6}-[0-9a-f]{7,}$'; then
+            echo "::error::refusing to publish non-experimental tag '${TAG}'" >&2
+            exit 1
+          fi
+          missing=0
+          for target in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl; do
+            f="clickhousectl-${target}-${TAG}.tar.gz"
+            [ -f "$f" ] || { echo "::error::missing $f"; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          sha256sum clickhousectl-*-"${TAG}".tar.gz > SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 4 ] || { echo "::error::expected 4 archives"; exit 1; }
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Render release notes
+        run: |
+          cat > release-notes.md <<EOF
+          > **Experimental build** — built with the \`experimental\` Cargo feature enabled for internal and private-preview testing.
+          > Self-update (\`clickhousectl update\`) and background update checks are disabled in this binary.
+
+          - **Version:** \`${EXPERIMENTAL_VERSION}\`
+          - **Tag:** \`${TAG}\`
+          - **Source:** \`${SOURCE_REF}\` (\`${SOURCE_SHA}\`)
+          EOF
+          if [ -n "$INPUT_NOTE" ]; then
+            {
+              echo ""
+              echo "### Notes"
+              echo ""
+              printf '%s\n' "$INPUT_NOTE"
+            } >> release-notes.md
+          fi
+          cat >> release-notes.md <<EOF
+
+          ### Install this build
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh -s -- --tag ${TAG}
+          \`\`\`
+
+          Or install the latest experimental build:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh
+          \`\`\`
+
+          ### Return to stable
+
+          \`\`\`sh
+          curl -fsSL https://clickhouse.com/cli | sh
+          \`\`\`
+          EOF
+
+      - name: Create GitHub Pre-release
+        run: |
+          gh release create "$TAG" \
+            --target "$SOURCE_SHA" \
+            --prerelease \
+            --latest=false \
+            --title "Experimental (${TAG})" \
+            --notes-file release-notes.md \
+            release/*
+
+      - name: Prune old experimental pre-releases (keep 5 newest)
+        run: |
+          python3 scripts/prune-experimental-releases.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --keep 5 \
+            --keep-tag "$TAG"
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## Experimental build published"
+            echo ""
+            echo "- **Release:** https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+            echo "- **Version:** \`${EXPERIMENTAL_VERSION}\`"
+            echo "- **Source:** \`${SOURCE_REF}\` (\`${SOURCE_SHA}\`)"
+            echo ""
+            echo "### Install latest experimental"
+            echo '```sh'
+            echo "curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh"
+            echo '```'
+            echo ""
+            echo "### Install this exact build"
+            echo '```sh'
+            echo "curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/scripts/install-experimental.sh | sh -s -- --tag ${TAG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

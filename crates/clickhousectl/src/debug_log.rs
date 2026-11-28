@@ -130,7 +130,7 @@ fn initial_entry<'a>(
         json!(format!("{:.3}", jiff::Timestamp::now())),
     );
     entry.insert("pid".into(), json!(std::process::id()));
-    entry.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
+    entry.insert("version".into(), json!(crate::build_info::VERSION));
     entry.insert(
         "argv".into(),
         json!(argv.iter().map(|a| lossy(a)).collect::<Vec<_>>()),

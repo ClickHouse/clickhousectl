@@ -16,6 +16,7 @@ INSTALL_EXACT_PATHS = frozenset(
         "Cargo.lock",
         "Cargo.toml",
         "crates/clickhousectl/Cargo.toml",
+        "crates/clickhousectl/src/build_info.rs",
         "crates/clickhousectl/src/cli.rs",
         "crates/clickhousectl/src/error.rs",
         "crates/clickhousectl/src/http.rs",

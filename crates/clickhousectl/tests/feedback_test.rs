@@ -261,10 +261,17 @@ async fn an_agent_session_sends_one_json_object_with_its_headers() {
 
     let request = sandbox.the_request().await;
     assert_eq!(header(&request, "content-type"), Some("application/json"));
+    let expected_version = if cfg!(feature = "experimental") {
+        option_env!("CLICKHOUSECTL_EXPERIMENTAL_VERSION")
+            .filter(|v| !v.is_empty())
+            .unwrap_or(concat!(env!("CARGO_PKG_VERSION"), "-experimental"))
+    } else {
+        env!("CARGO_PKG_VERSION")
+    };
     assert!(
         header(&request, "user-agent")
             .unwrap()
-            .starts_with(&format!("clickhousectl/{}", env!("CARGO_PKG_VERSION")))
+            .starts_with(&format!("clickhousectl/{expected_version}"))
     );
     assert_eq!(
         header(&request, "agent-session-id"),

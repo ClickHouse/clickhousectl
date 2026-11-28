@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "crates/clickhousectl/src/version_manager/**"
+      - "crates/clickhousectl/src/build_info.rs"
       - "crates/clickhousectl/src/main.rs"
       - "crates/clickhousectl/src/cli.rs"
       - "crates/clickhousectl/src/local/cli.rs"

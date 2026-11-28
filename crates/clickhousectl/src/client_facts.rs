@@ -42,7 +42,7 @@ impl ClientFacts {
             is_agent: detected.is_some(),
             agent: detected.map(|a| a.id.as_str()),
             ci: env_truthy(env(CI_ENV)),
-            version: env!("CARGO_PKG_VERSION"),
+            version: crate::build_info::VERSION,
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         }
