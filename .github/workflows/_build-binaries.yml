@@ -1,0 +1,211 @@
+name: Build Binaries
+
+on:
+  workflow_call:
+    inputs:
+      archive_tag:
+        description: "Tag suffix embedded in archive and artifact names (e.g. v0.6.1 or experimental-...)"
+        required: true
+        type: string
+      experimental:
+        description: "Build with the `experimental` umbrella Cargo feature enabled"
+        required: false
+        type: boolean
+        default: false
+      experimental_version:
+        description: "Compile-time CLICKHOUSECTL_EXPERIMENTAL_VERSION when experimental is true"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Build
+        env:
+          EXPERIMENTAL: ${{ inputs.experimental }}
+          CLICKHOUSECTL_EXPERIMENTAL_VERSION: ${{ inputs.experimental_version }}
+          TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.cross }}
+        run: |
+          if [ "$EXPERIMENTAL" = "true" ]; then
+            if [ -z "$CLICKHOUSECTL_EXPERIMENTAL_VERSION" ] || ! printf '%s' "$CLICKHOUSECTL_EXPERIMENTAL_VERSION" | grep -q "experimental"; then
+              echo "::error::experimental_version must be set and contain 'experimental', got '${CLICKHOUSECTL_EXPERIMENTAL_VERSION}'" >&2
+              exit 1
+            fi
+            if [ "$USE_CROSS" = "true" ]; then
+              cross build --release --locked --features experimental --target "$TARGET"
+            else
+              cargo build --release --locked --features experimental --target "$TARGET"
+            fi
+          else
+            unset CLICKHOUSECTL_EXPERIMENTAL_VERSION
+            if [ "$USE_CROSS" = "true" ]; then
+              cross build --release --locked --target "$TARGET"
+            else
+              cargo build --release --locked --target "$TARGET"
+            fi
+          fi
+
+      - name: Verify static linking
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          binary="target/${{ matrix.target }}/release/clickhousectl"
+          echo "--- file output ---"
+          file "$binary"
+          file "$binary" | grep -qE "statically linked|static-pie linked"
+          echo "--- ldd output ---"
+          ldd_output=$(ldd "$binary" 2>&1 || true)
+          echo "$ldd_output"
+          echo "$ldd_output" | grep -qE "not a dynamic executable|statically linked"
+          echo "Static linking verified."
+
+      # The internal `debug-log` feature must never ship in any release, and
+      # `experimental` must be compiled in iff this is an experimental build.
+      - name: Verify compiled features
+        env:
+          EXPERIMENTAL: ${{ inputs.experimental }}
+          EXPERIMENTAL_VERSION: ${{ inputs.experimental_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          binary="target/${TARGET}/release/clickhousectl"
+          if grep -q CLICKHOUSECTL_DEBUG_LOG "$binary"; then
+            echo "::error::Release binary contains the debug-log feature" >&2
+            exit 1
+          fi
+          if [ "$EXPERIMENTAL" = "true" ]; then
+            if ! grep -q CLICKHOUSECTL_EXPERIMENTAL_BUILD "$binary"; then
+              echo "::error::Experimental binary is missing CLICKHOUSECTL_EXPERIMENTAL_BUILD marker" >&2
+              exit 1
+            fi
+            if ! grep -qF "$EXPERIMENTAL_VERSION" "$binary"; then
+              echo "::error::Experimental binary does not embed version '${EXPERIMENTAL_VERSION}'" >&2
+              exit 1
+            fi
+          else
+            if grep -q CLICKHOUSECTL_EXPERIMENTAL_BUILD "$binary"; then
+              echo "::error::Standard release binary contains the experimental feature" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Package archive
+        env:
+          ARCHIVE_TAG: ${{ inputs.archive_tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          DIR="clickhousectl-${TARGET}-${ARCHIVE_TAG}"
+          mkdir "$DIR"
+          cp "target/${TARGET}/release/clickhousectl" "$DIR/"
+          # install.sh, install-experimental.sh, npm install.js and `update`
+          # take the binary by name, so the licence beside it changes nothing
+          # they extract.
+          cp LICENSE "$DIR/"
+          tar -czf "${DIR}.tar.gz" "$DIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clickhousectl-${{ matrix.target }}-${{ inputs.archive_tag }}
+          path: clickhousectl-${{ matrix.target }}-${{ inputs.archive_tag }}.tar.gz
+
+  smoke-test:
+    name: Smoke test (${{ matrix.distro }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu:20.04
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:bullseye
+          - debian:bookworm
+          - centos:7
+          - amazonlinux:2
+          - alpine:3.18
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      ARCHIVE_TAG: ${{ inputs.archive_tag }}
+      EXPERIMENTAL: ${{ inputs.experimental }}
+      EXPERIMENTAL_VERSION: ${{ inputs.experimental_version }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: clickhousectl-${{ env.TARGET }}-${{ inputs.archive_tag }}
+
+      - name: Extract archive
+        run: |
+          DIR="clickhousectl-${TARGET}-${ARCHIVE_TAG}"
+          tar -xzf "${DIR}.tar.gz"
+          chmod +x "${DIR}/clickhousectl"
+          echo "BIN_PATH=${PWD}/${DIR}/clickhousectl" >> "$GITHUB_ENV"
+
+      - name: Run smoke test in ${{ matrix.distro }}
+        run: |
+          version_out=$(docker run --rm \
+            -e DO_NOT_TRACK=1 \
+            -v "${BIN_PATH}:/usr/local/bin/clickhousectl:ro" \
+            ${{ matrix.distro }} \
+            sh -c 'clickhousectl --version && clickhousectl --help >/dev/null')
+          echo "$version_out"
+          if [ "$EXPERIMENTAL" = "true" ]; then
+            printf '%s\n' "$version_out" | grep -qF "$EXPERIMENTAL_VERSION" \
+              || { echo "::error::expected --version to contain ${EXPERIMENTAL_VERSION}, got: ${version_out}"; exit 1; }
+            # Prove `update --check` is inert offline in experimental builds.
+            update_out=$(docker run --rm --network=none \
+              -e DO_NOT_TRACK=1 \
+              -v "${BIN_PATH}:/usr/local/bin/clickhousectl:ro" \
+              ${{ matrix.distro }} \
+              clickhousectl update --check --json)
+            echo "$update_out"
+            printf '%s\n' "$update_out" | grep -q '"action": "up_to_date"' \
+              || { echo "::error::expected inert up_to_date response, got: ${update_out}"; exit 1; }
+            printf '%s\n' "$update_out" | grep -qF "$EXPERIMENTAL_VERSION" \
+              || { echo "::error::expected experimental version in update output, got: ${update_out}"; exit 1; }
+          else
+            if printf '%s\n' "$version_out" | grep -qi "experimental"; then
+              echo "::error::standard release --version unexpectedly mentions experimental: ${version_out}" >&2
+              exit 1
+            fi
+          fi

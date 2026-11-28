@@ -41,7 +41,7 @@ const ROOT_AFTER_HELP: &str = root_agent_context!();
 #[derive(Args)]
 #[command(name = "clickhousectl")]
 #[command(about = "The official CLI for ClickHouse and Postgres: local and cloud", long_about = None)]
-#[command(version, disable_version_flag = true)]
+#[command(version = crate::build_info::VERSION, disable_version_flag = true)]
 #[command(arg(clap::Arg::new("version")
     .short('V')
     .long("version")
@@ -816,7 +816,10 @@ mod tests {
                 .err()
                 .expect("version flag should exit before dispatch");
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-            assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+            assert!(error.to_string().contains(crate::build_info::VERSION));
+            if cfg!(feature = "experimental") {
+                assert!(error.to_string().contains("experimental"));
+            }
             assert_eq!(error.exit_code(), 0);
         }
     }

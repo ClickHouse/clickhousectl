@@ -593,7 +593,7 @@ mod tests {
             ]
         );
         assert_eq!(value["message"], "m");
-        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["version"], crate::build_info::VERSION);
         assert_eq!(value["os"], std::env::consts::OS);
         assert_eq!(value["arch"], std::env::consts::ARCH);
         assert_eq!(value["ci"], false);

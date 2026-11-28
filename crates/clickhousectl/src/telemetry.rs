@@ -1430,7 +1430,7 @@ mod tests {
         assert_eq!(value["outcome"], "auth_required");
         assert_eq!(value["suggestion"], serde_json::Value::Null);
         assert_eq!(value["ci"], true);
-        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["version"], crate::build_info::VERSION);
         assert_eq!(value["os"], std::env::consts::OS);
         assert_eq!(value["arch"], std::env::consts::ARCH);
     }

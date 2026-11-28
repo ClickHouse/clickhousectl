@@ -167,6 +167,18 @@ impl UpdateResult {
         }
     }
 
+    /// Inert result for experimental builds: never checks the network or
+    /// replaces the binary, and always reports the running experimental version
+    /// as up to date.
+    fn experimental_inert() -> Self {
+        Self {
+            current_version: crate::build_info::VERSION.to_owned(),
+            latest_version: crate::build_info::VERSION.to_owned(),
+            action: UpdateAction::UpToDate,
+            upgrade_command: InstallChannel::Standalone.upgrade_command(),
+        }
+    }
+
     pub fn write(&self, output: &mut dyn Write, json: bool) -> Result<()> {
         if json {
             writeln!(output, "{}", serde_json::to_string_pretty(self)?)?;
@@ -430,7 +442,10 @@ pub const BACKGROUND_JOIN_TIMEOUT: std::time::Duration =
 /// Check for updates and retain both versions even when no update is available.
 /// Uses the explicit (longer) timeout since this is called from user-initiated commands.
 pub async fn check_for_update() -> Result<UpdateResult> {
-    let current = env!("CARGO_PKG_VERSION");
+    if cfg!(feature = "experimental") {
+        return Ok(UpdateResult::experimental_inert());
+    }
+    let current = crate::build_info::VERSION;
     let latest = &fetch_latest_tag(EXPLICIT_TIMEOUT).await?;
     let display = latest.strip_prefix('v').unwrap_or(latest);
 
@@ -447,9 +462,12 @@ pub async fn check_for_update() -> Result<UpdateResult> {
 /// package manager installed is refused before any network access, since
 /// replacing it would leave the manager's records wrong (#1305).
 pub async fn perform_update(json: bool) -> Result<UpdateResult> {
+    if cfg!(feature = "experimental") {
+        return Ok(UpdateResult::experimental_inert());
+    }
     InstallChannel::current().ensure_self_updatable()?;
 
-    let current = env!("CARGO_PKG_VERSION");
+    let current = crate::build_info::VERSION;
     let latest = &fetch_latest_tag(EXPLICIT_TIMEOUT).await?;
     let mut result = UpdateResult::checked(current, latest);
 
@@ -777,11 +795,11 @@ fn cache_is_stale(cache: Option<&UpdateCheck>, now: u64) -> bool {
 /// after the command's own output so the two never interleave. Silent when
 /// [`NO_UPDATE_CHECK_ENV`] turns the check off.
 pub fn print_cached_update_notice() {
-    if update_check_disabled_by_env() {
+    if cfg!(feature = "experimental") || update_check_disabled_by_env() {
         return;
     }
     if let Some(check) = read_update_check() {
-        let current = env!("CARGO_PKG_VERSION");
+        let current = crate::build_info::VERSION;
         if is_newer(current, &check.latest_version) {
             eprintln!(
                 "\nThere is a new version of clickhousectl. Update with `{}`.",
@@ -796,7 +814,7 @@ pub fn print_cached_update_notice() {
 /// full day, and a previously-cached "update available" version is kept so a
 /// known update is not hidden.
 async fn do_refresh_update_cache(timeout: std::time::Duration) {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = crate::build_info::VERSION;
     match fetch_latest_tag(timeout).await {
         Ok(latest) => {
             let display = latest.strip_prefix('v').unwrap_or(&latest);
@@ -820,7 +838,10 @@ async fn do_refresh_update_cache(timeout: std::time::Duration) {
 /// when the cache is still fresh or [`NO_UPDATE_CHECK_ENV`] turns the check off.
 /// Used in the background by every command and, awaited, by `--version`.
 pub async fn refresh_update_cache() {
-    if update_check_disabled_by_env() || !cache_is_stale(read_update_check().as_ref(), now_secs()) {
+    if cfg!(feature = "experimental")
+        || update_check_disabled_by_env()
+        || !cache_is_stale(read_update_check().as_ref(), now_secs())
+    {
         return;
     }
     let timeout = crate::timing::duration_override(
@@ -853,6 +874,28 @@ mod tests {
             assert_eq!(value["current_version"], "0.4.2");
             assert_eq!(value["latest_version"], latest.trim_start_matches('v'));
             assert_eq!(value["action"], action);
+        }
+    }
+
+    #[cfg(feature = "experimental")]
+    #[tokio::test]
+    async fn experimental_update_is_inert_and_reports_up_to_date() {
+        for result in [
+            check_for_update().await.unwrap(),
+            perform_update(true).await.unwrap(),
+        ] {
+            let mut output = Vec::new();
+            result.write(&mut output, true).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(value["action"], "up_to_date");
+            assert_eq!(value["current_version"], crate::build_info::VERSION);
+            assert_eq!(value["latest_version"], crate::build_info::VERSION);
+            assert!(
+                value["current_version"]
+                    .as_str()
+                    .unwrap()
+                    .contains("experimental")
+            );
         }
     }
 

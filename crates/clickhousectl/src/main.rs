@@ -5,6 +5,7 @@
 #[macro_use]
 mod stdout;
 
+mod build_info;
 mod cli;
 #[cfg(any(feature = "telemetry", feature = "feedback"))]
 mod client_facts;

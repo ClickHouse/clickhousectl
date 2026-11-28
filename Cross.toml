@@ -1,0 +1,6 @@
+# Pass build-time experimental version metadata into `cross` Docker containers
+# so Linux musl experimental builds embed the same version string as macOS builds.
+[build.env]
+passthrough = [
+    "CLICKHOUSECTL_EXPERIMENTAL_VERSION",
+]

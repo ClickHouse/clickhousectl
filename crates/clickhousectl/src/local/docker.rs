@@ -30,7 +30,7 @@ pub const LABEL_CREATED_BY: &str = "created_by";
 
 /// Value of the `created_by` label — `clickhousectl_<crate version>`.
 pub fn created_by_value() -> String {
-    format!("clickhousectl_{}", env!("CARGO_PKG_VERSION"))
+    format!("clickhousectl_{}", crate::build_info::VERSION)
 }
 
 /// Container name for a Postgres instance:

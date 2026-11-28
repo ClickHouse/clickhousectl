@@ -11,6 +11,10 @@ on:
       - "Cargo.lock"
       - "scripts/classify-install-integration.py"
       - "scripts/tests/test_classify_install_integration.py"
+      - "scripts/install-experimental.sh"
+      - "scripts/prune-experimental-releases.py"
+      - "scripts/tests/test_install_experimental.py"
+      - "scripts/tests/test_prune_experimental_releases.py"
       - ".github/workflows/test-install.yml"
       - ".github/workflows/test-cli.yml"
 
@@ -36,6 +40,10 @@ jobs:
 
       - name: Verify install workflow path mapping
         run: python3 scripts/tests/test_classify_install_integration.py
+
+      - name: Test experimental release scripts
+        run: |
+          python3 -m unittest             scripts/tests/test_prune_experimental_releases.py             scripts/tests/test_install_experimental.py
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable @ 2026-10-16
@@ -65,6 +73,13 @@ jobs:
 
       - name: Test debug-log
         run: cargo test -p clickhousectl --features debug-log debug_log
+
+      # Experimental builds compile in-development features and make `update` inert.
+      - name: Clippy with experimental
+        run: cargo clippy -p clickhousectl --all-targets --features experimental -- -D warnings
+
+      - name: Test with experimental
+        run: cargo test -p clickhousectl --features experimental
 
       # The live tests include the API library's harness by a path outside
       # this crate, so the published crate must ship its sources only.

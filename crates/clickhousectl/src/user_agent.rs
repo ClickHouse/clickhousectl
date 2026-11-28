@@ -12,7 +12,7 @@ pub fn user_agent() -> String {
 
 /// Build the User-Agent from the detected agent id, if any.
 fn user_agent_from(detected: Option<&str>) -> String {
-    let base = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
+    let base = format!("clickhousectl/{}", crate::build_info::VERSION);
     match detected {
         Some(id) => format!("{base} (agent={id})"),
         None => base,
@@ -25,10 +25,11 @@ mod tests {
 
     #[test]
     fn human_invocation_is_just_name_and_version() {
-        assert_eq!(
-            user_agent_from(None),
-            format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"))
-        );
+        let ua = user_agent_from(None);
+        assert_eq!(ua, format!("clickhousectl/{}", crate::build_info::VERSION));
+        if cfg!(feature = "experimental") {
+            assert!(ua.contains("experimental"), "got: {ua}");
+        }
     }
 
     #[test]
@@ -37,7 +38,7 @@ mod tests {
             user_agent_from(Some("claude-code")),
             format!(
                 "clickhousectl/{} (agent=claude-code)",
-                env!("CARGO_PKG_VERSION")
+                crate::build_info::VERSION
             )
         );
     }
@@ -47,7 +48,7 @@ mod tests {
         // Live process check: we can't control the env reliably across CI
         // hosts, but the prefix invariant must always hold.
         let ua = user_agent();
-        let prefix = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
+        let prefix = format!("clickhousectl/{}", crate::build_info::VERSION);
         assert!(ua == prefix || ua.starts_with(&format!("{prefix} (")));
     }
 }

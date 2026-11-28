@@ -41,6 +41,13 @@ channel-pip = []
 # invocation (raw argv, cwd, env, outcome) to the file named by
 # `CLICKHOUSECTL_DEBUG_LOG`, for agent-experience experiments. Unredacted.
 debug-log = []
+# Umbrella feature enabling all in-development features merged to `main` behind
+# build flags for internal and private-preview experimental builds. Never in
+# `default` and never enabled by `release.yml`. Experimental builds report a
+# version containing `experimental` in `--version`, `User-Agent`, telemetry,
+# and feedback, and make `clickhousectl update` and background update checks
+# inert so testers are never silently downgraded to a stable release.
+experimental = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

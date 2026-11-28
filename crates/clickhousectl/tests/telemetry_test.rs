@@ -283,7 +283,14 @@ async fn enabled_run_sends_payload_with_expected_shape() {
         "is_agent and agent must come from the same detection: {event}"
     );
     assert_eq!(event["ci"], false);
-    assert_eq!(event["version"], env!("CARGO_PKG_VERSION"));
+    let expected_version = if cfg!(feature = "experimental") {
+        option_env!("CLICKHOUSECTL_EXPERIMENTAL_VERSION")
+            .filter(|v| !v.is_empty())
+            .unwrap_or(concat!(env!("CARGO_PKG_VERSION"), "-experimental"))
+    } else {
+        env!("CARGO_PKG_VERSION")
+    };
+    assert_eq!(event["version"], expected_version);
     assert_eq!(event["os"], std::env::consts::OS);
     assert_eq!(event["arch"], std::env::consts::ARCH);
     assert!(
@@ -303,7 +310,7 @@ async fn enabled_run_sends_payload_with_expected_shape() {
         .expect("telemetry POST must carry a User-Agent")
         .to_str()
         .unwrap();
-    let prefix = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
+    let prefix = format!("clickhousectl/{expected_version}");
     assert!(
         ua == prefix || ua.starts_with(&format!("{prefix} (")),
         "unexpected User-Agent: {ua}"
@@ -551,11 +558,19 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         "child stderr should not gain a wrapper error: {}",
         stderr_of(&output)
     );
-    assert!(
-        stderr_of(&output).contains("`clickhousectl update`"),
-        "child failure should still reach the update-notice tail: {}",
-        stderr_of(&output)
-    );
+    if cfg!(feature = "experimental") {
+        assert!(
+            !stderr_of(&output).contains("`clickhousectl update`"),
+            "experimental builds must stay silent even with a cached newer version: {}",
+            stderr_of(&output)
+        );
+    } else {
+        assert!(
+            stderr_of(&output).contains("`clickhousectl update`"),
+            "child failure should still reach the update-notice tail: {}",
+            stderr_of(&output)
+        );
+    }
     let payloads = sandbox.wait_for_requests(1).await;
     assert_eq!(payloads[0]["command"], "local clickhouse start");
     assert_eq!(payloads[0]["exit_code"], 3);
