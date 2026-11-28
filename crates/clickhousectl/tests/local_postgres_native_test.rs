@@ -175,9 +175,9 @@ impl Fixture {
         std::fs::write(source.join(&file), &tarball).expect("write bundle");
         let mut document = json!({
             "schema": 1,
-            "release": "v0.3.0",
+            "release": "2026.11.28",
             "built_at": "2026-11-16T00:00:00Z",
-            "source": { "repo": "sdairs/pg-bundles", "commit": "0000000" },
+            "source": { "repo": "sdairs/postgres-binaries", "commit": "0000000" },
             "bundles": [{
                 "postgres_version": PG_VERSION,
                 "postgres_major": "18",
@@ -543,9 +543,9 @@ fn latest_txt_multi_major_defaults_to_newest_and_honours_explicit_majors() {
     std::fs::create_dir(project.join(".clickhouse")).expect("mark project");
 
     // Immutable `<tag>/` layout pointed to by `latest.txt` (builds.clickhouse.com).
-    let release_dir = source.join("v0.4.0");
+    let release_dir = source.join("2026.11.28");
     std::fs::create_dir(&release_dir).expect("create release dir");
-    std::fs::write(source.join("latest.txt"), "v0.4.0\n").expect("write latest.txt");
+    std::fs::write(source.join("latest.txt"), "2026.11.28\n").expect("write latest.txt");
 
     let mut bundles = Vec::new();
     for version in ["19.0", "18.7", "17.12"] {
@@ -564,9 +564,9 @@ fn latest_txt_multi_major_defaults_to_newest_and_honours_explicit_majors() {
     }
     let manifest = json!({
         "schema": 1,
-        "release": "v0.4.0",
+        "release": "2026.11.28",
         "built_at": "2026-11-28T00:00:00Z",
-        "source": { "repo": "ClickHouse/postgres-builds", "commit": "0000000" },
+        "source": { "repo": "ClickHouse/postgres-binaries", "commit": "0000000" },
         "bundles": bundles,
     });
     std::fs::write(

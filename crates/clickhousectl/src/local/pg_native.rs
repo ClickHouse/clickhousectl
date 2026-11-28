@@ -1,5 +1,5 @@
 //! The native runtime for `local postgres`: a postmaster from a cached
-//! bundle (`local::pg_bundle`), run as a child process.
+//! bundle (`local::pg_binaries`), run as a child process.
 //!
 //! Everything an instance owns lives in its directory under
 //! `.clickhouse/servers/<name>-pg<major>/`: `data/` (PGDATA), `postgres.log`,
@@ -8,7 +8,7 @@
 //! instance and recording it in the project metadata is `local::postgres`.
 
 use crate::error::{Error, Result, StartupKind};
-use crate::local::pg_bundle::InstalledBundle;
+use crate::local::pg_binaries::InstalledBundle;
 use crate::local::server;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom, Write};

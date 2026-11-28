@@ -7,7 +7,7 @@
 | Path | Responsibility |
 | --- | --- |
 | `crates/clickhousectl/src/main.rs`, `cli.rs` | Entrypoint, common CLI options, output mode |
-| `crates/clickhousectl/src/local/` | Local command definitions, dispatch, servers, Postgres (`postgres.rs` chooses the runtime; `pg_bundle.rs` and `pg_native.rs` are the native one, `docker.rs` the Docker one), output |
+| `crates/clickhousectl/src/local/` | Local command definitions, dispatch, servers, Postgres (`postgres.rs` chooses the runtime; `pg_binaries.rs` and `pg_native.rs` are the native one, `docker.rs` the Docker one), output |
 | `crates/clickhousectl/src/cloud/<domain>.rs` | Cloud domain definitions, handlers, builders, wrappers, tests |
 | `crates/clickhousectl/src/cloud/<domain>/` | A large Cloud domain: `PERMISSIONS` and dispatch in `mod.rs`, command enums and shared arg groups in `cli.rs` (a source-specific arg struct may sit with its builder, as in `clickpipes/sources/<kind>.rs`), `CloudClient` wrappers in `client.rs`, one file per command family, tests beside the code they test |
 | `crates/clickhousectl/src/cloud/client.rs` | Credential resolution and shared Cloud client/error handling |

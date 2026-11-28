@@ -2,7 +2,7 @@
 //!
 //! An instance runs in one of two runtimes ([`PgRuntime`]) and keeps the one
 //! it was created with: native, a postmaster from a downloaded bundle
-//! (`local::pg_bundle`, `local::pg_native`), or Docker (`local::docker`).
+//! (`local::pg_binaries`, `local::pg_native`), or Docker (`local::docker`).
 //! `start` chooses for a new instance in [`select_start_runtime`]; every other
 //! command reads the choice back with `ServerInfo::pg_runtime`. State is
 //! reused from `local::server` — Postgres entries land in the same metadata
@@ -12,7 +12,7 @@ use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
 use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
-use crate::local::pg_bundle::{self, InstalledBundle, PgVersionRequest};
+use crate::local::pg_binaries::{self, InstalledBundle, PgVersionRequest};
 use crate::local::pg_native::{self, BundleIdentity, NativeState};
 use crate::local::server::{self, Engine, PgRuntime, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
@@ -783,12 +783,12 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                 let run_as = pg_native::user_for_new_instance()?;
                 if let Some(server_user) = &run_as {
                     pg_native::ensure_searchable(
-                        &[&pg_bundle::cache_root()?, &crate::init::local_dir()?],
+                        &[&pg_binaries::cache_root()?, &crate::init::local_dir()?],
                         server_user,
                     )?;
                 }
                 let bundle =
-                    pg_bundle::ensure_bundle(&PgVersionRequest::latest(), false, json).await?;
+                    pg_binaries::ensure_bundle(&PgVersionRequest::latest(), false, json).await?;
                 let major = bundle.spec.postgres_major.clone();
                 let key = server::pg_instance_key(&user_name, &major);
                 let instance_dir = server::servers_dir_join(&key)?;
@@ -830,7 +830,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                 };
                 if let Some(server_user) = &run_as {
                     pg_native::ensure_searchable(
-                        &[&pg_bundle::cache_root()?, &instance_dir],
+                        &[&pg_binaries::cache_root()?, &instance_dir],
                         server_user,
                     )?;
                 }
@@ -838,7 +838,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                     // Data directories work across minors of a major, so an
                     // existing instance takes the newest installed bundle and
                     // needs no network.
-                    Some(_) => pg_bundle::bundle_for_existing(&major, json).await?,
+                    Some(_) => pg_binaries::bundle_for_existing(&major, json).await?,
                     None => {
                         let request = PgVersionRequest::parse(&tag).ok_or_else(|| {
                             Error::PostgresUsage(format!(
@@ -846,7 +846,7 @@ async fn start_native(request: StartRequest, json: bool) -> Result<()> {
                                  17, 18, 19 or <major>.<minor>, or add `--docker`"
                             ))
                         })?;
-                        pg_bundle::ensure_bundle(&request, false, json).await?
+                        pg_binaries::ensure_bundle(&request, false, json).await?
                     }
                 };
                 if let Some(server_user) = &run_as {
@@ -2177,7 +2177,7 @@ fn native_state(info: &ServerInfo) -> Result<NativeState> {
 /// The installed bundle whose client tools match a native instance's major.
 fn installed_bundle_for(state: &NativeState) -> Result<InstalledBundle> {
     let major = &state.postgres_major;
-    pg_bundle::newest_installed(&PgVersionRequest::major(major))?.ok_or_else(|| {
+    pg_binaries::newest_installed(&PgVersionRequest::major(major))?.ok_or_else(|| {
         Error::PostgresBundleUnavailable(format!(
             "no PostgreSQL {major} bundle is installed; run `clickhousectl local install \
              postgres@{major}`"

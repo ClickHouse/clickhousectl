@@ -23,9 +23,10 @@ pub(crate) const BUNDLES_URL_ENV: &str = "CLICKHOUSECTL_POSTGRES_BUNDLES_URL";
 /// Where `manifest.json` and the tarballs it names are published. No request
 /// to it, or to anything it redirects to, carries credentials.
 ///
-/// TODO(before merge): switch to `https://builds.clickhouse.com/postgres-builds`
-/// once `ClickHouse/postgres-builds` is published there.
-const DEFAULT_BUNDLES_URL: &str = "https://github.com/sdairs/pg-bundles/releases/latest/download";
+/// TODO(before merge): switch to `https://builds.clickhouse.com/postgres-binaries`
+/// once `ClickHouse/postgres-binaries` is published there.
+const DEFAULT_BUNDLES_URL: &str =
+    "https://github.com/sdairs/postgres-binaries/releases/latest/download";
 const MANIFEST_FILE: &str = "manifest.json";
 const LATEST_TAG_FILE: &str = "latest.txt";
 const SUPPORTED_SCHEMA: u64 = 1;
@@ -236,19 +237,32 @@ fn parse_manifest(bytes: &[u8]) -> Result<ParsedManifest> {
     })
 }
 
-/// Parse a release tag such as `v0.4.0`, as written to `latest.txt`. Rejects
-/// path separators or traversal segments so joining it onto a base URL or
-/// directory cannot escape the source.
+/// Parse a CalVer release tag (`YYYY.MM.DD`, optionally `.N` and/or
+/// `-<suffix>`, e.g. `2026.11.28`, `2026.11.28.1`, `2026.11.28-rc1`,
+/// `2026.11.28.1-rc1`), as written to `latest.txt` and `manifest.json`. Rejects
+/// path separators, traversal segments, and arbitrary bodies so joining it onto
+/// a base URL or directory cannot escape the source.
 fn parse_release_tag(text: &str) -> Option<String> {
     let tag = text.trim();
-    let rest = tag.strip_prefix('v')?;
-    let valid = !rest.is_empty()
-        && !rest.starts_with('.')
-        && !rest.contains("..")
-        && rest
+    if tag.is_empty()
+        || tag.contains("..")
+        || !tag
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
-    valid.then(|| tag.to_string())
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return None;
+    }
+    let bytes = tag.as_bytes();
+    let is_calver = bytes.len() >= 10
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'.'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'.'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+        && (bytes.len() == 10
+            || (matches!(bytes[10], b'.' | b'-')
+                && bytes.get(11).is_some_and(u8::is_ascii_alphanumeric)));
+    is_calver.then(|| tag.to_string())
 }
 
 /// Compute the base URL for bundle tarballs from the requested base, the final
@@ -444,7 +458,7 @@ impl BundleSource {
 ///   pinned `<base>/<tag>` URL). Assets resolve against the final redirected
 ///   URL so a concurrent release cannot cause a checksum mismatch.
 /// - Immutable `<base>/latest.txt` + `<base>/<tag>/manifest.json` (the
-///   `builds.clickhouse.com/postgres-builds` layout), tried when
+///   `builds.clickhouse.com/postgres-binaries` layout), tried when
 ///   `<base>/manifest.json` returns 404.
 async fn resolve_https_manifest(base: &url::Url) -> Result<ResolvedManifest> {
     let manifest_url = base
@@ -799,9 +813,9 @@ mod tests {
     fn manifest(schema: u64, bundles: &[BundleSpec]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema": schema,
-            "release": "v0.4.0",
+            "release": "2026.11.28",
             "built_at": "2026-11-28T00:00:00Z",
-            "source": { "repo": "ClickHouse/postgres-builds", "commit": "abc" },
+            "source": { "repo": "ClickHouse/postgres-binaries", "commit": "abc" },
             "bundles": bundles,
         }))
         .unwrap()
@@ -904,18 +918,47 @@ mod tests {
 
     #[test]
     fn release_tag_parsing_and_redirect_base_resolution() {
-        assert_eq!(parse_release_tag("v0.4.0\n"), Some("v0.4.0".to_string()));
         assert_eq!(
-            parse_release_tag("  v1.2.3-rc1  "),
-            Some("v1.2.3-rc1".to_string())
+            parse_release_tag("2026.11.28\n"),
+            Some("2026.11.28".to_string())
         );
-        for bad in ["", "0.4.0", "v", "v../etc", "v0.4.0/foo", "v.hidden"] {
+        assert_eq!(
+            parse_release_tag("2026.11.28.1"),
+            Some("2026.11.28.1".to_string())
+        );
+        assert_eq!(
+            parse_release_tag("  2026.11.28-rc1  "),
+            Some("2026.11.28-rc1".to_string())
+        );
+        assert_eq!(
+            parse_release_tag("2026.11.28.1-rc1"),
+            Some("2026.11.28.1-rc1".to_string())
+        );
+        for bad in [
+            "",
+            "0.4.0",
+            "v",
+            "v0.4.0",
+            "v0.4.0\n",
+            "v1.2.3-rc1",
+            "v2026.11.28",
+            "v../etc",
+            "v0.4.0/foo",
+            "v.hidden",
+            "2026.11.28/foo",
+            "2026.11.28..1",
+            "2026.11.28.",
+            "2026.11.28-",
+            "2026.11.28foo",
+            "../2026.11.28",
+        ] {
             assert_eq!(parse_release_tag(bad), None, "{bad}");
         }
 
-        let requested =
-            url::Url::parse("https://github.com/sdairs/pg-bundles/releases/latest/download/")
-                .unwrap();
+        let requested = url::Url::parse(
+            "https://github.com/sdairs/postgres-binaries/releases/latest/download/",
+        )
+        .unwrap();
         // Cross-host SAS redirect (GitHub -> release-assets.githubusercontent.com)
         // stays on github.com and pins to the manifest's immutable release tag.
         let sas_redirect = url::Url::parse(
@@ -923,18 +966,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            asset_base_url(&requested, &sas_redirect, Some("v0.4.0")).as_str(),
-            "https://github.com/sdairs/pg-bundles/releases/download/v0.4.0/"
+            asset_base_url(&requested, &sas_redirect, Some("2026.11.28")).as_str(),
+            "https://github.com/sdairs/postgres-binaries/releases/download/2026.11.28/"
         );
         // Same-host redirect follows the redirected directory.
         let same_host = url::Url::parse(
-            "https://builds.clickhouse.com/postgres-builds/v0.4.0/manifest.json?t=1",
+            "https://builds.clickhouse.com/postgres-binaries/2026.11.28/manifest.json?t=1",
         )
         .unwrap();
-        let ch_base = url::Url::parse("https://builds.clickhouse.com/postgres-builds/").unwrap();
+        let ch_base = url::Url::parse("https://builds.clickhouse.com/postgres-binaries/").unwrap();
         assert_eq!(
-            asset_base_url(&ch_base, &same_host, Some("v0.4.0")).as_str(),
-            "https://builds.clickhouse.com/postgres-builds/v0.4.0/"
+            asset_base_url(&ch_base, &same_host, Some("2026.11.28")).as_str(),
+            "https://builds.clickhouse.com/postgres-binaries/2026.11.28/"
         );
     }
 
@@ -1034,8 +1077,8 @@ mod tests {
     #[tokio::test]
     async fn directory_source_follows_latest_txt_when_no_root_manifest_exists() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(LATEST_TAG_FILE), "v0.4.0\n").unwrap();
-        let release_dir = dir.path().join("v0.4.0");
+        std::fs::write(dir.path().join(LATEST_TAG_FILE), "2026.11.28\n").unwrap();
+        let release_dir = dir.path().join("2026.11.28");
         std::fs::create_dir(&release_dir).unwrap();
         let bundles = [spec("19.0", "aarch64-apple-darwin", SHA_A)];
         std::fs::write(release_dir.join(MANIFEST_FILE), manifest(1, &bundles)).unwrap();

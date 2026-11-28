@@ -3,7 +3,7 @@ pub mod config;
 pub mod discovery;
 pub mod docker;
 pub mod output;
-pub(crate) mod pg_bundle;
+pub(crate) mod pg_binaries;
 pub(crate) mod pg_native;
 pub mod postgres;
 pub(crate) mod procinfo;
@@ -100,7 +100,7 @@ async fn install_postgres(tag: &str, force: bool, docker: bool, json: bool) -> R
         return install_postgres_image(tag, force, json).await;
     }
     postgres::validate_pg_start_version(tag)?;
-    let Some(request) = pg_bundle::PgVersionRequest::parse(tag) else {
+    let Some(request) = pg_binaries::PgVersionRequest::parse(tag) else {
         return Err(Error::usage(
             clap::error::ErrorKind::ArgumentConflict,
             format!(
@@ -109,7 +109,7 @@ async fn install_postgres(tag: &str, force: bool, docker: bool, json: bool) -> R
             ),
         ));
     };
-    let bundle = pg_bundle::ensure_bundle(&request, force, json).await?;
+    let bundle = pg_binaries::ensure_bundle(&request, force, json).await?;
     let out = output::InstallOutput {
         version: format!("postgres@{}", bundle.spec.postgres_version),
         set_as_default: false,

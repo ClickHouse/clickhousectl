@@ -77,7 +77,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/src/feedback.rs",
         "crates/clickhousectl/src/local/config.rs",
         "crates/clickhousectl/src/local/docker.rs",
-        "crates/clickhousectl/src/local/pg_bundle.rs",
+        "crates/clickhousectl/src/local/pg_binaries.rs",
         "crates/clickhousectl/src/local/pg_native.rs",
         "crates/clickhousectl/src/local/postgres.rs",
         "crates/clickhousectl/src/local/udf.rs",
